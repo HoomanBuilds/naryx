@@ -3,11 +3,19 @@ import { compareBytes, toHex } from './bytes.js';
 import { canonicalBytes } from './encoding.js';
 import { DuplicateElementError, MalformedInputError } from './errors.js';
 import { domainHash, HASH_DOMAIN } from './hashing.js';
+import {
+  NETTING_POLICY_MAX_OBLIGATIONS,
+  nettingPolicyManifest,
+  nettingPolicyManifestHash,
+  type NettingInstrumentPolicy,
+  type NettingPolicyManifest,
+  type NettingPolicyManifestInput,
+} from './netting-policy-manifest.js';
 import { commitmentHash, encodeCommitmentHash, type CommitmentHash } from './package-order-primitives.js';
 import { encodeProtocolId, protocolId, type ProtocolId } from './primitives.js';
 
-export const NETTING_MAX_OBLIGATIONS = 512;
-export const NETTING_RESULT_VERSION = 2;
+export const NETTING_MAX_OBLIGATIONS = NETTING_POLICY_MAX_OBLIGATIONS;
+export const NETTING_RESULT_VERSION = 3;
 const U64_BITS = 64;
 const U128_BITS = 128;
 const I128_BITS = 128;
@@ -70,25 +78,41 @@ export function compressPackageLegs(legs: readonly PackageLegQuantity[]): Compre
 
 // ------------------------------------------------------------------ cross-user netting
 
-export interface NettingObligation {
-  readonly obligationId: Uint8Array | string;
-  readonly userId: string;
-  readonly packageId: string;
-  readonly underlyingId: string;
+export interface NettingObligationInput {
+  readonly ownerId: string;
+  readonly strategyOrderHash: Uint8Array | string;
+  readonly packageOrderId: Uint8Array | string;
+  readonly settlementReadinessHash: Uint8Array | string;
+  readonly legId: string;
+  readonly instrumentId: string;
   readonly signedQuantityAtoms: bigint;
   readonly sequence: bigint;
 }
 
-export interface NettingQuantityIncrement {
-  readonly underlyingId: string;
-  readonly quantityIncrementAtoms: bigint;
+export interface NettingObligation {
+  readonly obligationId: CommitmentHash;
+  readonly nettingPolicyHash: CommitmentHash;
+  readonly ownerId: ProtocolId;
+  readonly strategyOrderHash: CommitmentHash;
+  readonly packageOrderId: CommitmentHash;
+  readonly settlementReadinessHash: CommitmentHash;
+  readonly legId: ProtocolId;
+  readonly instrumentId: ProtocolId;
+  readonly instrumentHash: CommitmentHash;
+  readonly signedQuantityAtoms: bigint;
+  readonly sequence: bigint;
 }
 
 export interface NettingAllocation {
   readonly obligationId: CommitmentHash;
-  readonly userId: ProtocolId;
-  readonly packageId: ProtocolId;
-  readonly underlyingId: ProtocolId;
+  readonly nettingPolicyHash: CommitmentHash;
+  readonly ownerId: ProtocolId;
+  readonly strategyOrderHash: CommitmentHash;
+  readonly packageOrderId: CommitmentHash;
+  readonly settlementReadinessHash: CommitmentHash;
+  readonly legId: ProtocolId;
+  readonly instrumentId: ProtocolId;
+  readonly instrumentHash: CommitmentHash;
   readonly signedQuantityAtoms: bigint;
   readonly internalQuantityAtoms: bigint;
   readonly externalQuantityAtoms: bigint;
@@ -96,7 +120,8 @@ export interface NettingAllocation {
 }
 
 export interface NettingUnderlyingSummary {
-  readonly underlyingId: ProtocolId;
+  readonly instrumentId: ProtocolId;
+  readonly instrumentHash: CommitmentHash;
   readonly grossBuyAtoms: bigint;
   readonly grossSellAtoms: bigint;
   readonly internalMatchedAtoms: bigint;
@@ -105,7 +130,8 @@ export interface NettingUnderlyingSummary {
 }
 
 export interface NettingResult {
-  readonly version: 2;
+  readonly version: 3;
+  readonly nettingPolicyHash: CommitmentHash;
   readonly allocations: readonly NettingAllocation[];
   readonly underlyings: readonly NettingUnderlyingSummary[];
   readonly proofHash: CommitmentHash;
@@ -115,12 +141,72 @@ export type NettingResultInput = Omit<NettingResult, 'proofHash'>;
 
 type Checked = {
   obligationId: CommitmentHash;
-  userId: ProtocolId;
-  packageId: ProtocolId;
-  underlyingId: ProtocolId;
+  nettingPolicyHash: CommitmentHash;
+  ownerId: ProtocolId;
+  strategyOrderHash: CommitmentHash;
+  packageOrderId: CommitmentHash;
+  settlementReadinessHash: CommitmentHash;
+  legId: ProtocolId;
+  instrumentId: ProtocolId;
+  instrumentHash: CommitmentHash;
   signedQuantityAtoms: bigint;
   sequence: bigint;
 };
+
+function nettingObligationPayload(
+  obligation: Omit<NettingObligation, 'obligationId'>,
+): Uint8Array {
+  return canonicalBytes((writer) => {
+    encodeCommitmentHash(writer, obligation.nettingPolicyHash, 'nettingPolicyHash');
+    encodeProtocolId(writer, obligation.ownerId, 'ownerId');
+    encodeCommitmentHash(writer, obligation.strategyOrderHash, 'strategyOrderHash');
+    encodeCommitmentHash(writer, obligation.packageOrderId, 'packageOrderId');
+    encodeCommitmentHash(writer, obligation.settlementReadinessHash, 'settlementReadinessHash');
+    encodeProtocolId(writer, obligation.legId, 'legId');
+    encodeProtocolId(writer, obligation.instrumentId, 'instrumentId');
+    encodeCommitmentHash(writer, obligation.instrumentHash, 'instrumentHash');
+    writer.writeI128(obligation.signedQuantityAtoms, 'signedQuantityAtoms');
+    writer.writeU64(obligation.sequence, 'sequence');
+  });
+}
+
+function obligationHash(obligation: Omit<NettingObligation, 'obligationId'>): CommitmentHash {
+  return commitmentHash(
+    domainHash(HASH_DOMAIN.NETTING_OBLIGATION, nettingObligationPayload(obligation)),
+    'nettingObligationHash',
+  );
+}
+
+export function nettingObligation(
+  input: NettingObligationInput,
+  policyInput: NettingPolicyManifestInput | NettingPolicyManifest,
+  context = 'nettingObligation',
+): NettingObligation {
+  object(input, context);
+  const policy = nettingPolicyManifest(policyInput, `${context}.policy`);
+  const instrumentId = protocolId(input.instrumentId, `${context}.instrumentId`);
+  const instrument = policy.instruments.find((candidate) => candidate.instrumentId === instrumentId);
+  if (instrument === undefined) {
+    throw new MalformedInputError(`${context}.instrumentId`, 'instrument is not permitted by the netting policy');
+  }
+  const signedQuantityAtoms = signedNonzero(input.signedQuantityAtoms, `${context}.signedQuantityAtoms`);
+  if (signedQuantityAtoms % instrument.quantityIncrementAtoms !== 0n) {
+    throw new MalformedInputError(`${context}.signedQuantityAtoms`, 'quantity is off the instrument increment lattice');
+  }
+  const checked = Object.freeze({
+    nettingPolicyHash: commitmentHash(nettingPolicyManifestHash(policy), `${context}.nettingPolicyHash`),
+    ownerId: protocolId(input.ownerId, `${context}.ownerId`),
+    strategyOrderHash: commitmentHash(input.strategyOrderHash, `${context}.strategyOrderHash`),
+    packageOrderId: commitmentHash(input.packageOrderId, `${context}.packageOrderId`),
+    settlementReadinessHash: commitmentHash(input.settlementReadinessHash, `${context}.settlementReadinessHash`),
+    legId: protocolId(input.legId, `${context}.legId`),
+    instrumentId,
+    instrumentHash: instrument.instrumentHash,
+    signedQuantityAtoms,
+    sequence: unsigned(input.sequence, U64_BITS, `${context}.sequence`),
+  });
+  return Object.freeze({ obligationId: obligationHash(checked), ...checked });
+}
 
 /**
  * Splits `matched` across one side in increments: floor pro-rata first, then any leftover
@@ -160,43 +246,20 @@ function allocateSide(side: readonly Checked[], matched: bigint, increment: bigi
  * and `gross = internal + external` holds per obligation, per side, and per underlying.
  */
 export function netObligations(
-  obligations: readonly NettingObligation[],
-  quantityIncrements: readonly NettingQuantityIncrement[],
+  obligations: readonly NettingObligationInput[],
+  policyInput: NettingPolicyManifestInput | NettingPolicyManifest,
 ): NettingResult {
   requireArray(obligations, 'netObligations.obligations');
   if (obligations.length === 0) throw new MalformedInputError('netObligations.obligations', 'netting batch is empty');
-  requireArray(quantityIncrements, 'netObligations.quantityIncrements');
-  const increments = quantityIncrements.map((entry, index) => {
-    const at = `netObligations.quantityIncrements[${index}]`;
-    object(entry, at);
-    const increment = unsigned(entry.quantityIncrementAtoms, U128_BITS, `${at}.quantityIncrementAtoms`);
-    if (increment === 0n) throw new MalformedInputError(`${at}.quantityIncrementAtoms`, 'increment is zero');
-    return Object.freeze({
-      underlyingId: protocolId(entry.underlyingId, `${at}.underlyingId`),
-      quantityIncrementAtoms: increment,
-    });
-  }).sort((left, right) => left.underlyingId < right.underlyingId ? -1 : left.underlyingId > right.underlyingId ? 1 : 0);
-  if (new Set(increments.map((entry) => entry.underlyingId)).size !== increments.length) {
-    throw new DuplicateElementError('netObligations.quantityIncrements', 'underlying ids repeat');
+  const policy = nettingPolicyManifest(policyInput, 'netObligations.policy');
+  if (obligations.length > policy.maximumObligations) {
+    throw new MalformedInputError('netObligations.obligations', 'batch exceeds the netting policy maximum');
   }
-  const incrementByUnderlying = new Map(increments.map((entry) => [entry.underlyingId, entry.quantityIncrementAtoms]));
-  const checked: Checked[] = obligations.map((obligation, index) => {
-    const at = `netObligations.obligations[${index}]`;
-    object(obligation, at);
-    const signedQuantityAtoms = signedNonzero(obligation.signedQuantityAtoms, `${at}.signedQuantityAtoms`);
-    const underlyingId = protocolId(obligation.underlyingId, `${at}.underlyingId`);
-    const increment = incrementByUnderlying.get(underlyingId);
-    if (increment === undefined) throw new MalformedInputError(`${at}.underlyingId`, 'underlying has no quantity increment');
-    if (signedQuantityAtoms % increment !== 0n) throw new MalformedInputError(`${at}.signedQuantityAtoms`, 'quantity is off the increment lattice');
-    return {
-      obligationId: commitmentHash(obligation.obligationId, `${at}.obligationId`),
-      userId: protocolId(obligation.userId, `${at}.userId`),
-      packageId: protocolId(obligation.packageId, `${at}.packageId`),
-      underlyingId,
-      signedQuantityAtoms,
-      sequence: unsigned(obligation.sequence, U64_BITS, `${at}.sequence`),
-    };
-  });
+  const policyHash = commitmentHash(nettingPolicyManifestHash(policy), 'netObligations.nettingPolicyHash');
+  const instrumentById = new Map(policy.instruments.map((instrument) => [instrument.instrumentId, instrument]));
+  const checked: Checked[] = obligations.map((obligation, index) =>
+    nettingObligation(obligation, policy, `netObligations.obligations[${index}]`),
+  );
   checked.sort((left, right) => (left.sequence !== right.sequence ? (left.sequence < right.sequence ? -1 : 1) : compareBytes(left.obligationId, right.obligationId)));
   const ids = new Set(checked.map((item) => toHex(item.obligationId)));
   if (ids.size !== checked.length) throw new DuplicateElementError('netObligations.obligations', 'obligation ids repeat');
@@ -204,22 +267,21 @@ export function netObligations(
     throw new DuplicateElementError('netObligations.obligations', 'sequences repeat');
   }
 
-  const underlyings = [...new Set(checked.map((item) => item.underlyingId))].sort();
-  if (underlyings.length !== increments.length || underlyings.some((underlyingId, index) => underlyingId !== increments[index]?.underlyingId)) {
-    throw new MalformedInputError('netObligations.quantityIncrements', 'increments must name every netted underlying exactly once');
-  }
+  const underlyings = [...new Set(checked.map((item) => item.instrumentId))].sort();
   const internal = new Map<string, bigint>();
-  const summaries = underlyings.map((underlyingId) => {
-    const increment = incrementByUnderlying.get(underlyingId) as bigint;
-    const buys = checked.filter((item) => item.underlyingId === underlyingId && item.signedQuantityAtoms > 0n);
-    const sells = checked.filter((item) => item.underlyingId === underlyingId && item.signedQuantityAtoms < 0n);
+  const summaries = underlyings.map((instrumentId) => {
+    const instrument = instrumentById.get(instrumentId) as NettingInstrumentPolicy;
+    const increment = instrument.quantityIncrementAtoms;
+    const buys = checked.filter((item) => item.instrumentId === instrumentId && item.signedQuantityAtoms > 0n);
+    const sells = checked.filter((item) => item.instrumentId === instrumentId && item.signedQuantityAtoms < 0n);
     const grossBuy = buys.reduce((sum, item) => sum + item.signedQuantityAtoms, 0n);
     const grossSell = sells.reduce((sum, item) => sum - item.signedQuantityAtoms, 0n);
     const matched = grossBuy < grossSell ? grossBuy : grossSell;
     for (const [key, value] of allocateSide(buys, matched, increment)) internal.set(key, value);
     for (const [key, value] of allocateSide(sells, matched, increment)) internal.set(key, -value);
     return Object.freeze({
-      underlyingId,
+      instrumentId,
+      instrumentHash: instrument.instrumentHash,
       grossBuyAtoms: grossBuy,
       grossSellAtoms: grossSell,
       internalMatchedAtoms: matched,
@@ -231,9 +293,14 @@ export function netObligations(
     const inside = internal.get(toHex(item.obligationId)) ?? 0n;
     return Object.freeze({
       obligationId: item.obligationId,
-      userId: item.userId,
-      packageId: item.packageId,
-      underlyingId: item.underlyingId,
+      nettingPolicyHash: item.nettingPolicyHash,
+      ownerId: item.ownerId,
+      strategyOrderHash: item.strategyOrderHash,
+      packageOrderId: item.packageOrderId,
+      settlementReadinessHash: item.settlementReadinessHash,
+      legId: item.legId,
+      instrumentId: item.instrumentId,
+      instrumentHash: item.instrumentHash,
       signedQuantityAtoms: item.signedQuantityAtoms,
       internalQuantityAtoms: inside,
       externalQuantityAtoms: item.signedQuantityAtoms - inside,
@@ -242,10 +309,11 @@ export function netObligations(
   });
   const result = Object.freeze({
     version: NETTING_RESULT_VERSION,
+    nettingPolicyHash: policyHash,
     allocations: Object.freeze(allocations),
     underlyings: Object.freeze(summaries),
   });
-  verifyNetting(result.allocations, result.underlyings);
+  verifyNetting(result.nettingPolicyHash, result.allocations, result.underlyings);
   return Object.freeze({ ...result, proofHash: nettingResultHash(result) });
 }
 
@@ -253,21 +321,29 @@ export function nettingResultHash(input: NettingResultInput): CommitmentHash {
   if (input.version !== NETTING_RESULT_VERSION) {
     throw new MalformedInputError('nettingResult.version', `version must equal ${NETTING_RESULT_VERSION}`);
   }
-  verifyNetting(input.allocations, input.underlyings);
+  const policyHash = commitmentHash(input.nettingPolicyHash, 'nettingResult.nettingPolicyHash');
+  verifyNetting(policyHash, input.allocations, input.underlyings);
   const payload = canonicalBytes((writer) => {
     writer.writeU32(NETTING_RESULT_VERSION, 'version');
+    encodeCommitmentHash(writer, policyHash, 'nettingPolicyHash');
     writer.writeArray(input.allocations, (element, allocation) => {
       encodeCommitmentHash(element, allocation.obligationId, 'obligationId');
-      encodeProtocolId(element, allocation.userId);
-      encodeProtocolId(element, allocation.packageId);
-      encodeProtocolId(element, allocation.underlyingId);
+      encodeCommitmentHash(element, allocation.nettingPolicyHash, 'allocation.nettingPolicyHash');
+      encodeProtocolId(element, allocation.ownerId);
+      encodeCommitmentHash(element, allocation.strategyOrderHash, 'strategyOrderHash');
+      encodeCommitmentHash(element, allocation.packageOrderId, 'packageOrderId');
+      encodeCommitmentHash(element, allocation.settlementReadinessHash, 'settlementReadinessHash');
+      encodeProtocolId(element, allocation.legId);
+      encodeProtocolId(element, allocation.instrumentId);
+      encodeCommitmentHash(element, allocation.instrumentHash, 'instrumentHash');
       element.writeI128(allocation.signedQuantityAtoms, 'signedQuantityAtoms');
       element.writeI128(allocation.internalQuantityAtoms, 'internalQuantityAtoms');
       element.writeI128(allocation.externalQuantityAtoms, 'externalQuantityAtoms');
       element.writeU64(allocation.sequence, 'sequence');
     });
     writer.writeArray(input.underlyings, (element, summary) => {
-      encodeProtocolId(element, summary.underlyingId);
+      encodeProtocolId(element, summary.instrumentId);
+      encodeCommitmentHash(element, summary.instrumentHash, 'instrumentHash');
       element.writeU128(summary.grossBuyAtoms, 'grossBuyAtoms');
       element.writeU128(summary.grossSellAtoms, 'grossSellAtoms');
       element.writeU128(summary.internalMatchedAtoms, 'internalMatchedAtoms');
@@ -285,28 +361,71 @@ export function verifyNettingResult(input: NettingResult): void {
   }
 }
 
+export function verifyNettingResultAgainstPolicy(
+  input: NettingResult,
+  policyInput: NettingPolicyManifestInput | NettingPolicyManifest,
+): void {
+  verifyNettingResult(input);
+  const policy = nettingPolicyManifest(policyInput, 'verifyNettingResultAgainstPolicy.policy');
+  const policyHash = commitmentHash(nettingPolicyManifestHash(policy), 'verifyNettingResultAgainstPolicy.nettingPolicyHash');
+  if (compareBytes(input.nettingPolicyHash, policyHash) !== 0) {
+    throw new MalformedInputError('nettingResult.nettingPolicyHash', 'result cites another netting policy');
+  }
+  if (input.allocations.length > policy.maximumObligations) {
+    throw new MalformedInputError('nettingResult.allocations', 'batch exceeds the netting policy maximum');
+  }
+  const instrumentById = new Map(policy.instruments.map((instrument) => [instrument.instrumentId, instrument]));
+  for (const summary of input.underlyings) {
+    const instrument = instrumentById.get(summary.instrumentId);
+    if (instrument === undefined || compareBytes(instrument.instrumentHash, summary.instrumentHash) !== 0) {
+      throw new MalformedInputError('nettingResult.underlyings', 'result contains an instrument outside the netting policy');
+    }
+    if (instrument.quantityIncrementAtoms !== summary.quantityIncrementAtoms) {
+      throw new MalformedInputError('nettingResult.underlyings', 'result uses another instrument quantity increment');
+    }
+  }
+}
+
 /**
  * Recomputes the conservation equations for a netting result; any violation rejects. Every
  * underlying that appears in an allocation needs exactly one summary, and each summary's gross
  * and matched figures are recomputed from the allocations rather than trusted.
  */
-export function verifyNetting(allocations: readonly NettingAllocation[], summaries: readonly NettingUnderlyingSummary[]): void {
+export function verifyNetting(
+  nettingPolicyHashInput: Uint8Array | string,
+  allocations: readonly NettingAllocation[],
+  summaries: readonly NettingUnderlyingSummary[],
+): void {
+  const nettingPolicyHash = commitmentHash(nettingPolicyHashInput, 'verifyNetting.nettingPolicyHash');
   requireArray(allocations, 'verifyNetting.allocations');
   requireArray(summaries, 'verifyNetting.underlyings');
   if (allocations.length === 0) throw new MalformedInputError('verifyNetting.allocations', 'netting batch is empty');
   const checkedAllocations = allocations.map((allocation, index): NettingAllocation => {
     const at = `verifyNetting.allocations[${index}]`;
     object(allocation, at);
-    return Object.freeze({
+    const checked = Object.freeze({
+      nettingPolicyHash: commitmentHash(allocation.nettingPolicyHash, `${at}.nettingPolicyHash`),
       obligationId: commitmentHash(allocation.obligationId, `${at}.obligationId`),
-      userId: protocolId(allocation.userId, `${at}.userId`),
-      packageId: protocolId(allocation.packageId, `${at}.packageId`),
-      underlyingId: protocolId(allocation.underlyingId, `${at}.underlyingId`),
+      ownerId: protocolId(allocation.ownerId, `${at}.ownerId`),
+      strategyOrderHash: commitmentHash(allocation.strategyOrderHash, `${at}.strategyOrderHash`),
+      packageOrderId: commitmentHash(allocation.packageOrderId, `${at}.packageOrderId`),
+      settlementReadinessHash: commitmentHash(allocation.settlementReadinessHash, `${at}.settlementReadinessHash`),
+      legId: protocolId(allocation.legId, `${at}.legId`),
+      instrumentId: protocolId(allocation.instrumentId, `${at}.instrumentId`),
+      instrumentHash: commitmentHash(allocation.instrumentHash, `${at}.instrumentHash`),
       signedQuantityAtoms: signedNonzero(allocation.signedQuantityAtoms, `${at}.signedQuantityAtoms`),
       internalQuantityAtoms: checkedSigned(allocation.internalQuantityAtoms, I128_BITS, `${at}.internalQuantityAtoms`),
       externalQuantityAtoms: checkedSigned(allocation.externalQuantityAtoms, I128_BITS, `${at}.externalQuantityAtoms`),
       sequence: unsigned(allocation.sequence, U64_BITS, `${at}.sequence`),
     });
+    if (compareBytes(checked.nettingPolicyHash, nettingPolicyHash) !== 0) {
+      throw new MalformedInputError(`${at}.nettingPolicyHash`, 'allocation cites another netting policy');
+    }
+    const { obligationId: _, ...identity } = checked;
+    if (compareBytes(checked.obligationId, obligationHash(identity)) !== 0) {
+      throw new MalformedInputError(`${at}.obligationId`, 'obligation id does not match its signed source identity');
+    }
+    return checked;
   });
   const sortedAllocations = [...checkedAllocations].sort((left, right) => left.sequence !== right.sequence
     ? left.sequence < right.sequence ? -1 : 1
@@ -327,7 +446,8 @@ export function verifyNetting(allocations: readonly NettingAllocation[], summari
     const quantityIncrementAtoms = unsigned(summary.quantityIncrementAtoms, U128_BITS, `${at}.quantityIncrementAtoms`);
     if (quantityIncrementAtoms === 0n) throw new MalformedInputError(`${at}.quantityIncrementAtoms`, 'increment is zero');
     return Object.freeze({
-      underlyingId: protocolId(summary.underlyingId, `${at}.underlyingId`),
+      instrumentId: protocolId(summary.instrumentId, `${at}.instrumentId`),
+      instrumentHash: commitmentHash(summary.instrumentHash, `${at}.instrumentHash`),
       grossBuyAtoms: unsigned(summary.grossBuyAtoms, U128_BITS, `${at}.grossBuyAtoms`),
       grossSellAtoms: unsigned(summary.grossSellAtoms, U128_BITS, `${at}.grossSellAtoms`),
       internalMatchedAtoms: unsigned(summary.internalMatchedAtoms, U128_BITS, `${at}.internalMatchedAtoms`),
@@ -336,8 +456,8 @@ export function verifyNetting(allocations: readonly NettingAllocation[], summari
     });
   });
   if (checkedSummaries.some((summary, index) => index > 0
-    && checkedSummaries[index - 1]!.underlyingId >= summary.underlyingId)) {
-    throw new MalformedInputError('verifyNetting.underlyings', 'underlying summaries are not canonically ordered');
+    && checkedSummaries[index - 1]!.instrumentId >= summary.instrumentId)) {
+    throw new MalformedInputError('verifyNetting.underlyings', 'instrument summaries are not canonically ordered');
   }
   for (const allocation of checkedAllocations) {
     const { signedQuantityAtoms: gross, internalQuantityAtoms: inside, externalQuantityAtoms: outside } = allocation;
@@ -345,22 +465,25 @@ export function verifyNetting(allocations: readonly NettingAllocation[], summari
     if (inside !== 0n && (inside > 0n) !== (gross > 0n)) throw new MalformedInputError('verifyNetting', 'an internal share flips direction');
     if (absBigInt(inside) > absBigInt(gross)) throw new MalformedInputError('verifyNetting', 'an internal share exceeds its obligation');
   }
-  const underlyings = new Set<string>(checkedAllocations.map((allocation) => allocation.underlyingId));
+  const underlyings = new Set<string>(checkedAllocations.map((allocation) => allocation.instrumentId));
   const summarized = new Set<string>();
   for (const summary of checkedSummaries) {
-    if (summarized.has(summary.underlyingId)) throw new MalformedInputError('verifyNetting', `underlying ${summary.underlyingId} is summarized twice`);
-    summarized.add(summary.underlyingId);
-    if (!underlyings.has(summary.underlyingId)) throw new MalformedInputError('verifyNetting', `underlying ${summary.underlyingId} has no allocations`);
+    if (summarized.has(summary.instrumentId)) throw new MalformedInputError('verifyNetting', `instrument ${summary.instrumentId} is summarized twice`);
+    summarized.add(summary.instrumentId);
+    if (!underlyings.has(summary.instrumentId)) throw new MalformedInputError('verifyNetting', `instrument ${summary.instrumentId} has no allocations`);
   }
-  for (const underlyingId of underlyings) {
-    if (!summarized.has(underlyingId)) throw new MalformedInputError('verifyNetting', `underlying ${underlyingId} has no summary`);
+  for (const instrumentId of underlyings) {
+    if (!summarized.has(instrumentId)) throw new MalformedInputError('verifyNetting', `instrument ${instrumentId} has no summary`);
   }
   for (const summary of checkedSummaries) {
-    const lines = checkedAllocations.filter((allocation) => allocation.underlyingId === summary.underlyingId);
+    const lines = checkedAllocations.filter((allocation) => allocation.instrumentId === summary.instrumentId);
+    if (lines.some((line) => compareBytes(line.instrumentHash, summary.instrumentHash) !== 0)) {
+      throw new MalformedInputError('verifyNetting', 'an allocation cites another instrument identity');
+    }
     if (lines.some((line) => line.signedQuantityAtoms % summary.quantityIncrementAtoms !== 0n
       || line.internalQuantityAtoms % summary.quantityIncrementAtoms !== 0n
       || line.externalQuantityAtoms % summary.quantityIncrementAtoms !== 0n)) {
-      throw new MalformedInputError('verifyNetting', 'an allocation is off the underlying increment lattice');
+      throw new MalformedInputError('verifyNetting', 'an allocation is off the instrument increment lattice');
     }
     const grossBuy = lines.filter((line) => line.signedQuantityAtoms > 0n).reduce((sum, line) => sum + line.signedQuantityAtoms, 0n);
     const grossSell = lines.filter((line) => line.signedQuantityAtoms < 0n).reduce((sum, line) => sum - line.signedQuantityAtoms, 0n);

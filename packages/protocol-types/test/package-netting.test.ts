@@ -2,25 +2,79 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   EMPTY_RECOVERY_RESERVE,
+  assetRef,
   commitmentHash,
   compressPackageLegs,
+  domainRef,
   fundRecoveryReserve,
   netObligations,
+  nettingPolicyManifest,
   recoveryReserveAvailable,
   reserveRecoveryCapital,
   settleRecoveryClaim,
   toHex,
   verifyNetting,
   verifyNettingResult,
-  type NettingObligation,
+  verifyNettingResultAgainstPolicy,
+  versionedManifestRef,
+  type NettingObligationInput,
+  type NettingPolicyManifestInput,
 } from '../src/index.js';
 
 const id = (n: number): string => n.toString(16).padStart(64, '0');
-const obligation = (n: number, userId: string, quantity: bigint, underlyingId = 'sol'): NettingObligation => ({
-  obligationId: id(n),
-  userId,
-  packageId: `pkg-${n}`,
-  underlyingId,
+
+function instrument(instrumentId: string, hashSeed: number, quantityIncrementAtoms: bigint) {
+  return {
+    instrumentId,
+    domain: domainRef(`svm:${instrumentId}`, 1, id(hashSeed)),
+    adapter: {
+      adapterId: `adapter-${instrumentId}`,
+      adapterManifestVersion: 1,
+      adapterManifestHash: id(hashSeed + 1),
+    },
+    venue: versionedManifestRef(`venue-${instrumentId}`, 1, id(hashSeed + 2)),
+    market: versionedManifestRef(`market-${instrumentId}`, 1, id(hashSeed + 3)),
+    quantityAsset: assetRef(`asset-${instrumentId}`, id(hashSeed + 4), 6),
+    legFamily: 'PERP_OPEN' as const,
+    quantityIncrementAtoms,
+  };
+}
+
+function policy(
+  solIncrement = 10n,
+  ethIncrement = 5n,
+  overrides: Partial<NettingPolicyManifestInput> = {},
+): NettingPolicyManifestInput {
+  return {
+    schemaVersion: 1,
+    manifestVersion: 1,
+    nettingPolicyVersion: 1,
+    environment: 'testnet',
+    executionClassId: 'cross-user-netting-v1',
+    executionClassVersion: 1,
+    executionClassManifestHash: id(80),
+    settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
+    allocationRule: 'PRO_RATA_SEQUENCE',
+    externalExecutionMode: 'EXACT_NET_ONLY',
+    maximumObligations: 32,
+    maximumBatchWindowMilliseconds: 500n,
+    instruments: [instrument('sol', 10, solIncrement), instrument('eth', 20, ethIncrement)],
+    ...overrides,
+  };
+}
+
+const obligation = (
+  n: number,
+  ownerId: string,
+  quantity: bigint,
+  instrumentId = 'sol',
+): NettingObligationInput => ({
+  ownerId,
+  strategyOrderHash: id(100 + n),
+  packageOrderId: id(200 + n),
+  settlementReadinessHash: id(300 + n),
+  legId: `leg-${n}`,
+  instrumentId,
   signedQuantityAtoms: quantity,
   sequence: BigInt(n),
 });
@@ -39,96 +93,120 @@ describe('package compression', () => {
 });
 
 describe('cross-user netting', () => {
-  const book = [obligation(1, 'alice', 30n), obligation(2, 'bob', 20n), obligation(3, 'carol', -40n), obligation(4, 'dave', 10n, 'eth')];
-  const increments = [
-    { underlyingId: 'eth', quantityIncrementAtoms: 5n },
-    { underlyingId: 'sol', quantityIncrementAtoms: 10n },
+  const book = [
+    obligation(1, 'alice', 30n),
+    obligation(2, 'bob', 20n),
+    obligation(3, 'carol', -40n),
+    obligation(4, 'dave', 10n, 'eth'),
   ];
+  const nettingPolicy = policy();
 
-  test('crosses opposite obligations pro rata and routes only the net externally', () => {
-    const result = netObligations(book, increments);
-    assert.equal(result.version, 2);
+  test('crosses exact instruments and routes only the net externally', () => {
+    const result = netObligations(book, nettingPolicy);
+    assert.equal(result.version, 3);
     assert.deepEqual(
-      result.allocations.map((item) => [item.userId, item.packageId, item.internalQuantityAtoms, item.externalQuantityAtoms]),
+      result.allocations.map((item) => [item.ownerId, item.legId, item.internalQuantityAtoms, item.externalQuantityAtoms]),
       [
-        ['alice', 'pkg-1', 30n, 0n],
-        ['bob', 'pkg-2', 10n, 10n],
-        ['carol', 'pkg-3', -40n, 0n],
-        ['dave', 'pkg-4', 0n, 10n],
+        ['alice', 'leg-1', 30n, 0n],
+        ['bob', 'leg-2', 10n, 10n],
+        ['carol', 'leg-3', -40n, 0n],
+        ['dave', 'leg-4', 0n, 10n],
       ],
     );
     assert.deepEqual(
-      result.underlyings.map((item) => [item.underlyingId, item.internalMatchedAtoms, item.externalNetAtoms, item.quantityIncrementAtoms]),
+      result.underlyings.map((item) => [item.instrumentId, item.internalMatchedAtoms, item.externalNetAtoms, item.quantityIncrementAtoms]),
       [
         ['eth', 0n, 10n, 5n],
         ['sol', 40n, 10n, 10n],
       ],
     );
-    assert.equal(toHex(netObligations([...book].reverse(), [...increments].reverse()).proofHash), toHex(result.proofHash));
+    const reversedPolicy = { ...nettingPolicy, instruments: [...nettingPolicy.instruments].reverse() };
+    assert.equal(toHex(netObligations([...book].reverse(), reversedPolicy).proofHash), toHex(result.proofHash));
     verifyNettingResult(result);
+    verifyNettingResultAgainstPolicy(result, nettingPolicy);
     assert.notEqual(
-      toHex(netObligations(book.map((item) => item.userId === 'alice' ? { ...item, packageId: 'pkg-other' } : item), increments).proofHash),
+      toHex(netObligations(book.map((item) => item.ownerId === 'alice' ? { ...item, packageOrderId: id(999) } : item), nettingPolicy).proofHash),
       toHex(result.proofHash),
     );
     assert.throws(() => verifyNettingResult({ ...result, proofHash: commitmentHash(new Uint8Array(32).fill(99)) }), /proof hash/);
   });
 
-  test('tampering with any allocation breaks conservation', () => {
-    const result = netObligations(book, increments);
+  test('tampering with an allocation or its signed source identity rejects', () => {
+    const result = netObligations(book, nettingPolicy);
     const alice = result.allocations[0]!;
     const rest = result.allocations.slice(1);
     const tampered = { ...alice, internalQuantityAtoms: 20n, externalQuantityAtoms: 10n };
-    assert.throws(() => verifyNetting([tampered, ...rest], result.underlyings), /unbalanced/);
+    assert.throws(() => verifyNetting(result.nettingPolicyHash, [tampered, ...rest], result.underlyings), /unbalanced/);
     const flipped = { ...alice, internalQuantityAtoms: 40n, externalQuantityAtoms: -10n };
-    assert.throws(() => verifyNetting([flipped, ...rest], result.underlyings), /exceeds its obligation/);
+    assert.throws(() => verifyNetting(result.nettingPolicyHash, [flipped, ...rest], result.underlyings), /exceeds its obligation/);
+    assert.throws(
+      () => verifyNetting(result.nettingPolicyHash, [{ ...alice, strategyOrderHash: commitmentHash(id(999)) }, ...rest], result.underlyings),
+      /obligation id/,
+    );
     const [, bob, carol, dave] = result.allocations;
     const wrongPriority = [
-      { ...alice!, internalQuantityAtoms: 20n, externalQuantityAtoms: 10n },
+      { ...alice, internalQuantityAtoms: 20n, externalQuantityAtoms: 10n },
       { ...bob!, internalQuantityAtoms: 20n, externalQuantityAtoms: 0n },
       carol!,
       dave!,
     ];
-    assert.throws(() => verifyNetting(wrongPriority, result.underlyings), /deterministic pro-rata/);
+    assert.throws(() => verifyNetting(result.nettingPolicyHash, wrongPriority, result.underlyings), /deterministic pro-rata/);
   });
 
-  test('every netted underlying needs one summary recomputed from its allocations', () => {
-    const result = netObligations(book, increments);
-    assert.throws(() => verifyNetting(result.allocations, []), /has no summary/);
-    assert.throws(() => verifyNetting(result.allocations, result.underlyings.slice(1)), /has no summary/);
-    assert.throws(() => verifyNetting(result.allocations, [...result.underlyings, result.underlyings[0]!]), /canonically ordered|summarized twice/);
-    const inflated = result.underlyings.map((summary) => ({ ...summary, grossBuyAtoms: summary.grossBuyAtoms + 5n, grossSellAtoms: summary.grossSellAtoms + 5n }));
-    assert.throws(() => verifyNetting(result.allocations, inflated), /do not follow from the allocations/);
+  test('every netted instrument needs one exact summary', () => {
+    const result = netObligations(book, nettingPolicy);
+    assert.throws(() => verifyNetting(result.nettingPolicyHash, result.allocations, []), /has no summary/);
+    assert.throws(() => verifyNetting(result.nettingPolicyHash, result.allocations, result.underlyings.slice(1)), /has no summary/);
+    assert.throws(
+      () => verifyNetting(result.nettingPolicyHash, result.allocations, [...result.underlyings, result.underlyings[0]!]),
+      /canonically ordered|summarized twice/,
+    );
+    const inflated = result.underlyings.map((summary) => ({
+      ...summary,
+      grossBuyAtoms: summary.grossBuyAtoms + 5n,
+      grossSellAtoms: summary.grossSellAtoms + 5n,
+    }));
+    assert.throws(() => verifyNetting(result.nettingPolicyHash, result.allocations, inflated), /do not follow from the allocations/);
   });
 
-  test('malformed obligation sets reject', () => {
-    const solIncrement = [{ underlyingId: 'sol', quantityIncrementAtoms: 10n }];
-    assert.throws(() => netObligations([obligation(1, 'alice', 15n)], solIncrement), /increment lattice/);
-    assert.throws(() => netObligations([obligation(1, 'alice', 10n), obligation(1, 'bob', -10n)], solIncrement), /repeat/);
-    assert.throws(() => netObligations([obligation(1, 'alice', 0n)], solIncrement), /zero/);
-    assert.throws(() => netObligations([obligation(1, 'alice', 10n)], []), /no quantity increment/);
-    assert.throws(() => netObligations([obligation(1, 'alice', 10n)], [...solIncrement, ...solIncrement]), /repeat/);
-    assert.throws(() => netObligations([obligation(1, 'alice', 10n)], [...solIncrement, { underlyingId: 'eth', quantityIncrementAtoms: 1n }]), /every netted underlying/);
+  test('malformed or unauthorized obligation sets reject', () => {
+    assert.throws(() => netObligations([obligation(1, 'alice', 15n)], nettingPolicy), /increment lattice/);
+    assert.throws(() => netObligations([obligation(1, 'alice', 10n), obligation(1, 'alice', 10n)], nettingPolicy), /repeat/);
+    assert.throws(() => netObligations([obligation(1, 'alice', 0n)], nettingPolicy), /zero/);
+    assert.throws(() => netObligations([obligation(1, 'alice', 10n, 'btc')], nettingPolicy), /not permitted/);
+    assert.throws(
+      () => netObligations([obligation(1, 'alice', 10n), { ...obligation(2, 'bob', -10n), sequence: 1n }], nettingPolicy),
+      /sequences repeat/,
+    );
+    assert.throws(
+      () => netObligations([obligation(1, 'alice', 10n), obligation(2, 'bob', -10n)], policy(10n, 5n, { maximumObligations: 1 })),
+      /policy maximum/,
+    );
   });
 
-  test('a seeded run conserves every obligation, side, and underlying', () => {
+  test('a seeded run conserves every obligation, side, and instrument', () => {
     let seed = 7n;
     const next = (modulus: bigint): bigint => {
       seed = (seed * 6364136223846793005n + 1442695040888963407n) % (1n << 64n);
       return (seed >> 33n) % modulus;
     };
+    const seededPolicy = policy(5n, 5n);
     for (let round = 0; round < 50; round += 1) {
       const count = Number(next(12n)) + 1;
       const obligations = Array.from({ length: count }, (_, index) => {
         const size = (next(9n) + 1n) * 5n;
         return obligation(index + 1, `u-${next(4n)}`, next(2n) === 0n ? size : -size, next(2n) === 0n ? 'sol' : 'eth');
       });
-      const result = netObligations(obligations, [
-        { underlyingId: 'eth', quantityIncrementAtoms: 5n },
-        { underlyingId: 'sol', quantityIncrementAtoms: 5n },
-      ].filter((increment) => obligations.some((item) => item.underlyingId === increment.underlyingId)));
-      verifyNetting(result.allocations, result.underlyings);
+      const result = netObligations(obligations, seededPolicy);
+      verifyNetting(result.nettingPolicyHash, result.allocations, result.underlyings);
       for (const item of result.allocations) assert.equal(item.internalQuantityAtoms % 5n, 0n);
     }
+  });
+
+  test('a proof is bound to the complete netting policy', () => {
+    const result = netObligations(book, nettingPolicy);
+    const changed = nettingPolicyManifest({ ...nettingPolicy, maximumBatchWindowMilliseconds: 750n });
+    assert.throws(() => verifyNettingResultAgainstPolicy(result, changed), /another netting policy/);
   });
 });
 
