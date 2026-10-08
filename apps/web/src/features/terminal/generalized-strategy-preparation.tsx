@@ -150,7 +150,7 @@ type PackageQuoteReview = Readonly<{
   metrics: readonly QuoteMetric[];
 }>;
 
-type QuoteOrigin = "DIRECT" | "POST_MATCH" | "PRIVATE_RFQ" | "SEALED_AUCTION";
+type QuoteOrigin = "DIRECT" | "POST_MATCH" | "PRIVATE_RFQ" | "SEALED_AUCTION" | "STORED";
 
 type QuoteCandidate = Readonly<{
   review: PackageQuoteReview;
@@ -1160,6 +1160,38 @@ function parseQuoteReview(payload: unknown, requestedOrderHash: string): Package
     validUntilValue: decimalInteger(quote.validUntilValue, "Quote validity value"),
     metrics: Object.freeze(metrics),
   });
+}
+
+function parseStoredQuoteCandidates(payload: unknown, requestedOrderHash: string): readonly QuoteCandidate[] {
+  const root = record(payload, "Stored quote history");
+  if (root.version !== 1 || hash(root.orderHash, "Stored quote history order") !== requestedOrderHash) {
+    throw new Error("Stored quote history does not bind the requested order.");
+  }
+  return Object.freeze(list(root.quotes, "Stored quote history quotes").map((candidate, index): QuoteCandidate => {
+    const stored = record(candidate, `Stored quote ${index}`);
+    const quoteHash = hash(stored.quoteHashHex, `Stored quote ${index} hash`);
+    const routeHash = hash(stored.routeHashHex, `Stored quote ${index} route hash`);
+    const review = parseQuoteReview({
+      version: 1,
+      status: "SIGNED_AND_STORED",
+      orderHash: requestedOrderHash,
+      quoteHash,
+      routeHash,
+      quote: stored.quote,
+    }, requestedOrderHash);
+    return Object.freeze({ review, origin: "STORED", receivedAtMs: integer(stored.recordedAtMs, `Stored quote ${index} time`) });
+  }));
+}
+
+function mergeQuoteCandidates(
+  current: readonly QuoteCandidate[],
+  incoming: readonly QuoteCandidate[],
+): readonly QuoteCandidate[] {
+  const byHash = new Map(incoming.map((candidate) => [candidate.review.quoteHash, candidate]));
+  for (const candidate of current) byHash.set(candidate.review.quoteHash, candidate);
+  return Object.freeze([...byHash.values()]
+    .sort((left, right) => left.receivedAtMs - right.receivedAtMs)
+    .slice(-16));
 }
 
 async function parsePrivateRfqStatus(
@@ -2525,6 +2557,7 @@ function quoteOriginLabel(origin: QuoteOrigin): string {
   if (origin === "PRIVATE_RFQ") return "Private RFQ";
   if (origin === "SEALED_AUCTION") return "Sealed auction";
   if (origin === "POST_MATCH") return "Post-match";
+  if (origin === "STORED") return "Stored quote";
   return "Direct quote";
 }
 
@@ -2617,6 +2650,7 @@ export function GeneralizedStrategyPreparationPanel({
   const [quoteHash, setQuoteHash] = useState("");
   const [quoteOrigin, setQuoteOrigin] = useState<QuoteOrigin | null>(null);
   const [quoteCandidates, setQuoteCandidates] = useState<readonly QuoteCandidate[]>([]);
+  const [quoteHistoryError, setQuoteHistoryError] = useState<string | null>(null);
   const [nettingProofHash, setNettingProofHash] = useState("");
   const [nettingSelection, setNettingSelection] = useState<NettingAllocationSelection | null>(null);
   const [nettingCurrentAllocationHash, setNettingCurrentAllocationHash] = useState("");
@@ -2775,6 +2809,7 @@ export function GeneralizedStrategyPreparationPanel({
     setQuoteHash("");
     setQuoteOrigin(null);
     setQuoteCandidates([]);
+    setQuoteHistoryError(null);
     setPrivateRfqOrderContext(null);
     setPrivateRfqSession(null);
     setPrivateRfqBusy(null);
@@ -2805,10 +2840,9 @@ export function GeneralizedStrategyPreparationPanel({
   }
 
   function acceptQuote(parsed: PackageQuoteReview, origin: QuoteOrigin) {
-    setQuoteCandidates((current) => Object.freeze([
-      ...current.filter((candidate) => candidate.review.quoteHash !== parsed.quoteHash),
+    setQuoteCandidates((current) => mergeQuoteCandidates(current, [
       Object.freeze({ review: parsed, origin, receivedAtMs: Date.now() }),
-    ].slice(-16)));
+    ]));
     activateQuote(parsed, origin);
   }
 
@@ -2985,9 +3019,12 @@ export function GeneralizedStrategyPreparationPanel({
         });
         if (!response.ok) throw new Error(await failureMessage(response));
         const parsed = parseSealedAuctionAward(await response.json(), active);
+        setQuoteCandidates((current) => mergeQuoteCandidates(current, [
+          Object.freeze({ review: parsed, origin: "SEALED_AUCTION", receivedAtMs: Date.now() }),
+        ]));
         setQuoteReview(parsed);
         setQuoteHash(parsed.quoteHash);
-        setQuoteOrigin("DIRECT");
+        setQuoteOrigin("SEALED_AUCTION");
         setSolanaExecutionSignature(null);
         setSolanaObservation(null);
         setEvmCollateral(null);
@@ -3181,6 +3218,29 @@ export function GeneralizedStrategyPreparationPanel({
     });
     return () => controller.abort();
   }, [publicApiBaseUrl]);
+
+  useEffect(() => {
+    if (privateApiBaseUrl === null || !HASH.test(orderHash)) return;
+    const requestedOrderHash = orderHash;
+    const controller = new AbortController();
+    void fetch(`${privateApiBaseUrl}/internal/terminal/strategy-orders/${requestedOrderHash}/quotes`, {
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error(await failureMessage(response));
+      return parseStoredQuoteCandidates(await response.json(), requestedOrderHash);
+    }).then((stored) => {
+      setQuoteCandidates((current) => mergeQuoteCandidates(current, stored));
+      setQuoteHistoryError(null);
+    }).catch((cause: unknown) => {
+      if (controller.signal.aborted) return;
+      setQuoteHistoryError(cause instanceof Error ? cause.message : "Stored quote history is unavailable.");
+    });
+    return () => controller.abort();
+  }, [orderHash, privateApiBaseUrl]);
 
   useEffect(() => {
     if (!hyperliquidLane || privateApiBaseUrl === null || sourceOrderHash !== null || !NATIVE_HYPERCORE_TEMPLATES.has(templateId)) {
@@ -6187,11 +6247,14 @@ export function GeneralizedStrategyPreparationPanel({
           )}
         </div>
       ) : null}
-      {comparableQuotes.length > 1 ? (
+      {quoteHistoryError ? (
+        <p className={styles.fieldContext} role="status">Stored quote comparison is unavailable: {quoteHistoryError}</p>
+      ) : null}
+      {comparableQuotes.length > 0 ? (
         <div className={styles.quoteComparison}>
           <div className={styles.evidenceHeading}>
             <h3>Complete-package quotes</h3>
-            <span>{comparableQuotes.length} OPTIONS</span>
+            <span>{comparableQuotes.length} {comparableQuotes.length === 1 ? "OPTION" : "OPTIONS"}</span>
           </div>
           <div className={styles.quoteCandidateGrid}>
             {comparableQuotes.map((candidate) => {
