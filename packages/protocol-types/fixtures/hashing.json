@@ -66,6 +66,8 @@
     { "name": "netting-instrument-shared-payload", "domain": "CON/v1/netting-instrument", "payloadHex": "deadbeef", "digestHex": "ba2aaf206c9207b1fb011efb14ceb83c65dd80a48b3ff2069270de12247d0239" },
     { "name": "netting-obligation-shared-payload", "domain": "CON/v1/netting-obligation", "payloadHex": "deadbeef", "digestHex": "c987583bea3ae0c02526a3dd0cafcc6ee116158bcd6593ea9fd16bd459d4d925" },
     { "name": "netting-proof-shared-payload", "domain": "CON/v1/netting-proof", "payloadHex": "deadbeef", "digestHex": "28c75abde02a74a6ed7ab02acea928a9de28fa568bb3c3533a372a08a8f31f19" },
+    { "name": "netting-external-execution-intent-shared-payload", "domain": "CON/v1/netting-external-execution-intent", "payloadHex": "deadbeef", "digestHex": "4a6309add997f834885644c829eac9e58bf6a4253c27fa3dd99014d7fa9a7be3" },
+    { "name": "netting-external-execution-evidence-shared-payload", "domain": "CON/v1/netting-external-execution-evidence", "payloadHex": "deadbeef", "digestHex": "290a012985a345dba99f15aafd8c6e66f7b84e2285bd994a5b1501c9bf7b5e97" },
     { "name": "strategy-state-shared-payload", "domain": "CON/v1/strategy-state", "payloadHex": "deadbeef", "digestHex": "80a3e838b55dde1b5c9542e3f1a357c9d25cc9698be1c8bbcb21d5836282cd90" },
     { "name": "strategy-transition-shared-payload", "domain": "CON/v1/strategy-transition", "payloadHex": "deadbeef", "digestHex": "f8ee8e9ec7f7a4563be24a206fd4d882af63b5f214dbee314cae61bdf14d93a1" },
     { "name": "private-rfq-response-shared-payload", "domain": "CON/v1/private-rfq-response", "payloadHex": "deadbeef", "digestHex": "ab062b9896c77c124a3bea49acf5db3a0117c9b8e42fe520a3e334032514c33f" },

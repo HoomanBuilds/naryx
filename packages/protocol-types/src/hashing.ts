@@ -69,6 +69,8 @@ export const HASH_DOMAIN = Object.freeze({
   NETTING_INSTRUMENT: 'CON/v1/netting-instrument',
   NETTING_OBLIGATION: 'CON/v1/netting-obligation',
   NETTING_PROOF: 'CON/v1/netting-proof',
+  NETTING_EXTERNAL_EXECUTION_INTENT: 'CON/v1/netting-external-execution-intent',
+  NETTING_EXTERNAL_EXECUTION_EVIDENCE: 'CON/v1/netting-external-execution-evidence',
   STRATEGY_STATE: 'CON/v1/strategy-state',
   STRATEGY_TRANSITION: 'CON/v1/strategy-transition',
   PRIVATE_RFQ_RESPONSE: 'CON/v1/private-rfq-response',

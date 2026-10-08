@@ -564,6 +564,22 @@ export {
 } from './package-netting.js';
 
 export {
+  NETTING_EXTERNAL_EXECUTION_INTENT_VERSION,
+  NETTING_EXTERNAL_EXECUTION_EVIDENCE_VERSION,
+  NETTING_EXTERNAL_EXECUTION_OUTCOME,
+  nettingExternalExecutionIntent,
+  nettingExternalExecutionIntentHash,
+  verifyNettingExternalExecutionIntent,
+  nettingExternalExecutionEvidence,
+  verifyNettingExternalExecutionEvidence,
+  type NettingExternalExecutionOutcome,
+  type NettingExternalExecutionIntentParameters,
+  type NettingExternalExecutionIntent,
+  type NettingExternalExecutionEvidenceInput,
+  type NettingExternalExecutionEvidence,
+} from './netting-execution.js';
+
+export {
   STRATEGY_STATE_VERSION,
   STRATEGY_MAX_LEGS,
   STRATEGY_OPERATION,

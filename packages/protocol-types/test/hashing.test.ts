@@ -123,6 +123,8 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/netting-instrument',
         'CON/v1/netting-obligation',
         'CON/v1/netting-proof',
+        'CON/v1/netting-external-execution-intent',
+        'CON/v1/netting-external-execution-evidence',
         'CON/v1/strategy-state',
         'CON/v1/strategy-transition',
         'CON/v1/private-rfq-response',
