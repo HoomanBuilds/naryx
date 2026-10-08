@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
+import type { DomainRef } from '@naryx/protocol-types';
 import { PublicKey } from '@solana/web3.js';
-import type { SolanaNettingAllocationEnvelope } from './multi-strategy-account.js';
+import type {
+  SolanaNettingAllocationEnvelope,
+  SolanaStrategyOperation,
+} from './multi-strategy-account.js';
 
 const ACCOUNT_DISCRIMINATOR = createHash('sha256')
   .update('account:StrategyReceipt', 'ascii')
@@ -87,6 +91,39 @@ export interface SolanaNettingAllocationObservation {
   readonly receiptHash: Uint8Array;
   readonly evidenceRoot: Uint8Array;
   readonly authorizationHash: Uint8Array;
+}
+
+export interface SolanaNettingAllocationObservationBinding {
+  readonly authorizationHash: Uint8Array;
+  readonly domain: DomainRef;
+  readonly programId: string;
+  readonly instructionAccounts: readonly string[];
+  readonly instructionData: Uint8Array;
+  readonly executionHash: Uint8Array;
+  readonly callsHash: Uint8Array;
+  readonly owner: string;
+  readonly solver: string;
+  readonly strategyAccount: string;
+  readonly receiptAccount: string;
+  readonly packageId: Uint8Array;
+  readonly orderHash: Uint8Array;
+  readonly graphHash: Uint8Array;
+  readonly quoteHash: Uint8Array;
+  readonly routeHash: Uint8Array;
+  readonly operation: SolanaStrategyOperation;
+  readonly previousStateHash: Uint8Array;
+  readonly nextStateHash: Uint8Array;
+  readonly nonce: bigint;
+  readonly deadlineSlot: bigint;
+  readonly fees: Readonly<{
+    quoteAssetSubjectId: Uint8Array;
+    quoteAssetManifestVersion: number;
+    quoteAssetManifestHash: Uint8Array;
+    policyVersion: number;
+    policyManifestHash: Uint8Array;
+    protocolFeeAtoms: bigint;
+    solverFeeAtoms: bigint;
+  }>;
 }
 
 function fail(message: string): never {
@@ -225,46 +262,82 @@ function sameAddresses(left: readonly string[], right: readonly string[]): boole
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+export function solanaNettingAllocationObservationBinding(
+  netting: SolanaNettingAllocationEnvelope,
+): SolanaNettingAllocationObservationBinding {
+  const envelope = netting.envelope;
+  if (envelope.fees === undefined) fail('authorized netting execution has no fee terms');
+  return Object.freeze({
+    authorizationHash: Uint8Array.from(netting.authorizationHash),
+    domain: envelope.domain,
+    programId: netting.instruction.programId.toBase58(),
+    instructionAccounts: Object.freeze(netting.instruction.keys.map((account) => account.pubkey.toBase58())),
+    instructionData: Uint8Array.from(netting.instruction.data),
+    executionHash: Uint8Array.from(envelope.executionHash),
+    callsHash: Uint8Array.from(envelope.callsHash),
+    owner: envelope.owner.toBase58(),
+    solver: envelope.solver.toBase58(),
+    strategyAccount: envelope.strategyAccount.toBase58(),
+    receiptAccount: envelope.receipt.toBase58(),
+    packageId: Uint8Array.from(envelope.packageId),
+    orderHash: Uint8Array.from(envelope.orderHash),
+    graphHash: Uint8Array.from(envelope.graphHash),
+    quoteHash: Uint8Array.from(envelope.quoteHash),
+    routeHash: Uint8Array.from(envelope.routeHash),
+    operation: envelope.operation,
+    previousStateHash: Uint8Array.from(envelope.previousStateHash),
+    nextStateHash: Uint8Array.from(envelope.nextStateHash),
+    nonce: envelope.nonce,
+    deadlineSlot: envelope.deadlineSlot,
+    fees: Object.freeze({
+      quoteAssetSubjectId: Uint8Array.from(envelope.fees.quoteAssetSubjectId),
+      quoteAssetManifestVersion: envelope.fees.quoteAssetManifestVersion,
+      quoteAssetManifestHash: Uint8Array.from(envelope.fees.quoteAssetManifestHash),
+      policyVersion: envelope.fees.policyVersion,
+      policyManifestHash: Uint8Array.from(envelope.fees.policyManifestHash),
+      protocolFeeAtoms: envelope.fees.protocolFeeAtoms,
+      solverFeeAtoms: envelope.fees.solverFeeAtoms,
+    }),
+  });
+}
+
 export function observeSolanaNettingAllocation(input: Readonly<{
-  netting: SolanaNettingAllocationEnvelope;
+  binding: SolanaNettingAllocationObservationBinding;
   slot: bigint;
   instructions: readonly SolanaObservedNettingInstruction[];
   receiptAccount: Readonly<{ address: string; owner: string; data: Uint8Array }>;
 }>): SolanaNettingAllocationObservation {
   if (input.slot <= 0n) fail('observation slot must be positive');
-  const expected = input.netting.instruction;
-  const expectedAccounts = expected.keys.map((account) => account.pubkey.toBase58());
+  const expected = input.binding;
   const matchingInstructions = input.instructions.filter((instruction) =>
-    instruction.programId === expected.programId.toBase58()
-      && sameAddresses(instruction.accounts, expectedAccounts)
-      && sameBytes(instruction.data, expected.data));
+    instruction.programId === expected.programId
+      && sameAddresses(instruction.accounts, expected.instructionAccounts)
+      && sameBytes(instruction.data, expected.instructionData));
   if (matchingInstructions.length !== 1) fail('finalized transaction must contain the exact netting instruction once');
-  if (input.receiptAccount.address !== input.netting.envelope.receipt.toBase58()) {
+  if (input.receiptAccount.address !== expected.receiptAccount) {
     fail('receipt account address is invalid');
   }
-  if (input.receiptAccount.owner !== expected.programId.toBase58()) fail('receipt account owner is invalid');
+  if (input.receiptAccount.owner !== expected.programId) fail('receipt account owner is invalid');
   const receipt = decodeSolanaMultiStrategyReceipt(input.receiptAccount.data);
-  const envelope = input.netting.envelope;
   if (
-    !sameBytes(receipt.packageId, envelope.packageId)
-      || !sameBytes(receipt.orderHash, envelope.orderHash)
-      || !sameBytes(receipt.graphHash, envelope.graphHash)
-      || !sameBytes(receipt.quoteHash, envelope.quoteHash)
-      || !sameBytes(receipt.routeHash, envelope.routeHash)
-      || receipt.operation !== envelope.operation
-      || !sameBytes(receipt.previousStateHash, envelope.previousStateHash)
-      || !sameBytes(receipt.nextStateHash, envelope.nextStateHash)
-      || !sameBytes(receipt.callsHash, envelope.callsHash)
-      || !sameBytes(receipt.nettingAuthorizationHash, input.netting.authorizationHash)
-      || receipt.nonce !== envelope.nonce
-      || !receipt.solver.equals(envelope.solver)
+    !sameBytes(receipt.packageId, expected.packageId)
+      || !sameBytes(receipt.orderHash, expected.orderHash)
+      || !sameBytes(receipt.graphHash, expected.graphHash)
+      || !sameBytes(receipt.quoteHash, expected.quoteHash)
+      || !sameBytes(receipt.routeHash, expected.routeHash)
+      || receipt.operation !== expected.operation
+      || !sameBytes(receipt.previousStateHash, expected.previousStateHash)
+      || !sameBytes(receipt.nextStateHash, expected.nextStateHash)
+      || !sameBytes(receipt.callsHash, expected.callsHash)
+      || !sameBytes(receipt.nettingAuthorizationHash, expected.authorizationHash)
+      || receipt.nonce !== expected.nonce
+      || receipt.solver.toBase58() !== expected.solver
       || receipt.executionSlot !== input.slot
   ) {
     fail('stored receipt differs from the authorized netting execution');
   }
-  const fees = envelope.fees;
-  if (fees === undefined) fail('authorized netting execution has no fee terms');
-  const direction = envelope.operation === 'ENTRY' || envelope.operation === 'INCREASE' ? 'ENTRY' : 'EXIT';
+  const fees = expected.fees;
+  const direction = expected.operation === 'ENTRY' || expected.operation === 'INCREASE' ? 'ENTRY' : 'EXIT';
   if (
     receipt.fees.direction !== direction
       || !sameBytes(receipt.fees.quoteAssetSubjectId, fees.quoteAssetSubjectId)
@@ -278,8 +351,8 @@ export function observeSolanaNettingAllocation(input: Readonly<{
     fail('stored receipt fee terms differ from the authorized netting execution');
   }
   const expectedReceiptHash = solanaMultiStrategyReceiptHash({
-    executionHash: envelope.executionHash,
-    callsHash: envelope.callsHash,
+    executionHash: expected.executionHash,
+    callsHash: expected.callsHash,
     evidenceRoot: receipt.evidenceRoot,
   });
   if (!sameBytes(receipt.receiptHash, expectedReceiptHash)) fail('stored receipt hash is invalid');

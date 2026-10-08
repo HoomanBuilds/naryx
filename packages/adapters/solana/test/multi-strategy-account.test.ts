@@ -15,6 +15,7 @@ import {
   compileSolanaNettingAllocationEnvelope,
   deriveSolanaMultiStrategyAccount,
   observeSolanaNettingAllocation,
+  solanaNettingAllocationObservationBinding,
   solanaMultiStrategyReceiptHash,
   type SolanaStrategyAdapterPolicy,
   type SolanaStrategyInstructionPlan,
@@ -317,8 +318,9 @@ test('observes only the exact finalized Solana netting execution', () => {
     owner: netting.instruction.programId.toBase58(),
     data: receiptData(netting, slot),
   };
+  const binding = solanaNettingAllocationObservationBinding(netting);
   const observation = observeSolanaNettingAllocation({
-    netting,
+    binding,
     slot,
     instructions: [instruction],
     receiptAccount: account,
@@ -327,7 +329,7 @@ test('observes only the exact finalized Solana netting execution', () => {
   assert.deepEqual(observation.authorizationHash, netting.authorizationHash);
   assert.throws(
     () => observeSolanaNettingAllocation({
-      netting,
+      binding,
       slot,
       instructions: [instruction],
       receiptAccount: { ...account, data: receiptData(netting, slot + 1n) },

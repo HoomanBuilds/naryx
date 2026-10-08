@@ -8,7 +8,11 @@ import {
   type Address,
   type Hex,
 } from 'viem';
-import type { EvmNettingAllocationEnvelope, EvmStrategyFeeTerms } from './multi-strategy-account.js';
+import type {
+  EvmMultiStrategyExecution,
+  EvmNettingAllocationEnvelope,
+  EvmStrategyFeeTerms,
+} from './multi-strategy-account.js';
 import {
   equalAddress,
   equalHash,
@@ -64,6 +68,15 @@ export interface EvmNettingAllocationObservation {
   readonly authorizationHash: Hex;
   readonly receipt: EvmNettingAllocationReceipt | null;
   readonly reason: string | null;
+}
+
+export interface EvmNettingAllocationObservationBinding {
+  readonly chainReference: bigint;
+  readonly account: Address;
+  readonly authorizationHash: Hex;
+  readonly executionHash: Hex;
+  readonly callsHash: Hex;
+  readonly execution: EvmMultiStrategyExecution;
 }
 
 function mismatch(
@@ -122,8 +135,11 @@ function normalizedReceipt(receiptHash: Hex, value: unknown): EvmNettingAllocati
   });
 }
 
-function matchesEnvelope(receipt: EvmNettingAllocationReceipt, netting: EvmNettingAllocationEnvelope): boolean {
-  const execution = netting.envelope.execution;
+function matchesBinding(
+  receipt: EvmNettingAllocationReceipt,
+  binding: EvmNettingAllocationObservationBinding,
+): boolean {
+  const execution = binding.execution;
   const fees = receipt.fees;
   return equalHash(receipt.packageId, execution.packageId)
     && equalHash(receipt.orderHash, execution.orderHash)
@@ -133,7 +149,7 @@ function matchesEnvelope(receipt: EvmNettingAllocationReceipt, netting: EvmNetti
     && receipt.operation === execution.operation
     && equalHash(receipt.previousStateHash, execution.previousStateHash)
     && equalHash(receipt.nextStateHash, execution.nextStateHash)
-    && equalHash(receipt.callsHash, netting.envelope.callsHash)
+    && equalHash(receipt.callsHash, binding.callsHash)
     && fees.policyVersion === execution.fees.policyVersion
     && equalHash(fees.policyManifestHash, execution.fees.policyManifestHash)
     && equalAddress(fees.token, execution.fees.token)
@@ -143,44 +159,56 @@ function matchesEnvelope(receipt: EvmNettingAllocationReceipt, netting: EvmNetti
     && equalAddress(receipt.solver, execution.solver);
 }
 
+export function evmNettingAllocationObservationBinding(
+  netting: EvmNettingAllocationEnvelope,
+): EvmNettingAllocationObservationBinding {
+  return Object.freeze({
+    chainReference: BigInt(netting.ownerTypedData.domain.chainId),
+    account: netting.envelope.account,
+    authorizationHash: netting.authorizationHash,
+    executionHash: netting.envelope.executionHash,
+    callsHash: netting.envelope.callsHash,
+    execution: netting.envelope.execution,
+  });
+}
+
 export async function observeEvmNettingAllocation(
   port: EvmReadPort,
   input: Readonly<{
-    chainReference: bigint;
-    netting: EvmNettingAllocationEnvelope;
+    binding: EvmNettingAllocationObservationBinding;
     transactionHash: Hex;
     finality: EvmFinalityPolicy;
   }>,
 ): Promise<EvmNettingAllocationObservation> {
-  const account = requiredEvmAddress(input.netting.envelope.account, 'multi-strategy account');
+  const account = requiredEvmAddress(input.binding.account, 'multi-strategy account');
   const transactionHash = hash32(input.transactionHash, 'transaction hash');
-  const authorizationHash = hash32(input.netting.authorizationHash, 'authorization hash');
-  if (input.chainReference <= 0n) throw new Error('chain reference must be positive');
+  const authorizationHash = hash32(input.binding.authorizationHash, 'authorization hash');
+  if (input.binding.chainReference <= 0n) throw new Error('chain reference must be positive');
   validateFinalityPolicy(input.finality);
-  if (await port.chainId() !== input.chainReference) {
-    return mismatch(input.chainReference, transactionHash, authorizationHash, 'none', 'observed chain ID differs');
+  if (await port.chainId() !== input.binding.chainReference) {
+    return mismatch(input.binding.chainReference, transactionHash, authorizationHash, 'none', 'observed chain ID differs');
   }
   const transaction = await port.transactionReceipt(transactionHash);
   if (transaction === null) {
     return Object.freeze({
-      lifecycle: 'NOT_FOUND', evidenceGrade: 'none', chainReference: input.chainReference,
+      lifecycle: 'NOT_FOUND', evidenceGrade: 'none', chainReference: input.binding.chainReference,
       transactionHash, blockNumber: null, confirmations: null, authorizationHash, receipt: null,
       reason: 'transaction receipt is unavailable',
     });
   }
   if (transaction.blockNumber < 0n) {
-    return mismatch(input.chainReference, transactionHash, authorizationHash, 'transaction-receipt', 'transaction block is invalid');
+    return mismatch(input.binding.chainReference, transactionHash, authorizationHash, 'transaction-receipt', 'transaction block is invalid');
   }
   const head = await port.chainHead();
   if (head.latestBlock < transaction.blockNumber
     || (head.finalizedBlock !== null && (head.finalizedBlock < 0n || head.finalizedBlock > head.latestBlock))) {
-    return mismatch(input.chainReference, transactionHash, authorizationHash, 'transaction-receipt', 'chain head is inconsistent', transaction.blockNumber);
+    return mismatch(input.binding.chainReference, transactionHash, authorizationHash, 'transaction-receipt', 'chain head is inconsistent', transaction.blockNumber);
   }
   const depth = head.latestBlock - transaction.blockNumber + 1n;
   const confirmations = depth > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(depth);
   if (transaction.status === 'reverted') {
     return Object.freeze({
-      lifecycle: 'REVERTED', evidenceGrade: 'transaction-receipt', chainReference: input.chainReference,
+      lifecycle: 'REVERTED', evidenceGrade: 'transaction-receipt', chainReference: input.binding.chainReference,
       transactionHash, blockNumber: transaction.blockNumber, confirmations, authorizationHash, receipt: null,
       reason: 'transaction reverted',
     });
@@ -202,7 +230,7 @@ export async function observeEvmNettingAllocation(
     }
   }
   if (events.length !== 1) {
-    return mismatch(input.chainReference, transactionHash, authorizationHash, 'transaction-receipt', 'transaction has no unique matching netting event', transaction.blockNumber, confirmations);
+    return mismatch(input.binding.chainReference, transactionHash, authorizationHash, 'transaction-receipt', 'transaction has no unique matching netting event', transaction.blockNumber, confirmations);
   }
   const receiptHash = events[0]!;
   let storedAuthorization: unknown;
@@ -221,30 +249,30 @@ export async function observeEvmNettingAllocation(
       args: [receiptHash],
     });
   } catch {
-    return mismatch(input.chainReference, transactionHash, authorizationHash, 'transaction-receipt', 'contract evidence is unavailable', transaction.blockNumber, confirmations);
+    return mismatch(input.binding.chainReference, transactionHash, authorizationHash, 'transaction-receipt', 'contract evidence is unavailable', transaction.blockNumber, confirmations);
   }
   if (!equalHash(hash32(String(storedAuthorization).toLowerCase(), 'stored authorization hash'), authorizationHash)) {
-    return mismatch(input.chainReference, transactionHash, authorizationHash, 'contract-state', 'stored authorization differs', transaction.blockNumber, confirmations);
+    return mismatch(input.binding.chainReference, transactionHash, authorizationHash, 'contract-state', 'stored authorization differs', transaction.blockNumber, confirmations);
   }
   let receipt: EvmNettingAllocationReceipt;
   try {
     receipt = normalizedReceipt(receiptHash, storedReceipt);
   } catch {
-    return mismatch(input.chainReference, transactionHash, authorizationHash, 'contract-state', 'stored receipt is malformed', transaction.blockNumber, confirmations);
+    return mismatch(input.binding.chainReference, transactionHash, authorizationHash, 'contract-state', 'stored receipt is malformed', transaction.blockNumber, confirmations);
   }
   const expectedReceiptHash = keccak256(encodeAbiParameters(RECEIPT_HASH_PARAMETERS, [
-    input.netting.envelope.executionHash,
-    input.netting.envelope.callsHash,
+    input.binding.executionHash,
+    input.binding.callsHash,
     receipt.evidenceRoot,
   ]));
-  if (!matchesEnvelope(receipt, input.netting) || !equalHash(receipt.receiptHash, expectedReceiptHash)) {
-    return mismatch(input.chainReference, transactionHash, authorizationHash, 'contract-state', 'stored receipt differs from the authorized execution', transaction.blockNumber, confirmations);
+  if (!matchesBinding(receipt, input.binding) || !equalHash(receipt.receiptHash, expectedReceiptHash)) {
+    return mismatch(input.binding.chainReference, transactionHash, authorizationHash, 'contract-state', 'stored receipt differs from the authorized execution', transaction.blockNumber, confirmations);
   }
   const finalized = head.finalizedBlock !== null && transaction.blockNumber <= head.finalizedBlock;
   const confirmed = confirmations >= input.finality.requiredConfirmations;
   if (!confirmed || (input.finality.requireFinalized && !finalized)) {
     return Object.freeze({
-      lifecycle: 'CONFIRMING', evidenceGrade: 'contract-state', chainReference: input.chainReference,
+      lifecycle: 'CONFIRMING', evidenceGrade: 'contract-state', chainReference: input.binding.chainReference,
       transactionHash, blockNumber: transaction.blockNumber, confirmations, authorizationHash, receipt,
       reason: null,
     });
@@ -252,7 +280,7 @@ export async function observeEvmNettingAllocation(
   return Object.freeze({
     lifecycle: finalized ? 'FINALIZED' : 'CONFIRMED',
     evidenceGrade: finalized ? 'finalized-contract-receipt' : 'contract-state',
-    chainReference: input.chainReference,
+    chainReference: input.binding.chainReference,
     transactionHash,
     blockNumber: transaction.blockNumber,
     confirmations,

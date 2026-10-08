@@ -31,7 +31,10 @@ import {
   encodeEvmMultiStrategyAccountExecution,
   encodeEvmMultiStrategyAccountRecovery,
 } from '../src/multi-strategy-account.js';
-import { observeEvmNettingAllocation } from '../src/multi-strategy-observation.js';
+import {
+  evmNettingAllocationObservationBinding,
+  observeEvmNettingAllocation,
+} from '../src/multi-strategy-observation.js';
 import type { EvmReadPort } from '../src/readPort.js';
 import type { EvmStrategyExecutionPlan } from '../src/strategy-plan.js';
 
@@ -323,17 +326,16 @@ test('observes only the exact finalized EVM netting execution', async () => {
     readContract: async (read) => read.functionName === 'nettingAuthorizationOf' ? storedAuthorization : receipt,
     chainHead: async () => ({ latestBlock: 110n, finalizedBlock: 105n }),
   });
+  const binding = evmNettingAllocationObservationBinding(netting);
   const observed = await observeEvmNettingAllocation(port(netting.authorizationHash), {
-    chainReference: 84_532n,
-    netting,
+    binding,
     transactionHash: HASH_E,
     finality: { requiredConfirmations: 2, requireFinalized: true },
   });
   assert.equal(observed.lifecycle, 'FINALIZED');
   assert.equal(observed.receipt?.receiptHash, receiptHash);
   const refused = await observeEvmNettingAllocation(port(HASH_B), {
-    chainReference: 84_532n,
-    netting,
+    binding,
     transactionHash: HASH_E,
     finality: { requiredConfirmations: 2, requireFinalized: true },
   });
