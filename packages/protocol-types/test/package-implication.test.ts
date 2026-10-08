@@ -116,6 +116,44 @@ describe('bounded multi-package implication', () => {
     assert.equal(admitted.entry.minimumFillQuantity, 20n);
   });
 
+  test('derives implied-out liquidity with a signed package source', () => {
+    const policy = packageMatchingPolicy(POLICY);
+    const proof = derivePackageImplicationProof(policy, {
+      version: 1,
+      targetExecutionClassId: POLICY.executionClassId,
+      targetSide: 'ASK',
+      targetSeries: CALENDAR,
+      sources: [
+        {
+          entryId: id(41),
+          sourceVersion: 1n,
+          side: 'ASK',
+          priceTicks: 100n,
+          quantity: 20n,
+          derivationDepth: 0,
+          series: TARGET,
+          unitsPerTarget: { numerator: 1n, denominator: 1n },
+          reservationId: id(51),
+          ancestorEntryIds: [],
+        },
+        {
+          entryId: id(42),
+          sourceVersion: 1n,
+          side: 'BID',
+          priceTicks: 80n,
+          quantity: 20n,
+          derivationDepth: 0,
+          series: NEAR_BASIS,
+          unitsPerTarget: { numerator: -1n, denominator: 1n },
+          reservationId: id(52),
+          ancestorEntryIds: [],
+        },
+      ],
+    });
+    assert.equal(proof.quote.priceTicks, 20n);
+    assert.equal(proof.quote.quantity, 20n);
+  });
+
   test('rejects non-conserving exposure and mismatched source direction', () => {
     const policy = packageMatchingPolicy(POLICY);
     const input = proofInput();
