@@ -13,6 +13,7 @@ import {
 } from '@naryx/protocol-types';
 import {
   prepareCompiledStrategyExecution,
+  type PreparedStrategyExecution,
   type StrategyExecutionDomainBinding,
   type StrategyExecutionIdentity,
 } from './strategy-execution-preparer.js';
@@ -67,17 +68,28 @@ export class StrategyPreparationService {
   }
 
   async prepareByQuote(quoteHash: Hash32): Promise<PreparedStrategyExecutionTransport | undefined> {
+    const prepared = await this.prepareNativeByQuote(quoteHash);
+    return prepared === undefined ? undefined : preparedStrategyExecutionTransport(prepared);
+  }
+
+  async prepareNativeByQuote(quoteHash: Hash32): Promise<PreparedStrategyExecution | undefined> {
     const documents = await this.#packages.getByQuote(quoteHash);
     if (documents === undefined) return undefined;
     if (!bytesEqual(strategyPackageQuoteHash(documents.quote), quoteHash)) {
       throw new Error('strategy package provider returned another quote');
     }
-    return this.prepareDocuments(documents);
+    return this.prepareDocumentsNative(documents);
   }
 
   async prepareDocuments(
     documents: StoredStrategyPackageDocuments,
   ): Promise<PreparedStrategyExecutionTransport> {
+    return preparedStrategyExecutionTransport(await this.prepareDocumentsNative(documents));
+  }
+
+  async prepareDocumentsNative(
+    documents: StoredStrategyPackageDocuments,
+  ): Promise<PreparedStrategyExecution> {
     if (documents.packageExecutionLock !== undefined
       && (documents.packageExecution?.binding === undefined
         || toHex(documents.packageExecution.readiness.packageOrderId) !== documents.packageExecutionLock.packageOrderIdHex)) {
@@ -122,10 +134,10 @@ export class StrategyPreparationService {
       compilers: context.compilers,
       ...(context.crossDomainPlan === undefined ? {} : { crossDomainPlan: context.crossDomainPlan }),
     });
-    return preparedStrategyExecutionTransport(prepareCompiledStrategyExecution({
+    return prepareCompiledStrategyExecution({
       compiled,
       identity: context.identity,
       bindings: context.bindings,
-    }));
+    });
   }
 }

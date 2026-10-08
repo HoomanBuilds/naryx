@@ -39,6 +39,10 @@ export {
   type PreparedNettingAllocationExecution,
 } from './netting-allocation-execution-preparer.js';
 export {
+  NettingAllocationLifecycleService,
+  type RegisteredPreparedNettingAllocation,
+} from './netting-allocation-lifecycle.js';
+export {
   GeneralizedStrategyQuoteError,
   GeneralizedStrategyQuoteService,
   InMemoryGeneralizedStrategyQuoteStore,

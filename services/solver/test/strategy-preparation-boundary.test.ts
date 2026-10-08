@@ -39,6 +39,7 @@ test('preparation service does not resolve context for an unknown quote', async 
     { resolve: async () => { throw new Error('must not resolve'); } },
   );
   assert.equal(await service.prepareByQuote(commitmentHash(QUOTE_HASH)), undefined);
+  assert.equal(await service.prepareNativeByQuote(commitmentHash(QUOTE_HASH)), undefined);
 });
 
 test('preparation blocks an unbound quote after final package settlement', async () => {
