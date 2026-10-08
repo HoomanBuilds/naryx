@@ -765,6 +765,10 @@ export {
   type HyperliquidNettingResidualRuntimeOptions,
 } from './hyperliquid-netting-residual-runtime.js';
 export {
+  HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH,
+  createHyperliquidNettingResidualExecutionInternalHandler,
+} from './hyperliquid-netting-residual-execution-http.js';
+export {
   HyperliquidStrategyTestnetRuntime,
   createHyperliquidStrategyTestnetRuntime,
   type HyperliquidStrategyEvidenceBinding,

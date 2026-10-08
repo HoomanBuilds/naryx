@@ -634,3 +634,9 @@ export {
   type NettingExternalExecutionPort,
   type NettingExecutionCoordinatorResult,
 } from "./netting-execution-coordinator.js";
+export {
+  API_HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH,
+  HttpHyperliquidNettingResidualExecutionClient,
+  HyperliquidNettingResidualExecutionClientError,
+  type HyperliquidNettingResidualExecutionClientErrorCode,
+} from "./hyperliquid-netting-residual-execution-client.js";

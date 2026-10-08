@@ -216,5 +216,12 @@ test('executes one durable residual and resumes evidence without rebroadcast', a
       && error.name === 'HyperliquidNettingResidualRuntimeError'
       && error.message.includes('idempotency'),
   );
+  await assert.rejects(
+    runtime.execute({
+      intent: { ...intent, quantityAtoms: intent.quantityAtoms + 100n },
+      idempotencyKey: toHex(intent.intentHash),
+    }),
+    /idempotency differs from the intent/,
+  );
   assert.equal(transport.requests.length, 1);
 });

@@ -5,6 +5,7 @@ import {
   type HyperliquidNettingResidualPlan,
 } from '@naryx/adapter-hyperliquid';
 import {
+  nettingExternalExecutionIntentHash,
   toHex,
   type NettingExternalExecutionEvidence,
   type NettingExternalExecutionIntent,
@@ -190,7 +191,8 @@ export class HyperliquidNettingResidualTestnetRuntime {
     idempotencyKey: string;
   }>): Promise<NettingExternalExecutionEvidence> {
     const expectedKey = toHex(input.intent.intentHash);
-    if (input.idempotencyKey !== expectedKey) {
+    if (input.idempotencyKey !== expectedKey
+      || toHex(nettingExternalExecutionIntentHash(input.intent)) !== expectedKey) {
       throw new HyperliquidNettingResidualRuntimeError(
         'IDEMPOTENCY_MISMATCH', 'residual execution idempotency differs from the intent',
       );
