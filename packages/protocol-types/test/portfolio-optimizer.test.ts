@@ -95,7 +95,8 @@ function positionSnapshot(overrides: Partial<PositionSnapshotRecordInput> = {}):
 
 function collateral(overrides: Partial<CollateralSnapshotInput> = {}): CollateralSnapshotInput {
   return {
-    version: 1,
+    version: 2,
+    environment: 'testnet',
     snapshotId: 'collateral-a',
     sourceId: 'collateral-source',
     strategyAccount: 'strategy-a',
@@ -223,6 +224,10 @@ describe('portfolio optimization inputs', () => {
       toHex(collateralSnapshotHash(collateral())),
       toHex(collateralSnapshotHash(collateral({ sourceEvidenceHash: '63'.repeat(32) }))),
     );
+    assert.notEqual(
+      toHex(collateralSnapshotHash(collateral())),
+      toHex(collateralSnapshotHash(collateral({ environment: 'devnet' }))),
+    );
   });
 
   test('duplicate objectives and candidate ids fail closed', () => {
@@ -283,6 +288,7 @@ describe('deterministic portfolio optimization', () => {
       authorityVerified: false,
       positionSnapshot: positionSnapshot({ observedAtMs: 0n, positions: stalePositions }),
       collateralSnapshot: collateral({
+        environment: 'devnet',
         observedAtMs: 0n,
         ownAvailableQuoteAtoms: 1n,
         borrowAvailableQuoteAtoms: 1n,
@@ -302,6 +308,7 @@ describe('deterministic portfolio optimization', () => {
       'BORROW_UNAVAILABLE',
       'INSUFFICIENT_COLLATERAL',
       'POSITION_STATE_INCOMPLETE',
+      'ENVIRONMENT_MISMATCH',
     ]);
   });
 });

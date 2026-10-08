@@ -29,7 +29,7 @@ import {
 } from './primitives.js';
 
 export const PORTFOLIO_OPTIMIZATION_POLICY_VERSION = 1;
-export const COLLATERAL_SNAPSHOT_VERSION = 1;
+export const COLLATERAL_SNAPSHOT_VERSION = 2;
 export const PORTFOLIO_OPTIMIZATION_MAX_CANDIDATES = 64;
 export const PORTFOLIO_OPTIMIZATION_MAX_SCENARIOS = 32;
 const BPS = 10_000n;
@@ -79,6 +79,7 @@ export const PORTFOLIO_CANDIDATE_REJECTION = Object.freeze({
   POSITION_STATE_INCOMPLETE: 20,
   UNWIND_UNAVAILABLE: 21,
   TOTAL_COST_EXCEEDED: 22,
+  ENVIRONMENT_MISMATCH: 23,
 } as const);
 export type PortfolioCandidateRejection = keyof typeof PORTFOLIO_CANDIDATE_REJECTION;
 
@@ -126,6 +127,7 @@ function protocolIdSet(values: readonly string[], context: string): readonly Pro
 
 export interface CollateralSnapshotInput {
   readonly version: number;
+  readonly environment: string;
   readonly snapshotId: string;
   readonly sourceId: string;
   readonly strategyAccount: string;
@@ -148,9 +150,10 @@ export interface CollateralSnapshotInput {
 }
 
 export interface CollateralSnapshot extends Omit<CollateralSnapshotInput,
-  'snapshotId' | 'sourceId' | 'strategyAccount' | 'owner' | 'authority' | 'asset' |
+  'environment' | 'snapshotId' | 'sourceId' | 'strategyAccount' | 'owner' | 'authority' | 'asset' |
   'riskDomainId' | 'sourceEvidenceHash' | 'signature'> {
-  readonly version: 1;
+  readonly version: 2;
+  readonly environment: ProtocolId;
   readonly snapshotId: ProtocolId;
   readonly sourceId: ProtocolId;
   readonly strategyAccount: ProtocolId;
@@ -186,6 +189,7 @@ export function collateralSnapshot(input: CollateralSnapshotInput, context = 'co
   enumDiscriminant(COLLATERAL_MODE, input.mode, `${context}.mode`);
   return Object.freeze({
     version: COLLATERAL_SNAPSHOT_VERSION,
+    environment: protocolId(input.environment, `${context}.environment`),
     snapshotId: protocolId(input.snapshotId, `${context}.snapshotId`),
     sourceId: protocolId(input.sourceId, `${context}.sourceId`),
     strategyAccount: protocolId(input.strategyAccount, `${context}.strategyAccount`),
@@ -210,6 +214,7 @@ export function collateralSnapshot(input: CollateralSnapshotInput, context = 'co
 
 function encodeCollateralSnapshot(writer: CanonicalWriter, value: CollateralSnapshot): void {
   writer.writeU32(value.version, 'version');
+  encodeProtocolId(writer, value.environment, 'environment');
   encodeProtocolId(writer, value.snapshotId, 'snapshotId');
   encodeProtocolId(writer, value.sourceId, 'sourceId');
   encodeProtocolId(writer, value.strategyAccount, 'strategyAccount');
@@ -543,6 +548,9 @@ function candidateDecision(
   );
   const reasons = new Set<PortfolioCandidateRejection>();
   if (!raw.active) addReason(reasons, 'INACTIVE');
+  if (snapshot.environment !== policy.environment || collateral.environment !== policy.environment) {
+    addReason(reasons, 'ENVIRONMENT_MISMATCH');
+  }
   if (!raw.authorityVerified
     || snapshot.strategyAccount !== collateral.strategyAccount
     || collateral.owner !== policy.owner
