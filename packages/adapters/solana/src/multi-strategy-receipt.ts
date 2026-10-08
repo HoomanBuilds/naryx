@@ -11,7 +11,7 @@ const LEG_EVENT_DISCRIMINATOR = createHash('sha256')
   .update('event:StrategyAdapterLegExecuted', 'ascii')
   .digest()
   .subarray(0, 8);
-const ACCOUNT_BYTES = 500;
+const ACCOUNT_BYTES = 532;
 const LEG_EVENT_BYTES = 106;
 
 export type SolanaStrategyReceiptOperation =
@@ -48,6 +48,7 @@ export interface DecodedSolanaStrategyReceipt {
   readonly callsHash: Uint8Array;
   readonly evidenceRoot: Uint8Array;
   readonly receiptHash: Uint8Array;
+  readonly nettingAuthorizationHash: Uint8Array;
   readonly fees: Readonly<{
     direction: 'ENTRY' | 'EXIT';
     quoteAssetSubjectId: Uint8Array;
@@ -147,6 +148,7 @@ export function decodeSolanaMultiStrategyReceipt(value: Uint8Array): DecodedSola
   const callsHash = takeHash();
   const evidenceRoot = takeHash();
   const receiptHash = takeHash();
+  const nettingAuthorizationHash = takeHash();
   const feeDirectionDiscriminant = data[offset++]!;
   if (feeDirectionDiscriminant > 1) fail('fee direction is unsupported');
   const quoteAssetSubjectId = takeHash();
@@ -181,6 +183,7 @@ export function decodeSolanaMultiStrategyReceipt(value: Uint8Array): DecodedSola
     callsHash,
     evidenceRoot,
     receiptHash,
+    nettingAuthorizationHash,
     fees: Object.freeze({
       direction: feeDirectionDiscriminant === 0 ? 'ENTRY' : 'EXIT',
       quoteAssetSubjectId,

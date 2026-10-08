@@ -30,6 +30,15 @@ pub mod naryx_multi_strategy {
         execute::execute_handler(ctx, execution, calls)
     }
 
+    pub fn execute_netting_allocation<'info>(
+        ctx: Context<'info, ExecuteMultiStrategy<'info>>,
+        execution: StrategyExecutionArgs,
+        calls: Vec<StrategyCallArgs>,
+        authorization_hash: [u8; 32],
+    ) -> Result<()> {
+        execute::netting_allocation_handler(ctx, execution, calls, authorization_hash)
+    }
+
     pub fn execute_multi_strategy_recovery<'info>(
         ctx: Context<'info, ExecuteMultiStrategyRecovery<'info>>,
         execution: StrategyExecutionArgs,

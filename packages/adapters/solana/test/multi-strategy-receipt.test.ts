@@ -16,7 +16,7 @@ test('decodes the exact Anchor strategy receipt layout and verifies its hash', (
   const callsHash = bytes(10);
   const evidenceRoot = bytes(11);
   const receiptHash = solanaMultiStrategyReceiptHash({ executionHash, callsHash, evidenceRoot });
-  const data = Buffer.alloc(500);
+  const data = Buffer.alloc(532);
   createHash('sha256').update('account:StrategyReceipt', 'ascii').digest().copy(data, 0, 0, 8);
   let offset = 8;
   data[offset++] = 1;
@@ -29,6 +29,9 @@ test('decodes the exact Anchor strategy receipt layout and verifies its hash', (
     Buffer.from(value).copy(data, offset);
     offset += 32;
   }
+  const nettingAuthorizationHash = bytes(15);
+  Buffer.from(nettingAuthorizationHash).copy(data, offset);
+  offset += 32;
   data[offset++] = 0;
   Buffer.from(bytes(16)).copy(data, offset);
   offset += 32;
@@ -51,7 +54,7 @@ test('decodes the exact Anchor strategy receipt layout and verifies its hash', (
   offset += 32;
   data.writeBigUInt64LE(14n, offset);
   offset += 8;
-  data[offset++] = 15;
+  data[offset++] = 16;
 
   const receipt = decodeSolanaMultiStrategyReceipt(data);
   assert.equal(offset, data.length);
@@ -60,6 +63,7 @@ test('decodes the exact Anchor strategy receipt layout and verifies its hash', (
   assert.equal(receipt.executionSlot, 14n);
   assert.equal(receipt.solver.toBase58(), solver.toBase58());
   assert.deepEqual(receipt.receiptHash, receiptHash);
+  assert.deepEqual(receipt.nettingAuthorizationHash, nettingAuthorizationHash);
   assert.equal(receipt.fees.direction, 'ENTRY');
   assert.equal(receipt.fees.quoteAssetManifestVersion, 2);
   assert.equal(receipt.fees.policyVersion, 3);
@@ -68,8 +72,8 @@ test('decodes the exact Anchor strategy receipt layout and verifies its hash', (
 });
 
 test('rejects another account type and an unsupported operation', () => {
-  assert.throws(() => decodeSolanaMultiStrategyReceipt(new Uint8Array(500)), /discriminator/);
-  const data = Buffer.alloc(500);
+  assert.throws(() => decodeSolanaMultiStrategyReceipt(new Uint8Array(532)), /discriminator/);
+  const data = Buffer.alloc(532);
   createHash('sha256').update('account:StrategyReceipt', 'ascii').digest().copy(data, 0, 0, 8);
   data[8] = 1;
   data[8 + 1 + (32 * 5)] = 8;

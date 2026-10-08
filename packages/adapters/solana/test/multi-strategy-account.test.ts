@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { CompiledStrategyExecution } from '@naryx/adapter-core';
-import type { DomainRef } from '@naryx/protocol-types';
+import {
+  assetRef,
+  commitmentHash,
+  protocolId,
+  type DomainRef,
+  type NettingAllocationExecutionAuthorization,
+} from '@naryx/protocol-types';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
 import {
   compileSolanaMultiStrategyAccountEnvelope,
+  compileSolanaNettingAllocationEnvelope,
   deriveSolanaMultiStrategyAccount,
   type SolanaStrategyAdapterPolicy,
   type SolanaStrategyInstructionPlan,
@@ -111,6 +118,41 @@ function baseInput() {
   };
 }
 
+function nettingAuthorization(
+  envelope: ReturnType<typeof compileSolanaMultiStrategyAccountEnvelope>,
+): NettingAllocationExecutionAuthorization {
+  return Object.freeze({
+    version: 1,
+    authorizationHash: commitmentHash(hash(30)),
+    environment: protocolId('testnet'),
+    executionClassId: protocolId('svm-multi-strategy'),
+    finalAllocationReceiptHash: commitmentHash(hash(31)),
+    allocationReceiptHash: commitmentHash(hash(32)),
+    nettingProofHash: commitmentHash(hash(33)),
+    settlementCommitmentHash: commitmentHash(hash(34)),
+    obligationId: commitmentHash(hash(35)),
+    packageOrderId: commitmentHash(hash(36)),
+    strategyOrderHash: commitmentHash(envelope.orderHash),
+    ownerId: protocolId(owner.toBase58()),
+    settlementAccount: protocolId(envelope.strategyAccount.toBase58()),
+    domain,
+    instrumentId: protocolId('sol-spot'),
+    instrumentHash: commitmentHash(hash(37)),
+    quantityAsset: assetRef('sol', hash(38), 9),
+    quoteAsset: assetRef('usdc', hash(39), 6),
+    stateKind: 'ASSET_BALANCE',
+    settledQuantityAtoms: 1_000_000_000n,
+    settledQuoteDeltaAtoms: -100_000_000n,
+    executionPlanHash: commitmentHash(envelope.callsHash),
+    solverId: protocolId(solver.toBase58()),
+    protocolFeeAtoms: 1n,
+    solverFeeAtoms: 2n,
+    nonce: 1n,
+    validUntilUnit: 'SOLANA_SLOT',
+    validUntilValue: 500n,
+  });
+}
+
 test('compiles a solver-authorized typed strategy instruction', () => {
   assert.equal(
     deriveSolanaMultiStrategyAccount({ programId: multiStrategyProgram, owner }).toBase58(),
@@ -161,5 +203,32 @@ test('compiles owner-only recovery and rejects malformed economic bounds', () =>
       packageId: hash(21),
     }),
     /compiled plan package id mismatch/,
+  );
+});
+
+test('binds a final allocation authorization to exact Solana execution data', () => {
+  const envelope = compileSolanaMultiStrategyAccountEnvelope(baseInput());
+  const authorization = nettingAuthorization(envelope);
+  const netting = compileSolanaNettingAllocationEnvelope({ envelope, authorization });
+  assert.equal(netting.instruction.data.subarray(0, 8).toString('hex'), '7029a21484063beb');
+  assert.equal(
+    netting.instruction.data.subarray(-32).toString('hex'),
+    Buffer.from(authorization.authorizationHash).toString('hex'),
+  );
+  assert.deepEqual(netting.requiredSignerPubkeys, [owner.toBase58(), solver.toBase58()].sort());
+  assert.equal(netting.instruction.keys[20]?.pubkey.toBase58(), strategyAccount.toBase58());
+});
+
+test('rejects a netting authorization for another Solana call plan', () => {
+  const envelope = compileSolanaMultiStrategyAccountEnvelope(baseInput());
+  assert.throws(
+    () => compileSolanaNettingAllocationEnvelope({
+      envelope,
+      authorization: {
+        ...nettingAuthorization(envelope),
+        executionPlanHash: commitmentHash(hash(40)),
+      },
+    }),
+    /execution plan mismatch/,
   );
 });

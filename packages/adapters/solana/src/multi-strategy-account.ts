@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import type { CompiledStrategyExecution } from '@naryx/adapter-core';
-import { domainRefIdentityHash, type DomainRef } from '@naryx/protocol-types';
+import {
+  domainRefIdentityHash,
+  type DomainRef,
+  type NettingAllocationExecutionAuthorization,
+} from '@naryx/protocol-types';
 import {
   PublicKey,
   SystemProgram,
@@ -10,6 +14,7 @@ import {
 import type { SolanaStrategyInstructionPlan } from './strategy-plan.js';
 
 const EXECUTE_DISCRIMINATOR = Buffer.from('4ca9b2623392f612', 'hex');
+const NETTING_ALLOCATION_DISCRIMINATOR = Buffer.from('7029a21484063beb', 'hex');
 const RECOVERY_DISCRIMINATOR = Buffer.from('b0a04e24e8d78f91', 'hex');
 const EXECUTION_HASH_DOMAIN = Buffer.from('naryx.solana.multi-strategy.execution.v1', 'ascii');
 const CALLS_HASH_DOMAIN = Buffer.from('naryx.solana.multi-strategy.calls.v1', 'ascii');
@@ -66,6 +71,12 @@ export interface SolanaMultiStrategyEnvelope {
   readonly instruction: TransactionInstruction;
   readonly executionHash: Uint8Array;
   readonly callsHash: Uint8Array;
+  readonly domain: DomainRef;
+  readonly owner: PublicKey;
+  readonly solver: PublicKey;
+  readonly orderHash: Uint8Array;
+  readonly nonce: bigint;
+  readonly deadlineSlot: bigint;
   readonly strategyAccount: PublicKey;
   readonly position: PublicKey;
   readonly receipt: PublicKey;
@@ -80,6 +91,13 @@ export interface SolanaMultiStrategyEnvelope {
     protocolFeeAtoms: bigint;
     solverFeeAtoms: bigint;
   }>;
+  readonly requiredSignerPubkeys: readonly string[];
+}
+
+export interface SolanaNettingAllocationEnvelope {
+  readonly envelope: SolanaMultiStrategyEnvelope;
+  readonly authorizationHash: Uint8Array;
+  readonly instruction: TransactionInstruction;
   readonly requiredSignerPubkeys: readonly string[];
 }
 
@@ -431,6 +449,12 @@ export function compileSolanaMultiStrategyAccountEnvelope(input: Readonly<{
     instruction,
     executionHash: hash(EXECUTION_HASH_DOMAIN, executionBytes),
     callsHash: hash(CALLS_HASH_DOMAIN, callsBytes),
+    domain: plan.domain,
+    owner,
+    solver,
+    orderHash: Uint8Array.from(hash32(compiled.orderHash, 'order hash')),
+    nonce: input.nonce,
+    deadlineSlot: input.deadlineSlot,
     strategyAccount,
     position,
     receipt,
@@ -448,5 +472,64 @@ export function compileSolanaMultiStrategyAccountEnvelope(input: Readonly<{
       }),
     }),
     requiredSignerPubkeys: Object.freeze(recovery ? [owner.toBase58()] : [owner.toBase58(), solver.toBase58()].sort()),
+  });
+}
+
+export function compileSolanaNettingAllocationEnvelope(input: Readonly<{
+  envelope: SolanaMultiStrategyEnvelope;
+  authorization: NettingAllocationExecutionAuthorization;
+}>): SolanaNettingAllocationEnvelope {
+  const { envelope, authorization } = input;
+  const authorizationHash = hash32(authorization.authorizationHash, 'netting authorization hash');
+  requireCondition(envelope.fees !== undefined, 'netting allocation requires fee policy terms');
+  requireCondition(
+    authorization.settlementAccount === envelope.strategyAccount.toBase58(),
+    'netting settlement account mismatch',
+  );
+  requireCondition(authorization.ownerId === envelope.owner.toBase58(), 'netting owner mismatch');
+  requireCondition(
+    authorization.domain.domainId === envelope.domain.domainId
+      && authorization.domain.domainManifestVersion === envelope.domain.domainManifestVersion
+      && Buffer.from(authorization.domain.domainManifestHash).equals(Buffer.from(envelope.domain.domainManifestHash)),
+    'netting execution domain mismatch',
+  );
+  requireCondition(
+    Buffer.from(authorization.strategyOrderHash).equals(Buffer.from(envelope.orderHash)),
+    'netting strategy order mismatch',
+  );
+  requireCondition(
+    Buffer.from(authorization.executionPlanHash).equals(Buffer.from(envelope.callsHash)),
+    'netting execution plan mismatch',
+  );
+  requireCondition(authorization.solverId === envelope.solver.toBase58(), 'netting solver mismatch');
+  requireCondition(
+    authorization.protocolFeeAtoms === envelope.fees.protocolFeeAtoms
+      && authorization.solverFeeAtoms === envelope.fees.solverFeeAtoms,
+    'netting fee mismatch',
+  );
+  requireCondition(authorization.nonce === envelope.nonce, 'netting nonce mismatch');
+  requireCondition(
+    authorization.validUntilUnit === 'SOLANA_SLOT'
+      && envelope.deadlineSlot <= authorization.validUntilValue,
+    'netting execution outlives its authorization',
+  );
+  requireCondition(
+    envelope.instruction.data.subarray(0, 8).equals(EXECUTE_DISCRIMINATOR),
+    'netting allocation requires normal solver-authorized execution',
+  );
+  const instruction = new TransactionInstruction({
+    programId: envelope.instruction.programId,
+    keys: envelope.instruction.keys,
+    data: Buffer.concat([
+      NETTING_ALLOCATION_DISCRIMINATOR,
+      envelope.instruction.data.subarray(8),
+      authorizationHash,
+    ]),
+  });
+  return Object.freeze({
+    envelope,
+    authorizationHash,
+    instruction,
+    requiredSignerPubkeys: envelope.requiredSignerPubkeys,
   });
 }

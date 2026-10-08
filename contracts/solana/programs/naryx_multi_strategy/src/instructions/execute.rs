@@ -27,7 +27,10 @@ use crate::{
         STRATEGY_POSITION_SEED, STRATEGY_RECEIPT_SEED, TYPED_ADAPTER_DISCRIMINATOR,
     },
     error::ErrorCode,
-    events::{MultiStrategyExecuted, StrategyAdapterLegExecuted, StrategyFeesCollected},
+    events::{
+        MultiStrategyExecuted, NettingAllocationExecuted, StrategyAdapterLegExecuted,
+        StrategyFeesCollected,
+    },
     state::{
         MultiStrategyAccount, StrategyCallArgs, StrategyExecutionArgs, StrategyPosition,
         StrategyReceipt,
@@ -190,6 +193,51 @@ pub fn execute_handler<'info>(
         &ctx.remaining_accounts,
         &execution,
         &calls,
+        [0u8; 32],
+        false,
+        ctx.bumps.position,
+        ctx.bumps.receipt,
+    )
+}
+
+pub fn netting_allocation_handler<'info>(
+    ctx: Context<'info, ExecuteMultiStrategy<'info>>,
+    execution: StrategyExecutionArgs,
+    calls: Vec<StrategyCallArgs>,
+    authorization_hash: [u8; 32],
+) -> Result<()> {
+    require!(authorization_hash != [0u8; 32], ErrorCode::InvalidExecution);
+    require_keys_eq!(
+        execution.solver,
+        ctx.accounts.solver.key(),
+        ErrorCode::InvalidSolver
+    );
+    require!(
+        ctx.accounts
+            .solver_registry
+            .is_active(&ctx.accounts.solver.key()),
+        ErrorCode::InvalidSolver
+    );
+    execute(
+        &ctx.accounts.owner,
+        &ctx.accounts.config,
+        &mut ctx.accounts.strategy_account,
+        &mut ctx.accounts.position,
+        &mut ctx.accounts.receipt,
+        Some(FeeCollectionAccounts {
+            policy: &ctx.accounts.fee_policy,
+            asset_index: &ctx.accounts.quote_asset_index,
+            asset_record: &ctx.accounts.quote_asset_record,
+            mint: &ctx.accounts.quote_mint,
+            source: &ctx.accounts.owner_fee_token,
+            protocol_recipient: &ctx.accounts.protocol_fee_token,
+            solver_recipient: &ctx.accounts.solver_fee_token,
+            token_program: &ctx.accounts.token_program,
+        }),
+        &ctx.remaining_accounts,
+        &execution,
+        &calls,
+        authorization_hash,
         false,
         ctx.bumps.position,
         ctx.bumps.receipt,
@@ -212,6 +260,7 @@ pub fn recovery_handler<'info>(
         &ctx.remaining_accounts,
         &execution,
         &calls,
+        [0u8; 32],
         true,
         position_bump,
         ctx.bumps.receipt,
@@ -229,6 +278,7 @@ fn execute<'info>(
     remaining_accounts: &[AccountInfo<'info>],
     execution: &StrategyExecutionArgs,
     calls: &[StrategyCallArgs],
+    netting_authorization_hash: [u8; 32],
     recovery: bool,
     position_bump: u8,
     receipt_bump: u8,
@@ -282,6 +332,7 @@ fn execute<'info>(
         receipt,
         execution,
         &proofs,
+        netting_authorization_hash,
         position_bump,
         receipt_bump,
     );
@@ -293,6 +344,7 @@ fn execute<'info>(
         calls,
         &evidence,
         &proofs,
+        netting_authorization_hash,
         collected_fee_identity,
     )?;
     Ok(())
@@ -417,6 +469,7 @@ fn finalize_state(
     receipt: &mut StrategyReceipt,
     execution: &StrategyExecutionArgs,
     proofs: &ExecutionProofs,
+    netting_authorization_hash: [u8; 32],
     position_bump: u8,
     receipt_bump: u8,
 ) {
@@ -447,6 +500,7 @@ fn finalize_state(
     receipt.calls_hash = proofs.calls_hash;
     receipt.evidence_root = proofs.evidence_root;
     receipt.receipt_hash = proofs.receipt_hash;
+    receipt.netting_authorization_hash = netting_authorization_hash;
     receipt.fees = execution.fees.clone();
     receipt.nonce = execution.nonce;
     receipt.solver = execution.solver;
@@ -464,6 +518,7 @@ fn emit_execution_events(
     calls: &[StrategyCallArgs],
     evidence: &[[u8; 32]],
     proofs: &ExecutionProofs,
+    netting_authorization_hash: [u8; 32],
     collected_fee_identity: Option<(Pubkey, Pubkey)>,
 ) -> Result<()> {
     emit!(MultiStrategyExecuted {
@@ -485,6 +540,13 @@ fn emit_execution_events(
         nonce: execution.nonce,
         execution_slot: proofs.execution_slot,
     });
+    if netting_authorization_hash != [0u8; 32] {
+        emit!(NettingAllocationExecuted {
+            receipt,
+            receipt_hash: proofs.receipt_hash,
+            authorization_hash: netting_authorization_hash,
+        });
+    }
     if execution.fees.protocol_fee_atoms != 0 || execution.fees.solver_fee_atoms != 0 {
         let (mint, protocol_recipient) =
             collected_fee_identity.ok_or_else(|| error!(ErrorCode::InvalidFeePolicy))?;

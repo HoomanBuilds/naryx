@@ -32,6 +32,13 @@ pub struct MultiStrategyExecuted {
 }
 
 #[event]
+pub struct NettingAllocationExecuted {
+    pub receipt: Pubkey,
+    pub receipt_hash: [u8; 32],
+    pub authorization_hash: [u8; 32],
+}
+
+#[event]
 pub struct StrategyAdapterLegExecuted {
     pub receipt: Pubkey,
     pub call_index: u8,

@@ -120,6 +120,7 @@ pub struct StrategyReceipt {
     pub calls_hash: [u8; 32],
     pub evidence_root: [u8; 32],
     pub receipt_hash: [u8; 32],
+    pub netting_authorization_hash: [u8; 32],
     pub fees: StrategyFeeTerms,
     pub nonce: u64,
     pub solver: Pubkey,
