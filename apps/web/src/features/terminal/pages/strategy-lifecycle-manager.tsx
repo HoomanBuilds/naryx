@@ -17,6 +17,7 @@ const EVM_OWNER = /^0x(?!0{40}$)[0-9a-f]{40}$/;
 const AUTHORITIES = ["REBALANCE", "ROLL", "DECREASE", "EXIT", "EMERGENCY_UNWIND"] as const;
 type Authority = typeof AUTHORITIES[number];
 type Action = "ASSIGN_INTERNAL" | "DELEGATE" | "REVOKE_DELEGATION" | "SPLIT" | "MERGE";
+type PreparedOpen = Awaited<ReturnType<NaryxClient["prepareStrategyOpen"]>>;
 
 export type ManagedStrategy = Readonly<{
   strategyId: string;
@@ -27,6 +28,107 @@ export type ManagedStrategy = Readonly<{
 
 function short(value: string): string {
   return value.length > 24 ? `${value.slice(0, 14)}...${value.slice(-7)}` : value;
+}
+
+export function StrategyEntryManager({
+  baseUrl,
+  refresh,
+}: {
+  baseUrl: string;
+  refresh(): Promise<void>;
+}) {
+  const solana = useSolanaWallet();
+  const evm = useEvmWallet();
+  const [receiptHash, setReceiptHash] = useState("");
+  const [prepared, setPrepared] = useState<PreparedOpen | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+
+  const signer = (owner: string): StrategyCommandAuthorizationSigner => {
+    if (EVM_OWNER.test(owner)) {
+      if (evm.account?.toLowerCase() !== owner) throw new Error("Connect the EVM wallet that executed this entry.");
+      return { scheme: "EIP712_SECP256K1", signerId: owner, sign: (typedData) => evm.signChainlessTypedData(typedData) };
+    }
+    if (solana.selectedAccount?.address !== owner || !solana.canSignMessage) {
+      throw new Error("Connect the Solana wallet that executed this entry and supports message signing.");
+    }
+    return { scheme: "ED25519", signerId: owner, sign: async (message) => bs58.decode(await solana.signMessage(message)) };
+  };
+
+  const review = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setNotice(null);
+    try {
+      const value = receiptHash.trim().toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(value)) throw new Error("Enter a 32-byte lowercase receipt hash.");
+      const result = await new NaryxClient({ baseUrl }).prepareStrategyOpen(value);
+      signer(result.command.actorId);
+      setPrepared(result);
+    } catch (cause) {
+      setPrepared(null);
+      setNotice({ kind: "error", text: cause instanceof Error ? cause.message : "Receipt review failed." });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const open = async () => {
+    if (prepared === null) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const result = await new NaryxClient({ baseUrl }).submitAuthorizedStrategyCommand(
+        prepared.command,
+        signer(prepared.command.actorId),
+      );
+      setNotice({ kind: "ok", text: `Strategy recorded as ${short(prepared.command.strategyId)} from ${result.commandHash.slice(0, 12)}...` });
+      setPrepared(null);
+      setReceiptHash("");
+      await refresh();
+    } catch (cause) {
+      setNotice({ kind: "error", text: cause instanceof Error ? cause.message : "Strategy opening failed." });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className={styles.card} aria-labelledby="strategy-entry-title">
+      <div className={styles.cardHead}>
+        <div>
+          <h2 id="strategy-entry-title">Record executed strategy</h2>
+          <p>Convert one finalized entry receipt into wallet-owned lifecycle state. The server derives every leg from settled evidence.</p>
+        </div>
+        <span className={styles.pill}>Receipt bound</span>
+      </div>
+      <form className={`${styles.cardBody} ${styles.lifecycleForm}`} onSubmit={(event) => void review(event)}>
+        <div className={styles.lifecycleGrid}>
+          <label className={styles.field}>
+            <span>Finalized entry receipt hash</span>
+            <input
+              className={styles.mono}
+              value={receiptHash}
+              onChange={(event) => { setReceiptHash(event.target.value); setPrepared(null); setNotice(null); }}
+              placeholder="64 lowercase hexadecimal characters"
+              spellCheck={false}
+            />
+          </label>
+        </div>
+        <div className={styles.lifecycleActions}>
+          <p>{prepared === null
+            ? "Review derives the strategy identity, positions, ratios, liabilities, and owner from the receipt."
+            : `${prepared.command.parameters.kind === "OPEN" ? prepared.command.parameters.state.legs.length : 0} legs, state ${prepared.stateHash.slice(0, 12)}..., owner ${short(prepared.command.actorId)}.`}</p>
+          {prepared === null ? (
+            <button type="submit" className={styles.connect} disabled={busy}>{busy ? "Reviewing" : "Review receipt"}</button>
+          ) : (
+            <button type="button" className={styles.connect} disabled={busy} onClick={() => void open()}>{busy ? "Signing" : "Sign and record"}</button>
+          )}
+        </div>
+        {notice ? <p className={notice.kind === "ok" ? styles.noticeOk : styles.noticeError} role="status">{notice.text}</p> : null}
+      </form>
+    </section>
+  );
 }
 
 export function StrategyLifecycleManager({

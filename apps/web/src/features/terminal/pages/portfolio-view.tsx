@@ -12,7 +12,7 @@ import { attemptsOf } from "../shell/attempt-index";
 import { useEvmBalances, useHyperliquidBalance, useSolanaBalance, type Amount, type ChainBalance } from "./use-balances";
 import { formatAtomicAmount, formatScaledInteger } from "../format";
 import { usePortfolioIntelligence } from "./use-portfolio-intelligence";
-import { StrategyLifecycleManager } from "./strategy-lifecycle-manager";
+import { StrategyEntryManager, StrategyLifecycleManager } from "./strategy-lifecycle-manager";
 import { usePositions } from "./use-positions";
 import { GAS_FAUCETS, TEST_USDC_GRANT, useTestUsdcFaucets } from "./use-test-usdc";
 import styles from "./pages.module.css";
@@ -397,12 +397,12 @@ export function PortfolioView() {
         </div>
       </section>
 
+      {publicApiBaseUrl !== null && connectedCount > 0 ? (
+        <StrategyEntryManager baseUrl={publicApiBaseUrl} refresh={intelligence.refresh} />
+      ) : null}
+
       {publicApiBaseUrl !== null && intelligence.rows.length > 0 ? (
-        <StrategyLifecycleManager
-          baseUrl={publicApiBaseUrl}
-          strategies={intelligence.rows}
-          refresh={intelligence.refresh}
-        />
+        <StrategyLifecycleManager baseUrl={publicApiBaseUrl} strategies={intelligence.rows} refresh={intelligence.refresh} />
       ) : null}
 
       <section className={styles.card} aria-labelledby="account-terms-title">

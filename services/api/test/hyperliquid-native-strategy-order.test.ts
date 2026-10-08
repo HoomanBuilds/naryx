@@ -14,6 +14,7 @@ import {
   strategyPackageOrder,
   strategyPackageOrderHash,
   strategyPackageReceipt,
+  strategyPackageReceiptHash,
   stringifyProtocolJson,
   toHex,
   validateStrategyTemplateGraph,
@@ -30,6 +31,7 @@ import {
   HyperliquidNativeStrategyOrderError,
   loadHyperliquidNativeStrategyProfiles,
   nativeStrategyPositionFromEntry,
+  prepareStrategyOpen,
   validateNativeStrategyExit,
   validateNativeStrategyMigration,
   validateNativeStrategyRebalance,
@@ -266,6 +268,29 @@ test("rebalances and migrates an authoritative native hedge", () => {
     executedAtValue: 1_001_000n,
     receiptNonce: 10n,
   });
+  const preparedOpen = prepareStrategyOpen({
+    environment: "testnet",
+    atValue: BigInt(NOW_MS),
+    receiptHashHex: toHex(strategyPackageReceiptHash(entryReceipt)),
+    order: entry.order,
+    graph: entry.graph,
+    receipt: entryReceipt,
+  });
+  assert.equal(preparedOpen.command.parameters.kind, "OPEN");
+  assert.equal(preparedOpen.command.actorId, OWNER);
+  assert.equal(preparedOpen.command.strategyId, `strategy-${toHex(strategyPackageReceiptHash(entryReceipt))}`);
+  if (preparedOpen.command.parameters.kind === "OPEN") {
+    assert.equal(preparedOpen.command.parameters.state.legs[0]?.signedQuantityAtoms, -100_000n);
+    assert.equal(preparedOpen.command.parameters.state.legs[0]?.venueId, treasuryProfile.markets[0]?.venue.subjectId);
+  }
+  assert.throws(() => prepareStrategyOpen({
+    environment: "testnet",
+    atValue: BigInt(NOW_MS),
+    receiptHashHex: "ff".repeat(32),
+    order: entry.order,
+    graph: entry.graph,
+    receipt: entryReceipt,
+  }), { code: "RECEIPT_MISMATCH" });
   const opened = nativeStrategyPositionFromEntry({
     orderHashHex: toHex(strategyPackageOrderHash(entry.order)),
     receiptHashHex: "74".repeat(32),

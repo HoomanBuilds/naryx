@@ -43,6 +43,7 @@ import {
   solverCapabilityManifestHash,
   strategyPackageOrder,
   strategyPackageOrderHash,
+  strategyPackageReceipt,
   strategyCommandAuthorizationTypedData,
   strategyCommandHash,
   isEvmStrategyActor,
@@ -105,6 +106,7 @@ import type { SqliteQualificationStore } from "./qualification-store.js";
 import { PositionSnapshotStoreError, type SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
 import { CollateralSnapshotStoreError, type SqliteCollateralSnapshotStore } from "./collateral-snapshot-store.js";
 import { StrategyBookError, type SqliteStrategyBookStore } from "./strategy-book-store.js";
+import { prepareStrategyOpen, StrategyOpenPreparationError } from "./strategy-open-preparation.js";
 import type { StrategyCommandAuthorization } from "./strategy-command-authorization.js";
 import { BuilderStoreError, type SqliteBuilderStore } from "./builder-store.js";
 import { KeeperExecutorError, type SqliteKeeperExecutor } from "./keeper-executor.js";
@@ -1548,6 +1550,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/recovery/approvals",
       "/v1/strategies/commands",
       "/v1/strategies/commands/authorization",
+      "/v1/strategies/open/prepare",
       "/v1/builders",
       "/v1/builders/attributions",
     ].includes(path) && sealedAuctionAwardMatch === null && privateRfqAcceptanceMatch === null
@@ -1980,6 +1983,27 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const order = object(body.order, "order") as unknown as PackageOrderInput;
       const result = requireEvidence().submitOrder(order, authorization.signature as string);
       return { ...result, status: "ACCEPTED_FOR_QUOTING" };
+    }
+    if (path === "/v1/strategies/open/prepare") {
+      if (Object.keys(body).length !== 1 || typeof body.receiptHash !== "string" || !HASH_HEX.test(body.receiptHash)) {
+        throw new RequestError(400, "INVALID_REQUEST", "The request must contain one lowercase receiptHash.");
+      }
+      if (options.strategies === undefined || options.strategyPackages?.order === undefined) {
+        throw new RequestError(503, "STRATEGIES_UNAVAILABLE", "Strategy preparation requires the strategy book and package evidence store.");
+      }
+      const receipt = options.strategyPackages.receipt(body.receiptHash);
+      if (receipt === undefined) throw new RequestError(404, "RECEIPT_NOT_FOUND", "No settled strategy receipt has this hash.");
+      const checkedReceipt = strategyPackageReceipt(receipt);
+      const stored = options.strategyPackages.order(toHex(checkedReceipt.orderHash));
+      if (stored === undefined) throw new RequestError(404, "ORDER_NOT_FOUND", "The receipt's committed order is unavailable.");
+      return prepareStrategyOpen({
+        environment: options.strategies.environmentName(),
+        atValue: BigInt(clockMs()),
+        receiptHashHex: body.receiptHash,
+        order: stored.order,
+        graph: stored.graph,
+        receipt: checkedReceipt,
+      });
     }
     if (path === "/v1/strategies/commands/authorization") {
       const command = object(body.command, "command") as unknown as StrategyCommandInput;
@@ -2424,6 +2448,10 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         }
         if (error instanceof StrategyBookError) {
           const status = ["INVALID_COMMAND", "INVALID_SIGNATURE", "WRONG_ENVIRONMENT", "STALE_COMMAND"].includes(error.code) ? 400 : ["STRATEGY_NOT_FOUND", "ORIGIN_NOT_FOUND", "RECEIPT_NOT_FOUND"].includes(error.code) ? 404 : error.code === "CORRUPT_ROW" ? 500 : 409;
+          return fail(response, status, error.code, error.message);
+        }
+        if (error instanceof StrategyOpenPreparationError) {
+          const status = error.code.endsWith("NOT_FOUND") ? 404 : error.code === "RECEIPT_NOT_FINAL" ? 409 : 400;
           return fail(response, status, error.code, error.message);
         }
         if (error instanceof CoordinationStoreError) {

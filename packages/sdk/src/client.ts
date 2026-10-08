@@ -1721,6 +1721,29 @@ export class NaryxClient {
     return Object.freeze({ graphHash: body.graphHash as string, stages: body.stages, failurePoints: local });
   }
 
+  /** Builds the exact unsigned OPEN command from a finalized entry receipt. */
+  async prepareStrategyOpen(receiptHash: string) {
+    const requestedReceiptHash = hashHex(receiptHash, 'receipt hash');
+    const body = record(await this.#request('POST', '/v1/strategies/open/prepare', {
+      receiptHash: requestedReceiptHash,
+    }), 'prepared strategy open');
+    const command = body.command as StrategyCommandInput;
+    const commandHash = toHex(strategyCommandHash(command));
+    if (command.parameters.kind !== 'OPEN') throw new NaryxEvidenceError('the prepared strategy command is not an opening');
+    const state = strategyState(command.parameters.state);
+    const stateHash = toHex(strategyStateHash(state));
+    if (body.receiptHashHex !== requestedReceiptHash || body.commandHashHex !== commandHash || body.stateHashHex !== stateHash) {
+      throw new NaryxEvidenceError('the prepared strategy opening commitments do not match locally derived hashes');
+    }
+    return Object.freeze({
+      command,
+      commandHash,
+      stateHash,
+      orderHash: hashHex(body.orderHashHex, 'order hash'),
+      receiptHash: requestedReceiptHash,
+    });
+  }
+
   /**
    * Signs and submits one strategy command. The command is hashed locally and only its hash goes
    * to the caller's signer; the server's acknowledgement must name that exact hash.

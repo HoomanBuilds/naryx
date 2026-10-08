@@ -62,6 +62,11 @@ export {
   type NativeStrategyPositionStatus,
 } from "./native-strategy-position.js";
 export {
+  prepareStrategyOpen,
+  StrategyOpenPreparationError,
+  type PreparedStrategyOpen,
+} from "./strategy-open-preparation.js";
+export {
   createStrategyPackageAuthorizationPort,
   strategyPackageAuthorizationTypedData,
   StrategyPackageAuthorizationError,
