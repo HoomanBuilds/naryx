@@ -1868,11 +1868,19 @@ export class SqliteStrategyPackageStore {
   }
 
   quotes(orderHashHex: string): readonly StoredStrategyPackageQuote[] {
-    const rows = this.db.prepare("SELECT quote_hash, route_hash, quote_json, route_json, recorded_at_ms FROM strategy_package_quotes WHERE order_hash = ? ORDER BY recorded_at_ms, quote_hash").all(hashBuffer(orderHashHex)) as { quote_hash: Uint8Array; route_hash: Uint8Array; quote_json: string; route_json: string; recorded_at_ms: number }[];
+    const orderHash = hashBuffer(orderHashHex);
+    const rows = this.db.prepare("SELECT quote_hash, route_hash, quote_json, route_json, recorded_at_ms FROM strategy_package_quotes WHERE order_hash = ? ORDER BY recorded_at_ms, quote_hash").all(orderHash) as { quote_hash: Uint8Array; route_hash: Uint8Array; quote_json: string; route_json: string; recorded_at_ms: number }[];
     return Object.freeze(rows.map((row) => {
       const quote = strategyPackageQuote(parseProtocolJson(row.quote_json) as StrategyPackageQuote);
       const route = parseProtocolJson(row.route_json) as TypedStrategyRoute;
-      requireCondition(bytesEqual(strategyPackageQuoteHash(quote), row.quote_hash) && bytesEqual(typedStrategyRouteHash(route), row.route_hash), "CORRUPT_ROW", "A stored quote or route does not match its hash.");
+      requireCondition(
+        bytesEqual(strategyPackageQuoteHash(quote), row.quote_hash)
+          && bytesEqual(typedStrategyRouteHash(route), row.route_hash)
+          && bytesEqual(quote.orderHash, orderHash)
+          && bytesEqual(quote.routeHash, row.route_hash),
+        "CORRUPT_ROW",
+        "A stored quote or route does not match its order or hash.",
+      );
       return Object.freeze({ quoteHashHex: toHex(row.quote_hash), routeHashHex: toHex(row.route_hash), quote, route, recordedAtMs: row.recorded_at_ms });
     }));
   }

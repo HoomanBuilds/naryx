@@ -272,6 +272,20 @@ test("private terminal selects exactly the reviewed generalized Hyperliquid quot
           updatedAtMs: 1_000,
         }] as never;
       },
+      quotes: (requested) => {
+        assert.equal(requested, orderHash);
+        return [{
+          quoteHashHex: quoteHash,
+          routeHashHex: routeHash,
+          quote: {
+            version: 1,
+            solverId: "solver-a",
+            netPackageOutcome: { atoms: 42n },
+          },
+          route: {},
+          recordedAtMs: 1_002,
+        }] as never;
+      },
     },
   );
   context.after(() => server.close());
@@ -321,6 +335,23 @@ test("private terminal selects exactly the reviewed generalized Hyperliquid quot
     }],
   });
   assert.equal((await fetch(`${origin}/internal/terminal/native-strategies?owner=${nativeOwner}&extra=1`)).status, 400);
+  const quoteHistory = await fetch(`${origin}/internal/terminal/strategy-orders/${orderHash}/quotes`);
+  assert.equal(quoteHistory.status, 200);
+  assert.deepEqual(parseProtocolJson(await quoteHistory.text()), {
+    version: 1,
+    orderHash,
+    quotes: [{
+      quoteHashHex: quoteHash,
+      routeHashHex: routeHash,
+      quote: {
+        version: 1,
+        solverId: "solver-a",
+        netPackageOutcome: { atoms: 42n },
+      },
+      recordedAtMs: 1_002,
+    }],
+  });
+  assert.equal((await fetch(`${origin}/internal/terminal/strategy-orders/${orderHash}/quotes?other=1`)).status, 400);
   assert.equal((await fetch(`${origin}/internal/terminal/strategy-executions/select`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

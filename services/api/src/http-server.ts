@@ -115,6 +115,7 @@ import {
   type SelectHyperliquidStrategyExecutionRequest,
   type StoredNativeStrategyPosition,
   type StoredEvmStrategyPosition,
+  type StoredStrategyPackageQuote,
   type StoredSolanaStrategyPosition,
 } from "./strategy-package-store.js";
 import { StrategyOrderIntakeError } from "./strategy-order-intake.js";
@@ -201,6 +202,7 @@ interface GeneralizedStrategyExecutionPort {
   nativeStrategyPositionsByOwner?(owner: string): readonly StoredNativeStrategyPosition[];
   evmStrategyPositionsByOwner?(owner: string): readonly StoredEvmStrategyPosition[];
   solanaStrategyPositionsByOwner?(owner: string): readonly StoredSolanaStrategyPosition[];
+  quotes?(orderHashHex: string): readonly StoredStrategyPackageQuote[];
   recordEvmStrategyPosition?(evidence: import('./strategy-package-store.js').EvmStrategyPositionEvidence): StoredEvmStrategyPosition;
   recordSolanaStrategyPosition?(evidence: import('./strategy-package-store.js').SolanaStrategyPositionEvidence): StoredSolanaStrategyPosition;
   recordReceipt?(receipt: import('@naryx/protocol-types').StrategyPackageReceiptInput): { readonly created: boolean; readonly receiptHashHex: string };
@@ -470,6 +472,40 @@ export function createPrivateTerminalRequestHandler(
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (!applyCors(request, response, config.terminalOrigin)) return;
     const url = new URL(request.url ?? "/", "http://private-terminal.local");
+
+    const strategyQuoteHistoryMatch = /^\/internal\/terminal\/strategy-orders\/([0-9a-f]{64})\/quotes$/.exec(url.pathname);
+    if (strategyQuoteHistoryMatch !== null && request.method !== "OPTIONS") {
+      if (request.method !== "GET") {
+        response.setHeader("Allow", "GET, OPTIONS");
+        reject(response, 405, "METHOD_NOT_ALLOWED", "Only GET is allowed.");
+        return;
+      }
+      if (url.search !== "") {
+        reject(response, 400, "INVALID_REQUEST", "Strategy quote history accepts no query parameters.");
+        return;
+      }
+      if (generalizedStrategyExecutions?.quotes === undefined) {
+        reject(response, 503, "STRATEGY_QUOTE_HISTORY_UNAVAILABLE", "Strategy quote history is unavailable.");
+        return;
+      }
+      const orderHash = strategyQuoteHistoryMatch[1]!;
+      try {
+        const quotes = generalizedStrategyExecutions.quotes(orderHash).map((stored) => ({
+          quoteHashHex: stored.quoteHashHex,
+          routeHashHex: stored.routeHashHex,
+          quote: stored.quote,
+          recordedAtMs: stored.recordedAtMs,
+        }));
+        sendJson(response, 200, toProtocolJson({ version: 1, orderHash, quotes }));
+      } catch (error) {
+        if (error instanceof StrategyPackageStoreError) {
+          reject(response, error.code === "CORRUPT_ROW" ? 500 : 400, error.code, error.message);
+          return;
+        }
+        reject(response, 500, "STRATEGY_QUOTE_HISTORY_FAILED", "Strategy quote history failed closed.");
+      }
+      return;
+    }
 
     if (request.method === "OPTIONS") {
       if (request.headers.origin === undefined) {

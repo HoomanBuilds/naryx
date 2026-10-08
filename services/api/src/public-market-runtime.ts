@@ -96,7 +96,7 @@ export interface PublicMarketRuntime {
     SqliteStrategyPackageStore,
     "selectHyperliquidExecution" | "selectNativeHyperliquidExecution"
       | "strategyExecutionAttempt" | "nativeStrategyExecutionAttempt" | "anyStrategyExecutionAttempt" | "admissionByQuote"
-      | "ownerAuthorization" | "recordReceipt" | "nativeStrategyPositionsByOwner"
+      | "ownerAuthorization" | "recordReceipt" | "nativeStrategyPositionsByOwner" | "quotes"
   >;
   /** Immutable owner approval for an exact generalized strategy order. */
   readonly strategyPackageAuthorizations?: Pick<SqliteStrategyPackageStore, "order" | "ownerAuthorization" | "recordOwnerAuthorization">;
