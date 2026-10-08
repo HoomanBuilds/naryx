@@ -741,6 +741,20 @@ export {
   type HyperliquidStrategySubmissionResult,
 } from './hyperliquid-strategy-testnet-submission.js';
 export {
+  HyperliquidNettingResidualSqliteDurableJournal,
+  type HyperliquidNettingResidualDurableJournalPort,
+  type HyperliquidNettingResidualJournalPrepareInput,
+  type HyperliquidNettingResidualJournalReceipt,
+  type HyperliquidNettingResidualJournalRecord,
+  type HyperliquidNettingResidualSqliteJournalOptions,
+} from './hyperliquid-netting-residual-sqlite-journal.js';
+export {
+  HyperliquidNettingResidualTestnetSubmissionService,
+  type HyperliquidNettingResidualReconciliationHandoff,
+  type HyperliquidNettingResidualSubmissionInput,
+  type HyperliquidNettingResidualSubmissionResult,
+} from './hyperliquid-netting-residual-testnet-submission.js';
+export {
   HyperliquidStrategyTestnetRuntime,
   createHyperliquidStrategyTestnetRuntime,
   type HyperliquidStrategyEvidenceBinding,
