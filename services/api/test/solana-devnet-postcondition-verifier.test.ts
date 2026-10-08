@@ -35,6 +35,17 @@ function domain(): Buffer {
   return Buffer.concat([u32(id.length), id, u32(1), Buffer.from(bytes(1))]);
 }
 
+function riskBinding(): Buffer {
+  return Buffer.concat([
+    Buffer.from(bytes(41)),
+    u32(1),
+    Buffer.from(bytes(42)),
+    Buffer.from(bytes(43)),
+    u32(1),
+    Buffer.from(bytes(44)),
+  ]);
+}
+
 function discriminator(name: string): Buffer {
   const account = coreIdl.accounts.find((candidate: { name: string }) => candidate.name === name);
   if (account === undefined) throw new Error(`missing ${name} discriminator`);
@@ -62,6 +73,7 @@ function receiptData(action: 1 | 2, recovery: boolean, receiptAddress: string): 
     Buffer.from(bytes(action === 1 ? 8 : 18)),
     Buffer.from(bytes(9)),
     Buffer.from(bs58.decode(receiptAddress)),
+    riskBinding(),
     Buffer.from([255]),
   ]);
 }
@@ -82,6 +94,7 @@ function openPackageData(receiptAddress: string): Uint8Array {
     Buffer.from(bytes(11)),
     u64(10n),
     u64(11n),
+    riskBinding(),
     Buffer.from([254]),
   ]);
 }
