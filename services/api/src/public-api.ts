@@ -90,6 +90,7 @@ import type {
   StrategyPackageQuoteInput,
   TypedAdapterActionSupportInput,
   TypedStrategyRoute,
+  CollateralSnapshotInput,
 } from "@naryx/protocol-types";
 import { MAX_TAPE_PAGE, PackageExchangeStoreError, type SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { RegistryStoreError, type SqliteRegistryStore } from "./registry-store.js";
@@ -99,6 +100,7 @@ import { requestClientKey, createRateLimiter } from "./rate-limit.js";
 import { EvidenceStoreError, type SqliteEvidenceStore } from "./evidence-store.js";
 import type { SqliteQualificationStore } from "./qualification-store.js";
 import { PositionSnapshotStoreError, type SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
+import { CollateralSnapshotStoreError, type SqliteCollateralSnapshotStore } from "./collateral-snapshot-store.js";
 import { StrategyBookError, type SqliteStrategyBookStore } from "./strategy-book-store.js";
 import { BuilderStoreError, type SqliteBuilderStore } from "./builder-store.js";
 import { KeeperExecutorError, type SqliteKeeperExecutor } from "./keeper-executor.js";
@@ -297,6 +299,8 @@ export interface PublicApiOptions {
   readonly catalogue?: { current(): { readonly catalogue: unknown; readonly catalogueHash: string } };
   /** Optional: position and risk reads answer 503 without it. Snapshots are accepted only when signed by a configured authority. */
   readonly positions?: Pick<SqlitePositionSnapshotStore, "append" | "latest" | "riskDomain" | "now">;
+  /** Optional: collateral reads answer 503 without it. Snapshots are accepted only from configured authorities. */
+  readonly collateral?: Pick<SqliteCollateralSnapshotStore, "append" | "latest" | "now">;
   /** The signed strategy book; without it the strategy routes answer 503. */
   readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies">;
   /** Durable admitted package intake; without it submission answers 503 while validation remains available. */
@@ -478,6 +482,13 @@ export function createPublicApiHandler(options: PublicApiOptions) {
   function requirePositions() {
     if (options.positions === undefined) throw new RequestError(503, "POSITIONS_UNAVAILABLE", "No position snapshot store is configured on this server.");
     return options.positions;
+  }
+
+  function requireCollateral() {
+    if (options.collateral === undefined) {
+      throw new RequestError(503, "COLLATERAL_UNAVAILABLE", "No collateral snapshot store is configured on this server.");
+    }
+    return options.collateral;
   }
 
   function requireDelivery() {
@@ -891,6 +902,25 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const view = positionsView(strategyAccount, snapshots, store.now());
       if (match[1] === "positions") return view;
       return { strategyAccount, sources: view.sources, methodology: RISK_METHODOLOGY, byAccountingAsset: riskView(view.positions.map((entry) => entry.position)) };
+    }
+    if ((match = /^\/v1\/collateral\/([^/]+)$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const store = requireCollateral();
+      const strategyAccount = id(match[1], "Strategy account");
+      const snapshots = store.latest(strategyAccount);
+      if (snapshots.length === 0) {
+        throw new RequestError(404, "COLLATERAL_NOT_FOUND", "No collateral snapshot exists for this account.");
+      }
+      const now = BigInt(Math.floor(store.now()));
+      return {
+        strategyAccount,
+        label: "OBSERVED" as const,
+        sources: snapshots.map((entry) => ({
+          recordHash: entry.recordHashHex,
+          ageMs: now >= entry.record.observedAtMs ? now - entry.record.observedAtMs : 0n,
+          record: entry.record,
+        })),
+      };
     }
     if ((match = /^\/v1\/risk-domains\/([^/]+)$/.exec(path)) !== null) {
       // Every account's latest positions in one risk domain; positions in other domains are left out.
@@ -1494,6 +1524,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/auctions/sealed",
       "/v1/orders",
       "/v1/position-snapshots",
+      "/v1/collateral-snapshots",
       "/v1/health-snapshots",
       "/v1/recovery/approvals",
       "/v1/strategies/commands",
@@ -2264,6 +2295,9 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       // signature, the observation time, and ordering; nothing here grants authority over positions.
       return requirePositions().append(object(body.record, "record") as unknown as PositionSnapshotRecordInput);
     }
+    if (path === "/v1/collateral-snapshots") {
+      return requireCollateral().append(object(body.record, "record") as unknown as CollateralSnapshotInput);
+    }
     if (path === "/v1/recovery/approvals") {
       // A named approver's Ed25519 signature over the approval hash; nothing else counts toward quorum.
       const authorization = object(body.authorization, "authorization");
@@ -2360,6 +2394,12 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         }
         if (error instanceof PositionSnapshotStoreError) {
           const status = ["INVALID_RECORD", "INVALID_SIGNATURE"].includes(error.code) ? 400 : error.code === "UNKNOWN_AUTHORITY" ? 403 : error.code === "CORRUPT_ROW" ? 500 : 409;
+          return fail(response, status, error.code, error.message);
+        }
+        if (error instanceof CollateralSnapshotStoreError) {
+          const status = ["INVALID_RECORD", "INVALID_SIGNATURE", "WRONG_ENVIRONMENT"].includes(error.code) ? 400
+            : error.code === "UNKNOWN_AUTHORITY" ? 403
+              : error.code === "CORRUPT_ROW" ? 500 : 409;
           return fail(response, status, error.code, error.message);
         }
         if (error instanceof StrategyPackageStoreError) {

@@ -624,6 +624,7 @@ export {
 export { EvidenceStoreError, SOLVER_PERFORMANCE_ORDER_SAMPLE, SqliteEvidenceStore, type ExecutionQualitySummary, type SolverPerformanceSummary, type StoredOrder, type StoredOutcome, type StoredRouteDecision } from "./evidence-store.js";
 export { QualificationStoreError, SqliteQualificationStore, type StoredQualificationRecord } from "./qualification-store.js";
 export { PositionSnapshotStoreError, SqlitePositionSnapshotStore, type StoredPositionSnapshot } from "./position-snapshot-store.js";
+export { CollateralSnapshotStoreError, SqliteCollateralSnapshotStore, type StoredCollateralSnapshot } from "./collateral-snapshot-store.js";
 export { createMarketStream, type MarketStreamOptions } from "./market-stream.js";
 export { createOffchainShardSettlement, type OffchainShardFillRequest, type OffchainShardFillResult } from "./offchain-shard-settlement.js";
 export { SqliteStrategyBookStore, StrategyBookError, type OriginReceiptReader, type StrategyCommandConsent, type TransferEvidenceVerifier, type StoredStrategy, type StoredStrategyCommand, type StrategyCommandResult } from "./strategy-book-store.js";

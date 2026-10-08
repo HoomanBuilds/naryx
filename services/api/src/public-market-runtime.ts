@@ -20,6 +20,7 @@ import { SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 import { SqliteEvidenceStore } from "./evidence-store.js";
 import { SqliteQualificationStore } from "./qualification-store.js";
 import { SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
+import { SqliteCollateralSnapshotStore } from "./collateral-snapshot-store.js";
 import { createCatalogueIssuer } from "./market-catalogue-issuer.js";
 import { SqliteStrategyBookStore } from "./strategy-book-store.js";
 import { createEvmBondReader } from "./evm-bond-reader.js";
@@ -421,6 +422,23 @@ export function loadPublicMarketRuntime(
         clock: clockMs,
       });
     if (positions !== undefined) opened.push(positions);
+    const collateralPath = optional(environment.NARYX_COLLATERAL_DB);
+    const collateralEnvironment = environment.NARYX_PUBLIC_ENVIRONMENT;
+    if (collateralPath !== undefined && (
+      collateralEnvironment === undefined
+      || !/^[A-Za-z0-9._:-]{1,64}$/.test(collateralEnvironment)
+      || collateralEnvironment.toLowerCase().includes("mainnet")
+    )) {
+      throw new PublicMarketConfigError("NARYX_COLLATERAL_DB requires NARYX_PUBLIC_ENVIRONMENT, a non-mainnet environment id.");
+    }
+    const collateral = collateralPath === undefined
+      ? undefined
+      : new SqliteCollateralSnapshotStore(absolute(collateralPath, "NARYX_COLLATERAL_DB"), {
+        environment: collateralEnvironment as string,
+        authorities: authorityKeys(environment.NARYX_COLLATERAL_AUTHORITIES, "NARYX_COLLATERAL_DB", "NARYX_COLLATERAL_AUTHORITIES"),
+        clock: clockMs,
+      });
+    if (collateral !== undefined) opened.push(collateral);
     const graphContextPath = optional(environment.NARYX_GRAPH_COMPILE_CONTEXT);
     const graphContext = graphContextPath === undefined ? undefined : loadGraphContext(absolute(graphContextPath, "NARYX_GRAPH_COMPILE_CONTEXT"));
     const strategyPackagePath = optional(environment.NARYX_STRATEGY_PACKAGE_DB);
@@ -662,6 +680,7 @@ export function loadPublicMarketRuntime(
       ...(evidence === undefined ? {} : { evidence }),
       ...(qualification === undefined ? {} : { qualification }),
       ...(positions === undefined ? {} : { positions }),
+      ...(collateral === undefined ? {} : { collateral }),
       ...(graphContext === undefined ? {} : { graphContext }),
       ...(catalogue === undefined ? {} : { catalogue }),
       ...(strategies === undefined ? {} : { strategies }),
