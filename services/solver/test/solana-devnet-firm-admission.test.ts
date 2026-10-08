@@ -282,7 +282,7 @@ function chainAccounts(trader: PublicKey, order: PackageOrder): Map<string, { ow
     result.set(position.toBase58(), {
       owner: programs.perp_venue!.programId,
       data: new BorshWriter().bytes(accountDiscriminator('TestPerpPosition')).key(manifest.testPerp.market).key(trader).key(strategy)
-        .u64(50_000_000n).i64(-(QUANTITY / market.baseLotAtoms)).u64(order.expectedPrePositionEntryNotional.atoms).done(),
+        .u64(50_000_000n).i64(-(QUANTITY / market.baseLotAtoms)).u64(order.expectedPrePositionEntryNotional.atoms).i128(0n).u8(1).done(),
     });
   }
   return result;
