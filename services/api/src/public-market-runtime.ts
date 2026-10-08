@@ -31,6 +31,7 @@ import { createStrategyPackageInternalHandler, SqliteStrategyPackageStore } from
 import { createPackageReopeningAdminHandler } from "./package-reopening-admin.js";
 import { HttpGeneralizedStrategyQuoteClient } from "./generalized-strategy-quote-client.js";
 import { HttpPortfolioOptimizationClient } from './portfolio-optimization-client.js';
+import { AuthoritativePortfolioOptimization } from "./authoritative-portfolio-optimization.js";
 import {
   HttpHyperliquidCrossBatchResidualExecutionClient,
   HttpHyperliquidNettingResidualExecutionClient,
@@ -519,10 +520,20 @@ export function loadPublicMarketRuntime(
     if (portfolioOptimizationSetting !== 'true' && portfolioOptimizationSetting !== 'false') {
       throw new PublicMarketConfigError('NARYX_PORTFOLIO_OPTIMIZATION_ENABLED must be true or false.');
     }
-    const portfolioOptimization = portfolioOptimizationSetting === 'true'
-      ? new HttpPortfolioOptimizationClient(
-        environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? 'http://127.0.0.1:8788',
-      )
+    if (portfolioOptimizationSetting === "true" && (positions === undefined || collateral === undefined)) {
+      throw new PublicMarketConfigError(
+        "NARYX_PORTFOLIO_OPTIMIZATION_ENABLED requires NARYX_POSITION_DB and NARYX_COLLATERAL_DB.",
+      );
+    }
+    const portfolioOptimization = portfolioOptimizationSetting === "true" && positions !== undefined && collateral !== undefined
+      ? new AuthoritativePortfolioOptimization({
+        positions,
+        collateral,
+        optimizer: new HttpPortfolioOptimizationClient(
+          environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? 'http://127.0.0.1:8788',
+        ),
+        clock: clockMs,
+      })
       : undefined;
     const hyperliquidNettingExecutionSetting = environment.NARYX_HYPERLIQUID_TESTNET_NETTING_EXECUTION_ENABLED
       ?? "false";

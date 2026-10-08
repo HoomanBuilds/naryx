@@ -114,9 +114,12 @@ import {
 } from "./generalized-strategy-quote-client.js";
 import {
   PortfolioOptimizationClientError,
-  type PortfolioOptimizationPort,
-  type PortfolioOptimizationRequest,
 } from './portfolio-optimization-client.js';
+import {
+  AuthoritativePortfolioOptimizationError,
+  type AuthoritativePortfolioOptimizationPort,
+  type AuthoritativePortfolioOptimizationRequest,
+} from "./authoritative-portfolio-optimization.js";
 import {
   createStrategyOrderIntake,
   StrategyOrderIntakeError,
@@ -311,7 +314,7 @@ export interface PublicApiOptions {
   /** Optional: requests a signed quote from the loopback reference solver for a stored order. */
   readonly strategyQuotes?: GeneralizedStrategyQuotePort;
   /** Optional: computes an advisory portfolio selection and independently verifies the solver response. */
-  readonly portfolioOptimization?: PortfolioOptimizationPort;
+  readonly portfolioOptimization?: AuthoritativePortfolioOptimizationPort;
   /** Optional: executes already authorized Testnet residual intents through the loopback solver. */
   readonly nettingExecution?: Pick<NettingExecutionCoordinator, "execute">;
   /** Builder manifests and attributions; without it the builder routes answer 503. */
@@ -506,7 +509,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     return options.strategyQuotes;
   }
 
-  function requirePortfolioOptimization(): PortfolioOptimizationPort {
+  function requirePortfolioOptimization(): AuthoritativePortfolioOptimizationPort {
     if (options.portfolioOptimization === undefined) {
       throw new RequestError(503, "PORTFOLIO_OPTIMIZATION_UNAVAILABLE", "Portfolio optimization is disabled on this server.");
     }
@@ -1540,12 +1543,16 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     ), "Request body");
     if (path === '/v1/portfolio/optimize') {
       const keys = Object.keys(body).sort();
-      if (keys.length !== 3 || keys[0] !== 'candidates' || keys[1] !== 'decisionAtMs' || keys[2] !== 'policy') {
-        throw new RequestError(400, 'INVALID_REQUEST', 'Request must contain only candidates, decisionAtMs, and policy.');
+      if (keys.length !== 3 || keys[0] !== 'candidates' || keys[1] !== 'policy' || keys[2] !== 'strategyAccount') {
+        throw new RequestError(400, 'INVALID_REQUEST', 'Request must contain only candidates, policy, and strategyAccount.');
       }
       try {
-        return await requirePortfolioOptimization().optimize(body as unknown as PortfolioOptimizationRequest);
+        return await requirePortfolioOptimization().optimize(body as unknown as AuthoritativePortfolioOptimizationRequest);
       } catch (error) {
+        if (error instanceof AuthoritativePortfolioOptimizationError) {
+          const status = error.code === "INVALID_REQUEST" ? 400 : 409;
+          throw new RequestError(status, error.code, error.message);
+        }
         if (error instanceof PortfolioOptimizationClientError) {
           const status = error.code === 'INVALID_REQUEST' ? 400
             : error.code === 'NO_ELIGIBLE_CANDIDATE' ? 409 : 502;
