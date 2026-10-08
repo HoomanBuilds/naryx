@@ -536,6 +536,34 @@ export {
 } from './portfolio-risk.js';
 
 export {
+  PORTFOLIO_OPTIMIZATION_POLICY_VERSION,
+  COLLATERAL_SNAPSHOT_VERSION,
+  PORTFOLIO_OPTIMIZATION_MAX_CANDIDATES,
+  PORTFOLIO_OPTIMIZATION_MAX_SCENARIOS,
+  COLLATERAL_MODE,
+  PORTFOLIO_OBJECTIVE_METRIC,
+  PORTFOLIO_CANDIDATE_REJECTION,
+  collateralSnapshot,
+  collateralSnapshotBytes,
+  collateralSnapshotHash,
+  portfolioOptimizationPolicy,
+  portfolioOptimizationPolicyBytes,
+  portfolioOptimizationPolicyHash,
+  optimizePortfolio,
+  type CollateralMode,
+  type PortfolioObjectiveMetric,
+  type PortfolioCandidateRejection,
+  type CollateralSnapshotInput,
+  type CollateralSnapshot,
+  type PortfolioOptimizationPolicyInput,
+  type PortfolioOptimizationPolicy,
+  type PortfolioOptimizationCandidateInput,
+  type PortfolioCandidateMetrics,
+  type PortfolioCandidateDecision,
+  type PortfolioOptimizationDecision,
+} from './portfolio-optimizer.js';
+
+export {
   NETTING_POLICY_SCHEMA_VERSION,
   NETTING_POLICY_VERSION,
   NETTING_POLICY_MAX_INSTRUMENTS,
