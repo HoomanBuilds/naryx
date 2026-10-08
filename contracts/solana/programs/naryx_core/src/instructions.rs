@@ -14,6 +14,7 @@ pub mod pause_entry;
 pub mod program_identity;
 pub mod propose_domain;
 pub mod resource_registry;
+pub mod risk_domain;
 pub mod schedule_unpause;
 pub mod series_registry;
 pub mod solver_registry;
@@ -28,6 +29,7 @@ pub use execute_cash_and_carry::*;
 pub use execute_firm_cash_and_carry::*;
 pub use fee_policy::*;
 pub use resource_registry::*;
+pub use risk_domain::*;
 pub use series_registry::*;
 
 #[cfg(feature = "conformance")]

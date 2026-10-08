@@ -390,4 +390,60 @@ pub enum ErrorCode {
     FeePolicyNotionalZero,
     #[msg("Fee exceeds the active policy cap")]
     FeePolicyFeeExceeded,
+    #[msg("Risk domain schema is unsupported")]
+    RiskDomainSchemaUnsupported,
+    #[msg("Risk domain manifest identity is invalid")]
+    RiskDomainManifestInvalid,
+    #[msg("Risk domain does not match the active protocol domain")]
+    RiskDomainDomainMismatch,
+    #[msg("Risk domain economic limit is invalid")]
+    RiskDomainLimitInvalid,
+    #[msg("Risk domain leverage limit is invalid")]
+    RiskDomainLeverageInvalid,
+    #[msg("Risk domain timing limit is invalid")]
+    RiskDomainTimingInvalid,
+    #[msg("Risk domain haircut is invalid")]
+    RiskDomainHaircutInvalid,
+    #[msg("Risk domain series set is invalid")]
+    RiskDomainSeriesInvalid,
+    #[msg("Risk domain dependency set is invalid")]
+    RiskDomainDependencyInvalid,
+    #[msg("Risk domain identity does not match its account")]
+    RiskDomainIdentityMismatch,
+    #[msg("A risk domain registration is already pending")]
+    RiskDomainProposalExists,
+    #[msg("No risk domain registration is pending")]
+    RiskDomainProposalMissing,
+    #[msg("Risk domain registration is before its activation slot")]
+    RiskDomainProposalNotReady,
+    #[msg("Risk domain manifest version is not increasing")]
+    RiskDomainVersionNotIncreasing,
+    #[msg("Risk domain entry is already paused")]
+    RiskDomainAlreadyPaused,
+    #[msg("Risk domain entry is not paused")]
+    RiskDomainNotPaused,
+    #[msg("A risk domain resume is already pending")]
+    RiskDomainResumeExists,
+    #[msg("No risk domain resume is pending")]
+    RiskDomainResumeMissing,
+    #[msg("Risk domain resume is before its activation slot")]
+    RiskDomainResumeNotReady,
+    #[msg("Risk domain does not allow entry")]
+    RiskDomainEntryUnavailable,
+    #[msg("Risk domain does not support the requested series")]
+    RiskDomainSeriesUnsupported,
+    #[msg("Risk domain exposure exceeds its limit")]
+    RiskDomainExposureExceeded,
+    #[msg("Risk domain margin is insufficient")]
+    RiskDomainMarginInsufficient,
+    #[msg("Risk domain recovery reserve is insufficient")]
+    RiskDomainRecoveryReserveInsufficient,
+    #[msg("Risk domain observation is stale")]
+    RiskDomainObservationStale,
+    #[msg("Risk domain unwind duration exceeds its limit")]
+    RiskDomainUnwindTooSlow,
+    #[msg("Risk domain dependency exposure exceeds its limit")]
+    RiskDomainDependencyExceeded,
+    #[msg("Risk domain arithmetic overflowed")]
+    RiskDomainArithmeticOverflow,
 }

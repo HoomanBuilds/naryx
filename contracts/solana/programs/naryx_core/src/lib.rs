@@ -156,6 +156,48 @@ pub mod naryx_core {
         instructions::fee_policy::activate_resume(ctx)
     }
 
+    pub fn propose_initial_risk_domain(
+        ctx: Context<ProposeInitialRiskDomain>,
+        args: ProposeRiskDomainArgs,
+    ) -> Result<()> {
+        instructions::risk_domain::propose_initial(ctx, args)
+    }
+
+    pub fn propose_risk_domain_version(
+        ctx: Context<ProposeRiskDomainVersion>,
+        args: ProposeRiskDomainArgs,
+    ) -> Result<()> {
+        instructions::risk_domain::propose_version(ctx, args)
+    }
+
+    pub fn activate_initial_risk_domain(ctx: Context<ActivateInitialRiskDomain>) -> Result<()> {
+        instructions::risk_domain::activate_initial(ctx)
+    }
+
+    pub fn activate_risk_domain_version(ctx: Context<ActivateRiskDomainVersion>) -> Result<()> {
+        instructions::risk_domain::activate_version(ctx)
+    }
+
+    pub fn cancel_risk_domain_proposal(ctx: Context<CancelRiskDomainProposal>) -> Result<()> {
+        instructions::risk_domain::cancel(ctx)
+    }
+
+    pub fn pause_risk_domain_entry(ctx: Context<ControlRiskDomain>) -> Result<()> {
+        instructions::risk_domain::pause(ctx)
+    }
+
+    pub fn propose_risk_domain_resume(ctx: Context<ControlRiskDomain>) -> Result<()> {
+        instructions::risk_domain::propose_resume(ctx)
+    }
+
+    pub fn cancel_risk_domain_resume(ctx: Context<ControlRiskDomain>) -> Result<()> {
+        instructions::risk_domain::cancel_resume(ctx)
+    }
+
+    pub fn activate_risk_domain_resume(ctx: Context<ControlRiskDomain>) -> Result<()> {
+        instructions::risk_domain::activate_resume(ctx)
+    }
+
     pub fn propose_initial_cash_carry_series_binding(
         ctx: Context<ProposeInitialCashCarrySeriesBinding>,
         args: ProposeCashCarrySeriesBindingArgs,
@@ -426,6 +468,48 @@ pub mod naryx_core {
 
     pub fn activate_fee_policy_resume(ctx: Context<ActivateFeePolicyResume>) -> Result<()> {
         instructions::fee_policy::activate_resume(ctx)
+    }
+
+    pub fn propose_initial_risk_domain(
+        ctx: Context<ProposeInitialRiskDomain>,
+        args: ProposeRiskDomainArgs,
+    ) -> Result<()> {
+        instructions::risk_domain::propose_initial(ctx, args)
+    }
+
+    pub fn propose_risk_domain_version(
+        ctx: Context<ProposeRiskDomainVersion>,
+        args: ProposeRiskDomainArgs,
+    ) -> Result<()> {
+        instructions::risk_domain::propose_version(ctx, args)
+    }
+
+    pub fn activate_initial_risk_domain(ctx: Context<ActivateInitialRiskDomain>) -> Result<()> {
+        instructions::risk_domain::activate_initial(ctx)
+    }
+
+    pub fn activate_risk_domain_version(ctx: Context<ActivateRiskDomainVersion>) -> Result<()> {
+        instructions::risk_domain::activate_version(ctx)
+    }
+
+    pub fn cancel_risk_domain_proposal(ctx: Context<CancelRiskDomainProposal>) -> Result<()> {
+        instructions::risk_domain::cancel(ctx)
+    }
+
+    pub fn pause_risk_domain_entry(ctx: Context<ControlRiskDomain>) -> Result<()> {
+        instructions::risk_domain::pause(ctx)
+    }
+
+    pub fn propose_risk_domain_resume(ctx: Context<ControlRiskDomain>) -> Result<()> {
+        instructions::risk_domain::propose_resume(ctx)
+    }
+
+    pub fn cancel_risk_domain_resume(ctx: Context<ControlRiskDomain>) -> Result<()> {
+        instructions::risk_domain::cancel_resume(ctx)
+    }
+
+    pub fn activate_risk_domain_resume(ctx: Context<ControlRiskDomain>) -> Result<()> {
+        instructions::risk_domain::activate_resume(ctx)
     }
 
     pub fn propose_initial_cash_carry_series_binding(

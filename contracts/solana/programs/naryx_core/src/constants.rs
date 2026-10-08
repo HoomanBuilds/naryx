@@ -14,6 +14,8 @@ pub const ADAPTER_RESOURCE_SEED: &[u8] = b"adapter";
 pub const CASH_CARRY_SERIES_INDEX_SEED: &[u8] = b"cash-carry-series-index";
 pub const CASH_CARRY_SERIES_RECORD_SEED: &[u8] = b"cash-carry-series-record";
 pub const FEE_POLICY_SEED: &[u8] = b"fee-policy";
+pub const RISK_DOMAIN_INDEX_SEED: &[u8] = b"risk-domain-index";
+pub const RISK_DOMAIN_RECORD_SEED: &[u8] = b"risk-domain-record";
 
 #[cfg(feature = "conformance")]
 pub const CONFORMANCE_RECEIPT_SEED: &[u8] = b"conformance-receipt";

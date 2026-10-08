@@ -4,9 +4,11 @@ use crate::wire::{DomainRef, ProtocolId};
 
 pub mod fee_policy;
 pub mod resource_registry;
+pub mod risk_domain;
 pub mod series_registry;
 pub use fee_policy::*;
 pub use resource_registry::*;
+pub use risk_domain::*;
 pub use series_registry::*;
 
 pub const PROTOCOL_CONFIG_VERSION: u16 = 2;

@@ -314,3 +314,61 @@ pub struct FeePolicyResumeActivated {
     pub actor: Pubkey,
     pub policy: Pubkey,
 }
+
+#[event]
+pub struct RiskDomainPolicyProposed {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub risk_domain_id: [u8; HASH_BYTE_LENGTH],
+    pub manifest_version: u32,
+    pub manifest_hash: [u8; HASH_BYTE_LENGTH],
+    pub activation_slot: u64,
+}
+
+#[event]
+pub struct RiskDomainPolicyActivated {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub previous_record: Pubkey,
+    pub risk_domain_id: [u8; HASH_BYTE_LENGTH],
+    pub manifest_version: u32,
+    pub manifest_hash: [u8; HASH_BYTE_LENGTH],
+    pub lifecycle: Lifecycle,
+}
+
+#[event]
+pub struct RiskDomainPolicyCancelled {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub risk_domain_id: [u8; HASH_BYTE_LENGTH],
+    pub manifest_version: u32,
+}
+
+#[event]
+pub struct RiskDomainEntryPaused {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub risk_domain_id: [u8; HASH_BYTE_LENGTH],
+}
+
+#[event]
+pub struct RiskDomainResumeProposed {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub risk_domain_id: [u8; HASH_BYTE_LENGTH],
+    pub activation_slot: u64,
+}
+
+#[event]
+pub struct RiskDomainResumeCancelled {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub risk_domain_id: [u8; HASH_BYTE_LENGTH],
+}
+
+#[event]
+pub struct RiskDomainResumeActivated {
+    pub actor: Pubkey,
+    pub record: Pubkey,
+    pub risk_domain_id: [u8; HASH_BYTE_LENGTH],
+}
