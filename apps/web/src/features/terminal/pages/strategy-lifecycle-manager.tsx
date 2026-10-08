@@ -16,7 +16,7 @@ const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const EVM_OWNER = /^0x(?!0{40}$)[0-9a-f]{40}$/;
 const AUTHORITIES = ["REBALANCE", "ROLL", "DECREASE", "EXIT", "EMERGENCY_UNWIND"] as const;
 type Authority = typeof AUTHORITIES[number];
-type Action = "ASSIGN_INTERNAL" | "DELEGATE" | "REVOKE_DELEGATION" | "SPLIT" | "MERGE";
+type Action = "APPLY_EXECUTION" | "ASSIGN_INTERNAL" | "DELEGATE" | "REVOKE_DELEGATION" | "SPLIT" | "MERGE";
 type PreparedOpen = Awaited<ReturnType<NaryxClient["prepareStrategyOpen"]>>;
 
 export type ManagedStrategy = Readonly<{
@@ -28,6 +28,10 @@ export type ManagedStrategy = Readonly<{
 
 function short(value: string): string {
   return value.length > 24 ? `${value.slice(0, 14)}...${value.slice(-7)}` : value;
+}
+
+function hex(value: string | Uint8Array): string {
+  return typeof value === "string" ? value : [...value].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 export function StrategyEntryManager({
@@ -144,6 +148,7 @@ export function StrategyLifecycleManager({
   const evm = useEvmWallet();
   const [selectedId, setSelectedId] = useState(strategies[0]?.strategyId ?? "");
   const [action, setAction] = useState<Action>("ASSIGN_INTERNAL");
+  const [transitionReceiptHash, setTransitionReceiptHash] = useState("");
   const [subaccountId, setSubaccountId] = useState("primary");
   const [delegateId, setDelegateId] = useState("");
   const [authorities, setAuthorities] = useState<readonly Authority[]>(["REBALANCE", "DECREASE", "EXIT"]);
@@ -185,6 +190,7 @@ export function StrategyLifecycleManager({
   };
 
   const parameters = (): StrategyCommandInput["parameters"] => {
+    if (action === "APPLY_EXECUTION") throw new Error("A settled execution is derived from its receipt.");
     if (action === "ASSIGN_INTERNAL") {
       if (!ID.test(subaccountId)) throw new Error("Subaccount id must be 1 to 128 letters, numbers, dots, colons, underscores, or hyphens.");
       return { kind: action, subaccountId };
@@ -223,17 +229,24 @@ export function StrategyLifecycleManager({
     setBusy(true);
     setNotice(null);
     try {
-      const command: StrategyCommandInput = {
-        commandVersion: 1,
-        environment: selected.environment,
-        strategyId: selected.strategyId,
-        actorId: selected.state.ownerId,
-        expectedStateVersion: selected.state.stateVersion,
-        expectedStateHash: selected.stateHash,
-        atValue: BigInt(Date.now()),
-        parameters: parameters(),
-      };
       const client = new NaryxClient({ baseUrl });
+      const command: StrategyCommandInput = action === "APPLY_EXECUTION"
+        ? (await client.prepareStrategyTransition(selected.strategyId, transitionReceiptHash.trim().toLowerCase())).command
+        : {
+          commandVersion: 1,
+          environment: selected.environment,
+          strategyId: selected.strategyId,
+          actorId: selected.state.ownerId,
+          expectedStateVersion: selected.state.stateVersion,
+          expectedStateHash: selected.stateHash,
+          atValue: BigInt(Date.now()),
+          parameters: parameters(),
+        };
+      if (command.actorId !== selected.state.ownerId
+        || command.expectedStateVersion !== selected.state.stateVersion
+        || hex(command.expectedStateHash) !== selected.stateHash) {
+        throw new Error("The prepared lifecycle command does not bind the selected strategy state.");
+      }
       const result = await client.submitAuthorizedStrategyCommand(command, signer());
       setNotice({ kind: "ok", text: `${action.replaceAll("_", " ")} recorded as ${result.commandHash.slice(0, 12)}...` });
       await refresh();
@@ -266,6 +279,7 @@ export function StrategyLifecycleManager({
           <label className={styles.field}>
             <span>Command</span>
             <select value={action} onChange={(event) => { setAction(event.target.value as Action); setNotice(null); }}>
+              <option value="APPLY_EXECUTION">Apply settled execution</option>
               <option value="ASSIGN_INTERNAL">Assign internally</option>
               <option value="DELEGATE">Delegate risk reduction</option>
               <option value="REVOKE_DELEGATION">Revoke delegation</option>
@@ -273,6 +287,18 @@ export function StrategyLifecycleManager({
               <option value="MERGE">Merge compatible positions</option>
             </select>
           </label>
+          {action === "APPLY_EXECUTION" ? (
+            <label className={styles.field}>
+              <span>Finalized lifecycle receipt hash</span>
+              <input
+                className={styles.mono}
+                value={transitionReceiptHash}
+                onChange={(event) => setTransitionReceiptHash(event.target.value)}
+                placeholder="64 lowercase hexadecimal characters"
+                spellCheck={false}
+              />
+            </label>
+          ) : null}
           {action === "ASSIGN_INTERNAL" ? (
             <label className={styles.field}><span>Subaccount id</span><input value={subaccountId} onChange={(event) => setSubaccountId(event.target.value)} /></label>
           ) : null}
@@ -325,7 +351,9 @@ export function StrategyLifecycleManager({
           ) : null}
         </div>
         <div className={styles.lifecycleActions}>
-          <p>Owner {short(selected.state.ownerId)}. The command binds state hash {selected.stateHash.slice(0, 12)}...</p>
+          <p>{action === "APPLY_EXECUTION"
+            ? "The service derives the exact next state from the finalized receipt and rejects any unexplained position delta."
+            : `Owner ${short(selected.state.ownerId)}. The command binds state hash ${selected.stateHash.slice(0, 12)}...`}</p>
           <button type="submit" className={styles.connect} disabled={busy}>{busy ? "Signing" : "Review and sign"}</button>
         </div>
         {notice ? <p className={notice.kind === "ok" ? styles.noticeOk : styles.noticeError} role="status">{notice.text}</p> : null}

@@ -63,8 +63,10 @@ export {
 } from "./native-strategy-position.js";
 export {
   prepareStrategyOpen,
+  prepareStrategyTransition,
   StrategyOpenPreparationError,
   type PreparedStrategyOpen,
+  type PreparedStrategyTransition,
 } from "./strategy-open-preparation.js";
 export {
   createStrategyPackageAuthorizationPort,

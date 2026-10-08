@@ -1744,6 +1744,33 @@ export class NaryxClient {
     });
   }
 
+  /** Builds an exact unsigned lifecycle command from one finalized transition receipt. */
+  async prepareStrategyTransition(strategyId: string, receiptHash: string) {
+    const requestedStrategyId = checkId(strategyId, 'strategy id');
+    const requestedReceiptHash = hashHex(receiptHash, 'receipt hash');
+    const body = record(await this.#request('POST', '/v1/strategies/transitions/prepare', {
+      strategyId: requestedStrategyId,
+      receiptHash: requestedReceiptHash,
+    }), 'prepared strategy transition');
+    const command = body.command as StrategyCommandInput;
+    const commandHash = toHex(strategyCommandHash(command));
+    if (command.strategyId !== requestedStrategyId || command.parameters.kind !== 'APPLY_PACKAGE') {
+      throw new NaryxEvidenceError('the prepared lifecycle command targets another strategy or operation');
+    }
+    const state = strategyState(command.parameters.nextState);
+    const stateHash = toHex(strategyStateHash(state));
+    if (body.receiptHashHex !== requestedReceiptHash || body.commandHashHex !== commandHash || body.stateHashHex !== stateHash) {
+      throw new NaryxEvidenceError('the prepared lifecycle commitments do not match locally derived hashes');
+    }
+    return Object.freeze({
+      command,
+      commandHash,
+      stateHash,
+      orderHash: hashHex(body.orderHashHex, 'order hash'),
+      receiptHash: requestedReceiptHash,
+    });
+  }
+
   /**
    * Signs and submits one strategy command. The command is hashed locally and only its hash goes
    * to the caller's signer; the server's acknowledgement must name that exact hash.

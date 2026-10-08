@@ -106,7 +106,7 @@ import type { SqliteQualificationStore } from "./qualification-store.js";
 import { PositionSnapshotStoreError, type SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
 import { CollateralSnapshotStoreError, type SqliteCollateralSnapshotStore } from "./collateral-snapshot-store.js";
 import { StrategyBookError, type SqliteStrategyBookStore } from "./strategy-book-store.js";
-import { prepareStrategyOpen, StrategyOpenPreparationError } from "./strategy-open-preparation.js";
+import { prepareStrategyOpen, prepareStrategyTransition, StrategyOpenPreparationError } from "./strategy-open-preparation.js";
 import type { StrategyCommandAuthorization } from "./strategy-command-authorization.js";
 import { BuilderStoreError, type SqliteBuilderStore } from "./builder-store.js";
 import { KeeperExecutorError, type SqliteKeeperExecutor } from "./keeper-executor.js";
@@ -1551,6 +1551,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/strategies/commands",
       "/v1/strategies/commands/authorization",
       "/v1/strategies/open/prepare",
+      "/v1/strategies/transitions/prepare",
       "/v1/builders",
       "/v1/builders/attributions",
     ].includes(path) && sealedAuctionAwardMatch === null && privateRfqAcceptanceMatch === null
@@ -2002,6 +2003,34 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         receiptHashHex: body.receiptHash,
         order: stored.order,
         graph: stored.graph,
+        receipt: checkedReceipt,
+      });
+    }
+    if (path === "/v1/strategies/transitions/prepare") {
+      const keys = Object.keys(body).sort();
+      if (keys.length !== 2 || keys[0] !== "receiptHash" || keys[1] !== "strategyId"
+        || typeof body.receiptHash !== "string" || !HASH_HEX.test(body.receiptHash)
+        || typeof body.strategyId !== "string" || !ID.test(body.strategyId)) {
+        throw new RequestError(400, "INVALID_REQUEST", "The request must contain one strategyId and one lowercase receiptHash.");
+      }
+      if (options.strategies === undefined || options.strategyPackages?.order === undefined) {
+        throw new RequestError(503, "STRATEGIES_UNAVAILABLE", "Strategy transition preparation requires the strategy book and package evidence store.");
+      }
+      const storedStrategy = options.strategies.strategy(body.strategyId);
+      if (storedStrategy === undefined) throw new RequestError(404, "STRATEGY_NOT_FOUND", "No such strategy exists.");
+      if (storedStrategy.retiredByCommandHashHex !== undefined) throw new RequestError(409, "STRATEGY_RETIRED", "The strategy was split or merged away.");
+      const receipt = options.strategyPackages.receipt(body.receiptHash);
+      if (receipt === undefined) throw new RequestError(404, "RECEIPT_NOT_FOUND", "No settled strategy receipt has this hash.");
+      const checkedReceipt = strategyPackageReceipt(receipt);
+      const storedOrder = options.strategyPackages.order(toHex(checkedReceipt.orderHash));
+      if (storedOrder === undefined) throw new RequestError(404, "ORDER_NOT_FOUND", "The receipt's committed order is unavailable.");
+      return prepareStrategyTransition({
+        environment: options.strategies.environmentName(),
+        atValue: BigInt(clockMs()),
+        receiptHashHex: body.receiptHash,
+        current: storedStrategy.state,
+        order: storedOrder.order,
+        graph: storedOrder.graph,
         receipt: checkedReceipt,
       });
     }

@@ -32,6 +32,7 @@ import {
   loadHyperliquidNativeStrategyProfiles,
   nativeStrategyPositionFromEntry,
   prepareStrategyOpen,
+  prepareStrategyTransition,
   validateNativeStrategyExit,
   validateNativeStrategyMigration,
   validateNativeStrategyRebalance,
@@ -566,11 +567,26 @@ test("derives an authoritative native state and closes only its exact exit", () 
     expectedStrategyStateHash: opened.stateHashHex,
   });
   validateNativeStrategyTransition(opened, increase.order, increase.graph);
+  const increaseReceipt = receipt(increase, "INCREASE", -25_000n);
+  const preparedIncrease = prepareStrategyTransition({
+    environment: "testnet",
+    atValue: BigInt(NOW_MS),
+    receiptHashHex: toHex(strategyPackageReceiptHash(increaseReceipt)),
+    current: opened.state,
+    order: increase.order,
+    graph: increase.graph,
+    receipt: increaseReceipt,
+  });
+  assert.equal(preparedIncrease.command.parameters.kind, "APPLY_PACKAGE");
+  if (preparedIncrease.command.parameters.kind === "APPLY_PACKAGE") {
+    assert.equal(preparedIncrease.command.parameters.operation, "INCREASE");
+    assert.equal(preparedIncrease.command.parameters.nextState.legs[0]?.signedQuantityAtoms, -125_000n);
+  }
   const increased = applyNativeStrategyTransitionReceipt(
     opened,
     increase.order,
     increase.graph,
-    receipt(increase, "INCREASE", -25_000n),
+    increaseReceipt,
   );
   assert.equal(increased.status, "OPEN");
   assert.equal(increased.economicQuantityAtoms, 250_000n);
