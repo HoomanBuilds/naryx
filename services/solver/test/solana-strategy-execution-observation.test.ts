@@ -124,6 +124,19 @@ function prepared(): PreparedStrategyExecutionTransport {
         }),
         executionHash,
         callsHash,
+        domain,
+        owner: owner.toBase58(),
+        solver: solver.toBase58(),
+        packageId: bytes(7),
+        orderHash: bytes(10),
+        graphHash: bytes(11),
+        quoteHash,
+        routeHash: bytes(12),
+        operation: 'ENTRY',
+        previousStateHash: new Uint8Array(32),
+        nextStateHash: bytes(9),
+        nonce: 1n,
+        deadlineSlot: 500n,
         strategyAccount: key(15).toBase58(),
         position: key(16).toBase58(),
         receipt: receiptAddress.toBase58(),
@@ -146,7 +159,7 @@ function prepared(): PreparedStrategyExecutionTransport {
 
 function receiptData(protocolFeeAtoms = 100_000n): Uint8Array {
   const receiptHash = solanaMultiStrategyReceiptHash({ executionHash, callsHash, evidenceRoot });
-  const data = Buffer.alloc(500);
+  const data = Buffer.alloc(532);
   createHash('sha256').update('account:StrategyReceipt', 'ascii').digest().copy(data, 0, 0, 8);
   let offset = 8;
   data[offset++] = 1;
@@ -155,7 +168,14 @@ function receiptData(protocolFeeAtoms = 100_000n): Uint8Array {
     offset += 32;
   }
   data[offset++] = 0;
-  for (const value of [new Uint8Array(32), bytes(9), callsHash, evidenceRoot, receiptHash]) {
+  for (const value of [
+    new Uint8Array(32),
+    bytes(9),
+    callsHash,
+    evidenceRoot,
+    receiptHash,
+    new Uint8Array(32),
+  ]) {
     Buffer.from(value).copy(data, offset);
     offset += 32;
   }

@@ -1,4 +1,5 @@
 import type { DomainRef } from '@naryx/protocol-types';
+import type { SolanaStrategyOperation } from '@naryx/adapter-solana';
 import type {
   PreparedStrategyDomainExecution,
   PreparedStrategyExecution,
@@ -25,6 +26,19 @@ export type PreparedStrategyDomainTransport =
         instruction: SolanaInstructionTransport;
         executionHash: Uint8Array;
         callsHash: Uint8Array;
+        domain: DomainRef;
+        owner: string;
+        solver: string;
+        packageId: Uint8Array;
+        orderHash: Uint8Array;
+        graphHash: Uint8Array;
+        quoteHash: Uint8Array;
+        routeHash: Uint8Array;
+        operation: SolanaStrategyOperation;
+        previousStateHash: Uint8Array;
+        nextStateHash: Uint8Array;
+        nonce: bigint;
+        deadlineSlot: bigint;
         strategyAccount: string;
         position: string;
         receipt: string;
@@ -78,6 +92,19 @@ function transportDomain(domain: PreparedStrategyDomainExecution): PreparedStrat
       }),
       executionHash: Uint8Array.from(domain.envelope.executionHash),
       callsHash: Uint8Array.from(domain.envelope.callsHash),
+      domain: domain.envelope.domain,
+      owner: domain.envelope.owner.toBase58(),
+      solver: domain.envelope.solver.toBase58(),
+      packageId: Uint8Array.from(domain.envelope.packageId),
+      orderHash: Uint8Array.from(domain.envelope.orderHash),
+      graphHash: Uint8Array.from(domain.envelope.graphHash),
+      quoteHash: Uint8Array.from(domain.envelope.quoteHash),
+      routeHash: Uint8Array.from(domain.envelope.routeHash),
+      operation: domain.envelope.operation,
+      previousStateHash: Uint8Array.from(domain.envelope.previousStateHash),
+      nextStateHash: Uint8Array.from(domain.envelope.nextStateHash),
+      nonce: domain.envelope.nonce,
+      deadlineSlot: domain.envelope.deadlineSlot,
       strategyAccount: domain.envelope.strategyAccount.toBase58(),
       position: domain.envelope.position.toBase58(),
       receipt: domain.envelope.receipt.toBase58(),
