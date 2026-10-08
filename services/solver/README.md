@@ -32,6 +32,12 @@ With none of them configured the listener starts with `runtime=NONE` and every q
 
 The sealed auction participant uses the authenticated API feed rather than guessing auction hashes. Its cursor, quote hash, net outcome, and 32-byte salt are stored in a separate full-synchronous SQLite journal before the commitment is sent. Exact commit and reveal retries are idempotent at the relay, so a response lost between network acceptance and local acknowledgement can be retried without adding another event. An auction is not entered unless its signed quote remains valid through the settlement deadline. Slot-timed auctions are refused because this process has no authoritative slot clock for the cross-domain relay.
 
+### Maker emergency controls
+
+`NARYX_MAKER_CONTROLS_ENABLED=true` adds two loopback-only routes to the quote listener: `POST /internal/maker/shards/{shardId}/cancel-all` and `POST /internal/maker/shards/{shardId}/kill-switch`. Each request contains only the exact lowercase shard hash and decimal shard sequence the operator observed. The solver re-reads that shard through the authenticated solver API, rejects stale state, derives the restricted next state, signs it with the external quote key, and verifies the API admitted the same hash and sequence.
+
+The routes reject browser-originated requests. They cannot place or replace levels, change capacity, heartbeat, clear a kill switch, or accept arbitrary shard bytes. Re-arming remains a separate deliberate operational procedure. Set `NARYX_MAKER_SOLVER_API_ORIGIN` to the loopback listener that serves `/v1/solver`, then bind `NARYX_MAKER_SOLVER_ID` and `NARYX_MAKER_QUOTE_KEY_ID` to the registered capability manifest.
+
 ### Hyperliquid Testnet quote runtime
 
 The generalized strategy quote lane reuses the same reviewed market config and requires exactly one

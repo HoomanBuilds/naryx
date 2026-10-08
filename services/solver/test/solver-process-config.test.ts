@@ -22,6 +22,7 @@ test('composes the fixed local fixture only on explicit opt-in and otherwise req
   assert.equal(durable.localRuntime.kind, 'NONE');
   assert.equal(durable.sealedAuctions.kind, 'DISABLED');
   assert.equal(durable.privateRfqs.kind, 'DISABLED');
+  assert.equal(durable.makerControls.kind, 'DISABLED');
   assert.equal(durable.quoteDbPath, '/external/quotes.sqlite');
   // services/api defaults NARYX_SOLVER_INTERNAL_ORIGIN to this port.
   assert.equal(durable.port, 8_788);
@@ -29,6 +30,27 @@ test('composes the fixed local fixture only on explicit opt-in and otherwise req
   const fixture = loadSolverProcessConfig({ ...base, NARYX_LOCAL_FIXTURE_MODE: 'true' });
   assert.equal(fixture.localRuntime.kind, 'LOCAL_FIXTURE');
   assert.equal(fixture.quoteDbPath, '/tmp/naryx-local/solver-quotes.db');
+});
+
+test('maker controls require an explicit solver identity and quote key', () => {
+  const enabled = {
+    ...base,
+    NARYX_SOLVER_QUOTE_DB: '/external/quotes.sqlite',
+    NARYX_MAKER_CONTROLS_ENABLED: 'true',
+    NARYX_MAKER_SOLVER_ID: 'solver-a',
+    NARYX_MAKER_QUOTE_KEY_ID: 'quote-1',
+    NARYX_MAKER_SOLVER_API_ORIGIN: 'http://127.0.0.1:8790',
+  };
+  assert.throws(
+    () => loadSolverProcessConfig({ ...enabled, NARYX_MAKER_SOLVER_ID: '' }),
+    /NARYX_MAKER_SOLVER_ID must be a protocol identifier/,
+  );
+  assert.deepEqual(loadSolverProcessConfig(enabled).makerControls, {
+    kind: 'ENABLED',
+    apiOrigin: 'http://127.0.0.1:8790',
+    solverId: 'solver-a',
+    keyId: 'quote-1',
+  });
 });
 
 test('private RFQ participation requires explicit identity and external encryption key configuration', () => {

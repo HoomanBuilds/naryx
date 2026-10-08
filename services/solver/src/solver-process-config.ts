@@ -41,6 +41,14 @@ export interface SolverProcessConfig {
       encryptionKeyPath: string;
       pollIntervalMs: number;
     }>;
+  readonly makerControls:
+    | Readonly<{ kind: 'DISABLED' }>
+    | Readonly<{
+      kind: 'ENABLED';
+      apiOrigin: string;
+      solverId: string;
+      keyId: string;
+    }>;
 }
 
 export function explicitBoolean(value: string | undefined, name: string): boolean {
@@ -177,6 +185,18 @@ export function loadSolverProcessConfig(env: NodeJS.ProcessEnv): SolverProcessCo
       pollIntervalMs: privateRfqPollIntervalMs,
     })
     : Object.freeze({ kind: 'DISABLED' as const });
+  const makerControlsEnabled = explicitBoolean(
+    env.NARYX_MAKER_CONTROLS_ENABLED,
+    'NARYX_MAKER_CONTROLS_ENABLED',
+  );
+  const makerControls = makerControlsEnabled
+    ? Object.freeze({
+      kind: 'ENABLED' as const,
+      apiOrigin: env.NARYX_MAKER_SOLVER_API_ORIGIN ?? env.NARYX_API_INTERNAL_ORIGIN ?? 'http://127.0.0.1:8787',
+      solverId: identifier(env.NARYX_MAKER_SOLVER_ID, 'NARYX_MAKER_SOLVER_ID'),
+      keyId: identifier(env.NARYX_MAKER_QUOTE_KEY_ID, 'NARYX_MAKER_QUOTE_KEY_ID'),
+    })
+    : Object.freeze({ kind: 'DISABLED' as const });
   return Object.freeze({
     host: loopbackHost(env.NARYX_SOLVER_HOST ?? '127.0.0.1'),
     port: tcpPort(env.NARYX_SOLVER_PORT, 'NARYX_SOLVER_PORT', DEFAULT_SOLVER_PORT),
@@ -186,5 +206,6 @@ export function loadSolverProcessConfig(env: NodeJS.ProcessEnv): SolverProcessCo
     localRuntime,
     sealedAuctions,
     privateRfqs,
+    makerControls,
   });
 }

@@ -97,6 +97,9 @@ import {
   loadSolanaDevnetNettingResidualRuntime,
   createPortfolioOptimizationInternalHandler,
   PortfolioOptimizationService,
+  HttpMakerShardGateway,
+  MakerControlService,
+  createMakerControlInternalHandler,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 import { withBaseSepoliaQuoteProviders } from './base-sepolia-quote-runtime.js';
@@ -157,6 +160,17 @@ function loadSigner(path: string) {
 const config = loadSolverProcessConfig(process.env);
 const { host, port: listenPort, apiOrigin } = config;
 const executionSigner = loadSigner(config.signerPath);
+const makerControlHandler = config.makerControls.kind === 'DISABLED'
+  ? undefined
+  : createMakerControlInternalHandler(new MakerControlService({
+      gateway: new HttpMakerShardGateway({
+        origin: config.makerControls.apiOrigin,
+        solverId: config.makerControls.solverId,
+        keyId: config.makerControls.keyId,
+        signer: executionSigner,
+      }),
+      signer: executionSigner,
+    }));
 const store = new SqliteInternalAtomicQuoteStore(config.quoteDbPath);
 const manifestRuntime = config.localRuntime.kind === 'MANIFEST_VALIDATED'
   ? await loadSolanaLocalEnvironmentRuntime(config.localRuntime.manifestPath, config.localRuntime.solverId)
@@ -679,6 +693,7 @@ const portfolioOptimizationHandler = createPortfolioOptimizationInternalHandler(
   new PortfolioOptimizationService(),
 );
 const strategyRouteHandlers = [
+  makerControlHandler,
   portfolioOptimizationHandler,
   generalizedStrategyQuoteHandler,
   strategyPreparationHandler,

@@ -40,6 +40,17 @@ export {
   createPortfolioOptimizationInternalHandler,
 } from './portfolio-optimization-server.js';
 export {
+  HttpMakerShardGateway,
+  MakerControlError,
+  MakerControlService,
+  createMakerControlInternalHandler,
+  type MakerControlAction,
+  type MakerControlRequest,
+  type MakerControlResult,
+  type MakerControlSigner,
+  type MakerShardGateway,
+} from './maker-control.js';
+export {
   HttpNettingAllocationAdminClient,
   NettingAllocationAdminClientError,
   type NettingAllocationPreparation,
