@@ -67,8 +67,8 @@ import type {
   DomainResourceLimit,
   DomainRef,
   PackageGraphInput,
-  NettingObligation,
-  NettingQuantityIncrement,
+  NettingObligationInput,
+  NettingPolicyManifestInput,
   PackageTemplateManifestInput,
   PackageOrderInput,
   PackageBookAmendmentInput,
@@ -1954,15 +1954,15 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     }
     if (path === "/v1/netting/simulate") {
       const obligations = body.obligations;
-      const quantityIncrements = body.quantityIncrements;
-      if (!Array.isArray(obligations) || !Array.isArray(quantityIncrements)) {
-        throw new RequestError(400, "INVALID_REQUEST", "obligations and quantityIncrements must be arrays.");
+      const policy = body.policy;
+      if (!Array.isArray(obligations) || typeof policy !== "object" || policy === null) {
+        throw new RequestError(400, "INVALID_REQUEST", "obligations must be an array and policy must be an object.");
       }
       return {
         simulated: true,
         result: netObligations(
-          obligations as readonly NettingObligation[],
-          quantityIncrements as readonly NettingQuantityIncrement[],
+          obligations as readonly NettingObligationInput[],
+          policy as NettingPolicyManifestInput,
         ),
       };
     }

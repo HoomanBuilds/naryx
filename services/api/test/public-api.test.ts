@@ -9,6 +9,8 @@ import test from "node:test";
 import bs58 from "bs58";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
+  assetRef,
+  domainRef,
   fromProtocolJson,
   commitmentHash,
   toProtocolJson,
@@ -27,8 +29,12 @@ import {
   packageReopeningSnapshotHash,
   toHex,
   verifyNettingResult,
+  verifyNettingResultAgainstPolicy,
   verifyPackageAllocation,
   verifyPackageReopeningSettlementHandoff,
+  versionedManifestRef,
+  type NettingObligationInput,
+  type NettingPolicyManifestInput,
   type PackageAllocation,
   type PackageMatchingPolicy,
 } from "@naryx/protocol-types";
@@ -44,6 +50,42 @@ import {
 } from "../src/index.js";
 import { DOMAIN_MANIFEST, operatorKeys, signedSolverManifest } from "./registry-fixtures.js";
 import { CLASS, CLASS_SUPPORT, NOW, SERIES, SERIES_SUPPORT, id, impliedAsk, order, registerAll, settlement } from "./exchange-fixtures.js";
+
+const NETTING_POLICY: NettingPolicyManifestInput = {
+  schemaVersion: 1,
+  manifestVersion: 1,
+  nettingPolicyVersion: 1,
+  environment: "testnet",
+  executionClassId: CLASS,
+  executionClassVersion: 1,
+  executionClassManifestHash: id(85),
+  settlementClass: "BATCHED_IOC_WITH_RECOVERY",
+  allocationRule: "PRO_RATA_SEQUENCE",
+  externalExecutionMode: "EXACT_NET_ONLY",
+  maximumObligations: 16,
+  maximumBatchWindowMilliseconds: 500n,
+  instruments: [{
+    instrumentId: "sol",
+    domain: domainRef("svm:solana-devnet", 1, id(86)),
+    adapter: { adapterId: "phoenix-perps", adapterManifestVersion: 1, adapterManifestHash: id(87) },
+    venue: versionedManifestRef("phoenix", 1, id(88)),
+    market: versionedManifestRef("sol-perp", 1, id(89)),
+    quantityAsset: assetRef("sol", id(90), 9),
+    legFamily: "PERP_OPEN",
+    quantityIncrementAtoms: 10n,
+  }],
+};
+
+const nettingObligation = (n: number, ownerId: string, signedQuantityAtoms: bigint): NettingObligationInput => ({
+  ownerId,
+  strategyOrderHash: id(100 + n),
+  packageOrderId: id(110 + n),
+  settlementReadinessHash: id(120 + n),
+  legId: `leg-${n}`,
+  instrumentId: "sol",
+  signedQuantityAtoms,
+  sequence: BigInt(n),
+});
 
 function submitBookOrder(store: SqlitePackageExchangeStore, input: ReturnType<typeof order>) {
   return store.submitOrder(CLASS, input, NOW, settlement(input));
@@ -829,15 +871,15 @@ test("compute routes validate, simulate without persisting, and reject malformed
     assert.equal(store.getAllocation(id(9)), undefined);
     const netting = (await get("/v1/netting/simulate", post({
       obligations: [
-        { obligationId: id(91), userId: "alice", packageId: "package-a", underlyingId: "sol", signedQuantityAtoms: 30n, sequence: 1n },
-        { obligationId: id(92), userId: "bob", packageId: "package-b", underlyingId: "sol", signedQuantityAtoms: -20n, sequence: 2n },
+        nettingObligation(1, "alice", 30n),
+        nettingObligation(2, "bob", -20n),
       ],
-      quantityIncrements: [{ underlyingId: "sol", quantityIncrementAtoms: 10n }],
+      policy: NETTING_POLICY,
     }))).body as { simulated: boolean; result: Parameters<typeof verifyNettingResult>[0] };
     assert.equal(netting.simulated, true);
-    verifyNettingResult(netting.result);
+    verifyNettingResultAgainstPolicy(netting.result, NETTING_POLICY);
     assert.equal(netting.result.underlyings[0]?.externalNetAtoms, 10n);
-    assert.equal((await get("/v1/netting/simulate", post({ obligations: [], quantityIncrements: [] }))).status, 400);
+    assert.equal((await get("/v1/netting/simulate", post({ obligations: [] }))).status, 400);
     const invalid = (await get("/v1/orders/validate", post({ order: { version: 99 } }))).body as { valid: boolean; error: { code: string } };
     assert.equal(invalid.valid, false);
     assert.equal(typeof invalid.error.code, "string");

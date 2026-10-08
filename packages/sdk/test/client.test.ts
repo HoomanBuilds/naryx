@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { describe, test } from 'node:test';
 import {
+  assetRef,
   clearPackageReopeningAuction,
+  domainRef,
   emptyPackageBook,
   matchPackageOrder,
   netObligations,
@@ -27,6 +29,9 @@ import {
   setPackageBookHalted,
   toHex,
   toProtocolJson,
+  versionedManifestRef,
+  type NettingObligationInput,
+  type NettingPolicyManifestInput,
   type PackageAllocation,
   type PackageMatchingPolicyInput,
   type PackageTakerOrderInput,
@@ -49,6 +54,40 @@ const POLICY_INPUT: PackageMatchingPolicyInput = {
 };
 const policy = packageMatchingPolicy(POLICY_INPUT);
 const id = (n: number): string => n.toString(16).padStart(64, '0');
+const NETTING_POLICY: NettingPolicyManifestInput = {
+  schemaVersion: 1,
+  manifestVersion: 1,
+  nettingPolicyVersion: 1,
+  environment: 'testnet',
+  executionClassId: CLASS,
+  executionClassVersion: 1,
+  executionClassManifestHash: id(85),
+  settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
+  allocationRule: 'PRO_RATA_SEQUENCE',
+  externalExecutionMode: 'EXACT_NET_ONLY',
+  maximumObligations: 16,
+  maximumBatchWindowMilliseconds: 500n,
+  instruments: [{
+    instrumentId: 'sol',
+    domain: domainRef('svm:solana-devnet', 1, id(86)),
+    adapter: { adapterId: 'phoenix-perps', adapterManifestVersion: 1, adapterManifestHash: id(87) },
+    venue: versionedManifestRef('phoenix', 1, id(88)),
+    market: versionedManifestRef('sol-perp', 1, id(89)),
+    quantityAsset: assetRef('sol', id(90), 9),
+    legFamily: 'PERP_OPEN',
+    quantityIncrementAtoms: 10n,
+  }],
+};
+const nettingObligation = (n: number, ownerId: string, signedQuantityAtoms: bigint): NettingObligationInput => ({
+  ownerId,
+  strategyOrderHash: id(100 + n),
+  packageOrderId: id(110 + n),
+  settlementReadinessHash: id(120 + n),
+  legId: `leg-${n}`,
+  instrumentId: 'sol',
+  signedQuantityAtoms,
+  sequence: BigInt(n),
+});
 const order = (n: number, overrides: Partial<PackageTakerOrderInput> = {}): PackageTakerOrderInput => {
   const timeInForce = overrides.timeInForce ?? 'GTC';
   return {
@@ -293,19 +332,18 @@ describe('public API client', () => {
       /not marked as a simulation/,
     );
     const obligations = [
-      { obligationId: id(91), userId: 'alice', packageId: 'package-a', underlyingId: 'sol', signedQuantityAtoms: 30n, sequence: 1n },
-      { obligationId: id(92), userId: 'bob', packageId: 'package-b', underlyingId: 'sol', signedQuantityAtoms: -20n, sequence: 2n },
+      nettingObligation(1, 'alice', 30n),
+      nettingObligation(2, 'bob', -20n),
     ];
-    const quantityIncrements = [{ underlyingId: 'sol', quantityIncrementAtoms: 10n }];
-    const netting = netObligations(obligations, quantityIncrements);
+    const netting = netObligations(obligations, NETTING_POLICY);
     assert.equal(
       (await client({ 'POST /v1/netting/simulate': { body: { simulated: true, result: netting } } })
-        .simulateNetting(obligations, quantityIncrements)).underlyings[0]?.externalNetAtoms,
+        .simulateNetting(obligations, NETTING_POLICY)).underlyings[0]?.externalNetAtoms,
       10n,
     );
     await assert.rejects(
       client({ 'POST /v1/netting/simulate': { body: { simulated: true, result: { ...netting, allocations: netting.allocations.slice(1) } } } })
-        .simulateNetting(obligations, quantityIncrements),
+        .simulateNetting(obligations, NETTING_POLICY),
       /verification/,
     );
   });
