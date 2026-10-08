@@ -31,6 +31,7 @@ import { createPackageReopeningAdminHandler } from "./package-reopening-admin.js
 import { HttpGeneralizedStrategyQuoteClient } from "./generalized-strategy-quote-client.js";
 import { HttpHyperliquidNettingResidualExecutionClient } from "./hyperliquid-netting-residual-execution-client.js";
 import { HttpBaseSepoliaNettingResidualExecutionClient } from "./base-sepolia-netting-residual-execution-client.js";
+import { HttpSolanaDevnetNettingResidualExecutionClient } from "./solana-devnet-netting-residual-execution-client.js";
 import {
   NettingExecutionCoordinator,
   NettingExternalExecutionRouter,
@@ -471,7 +472,15 @@ export function loadPublicMarketRuntime(
         "NARYX_BASE_SEPOLIA_NETTING_EXECUTION_ENABLED must be true or false.",
       );
     }
-    if ((hyperliquidNettingExecutionSetting === "true" || baseNettingExecutionSetting === "true")
+    const solanaNettingExecutionSetting = environment.NARYX_SOLANA_DEVNET_NETTING_EXECUTION_ENABLED
+      ?? "false";
+    if (solanaNettingExecutionSetting !== "true" && solanaNettingExecutionSetting !== "false") {
+      throw new PublicMarketConfigError(
+        "NARYX_SOLANA_DEVNET_NETTING_EXECUTION_ENABLED must be true or false.",
+      );
+    }
+    if ((hyperliquidNettingExecutionSetting === "true" || baseNettingExecutionSetting === "true"
+      || solanaNettingExecutionSetting === "true")
       && publicEnvironment !== "testnet") {
       throw new PublicMarketConfigError(
         "Testnet netting execution requires NARYX_PUBLIC_ENVIRONMENT=testnet.",
@@ -484,6 +493,10 @@ export function loadPublicMarketRuntime(
         )] : []),
       ...(baseNettingExecutionSetting === "true"
         ? [new HttpBaseSepoliaNettingResidualExecutionClient(
+          environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
+        )] : []),
+      ...(solanaNettingExecutionSetting === "true"
+        ? [new HttpSolanaDevnetNettingResidualExecutionClient(
           environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
         )] : []),
     ];

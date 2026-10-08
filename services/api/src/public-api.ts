@@ -123,6 +123,7 @@ import {
   HyperliquidNettingResidualExecutionClientError,
 } from "./hyperliquid-netting-residual-execution-client.js";
 import { BaseSepoliaNettingResidualExecutionClientError } from "./base-sepolia-netting-residual-execution-client.js";
+import { SolanaDevnetNettingResidualExecutionClientError } from "./solana-devnet-netting-residual-execution-client.js";
 import type { NettingExecutionCoordinator } from "./netting-execution-coordinator.js";
 import {
   isEvmPackageBookParticipant,
@@ -1499,7 +1500,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         return await requireNettingExecution().execute(proofHash);
       } catch (error) {
         if (error instanceof HyperliquidNettingResidualExecutionClientError
-          || error instanceof BaseSepoliaNettingResidualExecutionClientError) {
+          || error instanceof BaseSepoliaNettingResidualExecutionClientError
+          || error instanceof SolanaDevnetNettingResidualExecutionClientError) {
           if (error.code === "EVIDENCE_PENDING") {
             throw new RequestError(409, "NETTING_EVIDENCE_PENDING", error.message);
           }

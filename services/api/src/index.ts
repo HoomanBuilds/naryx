@@ -648,3 +648,9 @@ export {
   HttpBaseSepoliaNettingResidualExecutionClient,
   type BaseSepoliaNettingResidualExecutionClientErrorCode,
 } from "./base-sepolia-netting-residual-execution-client.js";
+export {
+  API_SOLANA_DEVNET_NETTING_RESIDUAL_EXECUTION_PATH,
+  HttpSolanaDevnetNettingResidualExecutionClient,
+  SolanaDevnetNettingResidualExecutionClientError,
+  type SolanaDevnetNettingResidualExecutionClientErrorCode,
+} from "./solana-devnet-netting-residual-execution-client.js";

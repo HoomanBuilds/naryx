@@ -800,6 +800,10 @@ export {
   type SolanaDevnetNettingResidualLoadedRuntime,
 } from './solana-devnet-netting-residual-config.js';
 export {
+  SOLANA_DEVNET_NETTING_RESIDUAL_EXECUTION_PATH,
+  createSolanaDevnetNettingResidualExecutionInternalHandler,
+} from './solana-devnet-netting-residual-execution-http.js';
+export {
   createViemBaseSepoliaResidualChain,
   observeBaseSepoliaResidualReceipt,
   type BaseSepoliaResidualReceipt,
