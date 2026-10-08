@@ -777,6 +777,11 @@ export {
 } from './evm-netting-residual-runtime.js';
 export { EvmNettingResidualSqliteJournal } from './evm-netting-residual-sqlite-journal.js';
 export {
+  createViemBaseSepoliaResidualChain,
+  observeBaseSepoliaResidualReceipt,
+  type BaseSepoliaResidualReceipt,
+} from './base-sepolia-netting-residual-chain.js';
+export {
   HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH,
   createHyperliquidNettingResidualExecutionInternalHandler,
 } from './hyperliquid-netting-residual-execution-http.js';
