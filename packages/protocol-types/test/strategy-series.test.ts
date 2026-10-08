@@ -196,6 +196,33 @@ describe('economic strategy series', () => {
     );
     assert.equal(writer.bytes().length, 0);
   });
+
+  test('version 2 binds one unique tradable instrument to every economic leg', () => {
+    const versioned = economicStrategySeries(
+      seriesInput({
+        seriesVersion: 2,
+        instrumentRefs: ['sol-spot-orca', 'sol-perp-phoenix'],
+      }),
+      seriesSupport,
+    );
+    assert.deepEqual(versioned.instrumentRefs, ['sol-spot-orca', 'sol-perp-phoenix']);
+    assert.notEqual(
+      toHex(economicStrategySeriesHash(seriesInput(), seriesSupport)),
+      toHex(economicStrategySeriesHash({ ...seriesInput(), seriesVersion: 2, instrumentRefs: ['sol-spot-orca', 'sol-perp-phoenix'] }, seriesSupport)),
+    );
+    assert.throws(
+      () => economicStrategySeries(seriesInput({ instrumentRefs: ['sol-spot-orca', 'sol-perp-phoenix'] }), seriesSupport),
+      /version 2/,
+    );
+    assert.throws(
+      () => economicStrategySeries(seriesInput({ seriesVersion: 2 }), seriesSupport),
+      /match the economic leg count/,
+    );
+    assert.throws(
+      () => economicStrategySeries(seriesInput({ seriesVersion: 2, instrumentRefs: ['same', 'same'] }), seriesSupport),
+      DuplicateElementError,
+    );
+  });
 });
 
 describe('series execution class', () => {

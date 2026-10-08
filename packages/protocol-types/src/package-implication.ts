@@ -26,7 +26,13 @@ import {
   type ManifestHash,
   type ProtocolId,
 } from './primitives.js';
-import { encodeExactSignedRatio, exactSignedRatio, type ExactSignedRatio, type ExactSignedRatioInput } from './strategy-series.js';
+import {
+  encodeExactSignedRatio,
+  exactSignedRatio,
+  type EconomicStrategySeries,
+  type ExactSignedRatio,
+  type ExactSignedRatioInput,
+} from './strategy-series.js';
 
 export const PACKAGE_IMPLICATION_PROOF_VERSION = 1;
 export const PACKAGE_IMPLICATION_MAX_COMPONENTS = 32;
@@ -192,6 +198,28 @@ function seriesExposure(input: PackageSeriesExposureInput, context: string): Pac
     quoteConventionId: protocolId(input.quoteConventionId, `${context}.quoteConventionId`),
     components: Object.freeze(components),
   });
+}
+
+export function packageSeriesExposureFromEconomicSeries(
+  series: EconomicStrategySeries,
+  seriesManifestHash: Uint8Array | string,
+  context = 'packageSeriesExposureFromEconomicSeries',
+): PackageSeriesExposure {
+  object(series, `${context}.series`);
+  if (series.seriesVersion < 2 || series.instrumentRefs === undefined) {
+    throw new MalformedInputError(`${context}.series`, 'package implication requires a versioned instrument binding');
+  }
+  return seriesExposure({
+    seriesId: series.seriesId,
+    seriesVersion: series.seriesVersion,
+    seriesManifestHash,
+    quoteAssetId: series.quoteAsset,
+    quoteConventionId: series.quoteConvention,
+    components: series.instrumentRefs.map((instrumentId, index) => ({
+      instrumentId,
+      ratio: series.economicLegRatios[index] as ExactSignedRatio,
+    })),
+  }, context);
 }
 
 function encodeSeriesExposure(writer: CanonicalWriter, value: PackageSeriesExposure, context: string): void {

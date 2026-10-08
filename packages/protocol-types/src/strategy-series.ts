@@ -57,6 +57,7 @@ export interface EconomicStrategySeriesInput {
   readonly underlyingRefs: readonly string[];
   readonly quoteAsset: string;
   readonly economicLegRatios: readonly ExactSignedRatioInput[];
+  readonly instrumentRefs?: readonly string[];
   readonly maturityOrEvaluationWindow: Duration;
   readonly quoteConvention: string;
   readonly riskClass: string;
@@ -72,6 +73,7 @@ export interface EconomicStrategySeries {
   readonly underlyingRefs: readonly ProtocolId[];
   readonly quoteAsset: ProtocolId;
   readonly economicLegRatios: readonly ExactSignedRatio[];
+  readonly instrumentRefs?: readonly ProtocolId[];
   readonly maturityOrEvaluationWindow: Duration;
   readonly quoteConvention: ProtocolId;
   readonly riskClass: ProtocolId;
@@ -326,12 +328,30 @@ export function economicStrategySeries(
       `underlying count ${underlyingRefs.length} differs from ratio count ${ratios.length}`,
     );
   }
+  const seriesVersion = nonzeroU32(input.seriesVersion, `${context}.seriesVersion`);
+  let instrumentRefs: readonly ProtocolId[] | undefined;
+  if (seriesVersion === 1) {
+    if (input.instrumentRefs !== undefined) {
+      throw new MalformedInputError(`${context}.instrumentRefs`, 'instrument references require series version 2 or later');
+    }
+  } else {
+    if (!Array.isArray(input.instrumentRefs) || input.instrumentRefs.length !== ratios.length) {
+      throw new MalformedInputError(`${context}.instrumentRefs`, 'versioned instrument references must match the economic leg count');
+    }
+    const seen = new Set<string>();
+    instrumentRefs = Object.freeze(input.instrumentRefs.map((value, index) => {
+      const checked = protocolId(value, `${context}.instrumentRefs[${index}]`);
+      if (seen.has(checked)) throw new DuplicateElementError(`${context}.instrumentRefs`, 'instrument reference repeats');
+      seen.add(checked);
+      return checked;
+    }));
+  }
   const templateManifestHash = manifestHash(
     input.templateManifestHash,
     `${context}.templateManifestHash`,
   );
   return Object.freeze({
-    seriesVersion: nonzeroU32(input.seriesVersion, `${context}.seriesVersion`),
+    seriesVersion,
     seriesId: protocolId(input.seriesId, `${context}.seriesId`),
     templateId: checkedSemanticId(
       input.templateId,
@@ -345,6 +365,7 @@ export function economicStrategySeries(
     underlyingRefs: Object.freeze(underlyingRefs),
     quoteAsset: protocolId(input.quoteAsset, `${context}.quoteAsset`),
     economicLegRatios: Object.freeze(ratios),
+    ...(instrumentRefs === undefined ? {} : { instrumentRefs }),
     maturityOrEvaluationWindow: checkedDuration(
       input.maturityOrEvaluationWindow,
       `${context}.maturityOrEvaluationWindow`,
@@ -393,6 +414,7 @@ function checkedEconomicStrategySeries(
       underlyingRefs: value.underlyingRefs,
       quoteAsset: value.quoteAsset,
       economicLegRatios: value.economicLegRatios,
+      ...(value.instrumentRefs === undefined ? {} : { instrumentRefs: value.instrumentRefs }),
       maturityOrEvaluationWindow: value.maturityOrEvaluationWindow,
       quoteConvention: value.quoteConvention,
       riskClass: value.riskClass,
@@ -428,6 +450,13 @@ export function encodeEconomicStrategySeries(
     encodeExactSignedRatio,
     'economicStrategySeries.economicLegRatios',
   );
+  if (checked.seriesVersion >= 2) {
+    writer.writeArray(
+      checked.instrumentRefs!,
+      (target, value_) => encodeProtocolId(target, value_, 'economicStrategySeries.instrumentRefs.element'),
+      'economicStrategySeries.instrumentRefs',
+    );
+  }
   encodeDuration(writer, checked.maturityOrEvaluationWindow);
   encodeProtocolId(writer, checked.quoteConvention, 'economicStrategySeries.quoteConvention');
   encodeProtocolId(writer, checked.riskClass, 'economicStrategySeries.riskClass');

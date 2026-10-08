@@ -342,6 +342,7 @@ export {
   PACKAGE_IMPLICATION_MAX_COMPONENTS,
   PACKAGE_IMPLICATION_MAX_ANCESTORS,
   derivePackageImplicationProof,
+  packageSeriesExposureFromEconomicSeries,
   verifyPackageImplicationProof,
   addMultiPackageImpliedLiquidity,
   type PackageExposureComponentInput,
