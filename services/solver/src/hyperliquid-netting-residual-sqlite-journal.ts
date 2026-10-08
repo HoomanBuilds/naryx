@@ -138,6 +138,7 @@ export interface HyperliquidNettingResidualDurableJournalPort {
     expectedVersion: bigint;
     attemptId: string;
   }>): Promise<HyperliquidNettingResidualJournalReceipt>;
+  readAttempt(attemptId: string): Promise<HyperliquidNettingResidualJournalReceipt | null>;
 }
 
 interface NormalizedPrepare {

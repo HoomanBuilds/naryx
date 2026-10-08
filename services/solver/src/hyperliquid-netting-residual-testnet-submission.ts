@@ -248,7 +248,8 @@ export class HyperliquidNettingResidualTestnetSubmissionService {
       || typeof journal.markSubmittedUnknown !== 'function'
       || typeof journal.acknowledge !== 'function'
       || typeof journal.reject !== 'function'
-      || typeof journal.beginReconciliation !== 'function') {
+      || typeof journal.beginReconciliation !== 'function'
+      || typeof journal.readAttempt !== 'function') {
       throw new Error('a complete durable Hyperliquid residual journal is required');
     }
     if (!(submitter instanceof HyperliquidSdkTestnetOrderSubmitter)
@@ -282,23 +283,59 @@ export class HyperliquidNettingResidualTestnetSubmissionService {
     let receipt: HyperliquidNettingResidualJournalReceipt;
     let lastRecord: HyperliquidNettingResidualJournalRecord | null = null;
     try {
-      const prepared = await this.#journal.prepare({ ...input, ...validated });
-      validateReceipt(prepared, input, 'PREPARED', input.expectedVersion);
-      lastRecord = prepared.record;
-      const durable = await this.#journal.confirmDurable({
-        expectedVersion: prepared.journalVersion,
-        attemptId: input.attemptId,
-        recordHash: prepared.record.recordHash,
-      });
-      validateReceipt(durable, input, 'DURABLE_RECORD_CONFIRMED', prepared.journalVersion);
-      lastRecord = durable.record;
-      receipt = await this.#journal.markSubmittedUnknown({
-        expectedVersion: durable.journalVersion,
-        attemptId: input.attemptId,
-        nowMs: input.nowMs,
-      });
-      validateReceipt(receipt, input, 'SUBMITTED_UNKNOWN', durable.journalVersion);
-      lastRecord = receipt.record;
+      const existing = await this.#journal.readAttempt(input.attemptId);
+      let current = existing;
+      if (current === null) {
+        current = await this.#journal.prepare({ ...input, ...validated });
+        validateReceipt(current, input, 'PREPARED', input.expectedVersion);
+      } else {
+        validateReceipt(current, input, current.record.status);
+      }
+      lastRecord = current.record;
+      if (current.record.status === 'PREPARED') {
+        const durable = await this.#journal.confirmDurable({
+          expectedVersion: current.journalVersion,
+          attemptId: input.attemptId,
+          recordHash: current.record.recordHash,
+        });
+        validateReceipt(durable, input, 'DURABLE_RECORD_CONFIRMED', current.journalVersion);
+        current = durable;
+        lastRecord = current.record;
+      }
+      if (current.record.status === 'DURABLE_RECORD_CONFIRMED') {
+        const submitted = await this.#journal.markSubmittedUnknown({
+          expectedVersion: current.journalVersion,
+          attemptId: input.attemptId,
+          nowMs: input.nowMs,
+        });
+        validateReceipt(submitted, input, 'SUBMITTED_UNKNOWN', current.journalVersion);
+        current = submitted;
+        lastRecord = current.record;
+      }
+      if (existing !== null && (current.record.status === 'SUBMITTED_UNKNOWN'
+        || current.record.status === 'ACKNOWLEDGED' || current.record.status === 'REJECTED')) {
+        const reconciling = await this.#journal.beginReconciliation({
+          expectedVersion: current.journalVersion,
+          attemptId: input.attemptId,
+        });
+        validateReceipt(reconciling, input, 'RECONCILING', current.journalVersion);
+        current = reconciling;
+        lastRecord = current.record;
+      }
+      if (existing !== null && current.record.status === 'RECONCILING') {
+        return Object.freeze({
+          ...evidenceBase(input.attemptId, current.record),
+          status: 'SUBMISSION_AMBIGUOUS',
+          evidenceStatus: 'RESPONSE_UNKNOWN',
+          settlementStatus: 'RECONCILIATION_REQUIRED',
+          errorCommitment: commitment({ attemptId: input.attemptId, status: 'RECONCILING' }),
+          reconciliation: handoff(current.record),
+        });
+      }
+      if (current.record.status !== 'SUBMITTED_UNKNOWN') {
+        throw new Error('residual submission is not ready for one network attempt');
+      }
+      receipt = current;
     } catch (error) {
       return Object.freeze({
         ...evidenceBase(input.attemptId, lastRecord),

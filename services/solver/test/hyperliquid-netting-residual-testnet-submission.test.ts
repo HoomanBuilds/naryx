@@ -130,6 +130,10 @@ test('durably submits one net residual on Hyperliquid Testnet', async (t) => {
   assert.equal(result.reconciliation?.clientOrderId, clientOrderId);
   assert.equal(transport.requests.length, 1);
   assert.equal((await journal.readAttempt('net-residual-attempt-1'))?.record.status, 'RECONCILING');
+  const replay = await service.submitResidual(input({ expectedVersion: 5n }));
+  assert.equal(replay.status, 'SUBMISSION_AMBIGUOUS');
+  assert.equal(replay.reconciliation?.clientOrderId, clientOrderId);
+  assert.equal(transport.requests.length, 1);
   journal.close();
   journal = new HyperliquidNettingResidualSqliteDurableJournal({ databasePath: path });
   assert.equal((await journal.readAttempt('net-residual-attempt-1'))?.record.status, 'RECONCILING');
