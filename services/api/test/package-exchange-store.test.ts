@@ -120,13 +120,15 @@ test("owner authorization and prepared netting evidence are immutable and replay
       venue: versionedManifestRef("spot-venue", 1, id(503)),
       market: versionedManifestRef("sol-usdc", 1, id(504)),
       quantityAsset: assetRef("sol", id(505), 9),
+      quoteAsset: assetRef("usdc", id(506), 6),
       legFamily: "SPOT_SWAP" as const,
       quantityIncrementAtoms: 10n,
+      priceTickQuoteAtoms: 1n,
     };
     const policy: NettingPolicyManifestInput = {
       schemaVersion: 1,
       manifestVersion: 1,
-      nettingPolicyVersion: 1,
+      nettingPolicyVersion: 2,
       environment: "local",
       executionClassId: CLASS,
       executionClassVersion: 1,
@@ -134,6 +136,7 @@ test("owner authorization and prepared netting evidence are immutable and replay
       settlementClass: "ATOMIC_POSTCONDITION",
       allocationRule: "PRO_RATA_SEQUENCE",
       externalExecutionMode: "EXACT_NET_ONLY",
+      clearingRule: "LIMIT_MIDPOINT_BUYER_FAVOR",
       maximumObligations: 4,
       maximumBatchWindowMilliseconds: 1_000n,
       instruments: [instrument],
@@ -149,6 +152,7 @@ test("owner authorization and prepared netting evidence are immutable and replay
         legId: "spot-buy",
         instrumentId: instrument.instrumentId,
         signedQuantityAtoms: 10n,
+        limitPriceTicks: 12n,
         sequence: 1n,
       },
       {
@@ -159,6 +163,7 @@ test("owner authorization and prepared netting evidence are immutable and replay
         legId: "spot-sell",
         instrumentId: instrument.instrumentId,
         signedQuantityAtoms: -10n,
+        limitPriceTicks: 8n,
         sequence: 2n,
       },
     ], policy);

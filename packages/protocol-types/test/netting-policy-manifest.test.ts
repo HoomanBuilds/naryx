@@ -23,8 +23,10 @@ function instrument(instrumentId: string, seed: number): NettingInstrumentPolicy
     venue: versionedManifestRef(`venue-${instrumentId}`, 1, id(seed + 2)),
     market: versionedManifestRef(`market-${instrumentId}`, 1, id(seed + 3)),
     quantityAsset: assetRef(`asset-${instrumentId}`, id(seed + 4), 6),
+    quoteAsset: assetRef('usdc', id(99), 6),
     legFamily: 'PERP_OPEN',
     quantityIncrementAtoms: 10n,
+    priceTickQuoteAtoms: 1n,
   };
 }
 
@@ -32,7 +34,7 @@ function policy(overrides: Partial<NettingPolicyManifestInput> = {}): NettingPol
   return {
     schemaVersion: 1,
     manifestVersion: 1,
-    nettingPolicyVersion: 1,
+    nettingPolicyVersion: 2,
     environment: 'testnet',
     executionClassId: 'cross-user-netting-v1',
     executionClassVersion: 1,
@@ -40,6 +42,7 @@ function policy(overrides: Partial<NettingPolicyManifestInput> = {}): NettingPol
     settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
     allocationRule: 'PRO_RATA_SEQUENCE',
     externalExecutionMode: 'EXACT_NET_ONLY',
+    clearingRule: 'LIMIT_MIDPOINT_BUYER_FAVOR',
     maximumObligations: 32,
     maximumBatchWindowMilliseconds: 500n,
     instruments: [instrument('sol', 1), instrument('eth', 10)],
@@ -65,6 +68,7 @@ describe('netting policy manifest', () => {
       policy({ maximumObligations: 31 }),
       policy({ maximumBatchWindowMilliseconds: 750n }),
       policy({ settlementClass: 'ASYNC_BONDED_SOLVER' }),
+      policy({ clearingRule: 'LIMIT_MIDPOINT_BUYER_FAVOR', instruments: input.instruments.map((value, index) => index === 0 ? { ...value, priceTickQuoteAtoms: 2n } : value) }),
     ]) {
       assert.notEqual(toHex(nettingPolicyManifestHash(input)), toHex(nettingPolicyManifestHash(changed)));
     }
@@ -72,7 +76,7 @@ describe('netting policy manifest', () => {
 
   test('rejects unimplemented versions, empty bounds, and ambiguous instruments', () => {
     assert.throws(() => nettingPolicyManifest(policy({ schemaVersion: 2 })), MalformedInputError);
-    assert.throws(() => nettingPolicyManifest(policy({ nettingPolicyVersion: 2 })), MalformedInputError);
+    assert.throws(() => nettingPolicyManifest(policy({ nettingPolicyVersion: 1 })), MalformedInputError);
     assert.throws(() => nettingPolicyManifest(policy({ maximumObligations: 0 })), MalformedInputError);
     assert.throws(() => nettingPolicyManifest(policy({ maximumBatchWindowMilliseconds: 0n })), MalformedInputError);
     assert.throws(() => nettingPolicyManifest(policy({ instruments: [] })), MalformedInputError);

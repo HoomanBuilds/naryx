@@ -15,10 +15,12 @@ import { commitmentHash, encodeCommitmentHash, type CommitmentHash } from './pac
 import { encodeProtocolId, protocolId, type ProtocolId } from './primitives.js';
 
 export const NETTING_MAX_OBLIGATIONS = NETTING_POLICY_MAX_OBLIGATIONS;
-export const NETTING_RESULT_VERSION = 3;
+export const NETTING_RESULT_VERSION = 4;
 const U64_BITS = 64;
 const U128_BITS = 128;
+const U256_BITS = 256;
 const I128_BITS = 128;
+const I256_BITS = 256;
 
 function object(value: unknown, context: string): void {
   if (typeof value !== 'object' || value === null) throw new MalformedInputError(context, 'expected an object');
@@ -86,6 +88,7 @@ export interface NettingObligationInput {
   readonly legId: string;
   readonly instrumentId: string;
   readonly signedQuantityAtoms: bigint;
+  readonly limitPriceTicks: bigint;
   readonly sequence: bigint;
 }
 
@@ -100,6 +103,7 @@ export interface NettingObligation {
   readonly instrumentId: ProtocolId;
   readonly instrumentHash: CommitmentHash;
   readonly signedQuantityAtoms: bigint;
+  readonly limitPriceTicks: bigint;
   readonly sequence: bigint;
 }
 
@@ -114,7 +118,9 @@ export interface NettingAllocation {
   readonly instrumentId: ProtocolId;
   readonly instrumentHash: CommitmentHash;
   readonly signedQuantityAtoms: bigint;
+  readonly limitPriceTicks: bigint;
   readonly internalQuantityAtoms: bigint;
+  readonly internalQuoteDeltaAtoms: bigint;
   readonly externalQuantityAtoms: bigint;
   readonly sequence: bigint;
 }
@@ -127,10 +133,14 @@ export interface NettingUnderlyingSummary {
   readonly internalMatchedAtoms: bigint;
   readonly externalNetAtoms: bigint;
   readonly quantityIncrementAtoms: bigint;
+  readonly priceTickQuoteAtoms: bigint;
+  readonly internalClearingPriceTicks?: bigint;
+  readonly externalLimitPriceTicks?: bigint;
+  readonly internalQuoteAtoms: bigint;
 }
 
 export interface NettingResult {
-  readonly version: 3;
+  readonly version: 4;
   readonly nettingPolicyHash: CommitmentHash;
   readonly allocations: readonly NettingAllocation[];
   readonly underlyings: readonly NettingUnderlyingSummary[];
@@ -150,6 +160,7 @@ type Checked = {
   instrumentId: ProtocolId;
   instrumentHash: CommitmentHash;
   signedQuantityAtoms: bigint;
+  limitPriceTicks: bigint;
   sequence: bigint;
 };
 
@@ -166,6 +177,7 @@ function nettingObligationPayload(
     encodeProtocolId(writer, obligation.instrumentId, 'instrumentId');
     encodeCommitmentHash(writer, obligation.instrumentHash, 'instrumentHash');
     writer.writeI128(obligation.signedQuantityAtoms, 'signedQuantityAtoms');
+    writer.writeU128(obligation.limitPriceTicks, 'limitPriceTicks');
     writer.writeU64(obligation.sequence, 'sequence');
   });
 }
@@ -193,6 +205,8 @@ export function nettingObligation(
   if (signedQuantityAtoms % instrument.quantityIncrementAtoms !== 0n) {
     throw new MalformedInputError(`${context}.signedQuantityAtoms`, 'quantity is off the instrument increment lattice');
   }
+  const limitPriceTicks = unsigned(input.limitPriceTicks, U128_BITS, `${context}.limitPriceTicks`);
+  if (limitPriceTicks === 0n) throw new MalformedInputError(`${context}.limitPriceTicks`, 'price is zero');
   const checked = Object.freeze({
     nettingPolicyHash: commitmentHash(nettingPolicyManifestHash(policy), `${context}.nettingPolicyHash`),
     ownerId: protocolId(input.ownerId, `${context}.ownerId`),
@@ -203,9 +217,38 @@ export function nettingObligation(
     instrumentId,
     instrumentHash: instrument.instrumentHash,
     signedQuantityAtoms,
+    limitPriceTicks,
     sequence: unsigned(input.sequence, U64_BITS, `${context}.sequence`),
   });
   return Object.freeze({ obligationId: obligationHash(checked), ...checked });
+}
+
+function minimum(values: readonly bigint[], context: string): bigint {
+  if (values.length === 0) throw new MalformedInputError(context, 'expected a nonempty value set');
+  return values.reduce((lowest, value) => value < lowest ? value : lowest);
+}
+
+function maximum(values: readonly bigint[], context: string): bigint {
+  if (values.length === 0) throw new MalformedInputError(context, 'expected a nonempty value set');
+  return values.reduce((highest, value) => value > highest ? value : highest);
+}
+
+function quoteAtomsForQuantity(
+  quantityAtoms: bigint,
+  quantityIncrementAtoms: bigint,
+  priceTicks: bigint,
+  priceTickQuoteAtoms: bigint,
+  context: string,
+): bigint {
+  const magnitude = absBigInt(quantityAtoms);
+  if (magnitude % quantityIncrementAtoms !== 0n) {
+    throw new MalformedInputError(context, 'quantity is off the instrument increment lattice');
+  }
+  return checkedSigned(
+    (magnitude / quantityIncrementAtoms) * priceTicks * priceTickQuoteAtoms,
+    I256_BITS,
+    context,
+  );
 }
 
 /**
@@ -277,20 +320,62 @@ export function netObligations(
     const grossBuy = buys.reduce((sum, item) => sum + item.signedQuantityAtoms, 0n);
     const grossSell = sells.reduce((sum, item) => sum - item.signedQuantityAtoms, 0n);
     const matched = grossBuy < grossSell ? grossBuy : grossSell;
+    let internalClearingPriceTicks: bigint | undefined;
+    if (matched > 0n) {
+      const maximumSellLimit = maximum(sells.map((item) => item.limitPriceTicks), 'netObligations.sellLimits');
+      const minimumBuyLimit = minimum(buys.map((item) => item.limitPriceTicks), 'netObligations.buyLimits');
+      if (maximumSellLimit > minimumBuyLimit) {
+        throw new MalformedInputError('netObligations.limitPriceTicks', 'buy and sell limits do not overlap');
+      }
+      internalClearingPriceTicks = (maximumSellLimit + minimumBuyLimit) / 2n;
+    }
     for (const [key, value] of allocateSide(buys, matched, increment)) internal.set(key, value);
     for (const [key, value] of allocateSide(sells, matched, increment)) internal.set(key, -value);
+    const externalNetAtoms = grossBuy - grossSell;
+    const externallyRouted = [...buys, ...sells].filter((item) => (
+      item.signedQuantityAtoms - (internal.get(toHex(item.obligationId)) ?? 0n)
+    ) !== 0n);
+    const externalLimitPriceTicks = externalNetAtoms > 0n
+      ? minimum(externallyRouted.map((item) => item.limitPriceTicks), 'netObligations.externalBuyLimits')
+      : externalNetAtoms < 0n
+        ? maximum(externallyRouted.map((item) => item.limitPriceTicks), 'netObligations.externalSellLimits')
+        : undefined;
+    const internalQuoteAtoms = internalClearingPriceTicks === undefined
+      ? 0n
+      : quoteAtomsForQuantity(
+        matched,
+        increment,
+        internalClearingPriceTicks,
+        instrument.priceTickQuoteAtoms,
+        'netObligations.internalQuoteAtoms',
+      );
     return Object.freeze({
       instrumentId,
       instrumentHash: instrument.instrumentHash,
       grossBuyAtoms: grossBuy,
       grossSellAtoms: grossSell,
       internalMatchedAtoms: matched,
-      externalNetAtoms: grossBuy - grossSell,
+      externalNetAtoms,
       quantityIncrementAtoms: increment,
+      priceTickQuoteAtoms: instrument.priceTickQuoteAtoms,
+      ...(internalClearingPriceTicks === undefined ? {} : { internalClearingPriceTicks }),
+      ...(externalLimitPriceTicks === undefined ? {} : { externalLimitPriceTicks }),
+      internalQuoteAtoms,
     });
   });
+  const summaryByInstrument = new Map(summaries.map((summary) => [summary.instrumentId, summary]));
   const allocations = checked.map((item) => {
     const inside = internal.get(toHex(item.obligationId)) ?? 0n;
+    const summary = summaryByInstrument.get(item.instrumentId) as NettingUnderlyingSummary;
+    const quoteMagnitude = inside === 0n
+      ? 0n
+      : quoteAtomsForQuantity(
+        inside,
+        summary.quantityIncrementAtoms,
+        summary.internalClearingPriceTicks as bigint,
+        summary.priceTickQuoteAtoms,
+        'netObligations.internalQuoteDeltaAtoms',
+      );
     return Object.freeze({
       obligationId: item.obligationId,
       nettingPolicyHash: item.nettingPolicyHash,
@@ -302,7 +387,9 @@ export function netObligations(
       instrumentId: item.instrumentId,
       instrumentHash: item.instrumentHash,
       signedQuantityAtoms: item.signedQuantityAtoms,
+      limitPriceTicks: item.limitPriceTicks,
       internalQuantityAtoms: inside,
+      internalQuoteDeltaAtoms: inside > 0n ? -quoteMagnitude : quoteMagnitude,
       externalQuantityAtoms: item.signedQuantityAtoms - inside,
       sequence: item.sequence,
     });
@@ -337,7 +424,9 @@ export function nettingResultHash(input: NettingResultInput): CommitmentHash {
       encodeProtocolId(element, allocation.instrumentId);
       encodeCommitmentHash(element, allocation.instrumentHash, 'instrumentHash');
       element.writeI128(allocation.signedQuantityAtoms, 'signedQuantityAtoms');
+      element.writeU128(allocation.limitPriceTicks, 'limitPriceTicks');
       element.writeI128(allocation.internalQuantityAtoms, 'internalQuantityAtoms');
+      element.writeI256(allocation.internalQuoteDeltaAtoms, 'internalQuoteDeltaAtoms');
       element.writeI128(allocation.externalQuantityAtoms, 'externalQuantityAtoms');
       element.writeU64(allocation.sequence, 'sequence');
     });
@@ -349,6 +438,10 @@ export function nettingResultHash(input: NettingResultInput): CommitmentHash {
       element.writeU128(summary.internalMatchedAtoms, 'internalMatchedAtoms');
       element.writeI128(summary.externalNetAtoms, 'externalNetAtoms');
       element.writeU128(summary.quantityIncrementAtoms, 'quantityIncrementAtoms');
+      element.writeU128(summary.priceTickQuoteAtoms, 'priceTickQuoteAtoms');
+      element.writeOptional(summary.internalClearingPriceTicks, (inner, value) => inner.writeU128(value, 'internalClearingPriceTicks'), 'internalClearingPriceTicks');
+      element.writeOptional(summary.externalLimitPriceTicks, (inner, value) => inner.writeU128(value, 'externalLimitPriceTicks'), 'externalLimitPriceTicks');
+      element.writeU256(summary.internalQuoteAtoms, 'internalQuoteAtoms');
     });
   });
   return commitmentHash(domainHash(HASH_DOMAIN.NETTING_PROOF, payload), 'nettingProofHash');
@@ -383,6 +476,9 @@ export function verifyNettingResultAgainstPolicy(
     if (instrument.quantityIncrementAtoms !== summary.quantityIncrementAtoms) {
       throw new MalformedInputError('nettingResult.underlyings', 'result uses another instrument quantity increment');
     }
+    if (instrument.priceTickQuoteAtoms !== summary.priceTickQuoteAtoms) {
+      throw new MalformedInputError('nettingResult.underlyings', 'result uses another instrument price tick');
+    }
   }
 }
 
@@ -414,14 +510,29 @@ export function verifyNetting(
       instrumentId: protocolId(allocation.instrumentId, `${at}.instrumentId`),
       instrumentHash: commitmentHash(allocation.instrumentHash, `${at}.instrumentHash`),
       signedQuantityAtoms: signedNonzero(allocation.signedQuantityAtoms, `${at}.signedQuantityAtoms`),
+      limitPriceTicks: unsigned(allocation.limitPriceTicks, U128_BITS, `${at}.limitPriceTicks`),
       internalQuantityAtoms: checkedSigned(allocation.internalQuantityAtoms, I128_BITS, `${at}.internalQuantityAtoms`),
+      internalQuoteDeltaAtoms: checkedSigned(allocation.internalQuoteDeltaAtoms, I256_BITS, `${at}.internalQuoteDeltaAtoms`),
       externalQuantityAtoms: checkedSigned(allocation.externalQuantityAtoms, I128_BITS, `${at}.externalQuantityAtoms`),
       sequence: unsigned(allocation.sequence, U64_BITS, `${at}.sequence`),
     });
+    if (checked.limitPriceTicks === 0n) throw new MalformedInputError(`${at}.limitPriceTicks`, 'price is zero');
     if (compareBytes(checked.nettingPolicyHash, nettingPolicyHash) !== 0) {
       throw new MalformedInputError(`${at}.nettingPolicyHash`, 'allocation cites another netting policy');
     }
-    const { obligationId: _, ...identity } = checked;
+    const identity = {
+      nettingPolicyHash: checked.nettingPolicyHash,
+      ownerId: checked.ownerId,
+      strategyOrderHash: checked.strategyOrderHash,
+      packageOrderId: checked.packageOrderId,
+      settlementReadinessHash: checked.settlementReadinessHash,
+      legId: checked.legId,
+      instrumentId: checked.instrumentId,
+      instrumentHash: checked.instrumentHash,
+      signedQuantityAtoms: checked.signedQuantityAtoms,
+      limitPriceTicks: checked.limitPriceTicks,
+      sequence: checked.sequence,
+    };
     if (compareBytes(checked.obligationId, obligationHash(identity)) !== 0) {
       throw new MalformedInputError(`${at}.obligationId`, 'obligation id does not match its signed source identity');
     }
@@ -445,6 +556,16 @@ export function verifyNetting(
     object(summary, at);
     const quantityIncrementAtoms = unsigned(summary.quantityIncrementAtoms, U128_BITS, `${at}.quantityIncrementAtoms`);
     if (quantityIncrementAtoms === 0n) throw new MalformedInputError(`${at}.quantityIncrementAtoms`, 'increment is zero');
+    const priceTickQuoteAtoms = unsigned(summary.priceTickQuoteAtoms, U128_BITS, `${at}.priceTickQuoteAtoms`);
+    if (priceTickQuoteAtoms === 0n) throw new MalformedInputError(`${at}.priceTickQuoteAtoms`, 'price tick is zero');
+    const internalClearingPriceTicks = summary.internalClearingPriceTicks === undefined
+      ? undefined
+      : unsigned(summary.internalClearingPriceTicks, U128_BITS, `${at}.internalClearingPriceTicks`);
+    const externalLimitPriceTicks = summary.externalLimitPriceTicks === undefined
+      ? undefined
+      : unsigned(summary.externalLimitPriceTicks, U128_BITS, `${at}.externalLimitPriceTicks`);
+    if (internalClearingPriceTicks === 0n) throw new MalformedInputError(`${at}.internalClearingPriceTicks`, 'price is zero');
+    if (externalLimitPriceTicks === 0n) throw new MalformedInputError(`${at}.externalLimitPriceTicks`, 'price is zero');
     return Object.freeze({
       instrumentId: protocolId(summary.instrumentId, `${at}.instrumentId`),
       instrumentHash: commitmentHash(summary.instrumentHash, `${at}.instrumentHash`),
@@ -453,6 +574,10 @@ export function verifyNetting(
       internalMatchedAtoms: unsigned(summary.internalMatchedAtoms, U128_BITS, `${at}.internalMatchedAtoms`),
       externalNetAtoms: checkedSigned(summary.externalNetAtoms, I128_BITS, `${at}.externalNetAtoms`),
       quantityIncrementAtoms,
+      priceTickQuoteAtoms,
+      ...(internalClearingPriceTicks === undefined ? {} : { internalClearingPriceTicks }),
+      ...(externalLimitPriceTicks === undefined ? {} : { externalLimitPriceTicks }),
+      internalQuoteAtoms: unsigned(summary.internalQuoteAtoms, U256_BITS, `${at}.internalQuoteAtoms`),
     });
   });
   if (checkedSummaries.some((summary, index) => index > 0
@@ -464,6 +589,9 @@ export function verifyNetting(
     if (inside + outside !== gross) throw new MalformedInputError('verifyNetting', 'an obligation is not conserved');
     if (inside !== 0n && (inside > 0n) !== (gross > 0n)) throw new MalformedInputError('verifyNetting', 'an internal share flips direction');
     if (absBigInt(inside) > absBigInt(gross)) throw new MalformedInputError('verifyNetting', 'an internal share exceeds its obligation');
+    if (inside === 0n && allocation.internalQuoteDeltaAtoms !== 0n) throw new MalformedInputError('verifyNetting', 'an unnetted obligation has an internal quote transfer');
+    if (inside > 0n && allocation.internalQuoteDeltaAtoms >= 0n) throw new MalformedInputError('verifyNetting', 'an internal buyer does not pay quote asset');
+    if (inside < 0n && allocation.internalQuoteDeltaAtoms <= 0n) throw new MalformedInputError('verifyNetting', 'an internal seller does not receive quote asset');
   }
   const underlyings = new Set<string>(checkedAllocations.map((allocation) => allocation.instrumentId));
   const summarized = new Set<string>();
@@ -497,6 +625,16 @@ export function verifyNetting(
     if (buyInside !== matched || sellInside !== matched) {
       throw new MalformedInputError('verifyNetting', 'internal crossing is unbalanced');
     }
+    let expectedClearingPriceTicks: bigint | undefined;
+    if (matched > 0n) {
+      const maximumSellLimit = maximum(lines.filter((line) => line.signedQuantityAtoms < 0n).map((line) => line.limitPriceTicks), 'verifyNetting.sellLimits');
+      const minimumBuyLimit = minimum(lines.filter((line) => line.signedQuantityAtoms > 0n).map((line) => line.limitPriceTicks), 'verifyNetting.buyLimits');
+      if (maximumSellLimit > minimumBuyLimit) throw new MalformedInputError('verifyNetting', 'buy and sell limits do not overlap');
+      expectedClearingPriceTicks = (maximumSellLimit + minimumBuyLimit) / 2n;
+    }
+    if (summary.internalClearingPriceTicks !== expectedClearingPriceTicks) {
+      throw new MalformedInputError('verifyNetting', 'internal clearing price does not follow the signed limits');
+    }
     const buys = lines.filter((line) => line.signedQuantityAtoms > 0n) as readonly Checked[];
     const sells = lines.filter((line) => line.signedQuantityAtoms < 0n) as readonly Checked[];
     const expected = new Map<string, bigint>([
@@ -508,6 +646,50 @@ export function verifyNetting(
     }
     if (external !== summary.externalNetAtoms || grossBuy - grossSell !== summary.externalNetAtoms) {
       throw new MalformedInputError('verifyNetting', 'external net does not equal the gross imbalance');
+    }
+    const externalLines = lines.filter((line) => line.externalQuantityAtoms !== 0n);
+    const expectedExternalLimitPriceTicks = external > 0n
+      ? minimum(externalLines.map((line) => line.limitPriceTicks), 'verifyNetting.externalBuyLimits')
+      : external < 0n
+        ? maximum(externalLines.map((line) => line.limitPriceTicks), 'verifyNetting.externalSellLimits')
+        : undefined;
+    if (summary.externalLimitPriceTicks !== expectedExternalLimitPriceTicks) {
+      throw new MalformedInputError('verifyNetting', 'external execution limit does not follow the remaining obligations');
+    }
+    const internalQuoteAtoms = expectedClearingPriceTicks === undefined
+      ? 0n
+      : quoteAtomsForQuantity(
+        matched,
+        summary.quantityIncrementAtoms,
+        expectedClearingPriceTicks,
+        summary.priceTickQuoteAtoms,
+        'verifyNetting.internalQuoteAtoms',
+      );
+    if (summary.internalQuoteAtoms !== internalQuoteAtoms) {
+      throw new MalformedInputError('verifyNetting', 'internal quote total does not follow the clearing price');
+    }
+    const quoteDelta = lines.reduce((sum, line) => sum + line.internalQuoteDeltaAtoms, 0n);
+    if (quoteDelta !== 0n) throw new MalformedInputError('verifyNetting', 'internal quote transfers are unbalanced');
+    for (const line of lines) {
+      const expectedMagnitude = line.internalQuantityAtoms === 0n || expectedClearingPriceTicks === undefined
+        ? 0n
+        : quoteAtomsForQuantity(
+          line.internalQuantityAtoms,
+          summary.quantityIncrementAtoms,
+          expectedClearingPriceTicks,
+          summary.priceTickQuoteAtoms,
+          'verifyNetting.internalQuoteDeltaAtoms',
+        );
+      const expectedDelta = line.internalQuantityAtoms > 0n ? -expectedMagnitude : expectedMagnitude;
+      if (line.internalQuoteDeltaAtoms !== expectedDelta) {
+        throw new MalformedInputError('verifyNetting', 'an internal quote transfer does not follow the clearing price');
+      }
+      if (expectedClearingPriceTicks !== undefined && line.internalQuantityAtoms > 0n && expectedClearingPriceTicks > line.limitPriceTicks) {
+        throw new MalformedInputError('verifyNetting', 'internal clearing price exceeds a buyer limit');
+      }
+      if (expectedClearingPriceTicks !== undefined && line.internalQuantityAtoms < 0n && expectedClearingPriceTicks < line.limitPriceTicks) {
+        throw new MalformedInputError('verifyNetting', 'internal clearing price is below a seller limit');
+      }
     }
   }
 }

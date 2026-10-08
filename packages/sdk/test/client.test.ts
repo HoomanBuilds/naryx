@@ -57,7 +57,7 @@ const id = (n: number): string => n.toString(16).padStart(64, '0');
 const NETTING_POLICY: NettingPolicyManifestInput = {
   schemaVersion: 1,
   manifestVersion: 1,
-  nettingPolicyVersion: 1,
+  nettingPolicyVersion: 2,
   environment: 'testnet',
   executionClassId: CLASS,
   executionClassVersion: 1,
@@ -65,6 +65,7 @@ const NETTING_POLICY: NettingPolicyManifestInput = {
   settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
   allocationRule: 'PRO_RATA_SEQUENCE',
   externalExecutionMode: 'EXACT_NET_ONLY',
+  clearingRule: 'LIMIT_MIDPOINT_BUYER_FAVOR',
   maximumObligations: 16,
   maximumBatchWindowMilliseconds: 500n,
   instruments: [{
@@ -74,8 +75,10 @@ const NETTING_POLICY: NettingPolicyManifestInput = {
     venue: versionedManifestRef('phoenix', 1, id(88)),
     market: versionedManifestRef('sol-perp', 1, id(89)),
     quantityAsset: assetRef('sol', id(90), 9),
+    quoteAsset: assetRef('usdc', id(91), 6),
     legFamily: 'PERP_OPEN',
     quantityIncrementAtoms: 10n,
+    priceTickQuoteAtoms: 1n,
   }],
 };
 const nettingObligation = (n: number, ownerId: string, signedQuantityAtoms: bigint): NettingObligationInput => ({
@@ -86,6 +89,7 @@ const nettingObligation = (n: number, ownerId: string, signedQuantityAtoms: bigi
   legId: `leg-${n}`,
   instrumentId: 'sol',
   signedQuantityAtoms,
+  limitPriceTicks: signedQuantityAtoms > 0n ? 12n : 8n,
   sequence: BigInt(n),
 });
 const order = (n: number, overrides: Partial<PackageTakerOrderInput> = {}): PackageTakerOrderInput => {

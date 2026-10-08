@@ -13,6 +13,7 @@ import {
   toHex,
   type NettingObligationInput,
   type NettingPolicyManifestInput,
+  type AssetRef,
 } from "@naryx/protocol-types";
 import { verifyEd25519 } from "./ed25519.js";
 import {
@@ -58,6 +59,36 @@ export interface PrepareAuthoritativeNettingBatchResult {
 
 function fail(code: string, message: string): never {
   throw new AuthoritativeNettingError(code, message);
+}
+
+function sameAsset(left: AssetRef, right: AssetRef): boolean {
+  return left.assetId === right.assetId
+    && left.decimals === right.decimals
+    && bytesEqual(left.assetManifestHash, right.assetManifestHash);
+}
+
+function priceTicks(
+  leg: ReturnType<typeof packageGraph>["legs"][number],
+  instrument: ReturnType<typeof nettingPolicyManifest>["instruments"][number],
+  packageOrderIdHex: string,
+): bigint {
+  const limit = leg.limitPrice;
+  if (limit === undefined) {
+    fail("UNBOUNDED_NETTING_LEG", `Package ${packageOrderIdHex} leg ${leg.legId} has no exact limit price.`);
+  }
+  if (!sameAsset(limit.baseAsset, instrument.quantityAsset) || !sameAsset(limit.quoteAsset, instrument.quoteAsset)) {
+    fail("PRICE_ASSET_MISMATCH", `Package ${packageOrderIdHex} leg ${leg.legId} limit price uses another asset pair.`);
+  }
+  const numerator = limit.quoteAtoms * instrument.quantityIncrementAtoms;
+  const denominator = limit.baseAtoms * instrument.priceTickQuoteAtoms;
+  if (numerator % denominator !== 0n) {
+    fail("OFF_TICK_LIMIT", `Package ${packageOrderIdHex} leg ${leg.legId} limit price is off the signed price lattice.`);
+  }
+  const ticks = numerator / denominator;
+  if (ticks === 0n || ticks >= (1n << 128n)) {
+    fail("INVALID_LIMIT", `Package ${packageOrderIdHex} leg ${leg.legId} limit price is outside the supported range.`);
+  }
+  return ticks;
 }
 
 async function verifiesAuthorization(
@@ -173,8 +204,10 @@ export async function prepareAuthoritativeNettingBatch(
           venue: leg.venue,
           market: leg.market,
           quantityAsset: leg.quantityAsset,
+          quoteAsset: candidate.quoteAsset,
           legFamily: leg.legFamily,
           quantityIncrementAtoms: candidate.quantityIncrementAtoms,
+          priceTickQuoteAtoms: candidate.priceTickQuoteAtoms,
         }),
       ));
       if (instrument === undefined) {
@@ -188,6 +221,7 @@ export async function prepareAuthoritativeNettingBatch(
         legId: leg.legId,
         instrumentId: instrument.instrumentId,
         signedQuantityAtoms: leg.side === "BUY" ? leg.quantityAtoms : -leg.quantityAtoms,
+        limitPriceTicks: priceTicks(leg, instrument, packageOrderIdHex),
       }));
     }
     if (obligations.length === 0) {

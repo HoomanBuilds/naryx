@@ -41,7 +41,7 @@ import {
 } from './primitives.js';
 
 export const NETTING_POLICY_SCHEMA_VERSION = 1;
-export const NETTING_POLICY_VERSION = 1;
+export const NETTING_POLICY_VERSION = 2;
 export const NETTING_POLICY_MAX_INSTRUMENTS = 512;
 export const NETTING_POLICY_MAX_OBLIGATIONS = 512;
 
@@ -59,6 +59,11 @@ export const NETTING_EXTERNAL_EXECUTION_MODE = Object.freeze({
 } as const);
 export type NettingExternalExecutionMode = keyof typeof NETTING_EXTERNAL_EXECUTION_MODE;
 
+export const NETTING_CLEARING_RULE = Object.freeze({
+  LIMIT_MIDPOINT_BUYER_FAVOR: 1,
+} as const);
+export type NettingClearingRule = keyof typeof NETTING_CLEARING_RULE;
+
 export interface NettingInstrumentPolicyInput {
   readonly instrumentId: string;
   readonly domain: DomainRef;
@@ -66,8 +71,10 @@ export interface NettingInstrumentPolicyInput {
   readonly venue: VersionedManifestRef;
   readonly market: VersionedManifestRef;
   readonly quantityAsset: AssetRef;
+  readonly quoteAsset: AssetRef;
   readonly legFamily: LegFamily;
   readonly quantityIncrementAtoms: bigint;
+  readonly priceTickQuoteAtoms: bigint;
 }
 
 export interface NettingInstrumentPolicy {
@@ -78,8 +85,10 @@ export interface NettingInstrumentPolicy {
   readonly venue: VersionedManifestRef;
   readonly market: VersionedManifestRef;
   readonly quantityAsset: AssetRef;
+  readonly quoteAsset: AssetRef;
   readonly legFamily: LegFamily;
   readonly quantityIncrementAtoms: bigint;
+  readonly priceTickQuoteAtoms: bigint;
 }
 
 export interface NettingPolicyManifestInput {
@@ -93,6 +102,7 @@ export interface NettingPolicyManifestInput {
   readonly settlementClass: SettlementClass;
   readonly allocationRule: NettingAllocationRule;
   readonly externalExecutionMode: NettingExternalExecutionMode;
+  readonly clearingRule: NettingClearingRule;
   readonly maximumObligations: number;
   readonly maximumBatchWindowMilliseconds: bigint;
   readonly instruments: readonly NettingInstrumentPolicyInput[];
@@ -101,7 +111,7 @@ export interface NettingPolicyManifestInput {
 export interface NettingPolicyManifest {
   readonly schemaVersion: 1;
   readonly manifestVersion: number;
-  readonly nettingPolicyVersion: 1;
+  readonly nettingPolicyVersion: 2;
   readonly environment: ProtocolId;
   readonly executionClassId: ProtocolId;
   readonly executionClassVersion: number;
@@ -109,6 +119,7 @@ export interface NettingPolicyManifest {
   readonly settlementClass: SettlementClass;
   readonly allocationRule: NettingAllocationRule;
   readonly externalExecutionMode: NettingExternalExecutionMode;
+  readonly clearingRule: NettingClearingRule;
   readonly maximumObligations: number;
   readonly maximumBatchWindowMilliseconds: bigint;
   readonly instruments: readonly NettingInstrumentPolicy[];
@@ -120,11 +131,11 @@ function object(value: unknown, context: string): void {
   }
 }
 
-function fixedVersion(value: number, expected: number, context: string): 1 {
+function fixedVersion<const Version extends number>(value: number, expected: Version, context: string): Version {
   if (typeof value !== 'number') throw new MalformedInputError(context, 'expected a number');
   const checked = Number(checkedUnsigned(value, U32_BITS, context));
   if (checked !== expected) throw new MalformedInputError(context, `version must equal ${expected}`);
-  return 1;
+  return expected;
 }
 
 function nonzeroVersion(value: number, context: string): number {
@@ -176,6 +187,7 @@ interface CheckedInstrumentIdentity {
   readonly venue: VersionedManifestRef;
   readonly market: VersionedManifestRef;
   readonly quantityAsset: AssetRef;
+  readonly quoteAsset: AssetRef;
   readonly legFamily: LegFamily;
 }
 
@@ -191,6 +203,7 @@ function checkedInstrumentIdentity(
     venue: canonicalManifestRef(input.venue, `${context}.venue`),
     market: canonicalManifestRef(input.market, `${context}.market`),
     quantityAsset: canonicalAsset(input.quantityAsset, `${context}.quantityAsset`),
+    quoteAsset: canonicalAsset(input.quoteAsset, `${context}.quoteAsset`),
     legFamily: variant(LEG_FAMILY, input.legFamily, `${context}.legFamily`),
   });
 }
@@ -206,6 +219,7 @@ function encodeInstrumentIdentity(
   encodeVersionedManifestRef(writer, value.venue);
   encodeVersionedManifestRef(writer, value.market);
   encodeAssetRef(writer, value.quantityAsset);
+  encodeAssetRef(writer, value.quoteAsset);
   writer.writeEnum(LEG_FAMILY, value.legFamily, `${context}.legFamily`);
 }
 
@@ -227,11 +241,16 @@ function nettingInstrumentPolicy(
     U128_BITS,
     `${context}.quantityIncrementAtoms`,
   );
+  const priceTickQuoteAtoms = positive(
+    input.priceTickQuoteAtoms,
+    U128_BITS,
+    `${context}.priceTickQuoteAtoms`,
+  );
   const instrumentHash = nettingInstrumentHash(input);
   if ('instrumentHash' in input && compareBytes(commitmentHash(input.instrumentHash, `${context}.instrumentHash`), instrumentHash) !== 0) {
     throw new MalformedInputError(`${context}.instrumentHash`, 'hash does not match the instrument identity');
   }
-  return Object.freeze({ ...identity, instrumentHash, quantityIncrementAtoms });
+  return Object.freeze({ ...identity, instrumentHash, quantityIncrementAtoms, priceTickQuoteAtoms });
 }
 
 function encodeNettingInstrumentPolicy(
@@ -243,6 +262,7 @@ function encodeNettingInstrumentPolicy(
   encodeInstrumentIdentity(writer, checked, context);
   encodeCommitmentHash(writer, checked.instrumentHash, `${context}.instrumentHash`);
   writer.writeU128(checked.quantityIncrementAtoms, `${context}.quantityIncrementAtoms`);
+  writer.writeU128(checked.priceTickQuoteAtoms, `${context}.priceTickQuoteAtoms`);
 }
 
 export function nettingPolicyManifest(
@@ -280,6 +300,7 @@ export function nettingPolicyManifest(
       input.externalExecutionMode,
       `${context}.externalExecutionMode`,
     ),
+    clearingRule: variant(NETTING_CLEARING_RULE, input.clearingRule, `${context}.clearingRule`),
     maximumObligations: boundedCount(
       input.maximumObligations,
       NETTING_POLICY_MAX_OBLIGATIONS,
@@ -314,6 +335,7 @@ export function encodeNettingPolicyManifest(
     checked.externalExecutionMode,
     `${context}.externalExecutionMode`,
   );
+  writer.writeEnum(NETTING_CLEARING_RULE, checked.clearingRule, `${context}.clearingRule`);
   writer.writeU32(checked.maximumObligations, `${context}.maximumObligations`);
   writer.writeU64(checked.maximumBatchWindowMilliseconds, `${context}.maximumBatchWindowMilliseconds`);
   writer.writeArray(

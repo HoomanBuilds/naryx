@@ -45,7 +45,7 @@ const perpAdapter = adapterRef({ adapterId: "perp", adapterManifestVersion: 1, a
 const policyInput: NettingPolicyManifestInput = {
   schemaVersion: 1,
   manifestVersion: 1,
-  nettingPolicyVersion: 1,
+  nettingPolicyVersion: 2,
   environment: "devnet",
   executionClassId: "sol-basis",
   executionClassVersion: 1,
@@ -53,6 +53,7 @@ const policyInput: NettingPolicyManifestInput = {
   settlementClass: "ATOMIC_POSTCONDITION",
   allocationRule: "PRO_RATA_SEQUENCE",
   externalExecutionMode: "EXACT_NET_ONLY",
+  clearingRule: "LIMIT_MIDPOINT_BUYER_FAVOR",
   maximumObligations: 8,
   maximumBatchWindowMilliseconds: 1_000n,
   instruments: [
@@ -63,8 +64,10 @@ const policyInput: NettingPolicyManifestInput = {
       venue,
       market: spotMarket,
       quantityAsset: sol,
+      quoteAsset: usdc,
       legFamily: "SPOT_SWAP",
       quantityIncrementAtoms: 10n,
+      priceTickQuoteAtoms: 1n,
     },
     {
       instrumentId: "sol-perp",
@@ -73,8 +76,10 @@ const policyInput: NettingPolicyManifestInput = {
       venue,
       market: perpMarket,
       quantityAsset: sol,
+      quoteAsset: usdc,
       legFamily: "PERP_OPEN",
       quantityIncrementAtoms: 10n,
+      priceTickQuoteAtoms: 1n,
     },
   ],
 };
@@ -106,6 +111,13 @@ function graph(owner: string, reverse: boolean, nonce: bigint): PackageGraphInpu
     quantityAsset: sol,
     quantityAtoms: 10n,
     minimumQuantityAtoms: 10n,
+    limitPrice: {
+      baseAsset: sol,
+      quoteAsset: usdc,
+      quoteAtoms: side === "BUY" ? 6n : 4n,
+      baseAtoms: 5n,
+      roundingDirection: side === "BUY" ? "CEIL" as const : "FLOOR" as const,
+    },
     maximumFeeQuoteAtoms: 1n,
     preconditionHashes: [],
     postconditionHashes: [],
@@ -288,5 +300,9 @@ test("authoritative netting derives opposite package legs from signed durable st
   assert.deepEqual(
     prepared.batch.result.underlyings.map((entry) => [entry.instrumentId, entry.internalMatchedAtoms, entry.externalNetAtoms]),
     [["sol-perp", 10n, 0n], ["sol-spot", 10n, 0n]],
+  );
+  assert.deepEqual(
+    prepared.batch.result.underlyings.map((entry) => [entry.instrumentId, entry.internalClearingPriceTicks, entry.internalQuoteAtoms]),
+    [["sol-perp", 10n, 10n], ["sol-spot", 10n, 10n]],
   );
 });

@@ -35,8 +35,10 @@ function instrument(instrumentId: string, hashSeed: number, quantityIncrementAto
     venue: versionedManifestRef(`venue-${instrumentId}`, 1, id(hashSeed + 2)),
     market: versionedManifestRef(`market-${instrumentId}`, 1, id(hashSeed + 3)),
     quantityAsset: assetRef(`asset-${instrumentId}`, id(hashSeed + 4), 6),
+    quoteAsset: assetRef('usdc', id(99), 6),
     legFamily: 'PERP_OPEN' as const,
     quantityIncrementAtoms,
+    priceTickQuoteAtoms: 1n,
   };
 }
 
@@ -48,7 +50,7 @@ function policy(
   return {
     schemaVersion: 1,
     manifestVersion: 1,
-    nettingPolicyVersion: 1,
+    nettingPolicyVersion: 2,
     environment: 'testnet',
     executionClassId: 'cross-user-netting-v1',
     executionClassVersion: 1,
@@ -56,6 +58,7 @@ function policy(
     settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
     allocationRule: 'PRO_RATA_SEQUENCE',
     externalExecutionMode: 'EXACT_NET_ONLY',
+    clearingRule: 'LIMIT_MIDPOINT_BUYER_FAVOR',
     maximumObligations: 32,
     maximumBatchWindowMilliseconds: 500n,
     instruments: [instrument('sol', 10, solIncrement), instrument('eth', 20, ethIncrement)],
@@ -68,6 +71,7 @@ const obligation = (
   ownerId: string,
   quantity: bigint,
   instrumentId = 'sol',
+  limitPriceTicks = quantity > 0n ? 12n : 8n,
 ): NettingObligationInput => ({
   ownerId,
   strategyOrderHash: id(100 + n),
@@ -76,6 +80,7 @@ const obligation = (
   legId: `leg-${n}`,
   instrumentId,
   signedQuantityAtoms: quantity,
+  limitPriceTicks,
   sequence: BigInt(n),
 });
 
@@ -103,7 +108,7 @@ describe('cross-user netting', () => {
 
   test('crosses exact instruments and routes only the net externally', () => {
     const result = netObligations(book, nettingPolicy);
-    assert.equal(result.version, 3);
+    assert.equal(result.version, 4);
     assert.deepEqual(
       result.allocations.map((item) => [item.ownerId, item.legId, item.internalQuantityAtoms, item.externalQuantityAtoms]),
       [
@@ -112,6 +117,14 @@ describe('cross-user netting', () => {
         ['carol', 'leg-3', -40n, 0n],
         ['dave', 'leg-4', 0n, 10n],
       ],
+    );
+    assert.deepEqual(
+      result.allocations.map((item) => [item.ownerId, item.internalQuoteDeltaAtoms]),
+      [['alice', -30n], ['bob', -10n], ['carol', 40n], ['dave', 0n]],
+    );
+    assert.deepEqual(
+      result.underlyings.map((item) => [item.instrumentId, item.internalClearingPriceTicks, item.externalLimitPriceTicks, item.internalQuoteAtoms]),
+      [['eth', undefined, 12n, 0n], ['sol', 10n, 12n, 40n]],
     );
     assert.deepEqual(
       result.underlyings.map((item) => [item.instrumentId, item.internalMatchedAtoms, item.externalNetAtoms, item.quantityIncrementAtoms]),
@@ -142,6 +155,10 @@ describe('cross-user netting', () => {
     assert.throws(
       () => verifyNetting(result.nettingPolicyHash, [{ ...alice, strategyOrderHash: commitmentHash(id(999)) }, ...rest], result.underlyings),
       /obligation id/,
+    );
+    assert.throws(
+      () => verifyNetting(result.nettingPolicyHash, [{ ...alice, internalQuoteDeltaAtoms: -29n }, ...rest], result.underlyings),
+      /unbalanced|does not follow/,
     );
     const [, bob, carol, dave] = result.allocations;
     const wrongPriority = [
@@ -181,6 +198,10 @@ describe('cross-user netting', () => {
     assert.throws(
       () => netObligations([obligation(1, 'alice', 10n), obligation(2, 'bob', -10n)], policy(10n, 5n, { maximumObligations: 1 })),
       /policy maximum/,
+    );
+    assert.throws(
+      () => netObligations([obligation(1, 'alice', 10n, 'sol', 7n), obligation(2, 'bob', -10n, 'sol', 8n)], nettingPolicy),
+      /limits do not overlap/,
     );
   });
 
