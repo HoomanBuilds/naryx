@@ -6,9 +6,14 @@ import { bytesEqual, enumDiscriminant, SETTLEMENT_CLASS } from "@naryx/protocol-
 import type { DomainRef, PackageAdmission, SettlementClass, VersionedManifestRef } from "@naryx/protocol-types";
 import type {
   FirmCashCarryBinding,
+  SolanaObservedNettingInstruction,
   SolanaMaterializationRequest,
   UnsignedSolanaMaterialization,
 } from "@naryx/adapter-solana";
+import type {
+  SolanaFinalizedNettingTransaction,
+  SolanaNettingAllocationReadPort,
+} from "./netting-allocation-observation-routes.js";
 import {
   isSolanaDevnetLifecycleAttemptId,
   SOLANA_DEVNET_GENESIS_HASH,
@@ -1011,7 +1016,7 @@ export class InMemoryPreparedSolanaDevnetStore implements PreparedSolanaDevnetSt
   }
 }
 
-export class HttpSolanaDevnetReadOnlyRpc implements SolanaDevnetReadOnlyRpc {
+export class HttpSolanaDevnetReadOnlyRpc implements SolanaDevnetReadOnlyRpc, SolanaNettingAllocationReadPort {
   private readonly endpoint: string;
   private nextId = 1;
 
@@ -1037,6 +1042,10 @@ export class HttpSolanaDevnetReadOnlyRpc implements SolanaDevnetReadOnlyRpc {
       throw new Error("Solana RPC getGenesisHash returned malformed result.");
     }
     return result;
+  }
+
+  async genesisHash(): Promise<string> {
+    return this.getGenesisHash();
   }
 
   async getSignatureStatus(signature: string): Promise<SolanaSignatureStatus | null> {
@@ -1131,6 +1140,108 @@ export class HttpSolanaDevnetReadOnlyRpc implements SolanaDevnetReadOnlyRpc {
       return Object.freeze({ owner: entry.owner, data: Uint8Array.from(data) });
     });
     return Object.freeze({ contextSlot, accounts: Object.freeze(accounts) });
+  }
+
+  async finalizedTransaction(signature: string): Promise<SolanaFinalizedNettingTransaction | null> {
+    requireCanonicalSignature(signature);
+    const result = await this.call("getTransaction", [
+      signature,
+      { commitment: "finalized", encoding: "json", maxSupportedTransactionVersion: 0 },
+    ]);
+    if (result === null) return null;
+    if (!isRecord(result) || typeof result.slot !== "number" || !Number.isSafeInteger(result.slot) || result.slot <= 0
+      || !isRecord(result.transaction) || !isRecord(result.transaction.message) || !isRecord(result.meta)) {
+      throw new Error("Solana RPC getTransaction returned malformed result.");
+    }
+    const message = result.transaction.message;
+    const meta = result.meta;
+    if (!Array.isArray(message.accountKeys) || message.accountKeys.some((key) => typeof key !== "string" || !isAddress(key))) {
+      throw new Error("Solana RPC getTransaction returned malformed account keys.");
+    }
+    const loaded = meta.loadedAddresses;
+    const loadedWritable: unknown[] = loaded === undefined || loaded === null
+      ? []
+      : isRecord(loaded) && Array.isArray(loaded.writable) ? loaded.writable : [];
+    const loadedReadonly: unknown[] = loaded === undefined || loaded === null
+      ? []
+      : isRecord(loaded) && Array.isArray(loaded.readonly) ? loaded.readonly : [];
+    if (loaded !== undefined && loaded !== null && (!isRecord(loaded)
+      || !Array.isArray(loaded.writable) || !Array.isArray(loaded.readonly))) {
+      throw new Error("Solana RPC getTransaction returned malformed loaded addresses.");
+    }
+    const allKeys = [...message.accountKeys, ...loadedWritable, ...loadedReadonly];
+    if (allKeys.some((key) => typeof key !== "string" || !isAddress(key))) {
+      throw new Error("Solana RPC getTransaction returned invalid loaded addresses.");
+    }
+    const decodeInstruction = (value: unknown): SolanaObservedNettingInstruction => {
+      if (!isRecord(value)
+        || typeof value.programIdIndex !== "number" || !Number.isSafeInteger(value.programIdIndex)
+        || value.programIdIndex < 0 || value.programIdIndex >= allKeys.length
+        || !Array.isArray(value.accounts)
+        || value.accounts.some((index) => typeof index !== "number" || !Number.isSafeInteger(index)
+          || index < 0 || index >= allKeys.length)
+        || typeof value.data !== "string") {
+        throw new Error("Solana RPC getTransaction returned malformed compiled instruction.");
+      }
+      let data: Uint8Array;
+      try {
+        data = bs58.decode(value.data);
+        if (bs58.encode(data) !== value.data) throw new Error("noncanonical base58");
+      } catch {
+        throw new Error("Solana RPC getTransaction returned invalid instruction data.");
+      }
+      return Object.freeze({
+        programId: allKeys[value.programIdIndex] as string,
+        accounts: Object.freeze(value.accounts.map((index) => allKeys[index as number] as string)),
+        data: Uint8Array.from(data),
+      });
+    };
+    if (!Array.isArray(message.instructions)) {
+      throw new Error("Solana RPC getTransaction returned malformed instructions.");
+    }
+    const instructions = message.instructions.map(decodeInstruction);
+    if (meta.innerInstructions !== null && meta.innerInstructions !== undefined) {
+      if (!Array.isArray(meta.innerInstructions)) {
+        throw new Error("Solana RPC getTransaction returned malformed inner instructions.");
+      }
+      for (const group of meta.innerInstructions) {
+        if (!isRecord(group) || !Array.isArray(group.instructions)) {
+          throw new Error("Solana RPC getTransaction returned malformed inner instruction group.");
+        }
+        instructions.push(...group.instructions.map(decodeInstruction));
+      }
+    }
+    return Object.freeze({
+      slot: BigInt(result.slot),
+      successful: meta.err === null,
+      instructions: Object.freeze(instructions),
+    });
+  }
+
+  async finalizedAccount(address: string): Promise<Readonly<{
+    address: string;
+    owner: string;
+    data: Uint8Array;
+  }> | null> {
+    if (!isAddress(address)) throw new Error("Solana receipt address is invalid.");
+    const result = await this.call("getAccountInfo", [
+      address,
+      { commitment: "finalized", encoding: "base64" },
+    ]);
+    if (!isRecord(result) || !("value" in result)) {
+      throw new Error("Solana RPC getAccountInfo returned malformed result.");
+    }
+    if (result.value === null) return null;
+    if (!isRecord(result.value) || typeof result.value.owner !== "string" || !isAddress(result.value.owner)
+      || !Array.isArray(result.value.data) || result.value.data.length !== 2
+      || result.value.data[1] !== "base64" || typeof result.value.data[0] !== "string") {
+      throw new Error("Solana RPC getAccountInfo returned malformed account.");
+    }
+    const data = Buffer.from(result.value.data[0], "base64");
+    if (data.toString("base64") !== result.value.data[0]) {
+      throw new Error("Solana RPC getAccountInfo returned noncanonical account data.");
+    }
+    return Object.freeze({ address, owner: result.value.owner, data: Uint8Array.from(data) });
   }
 
   private async call(method: string, params: unknown[]): Promise<unknown> {
