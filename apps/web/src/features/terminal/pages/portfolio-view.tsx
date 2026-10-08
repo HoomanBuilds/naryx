@@ -19,7 +19,7 @@ import { GAS_FAUCETS, TEST_USDC_GRANT, useTestUsdcFaucets } from "./use-test-usd
 import styles from "./pages.module.css";
 
 const POSITION_COLUMNS = ["Package", "Chain", "Size", "Entry notional", "State", ""];
-const INTELLIGENCE_COLUMNS = ["Strategy account", "Position evidence", "Marked exposure", "Close cost", "Available collateral", "Risk domains", "Freshness"];
+const INTELLIGENCE_COLUMNS = ["Strategy account", "Position evidence", "Marked exposure", "Close cost", "10% stress loss", "Available collateral", "Risk domains", "Freshness"];
 
 /** What each chain's account is and the limits the code enforces on it. Nothing here claims a deployment. */
 const ACCOUNT_TERMS: Readonly<Record<DomainId, readonly (readonly [string, string])[]>> = {
@@ -383,7 +383,7 @@ export function PortfolioView() {
             <thead>
               <tr>
                 {INTELLIGENCE_COLUMNS.map((column, index) => (
-                  <th key={column} scope="col" className={index >= 2 && index <= 4 ? styles.num : undefined}>{column}</th>
+                  <th key={column} scope="col" className={index >= 2 && index <= 5 ? styles.num : undefined}>{column}</th>
                 ))}
               </tr>
             </thead>
@@ -418,6 +418,18 @@ export function PortfolioView() {
                             <span key={`${group.assetId}:${group.decimals}`} title="Net marked exposure and gross absolute marked exposure from locally verified position snapshots">
                               {formatAtomicAmount(group.netNotionalAtoms, group.decimals, group.assetId.toUpperCase())} <span className={styles.dim}>net</span>
                               <small className={styles.cellDetail}>{formatAtomicAmount(group.grossNotionalAtoms, group.decimals, group.assetId.toUpperCase())} gross</small>
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                    </td>
+                    <td className={styles.num}>
+                      {row.risk.length === 0 ? <span className={styles.dim}>No observation</span> : (
+                        <span className={styles.cellStack}>
+                          {row.risk.map((group) => (
+                            <span key={`${group.assetId}:${group.decimals}`} title="Locally replayed uniform price shocks with close costs stressed to 150%">
+                              {formatAtomicAmount(group.downShockLossAtoms, group.decimals, group.assetId.toUpperCase())} <span className={styles.dim}>down</span>
+                              <small className={styles.cellDetail}>{formatAtomicAmount(group.upShockLossAtoms, group.decimals, group.assetId.toUpperCase())} up</small>
                             </span>
                           ))}
                         </span>

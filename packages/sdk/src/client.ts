@@ -45,6 +45,7 @@ import {
   packageReopeningSettlementHandoff,
   packageReopeningSettlementHandoffHash,
   packageCloseCostIndex,
+  stressPortfolio,
   packageGraphHash,
   simulatePackageGraphFailures,
   packageReceipt,
@@ -2172,11 +2173,26 @@ export class NaryxClient {
       }
       const stress = record(served.stress, `byAccountingAsset[${index}].stress`);
       if (stress.label !== 'MODELED') throw new NaryxEvidenceError('stress rows must be labeled MODELED');
+      const stressResults = list(stress.results, `byAccountingAsset[${index}].stress.results`) as unknown as readonly StressResult[];
+      const underlyings = [...new Set(grouped.map((position) => position.underlyingId))].sort();
+      const scenario = (scenarioId: string, shockBps: bigint) => ({
+        scenarioId,
+        priceShocksBps: underlyings.map((underlyingId) => ({ underlyingId, shockBps })),
+        closeCostMultiplierBps: 15_000n,
+        failedDependencyIds: [],
+      });
+      const expectedStress = [
+        stressPortfolio(grouped, scenario('uniform-down-10pct', -1_000n), asset),
+        stressPortfolio(grouped, scenario('uniform-up-10pct', 1_000n), asset),
+      ];
+      if (!same(expectedStress, stressResults)) {
+        throw new NaryxEvidenceError(`byAccountingAsset[${index}] stress differs from the local computation`);
+      }
       return Object.freeze({
         accountingAsset: asset,
         exposure,
         closeCost,
-        stress: Object.freeze({ label: 'MODELED' as const, results: list(stress.results, `byAccountingAsset[${index}].stress.results`) as unknown as readonly StressResult[] }),
+        stress: Object.freeze({ label: 'MODELED' as const, results: stressResults }),
       });
     });
     const covered = groups.reduce((sum, group) => sum + positions.positions.filter((position) => position.markPrice.quoteAsset.assetId === group.accountingAsset.assetId && bytesEqual(position.markPrice.quoteAsset.assetManifestHash, group.accountingAsset.assetManifestHash)).length, 0);

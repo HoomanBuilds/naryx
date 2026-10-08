@@ -10,6 +10,7 @@ import {
   assetRef,
   buildExposureGraph,
   packageCloseCostIndex,
+  stressPortfolio,
   packageGraphHash,
   simulatePackageGraphFailures,
   positionSnapshotRecord,
@@ -648,10 +649,15 @@ describe('order intake and terminal evidence', () => {
       records: [record],
       positions: record.positions.map((entry) => ({ sourceId: record.sourceId, position: entry })),
     });
-    const riskBody = (exposure: unknown = buildExposureGraph(normalized.positions, usdc)) => ({
+    const scenarios = [
+      { scenarioId: 'uniform-down-10pct', priceShocksBps: [{ underlyingId: 'btc', shockBps: -1_000n }], closeCostMultiplierBps: 15_000n, failedDependencyIds: [] },
+      { scenarioId: 'uniform-up-10pct', priceShocksBps: [{ underlyingId: 'btc', shockBps: 1_000n }], closeCostMultiplierBps: 15_000n, failedDependencyIds: [] },
+    ];
+    const stress = scenarios.map((scenario) => stressPortfolio(normalized.positions, scenario, usdc));
+    const riskBody = (exposure: unknown = buildExposureGraph(normalized.positions, usdc), results: unknown = stress) => ({
       strategyAccount: 'strategy-1',
       methodology: 'uniform shocks',
-      byAccountingAsset: [{ accountingAsset: usdc, exposure, closeCost: packageCloseCostIndex(normalized.positions), stress: { label: 'MODELED', results: [] } }],
+      byAccountingAsset: [{ accountingAsset: usdc, exposure, closeCost: packageCloseCostIndex(normalized.positions), stress: { label: 'MODELED', results } }],
     });
     const trust = new Map([['position-key-1', trustedKey]]);
     const reader = (positions: unknown, risk: unknown = riskBody()) => client({ 'GET /v1/positions/strategy-1': { body: positions }, 'GET /v1/risk/strategy-1': { body: risk } });
@@ -667,6 +673,7 @@ describe('order intake and terminal evidence', () => {
     assert.equal(risk.byAccountingAsset.length, 1);
     const inflated = { ...buildExposureGraph(normalized.positions, usdc), byUnderlying: [] };
     await assert.rejects(reader(positionsBody(), riskBody(inflated)).getRisk('strategy-1'), /differs from the local computation/);
+    await assert.rejects(reader(positionsBody(), riskBody(undefined, [{ ...stress[0], lossQuoteAtoms: 0n }, stress[1]])).getRisk('strategy-1'), /stress differs from the local computation/);
   });
 
   test('graph simulations must match the local failure-point walk and graph hash', async () => {

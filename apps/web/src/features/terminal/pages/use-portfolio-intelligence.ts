@@ -26,6 +26,8 @@ type SignedRisk = Readonly<{
   closeCostAtoms: bigint;
   timeToUnwindMs: bigint;
   fullyClosable: boolean;
+  downShockLossAtoms: bigint;
+  upShockLossAtoms: bigint;
 }>;
 
 export type PortfolioIntelligenceRow = Readonly<{
@@ -125,15 +127,22 @@ function summarizeRisk(value: VerifiedRisk | null): Pick<PortfolioIntelligenceRo
     positionSources: value.positions.sources.length,
     positionCount: value.positions.positions.length,
     positionAgeMs: largest(value.positions.sources.map((source) => source.ageMs)),
-    risk: Object.freeze(value.byAccountingAsset.map((group) => Object.freeze({
-      assetId: group.accountingAsset.assetId,
-      decimals: group.accountingAsset.decimals,
-      netNotionalAtoms: group.exposure.byUnderlying.reduce((sum, line) => sum + line.netNotional, BigInt(0)),
-      grossNotionalAtoms: group.exposure.byUnderlying.reduce((sum, line) => sum + line.grossNotional, BigInt(0)),
-      closeCostAtoms: group.closeCost.costQuoteAtoms,
-      timeToUnwindMs: group.closeCost.timeToUnwindMs,
-      fullyClosable: group.closeCost.complete,
-    }))),
+    risk: Object.freeze(value.byAccountingAsset.map((group) => {
+      const down = group.stress.results.find((result) => result.scenarioId === "uniform-down-10pct");
+      const up = group.stress.results.find((result) => result.scenarioId === "uniform-up-10pct");
+      if (down === undefined || up === undefined) throw new Error("The verified risk view is missing its fixed stress scenarios.");
+      return Object.freeze({
+        assetId: group.accountingAsset.assetId,
+        decimals: group.accountingAsset.decimals,
+        netNotionalAtoms: group.exposure.byUnderlying.reduce((sum, line) => sum + line.netNotional, BigInt(0)),
+        grossNotionalAtoms: group.exposure.byUnderlying.reduce((sum, line) => sum + line.grossNotional, BigInt(0)),
+        closeCostAtoms: group.closeCost.costQuoteAtoms,
+        timeToUnwindMs: group.closeCost.timeToUnwindMs,
+        fullyClosable: group.closeCost.complete,
+        downShockLossAtoms: down.lossQuoteAtoms,
+        upShockLossAtoms: up.lossQuoteAtoms,
+      });
+    })),
   });
 }
 
