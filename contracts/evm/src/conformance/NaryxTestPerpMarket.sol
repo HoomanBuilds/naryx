@@ -83,6 +83,8 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
     error InvalidExpiry();
     error InvalidTradeHeader();
     error InvalidTradeShape();
+    error InvalidTradeBounds();
+    error BoundedExecutionConsumed();
     error OpensPaused();
     error PositionTooLarge();
     error MarginTooLarge();
@@ -144,6 +146,14 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
         uint256 payoutWad,
         uint256 badDebtWad
     );
+    event BoundedTradeExecuted(
+        bytes32 indexed executionId,
+        address indexed trader,
+        int128 sizeDelta,
+        uint256 fillPriceWad,
+        uint256 notionalWad,
+        uint256 feeWad
+    );
     event FundingRateSet(int256 ratePerSecond, int256 fundingIndex);
     event FundingKeeperSet(address indexed keeper);
     event OpensPausedSet(bool paused);
@@ -183,6 +193,7 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
 
     mapping(address trader => uint256 atoms) private _reserves;
     mapping(address trader => Position position) private _positions;
+    mapping(bytes32 executionId => bool consumed) public boundedExecutionConsumed;
 
     constructor(Parameters memory parameters) {
         if (
@@ -273,6 +284,44 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
     /// @notice Opens from flat or changes an existing position without permitting a direction flip.
     function trade(bytes32[2] calldata args) external nonReentrant returns (PositionCache memory result) {
         _requireDeploymentChain();
+        (int128 sizeDelta, int128 balanceDelta) = _tradeArguments(args);
+        _accrueFunding();
+        return _executeTrade(sizeDelta, balanceDelta);
+    }
+
+    /// @notice Executes one replay-protected trade only while its venue notional and fee remain inside
+    /// the signed residual bounds. `executionId` is expected to be the canonical residual intent hash.
+    function tradeBounded(
+        bytes32 executionId,
+        bytes32[2] calldata args,
+        uint256 minimumNotionalWad,
+        uint256 maximumNotionalWad,
+        uint256 maximumFeeWad
+    ) external nonReentrant returns (PositionCache memory result) {
+        _requireDeploymentChain();
+        if (
+            executionId == bytes32(0) || minimumNotionalWad == 0 || minimumNotionalWad > maximumNotionalWad
+                || boundedExecutionConsumed[executionId]
+        ) {
+            if (boundedExecutionConsumed[executionId]) revert BoundedExecutionConsumed();
+            revert InvalidTradeBounds();
+        }
+        (int128 sizeDelta, int128 balanceDelta) = _tradeArguments(args);
+        _accrueFunding();
+        (uint256 fillPriceWad, uint256 notionalWad, uint256 feeWad) = _quoteOpen(sizeDelta);
+        if (notionalWad < minimumNotionalWad || notionalWad > maximumNotionalWad || feeWad > maximumFeeWad) {
+            revert InvalidTradeBounds();
+        }
+        boundedExecutionConsumed[executionId] = true;
+        result = _executeTrade(sizeDelta, balanceDelta);
+        emit BoundedTradeExecuted(executionId, msg.sender, sizeDelta, fillPriceWad, notionalWad, feeWad);
+    }
+
+    function _tradeArguments(bytes32[2] calldata args)
+        private
+        view
+        returns (int128 sizeDelta, int128 balanceDelta)
+    {
         uint256 tradeHeader = uint256(args[0]);
         uint64 deadline = uint64(tradeHeader >> 56);
         if (
@@ -280,10 +329,12 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
                 || block.timestamp >= deadline
         ) revert InvalidTradeHeader();
 
-        _accrueFunding();
         uint256 packed = uint256(args[1]);
-        int128 sizeDelta = int128(uint128(packed >> 128));
-        int128 balanceDelta = int128(uint128(packed));
+        sizeDelta = int128(uint128(packed >> 128));
+        balanceDelta = int128(uint128(packed));
+    }
+
+    function _executeTrade(int128 sizeDelta, int128 balanceDelta) private returns (PositionCache memory result) {
         Position storage position = _positions[msg.sender];
         if (position.size == 0) {
             _open(position, sizeDelta, balanceDelta);

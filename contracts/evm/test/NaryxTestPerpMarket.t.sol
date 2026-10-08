@@ -195,6 +195,33 @@ contract NaryxTestPerpMarketTest is Test {
         vm.stopPrank();
     }
 
+    function testBoundedTradeEnforcesNotionalFeeAndReplayBeforeMutating() public {
+        bytes32 executionId = keccak256("netting-residual");
+        (uint256 fill, uint256 notional, uint256 fee,) = market.previewOpen(-ONE, 400e18);
+
+        vm.prank(alice);
+        market.tradeBounded(executionId, _args(-ONE, 400e18), notional, notional, fee);
+        assertTrue(market.boundedExecutionConsumed(executionId));
+        assertEq(market.getPosition(address(market), EXPIRY, alice).size, -ONE);
+
+        vm.prank(alice);
+        vm.expectRevert(NaryxTestPerpMarket.BoundedExecutionConsumed.selector);
+        market.tradeBounded(executionId, _args(ONE, 0), 1, type(uint256).max, type(uint256).max);
+
+        bytes32 nextId = keccak256("next-netting-residual");
+        vm.prank(bob);
+        vm.expectRevert(NaryxTestPerpMarket.InvalidTradeBounds.selector);
+        market.tradeBounded(nextId, _args(-ONE, 400e18), notional + 1, type(uint256).max, fee);
+        assertFalse(market.boundedExecutionConsumed(nextId));
+        assertEq(market.getPosition(address(market), EXPIRY, bob).size, 0);
+
+        vm.prank(bob);
+        vm.expectRevert(NaryxTestPerpMarket.InvalidTradeBounds.selector);
+        market.tradeBounded(nextId, _args(-ONE, 400e18), 1, type(uint256).max, fee - 1);
+        assertFalse(market.boundedExecutionConsumed(nextId));
+        assertEq(fill, 1_999.58e18);
+    }
+
     function testRejectsUndermarginedOversizedUnfundedAndMisshapedTrades() public {
         // Initial margin is 10% of 1999.58 = 199.958 after the 0.99979 fee.
         vm.startPrank(alice);
