@@ -274,6 +274,8 @@ test("authoritative netting derives opposite package legs from signed durable st
           result: input.result,
           externalExecutions: input.externalIntents.map((intent) => ({ intent })),
           externalExecutionStatus: input.externalIntents.length === 0 ? "NOT_REQUIRED" : "PENDING",
+          settlementEvidence: [],
+          settlementStatus: "AWAITING_FINAL_ALLOCATION",
           packages: input.packages,
           recordedAtMs: 1_100,
         },

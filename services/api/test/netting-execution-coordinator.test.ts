@@ -69,6 +69,8 @@ class Store implements NettingExternalExecutionStorePort {
     result,
     externalExecutions: Object.freeze([Object.freeze({ intent })]),
     externalExecutionStatus: 'PENDING',
+    settlementEvidence: Object.freeze([]),
+    settlementStatus: 'AWAITING_FINAL_ALLOCATION',
     packages: Object.freeze([Object.freeze({
       packageOrderIdHex: id(11),
       strategyOrderHashHex: id(10),

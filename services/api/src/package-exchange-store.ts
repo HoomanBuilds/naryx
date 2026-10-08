@@ -44,10 +44,13 @@ import {
   nettingPolicyManifest,
   nettingPolicyManifestHash,
   nettingResultHash,
+  nettingSettlementCompletionReceipt,
   nettingFinalAllocationReceipt,
+  verifyNettingAllocationSettlementEvidence,
   verifyNettingExternalExecutionEvidence,
   verifyNettingExternalExecutionIntent,
   verifyNettingFinalAllocationReceipt,
+  verifyNettingSettlementCompletionReceipt,
   PACKAGE_SETTLEMENT_MAX_ALLOCATIONS,
   parseProtocolJson,
   protocolId,
@@ -90,7 +93,9 @@ import type {
   NettingResult,
   NettingExternalExecutionIntent,
   NettingExternalExecutionEvidence,
+  NettingAllocationSettlementEvidence,
   NettingFinalAllocationReceipt,
+  NettingSettlementCompletionReceipt,
   SeriesExecutionClass,
   SeriesExecutionClassInput,
   SeriesExecutionClassSupportInput,
@@ -220,6 +225,9 @@ export interface PreparedNettingBatch {
   readonly externalExecutions: readonly NettingExternalExecutionRecord[];
   readonly externalExecutionStatus: "NOT_REQUIRED" | "PENDING" | "EXACT_FILLED" | "RECOVERY_REQUIRED";
   readonly finalAllocationReceipt?: NettingFinalAllocationReceipt;
+  readonly settlementEvidence: readonly NettingAllocationSettlementEvidence[];
+  readonly settlementStatus: "AWAITING_FINAL_ALLOCATION" | "AWAITING_SETTLEMENT" | "SETTLED";
+  readonly settlementCompletionReceipt?: NettingSettlementCompletionReceipt;
   readonly packages: readonly PreparedNettingBatchPackage[];
   readonly recordedAtMs: number;
 }
@@ -244,6 +252,14 @@ function nettingExternalExecutionStatus(
     return "RECOVERY_REQUIRED";
   }
   return records.every((record) => record.evidence?.outcome === "EXACT_FILLED") ? "EXACT_FILLED" : "PENDING";
+}
+
+function nettingSettlementStatus(
+  finalAllocationReceipt: NettingFinalAllocationReceipt | undefined,
+  settlementCompletionReceipt: NettingSettlementCompletionReceipt | undefined,
+): PreparedNettingBatch["settlementStatus"] {
+  if (finalAllocationReceipt === undefined) return "AWAITING_FINAL_ALLOCATION";
+  return settlementCompletionReceipt === undefined ? "AWAITING_SETTLEMENT" : "SETTLED";
 }
 
 export const MAX_TAPE_PAGE = 100;
@@ -434,6 +450,21 @@ CREATE TABLE IF NOT EXISTS netting_final_allocation_receipts (
   receipt_json TEXT NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS netting_allocation_settlement_evidence (
+  evidence_hash BLOB PRIMARY KEY,
+  proof_hash BLOB NOT NULL REFERENCES netting_batches(proof_hash),
+  final_allocation_receipt_hash BLOB NOT NULL REFERENCES netting_final_allocation_receipts(receipt_hash),
+  allocation_receipt_hash BLOB NOT NULL UNIQUE,
+  evidence_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS netting_settlement_completion_receipts (
+  proof_hash BLOB PRIMARY KEY REFERENCES netting_batches(proof_hash),
+  final_allocation_receipt_hash BLOB NOT NULL UNIQUE REFERENCES netting_final_allocation_receipts(receipt_hash),
+  receipt_hash BLOB NOT NULL UNIQUE,
+  receipt_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
 CREATE TRIGGER IF NOT EXISTS reject_exchange_document_change
   BEFORE UPDATE ON exchange_documents
   BEGIN SELECT RAISE(ABORT, 'exchange documents are immutable'); END;
@@ -545,6 +576,18 @@ CREATE TRIGGER IF NOT EXISTS reject_netting_final_allocation_receipt_change
 CREATE TRIGGER IF NOT EXISTS reject_netting_final_allocation_receipt_delete
   BEFORE DELETE ON netting_final_allocation_receipts
   BEGIN SELECT RAISE(ABORT, 'netting final allocation receipts are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_allocation_settlement_evidence_change
+  BEFORE UPDATE ON netting_allocation_settlement_evidence
+  BEGIN SELECT RAISE(ABORT, 'netting allocation settlement evidence is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_allocation_settlement_evidence_delete
+  BEFORE DELETE ON netting_allocation_settlement_evidence
+  BEGIN SELECT RAISE(ABORT, 'netting allocation settlement evidence is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_settlement_completion_receipt_change
+  BEFORE UPDATE ON netting_settlement_completion_receipts
+  BEGIN SELECT RAISE(ABORT, 'netting settlement completion receipts are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_settlement_completion_receipt_delete
+  BEFORE DELETE ON netting_settlement_completion_receipts
+  BEGIN SELECT RAISE(ABORT, 'netting settlement completion receipts are append-only'); END;
 CREATE INDEX IF NOT EXISTS package_book_allocations_by_time ON package_book_allocations(execution_class_id, recorded_at_ms);
 CREATE INDEX IF NOT EXISTS package_book_reopening_obligations_by_order ON package_book_reopening_obligations(package_order_id);
 CREATE TABLE IF NOT EXISTS package_book_trades (
@@ -1783,6 +1826,7 @@ export class SqlitePackageExchangeStore {
         externalIntents.map((intent) => Object.freeze({ intent })),
       );
       const finalAllocationReceipt = this.ensureNettingFinalAllocationReceipt(proofHash);
+      const settlementEvidence: readonly NettingAllocationSettlementEvidence[] = Object.freeze([]);
       return Object.freeze({
         batch: Object.freeze({
           status: "PREPARED" as const,
@@ -1792,6 +1836,8 @@ export class SqlitePackageExchangeStore {
           externalExecutions,
           externalExecutionStatus: nettingExternalExecutionStatus(externalExecutions),
           ...(finalAllocationReceipt === undefined ? {} : { finalAllocationReceipt }),
+          settlementEvidence,
+          settlementStatus: nettingSettlementStatus(finalAllocationReceipt, undefined),
           packages: Object.freeze(packages),
           recordedAtMs,
         }),
@@ -1916,6 +1962,74 @@ export class SqlitePackageExchangeStore {
         throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored final allocation receipt identity is inconsistent.");
       }
     }
+    const settlementRows = this.db.prepare(`
+      SELECT evidence_hash, allocation_receipt_hash, evidence_json
+      FROM netting_allocation_settlement_evidence
+      WHERE proof_hash = ?
+      ORDER BY allocation_receipt_hash
+    `).all(proofHash) as {
+      evidence_hash: unknown;
+      allocation_receipt_hash: unknown;
+      evidence_json: unknown;
+    }[];
+    const settlementEvidence: readonly NettingAllocationSettlementEvidence[] = Object.freeze(settlementRows.map((entry) => {
+      if (finalAllocationReceipt === undefined) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Settlement evidence exists before a final allocation receipt.");
+      }
+      const evidence = parseProtocolJson(
+        jsonText(entry.evidence_json, "evidence_json"),
+      ) as NettingAllocationSettlementEvidence;
+      guarded("CORRUPT_ROW", "Stored allocation settlement evidence failed validation.", () =>
+        verifyNettingAllocationSettlementEvidence(
+          evidence,
+          finalAllocationReceipt!,
+          result,
+          policy,
+          externalExecutions.map((record) => record.intent),
+          externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
+        ));
+      const allocation = finalAllocationReceipt.allocations.find((candidate) =>
+        bytesEqual(candidate.allocationReceiptHash, evidence.allocationReceiptHash));
+      const commitment = allocation === undefined ? undefined : this.settlementCommitment(allocation.packageOrderId);
+      if (
+        !bytesEqual(evidence.evidenceHash, hashBytes(entry.evidence_hash, "evidence_hash"))
+        || !bytesEqual(evidence.allocationReceiptHash, hashBytes(entry.allocation_receipt_hash, "allocation_receipt_hash"))
+        || allocation === undefined
+        || commitment === undefined
+        || commitment.participantId !== evidence.ownerId
+        || commitment.settlementAccount !== evidence.settlementAccount
+      ) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored allocation settlement evidence identity is inconsistent.");
+      }
+      return evidence;
+    }));
+    const completionRow = this.db.prepare(`
+      SELECT receipt_hash, receipt_json
+      FROM netting_settlement_completion_receipts
+      WHERE proof_hash = ?
+    `).get(proofHash) as { receipt_hash: unknown; receipt_json: unknown } | undefined;
+    let settlementCompletionReceipt: NettingSettlementCompletionReceipt | undefined;
+    if (completionRow !== undefined) {
+      if (finalAllocationReceipt === undefined) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Settlement completion exists before a final allocation receipt.");
+      }
+      settlementCompletionReceipt = parseProtocolJson(
+        jsonText(completionRow.receipt_json, "receipt_json"),
+      ) as NettingSettlementCompletionReceipt;
+      guarded("CORRUPT_ROW", "Stored settlement completion receipt failed validation.", () =>
+        verifyNettingSettlementCompletionReceipt(
+          settlementCompletionReceipt!,
+          finalAllocationReceipt!,
+          settlementEvidence,
+          result,
+          policy,
+          externalExecutions.map((record) => record.intent),
+          externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
+        ));
+      if (!bytesEqual(settlementCompletionReceipt.receiptHash, hashBytes(completionRow.receipt_hash, "receipt_hash"))) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored settlement completion receipt identity is inconsistent.");
+      }
+    }
     return Object.freeze({
       status: "PREPARED",
       proofHashHex: toHex(proofHash),
@@ -1924,6 +2038,9 @@ export class SqlitePackageExchangeStore {
       externalExecutions,
       externalExecutionStatus: nettingExternalExecutionStatus(externalExecutions),
       ...(finalAllocationReceipt === undefined ? {} : { finalAllocationReceipt }),
+      settlementEvidence,
+      settlementStatus: nettingSettlementStatus(finalAllocationReceipt, settlementCompletionReceipt),
+      ...(settlementCompletionReceipt === undefined ? {} : { settlementCompletionReceipt }),
       packages,
       recordedAtMs,
     });
@@ -1971,6 +2088,81 @@ export class SqlitePackageExchangeStore {
     });
   }
 
+  recordVerifiedNettingAllocationSettlementEvidence(
+    evidence: NettingAllocationSettlementEvidence,
+  ): { readonly evidence: NettingAllocationSettlementEvidence; readonly replayed: boolean } {
+    return this.transaction(() => {
+      const receiptRow = this.db.prepare(`
+        SELECT proof_hash
+        FROM netting_final_allocation_receipts
+        WHERE receipt_hash = ?
+      `).get(commitmentHash(evidence.finalAllocationReceiptHash)) as { proof_hash: unknown } | undefined;
+      if (receiptRow === undefined) {
+        throw new PackageExchangeStoreError("NETTING_FINAL_ALLOCATION_NOT_FOUND", "Final allocation receipt is not stored.");
+      }
+      const proofHash = hashBytes(receiptRow.proof_hash, "proof_hash");
+      const batch = this.nettingBatch(proofHash);
+      if (batch?.finalAllocationReceipt === undefined) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Final allocation receipt lost its netting batch.");
+      }
+      guarded("INVALID_INPUT", "Allocation settlement evidence is invalid.", () =>
+        verifyNettingAllocationSettlementEvidence(
+          evidence,
+          batch.finalAllocationReceipt!,
+          batch.result,
+          batch.policy,
+          batch.externalExecutions.map((record) => record.intent),
+          batch.externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
+        ));
+      const allocation = batch.finalAllocationReceipt.allocations.find((candidate) =>
+        bytesEqual(candidate.allocationReceiptHash, evidence.allocationReceiptHash));
+      const commitment = allocation === undefined ? undefined : this.settlementCommitment(allocation.packageOrderId);
+      if (
+        allocation === undefined
+        || commitment === undefined
+        || commitment.participantId !== evidence.ownerId
+        || commitment.settlementAccount !== evidence.settlementAccount
+      ) {
+        throw new PackageExchangeStoreError(
+          "NETTING_SETTLEMENT_ACCOUNT_MISMATCH",
+          "Allocation settlement evidence does not bind the authorized settlement account.",
+        );
+      }
+      const existing = this.db.prepare(`
+        SELECT evidence_hash, evidence_json
+        FROM netting_allocation_settlement_evidence
+        WHERE allocation_receipt_hash = ?
+      `).get(evidence.allocationReceiptHash) as { evidence_hash: unknown; evidence_json: unknown } | undefined;
+      if (existing !== undefined) {
+        if (
+          !bytesEqual(hashBytes(existing.evidence_hash, "evidence_hash"), evidence.evidenceHash)
+          || jsonText(existing.evidence_json, "evidence_json") !== stringifyProtocolJson(evidence)
+        ) {
+          throw new PackageExchangeStoreError(
+            "NETTING_SETTLEMENT_EVIDENCE_CONFLICT",
+            "Allocation already has different settlement evidence.",
+          );
+        }
+        this.ensureNettingSettlementCompletionReceipt(proofHash);
+        return Object.freeze({ evidence, replayed: true });
+      }
+      this.db.prepare(`
+        INSERT INTO netting_allocation_settlement_evidence
+          (evidence_hash, proof_hash, final_allocation_receipt_hash, allocation_receipt_hash, evidence_json, recorded_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        evidence.evidenceHash,
+        proofHash,
+        evidence.finalAllocationReceiptHash,
+        evidence.allocationReceiptHash,
+        stringifyProtocolJson(evidence),
+        this.clock(),
+      );
+      this.ensureNettingSettlementCompletionReceipt(proofHash);
+      return Object.freeze({ evidence, replayed: false });
+    });
+  }
+
   private ensureNettingFinalAllocationReceipt(
     proofHashInput: Uint8Array | string,
   ): NettingFinalAllocationReceipt | undefined {
@@ -1994,6 +2186,42 @@ export class SqlitePackageExchangeStore {
       VALUES (?, ?, ?, ?)
     `).run(proofHash, receipt.receiptHash, stringifyProtocolJson(receipt), this.clock());
     return receipt;
+  }
+
+  private ensureNettingSettlementCompletionReceipt(
+    proofHashInput: Uint8Array | string,
+  ): NettingSettlementCompletionReceipt | undefined {
+    const proofHash = commitmentHash(proofHashInput);
+    const batch = this.nettingBatch(proofHash);
+    if (batch === undefined) throw new PackageExchangeStoreError("CORRUPT_ROW", "Netting batch disappeared.");
+    if (batch.settlementCompletionReceipt !== undefined) return batch.settlementCompletionReceipt;
+    if (
+      batch.finalAllocationReceipt === undefined
+      || batch.settlementEvidence.length !== batch.finalAllocationReceipt.allocations.length
+    ) {
+      return undefined;
+    }
+    const completion = guarded("CORRUPT_ROW", "Settlement completion receipt could not be derived.", () =>
+      nettingSettlementCompletionReceipt(
+        batch.finalAllocationReceipt!,
+        batch.settlementEvidence,
+        batch.result,
+        batch.policy,
+        batch.externalExecutions.map((record) => record.intent),
+        batch.externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
+      ));
+    this.db.prepare(`
+      INSERT INTO netting_settlement_completion_receipts
+        (proof_hash, final_allocation_receipt_hash, receipt_hash, receipt_json, recorded_at_ms)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      proofHash,
+      completion.finalAllocationReceiptHash,
+      completion.receiptHash,
+      stringifyProtocolJson(completion),
+      this.clock(),
+    );
+    return completion;
   }
 
   settlementHandoff(allocationHash: Uint8Array | string): PackageSettlementHandoff | undefined {

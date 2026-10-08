@@ -6,8 +6,10 @@ import bs58 from "bs58";
 import {
   adapterRef,
   assetRef,
+  commitmentHash,
   domainRef,
   netObligations,
+  nettingAllocationSettlementEvidence,
   nettingExternalExecutionEvidence,
   nettingExternalExecutionIntent,
   packageMatchingPolicy,
@@ -187,8 +189,46 @@ test("owner authorization and prepared netting evidence are immutable and replay
     assert.equal(created.batch.result.underlyings[0]?.externalNetAtoms, 0n);
     assert.equal(created.batch.externalExecutionStatus, "NOT_REQUIRED");
     assert.ok(created.batch.finalAllocationReceipt);
+    assert.equal(created.batch.settlementStatus, "AWAITING_SETTLEMENT");
     assert.equal(store.recordPreparedNettingBatch({ policy, result, externalIntents: [], packages }).replayed, true);
     assert.deepEqual(store.nettingBatch(created.batch.proofHashHex), created.batch);
+
+    const orderByPackage = new Map([
+      [toHex(commitmentHash(maker.orderId)), maker],
+      [toHex(commitmentHash(taker.orderId)), taker],
+    ]);
+    const finalAllocationReceipt = created.batch.finalAllocationReceipt!;
+    const settlementEvidence = finalAllocationReceipt.allocations.map((allocation, index) => {
+      const packageOrder = orderByPackage.get(toHex(allocation.packageOrderId))!;
+      return nettingAllocationSettlementEvidence({
+        version: 1,
+        finalAllocationReceiptHash: finalAllocationReceipt.receiptHash,
+        allocationReceiptHash: allocation.allocationReceiptHash,
+        settlementAccount: settlement(packageOrder).settlementAccount,
+        settledQuantityAtoms: allocation.totalQuantityAtoms,
+        settledQuoteDeltaAtoms: allocation.totalQuoteDeltaAtoms,
+        observedAtUnit: "SOLANA_SLOT",
+        observedAtValue: 1_500n + BigInt(index),
+        settlementReferenceHash: id(550 + index),
+        authoritativeEvidenceHash: id(560 + index),
+      }, finalAllocationReceipt, result, policy, [], []);
+    });
+    const wrongAccountEvidence = nettingAllocationSettlementEvidence({
+      ...settlementEvidence[0]!,
+      settlementAccount: "another-account",
+    }, finalAllocationReceipt, result, policy, [], []);
+    assert.throws(
+      () => store.recordVerifiedNettingAllocationSettlementEvidence(wrongAccountEvidence),
+      { code: "NETTING_SETTLEMENT_ACCOUNT_MISMATCH" },
+    );
+    assert.equal(store.recordVerifiedNettingAllocationSettlementEvidence(settlementEvidence[0]!).replayed, false);
+    assert.equal(store.nettingBatch(created.batch.proofHashHex)?.settlementStatus, "AWAITING_SETTLEMENT");
+    assert.equal(store.recordVerifiedNettingAllocationSettlementEvidence(settlementEvidence[0]!).replayed, true);
+    assert.equal(store.recordVerifiedNettingAllocationSettlementEvidence(settlementEvidence[1]!).replayed, false);
+    const settledBatch = store.nettingBatch(created.batch.proofHashHex);
+    assert.equal(settledBatch?.settlementStatus, "SETTLED");
+    assert.equal(settledBatch?.settlementEvidence.length, 2);
+    assert.ok(settledBatch?.settlementCompletionReceipt);
 
     const secondMaker = order(3);
     const secondTaker = order(4, { side: "BID", timeInForce: "IOC" });
