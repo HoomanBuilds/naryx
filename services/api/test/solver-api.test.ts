@@ -624,6 +624,13 @@ test("a sealed auction accepts commits before its deadline, reveals after, and p
     };
     const created = (await api.plain("POST", "/v1/auctions/sealed", { definition })).body as { auctionHashHex: string };
     const hash = created.auctionHashHex;
+    const discovered = (await api.call("GET", "/v1/solver/auctions?after=0")).body as {
+      auctions: readonly { cursor: number; auctionHash: string; definition: { auctionId: string } }[];
+      nextCursor: number;
+    };
+    assert.deepEqual(discovered.auctions.map((entry) => [entry.auctionHash, entry.definition.auctionId]), [[hash, "auction-1"]]);
+    assert.deepEqual(((await api.call("GET", `/v1/solver/auctions?after=${discovered.nextCursor}`)).body as { auctions: readonly unknown[] }).auctions, []);
+    assert.equal((await api.call("GET", "/v1/solver/auctions?after=-1")).status, 400);
     const salt = new Uint8Array(32).fill(4);
     const opening = { solverId: "solver-a", quoteHash: "77".repeat(32), netOutcomeAtoms: 500n, salt };
     const commitment = sealedQuoteCommitment(hash, opening);

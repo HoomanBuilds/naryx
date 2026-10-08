@@ -69,6 +69,12 @@ CREATE TABLE IF NOT EXISTS sealed_auctions (
   definition_json TEXT NOT NULL,
   created_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS sealed_auction_eligible_solvers (
+  auction_hash BLOB NOT NULL REFERENCES sealed_auctions(auction_hash),
+  solver_id TEXT NOT NULL,
+  PRIMARY KEY (auction_hash, solver_id)
+) STRICT;
+CREATE INDEX IF NOT EXISTS sealed_auctions_by_solver ON sealed_auction_eligible_solvers(solver_id, auction_hash);
 CREATE TABLE IF NOT EXISTS sealed_auction_events (
   auction_hash BLOB NOT NULL REFERENCES sealed_auctions(auction_hash),
   sequence INTEGER NOT NULL,
@@ -79,6 +85,8 @@ CREATE TRIGGER IF NOT EXISTS reject_envelope_change BEFORE UPDATE ON rfq_envelop
 CREATE TRIGGER IF NOT EXISTS reject_response_change BEFORE UPDATE ON rfq_responses BEGIN SELECT RAISE(ABORT, 'responses are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_auction_event_change BEFORE UPDATE ON sealed_auction_events BEGIN SELECT RAISE(ABORT, 'auction events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_auction_event_delete BEFORE DELETE ON sealed_auction_events BEGIN SELECT RAISE(ABORT, 'auction events are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_auction_eligibility_change BEFORE UPDATE ON sealed_auction_eligible_solvers BEGIN SELECT RAISE(ABORT, 'auction eligibility is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS reject_auction_eligibility_delete BEFORE DELETE ON sealed_auction_eligible_solvers BEGIN SELECT RAISE(ABORT, 'auction eligibility is immutable'); END;
 `;
 
 export interface StoredEnvelope {
@@ -119,6 +127,22 @@ export class SqlitePrivateDeliveryStore {
       this.db.exec("ALTER TABLE rfq_envelopes ADD COLUMN sender_signature BLOB");
     }
     this.db.exec("CREATE INDEX IF NOT EXISTS rfq_envelopes_pending ON rfq_envelopes(recipient_solver_id, expires_at_ms, received_at_ms)");
+    const eligibility = this.db.prepare(
+      "INSERT OR IGNORE INTO sealed_auction_eligible_solvers (auction_hash, solver_id) VALUES (?, ?)",
+    );
+    this.db.transaction(() => {
+      const auctions = this.db.prepare("SELECT auction_hash, definition_json FROM sealed_auctions").all() as {
+        auction_hash: Uint8Array;
+        definition_json: string;
+      }[];
+      for (const row of auctions) {
+        const definition = sealedAuctionDefinition(parseProtocolJson(row.definition_json) as SealedAuctionDefinitionInput);
+        if (toHex(sealedAuctionHash(definition)) !== toHex(row.auction_hash)) {
+          throw new PrivateDeliveryStoreError("CORRUPT_ROW", "Stored auction does not match its hash.");
+        }
+        for (const solverId of definition.eligibleSolverIds) eligibility.run(row.auction_hash, solverId);
+      }
+    })();
     this.clock = options.clock ?? Date.now;
   }
 
@@ -297,7 +321,55 @@ export class SqlitePrivateDeliveryStore {
       const result = this.db
         .prepare("INSERT OR IGNORE INTO sealed_auctions (auction_hash, definition_json, created_at_ms) VALUES (?, ?, ?)")
         .run(hash, stringifyProtocolJson(definition), this.clock());
+      const eligibility = this.db.prepare(
+        "INSERT OR IGNORE INTO sealed_auction_eligible_solvers (auction_hash, solver_id) VALUES (?, ?)",
+      );
+      for (const solverId of definition.eligibleSolverIds) eligibility.run(hash, solverId);
       return { auctionHashHex: toHex(hash), created: result.changes === 1 };
+    });
+  }
+
+  /** Auctions addressed to one solver, in immutable creation order, suitable for cursor recovery. */
+  eligibleAuctions(solverId: string, after: number, limit = 100): {
+    readonly auctions: readonly {
+      readonly cursor: number;
+      readonly auctionHashHex: string;
+      readonly definition: SealedAuctionDefinition;
+      readonly createdAtMs: number;
+    }[];
+    readonly nextCursor: number;
+  } {
+    if (!Number.isSafeInteger(after) || after < 0) {
+      throw new PrivateDeliveryStoreError("INVALID_CURSOR", "Auction cursor must be a non-negative safe integer.");
+    }
+    const bounded = Math.max(1, Math.min(limit, 200));
+    const rows = this.db.prepare(
+      `SELECT a.rowid AS cursor, a.auction_hash, a.definition_json, a.created_at_ms
+       FROM sealed_auctions a
+       JOIN sealed_auction_eligible_solvers e ON e.auction_hash = a.auction_hash
+       WHERE e.solver_id = ? AND a.rowid > ?
+       ORDER BY a.rowid
+       LIMIT ?`,
+    ).all(solverId, after, bounded) as {
+      cursor: number;
+      auction_hash: Uint8Array;
+      definition_json: string;
+      created_at_ms: number;
+    }[];
+    const auctions = rows.map((row) => {
+      if (!Number.isSafeInteger(row.cursor) || row.cursor <= after) {
+        throw new PrivateDeliveryStoreError("CORRUPT_ROW", "Stored auction has an invalid cursor.");
+      }
+      const definition = sealedAuctionDefinition(parseProtocolJson(row.definition_json) as SealedAuctionDefinitionInput);
+      const auctionHashHex = toHex(row.auction_hash);
+      if (toHex(sealedAuctionHash(definition)) !== auctionHashHex) {
+        throw new PrivateDeliveryStoreError("CORRUPT_ROW", "Stored auction does not match its hash.");
+      }
+      return Object.freeze({ cursor: row.cursor, auctionHashHex, definition, createdAtMs: row.created_at_ms });
+    });
+    return Object.freeze({
+      auctions: Object.freeze(auctions),
+      nextCursor: auctions.at(-1)?.cursor ?? after,
     });
   }
 

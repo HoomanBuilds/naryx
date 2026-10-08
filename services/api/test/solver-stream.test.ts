@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fromProtocolJson, solverRequestDigest, toProtocolJson } from "@naryx/protocol-types";
-import { createSolverStream, SOLVER_STREAM_PATH, SqliteEvidenceStore, SqliteRegistryStore, SqliteSolverApiStore } from "../src/index.js";
+import { createSolverStream, SOLVER_STREAM_PATH, SqliteEvidenceStore, SqlitePrivateDeliveryStore, SqliteRegistryStore, SqliteSolverApiStore } from "../src/index.js";
 import { DOMAIN_MANIFEST, operatorKeys, signedSolverManifest } from "./registry-fixtures.js";
 import { signedOrder } from "./evidence-fixtures.js";
 
@@ -48,11 +48,12 @@ test("a solver stream opens only with a signed, unreplayed auth and then pushes 
   const registry = new SqliteRegistryStore(join(dir, "registry.sqlite"));
   const store = new SqliteSolverApiStore(join(dir, "solver.sqlite"), { clock: () => NOW_MS });
   const evidence = new SqliteEvidenceStore(join(dir, "evidence.sqlite"), { clock: () => NOW_MS });
+  const delivery = new SqlitePrivateDeliveryStore(join(dir, "delivery.sqlite"), { clock: () => NOW_MS });
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const raw = new Uint8Array(publicKey.export({ format: "der", type: "spki" }).subarray(-32));
   registry.registerDomain(DOMAIN_MANIFEST);
   registry.registerSolverManifest(signedSolverManifest(operatorKeys(), { quoteVerificationKeys: [{ keyId: "q-1", scheme: "ED25519", verificationKey: raw, validFromValue: 0n, validUntilValue: FAR }], validUntilValue: FAR }));
-  const stream = createSolverStream({ store, registry, evidence, clockMs: () => NOW_MS, pollIntervalMs: 50 });
+  const stream = createSolverStream({ store, registry, evidence, delivery, clockMs: () => NOW_MS, pollIntervalMs: 50 });
   const server = createServer();
   server.on("upgrade", (request, socket, head) => {
     if (!stream.upgrade(request, socket, head)) socket.destroy();
@@ -96,8 +97,22 @@ test("a solver stream opens only with a signed, unreplayed auth and then pushes 
     evidence.submitOrder(order, signature);
     const pushed = await solver.wait((message) => message.type === "orders");
     assert.deepEqual((pushed.orders as readonly { orderHash: string }[]).map((entry) => entry.orderHash), [orderHashHex]);
-    solver.send({ op: "subscribe", channel: "private-rfqs" });
-    assert.equal((await solver.wait((message) => message.type === "error")).code, "PRIVATE_DELIVERY_UNAVAILABLE");
+    const auction = delivery.createAuction({
+      version: 1,
+      auctionId: "auction-1",
+      environment: "testnet",
+      orderHash: "55".repeat(32),
+      eligibleSolverIds: ["solver-a"],
+      timeUnit: "EVM_UNIX_SECONDS",
+      commitDeadlineValue: BigInt(NOW_MS / 1_000) + 10n,
+      revealDeadlineValue: BigInt(NOW_MS / 1_000) + 20n,
+      settlementDeadlineValue: BigInt(NOW_MS / 1_000) + 30n,
+      minimumValidReveals: 1,
+    });
+    solver.send({ op: "subscribe", channel: "auctions", after: 0 });
+    await solver.wait((message) => message.type === "subscribed" && message.channel === "auctions");
+    const auctionPush = await solver.wait((message) => message.type === "auctions");
+    assert.deepEqual((auctionPush.auctions as readonly { auctionHash: string }[]).map((entry) => entry.auctionHash), [auction.auctionHashHex]);
     solver.socket.close();
   } finally {
     stream.close();
@@ -105,6 +120,7 @@ test("a solver stream opens only with a signed, unreplayed auth and then pushes 
     registry.close();
     store.close();
     evidence.close();
+    delivery.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });

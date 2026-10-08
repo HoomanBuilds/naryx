@@ -76,7 +76,7 @@ export interface SolverApiOptions {
    */
   readonly backingAtomsPerPackageUnit?: ReadonlyMap<string, { readonly commitment: bigint; readonly legs: readonly bigint[] }>;
   /** Optional: private RFQ and sealed auction routes answer 503 without it. */
-  readonly delivery?: Pick<SqlitePrivateDeliveryStore, "pendingFor" | "getEnvelope" | "acknowledge" | "storeResponse" | "appendAuctionEvent" | "auctionDefinition">;
+  readonly delivery?: Pick<SqlitePrivateDeliveryStore, "pendingFor" | "getEnvelope" | "acknowledge" | "storeResponse" | "eligibleAuctions" | "appendAuctionEvent" | "auctionDefinition">;
   /** Current time in the books' expiry unit. */
   readonly nowValue: () => bigint;
   readonly clockMs?: () => number;
@@ -588,6 +588,22 @@ export function createSolverApiHandler(options: SolverApiOptions) {
         })),
       };
     }
+    if (method === "GET" && path === "/v1/solver/auctions") {
+      const after = url.searchParams.get("after") ?? "0";
+      if (!/^(0|[1-9]\d{0,15})$/.test(after)) {
+        throw new SolverRequestError(400, "INVALID_REQUEST", "after must be a non-negative cursor.");
+      }
+      const page = requireDelivery().eligibleAuctions(solverId, Number(after), 100);
+      return {
+        auctions: page.auctions.map((entry) => ({
+          cursor: entry.cursor,
+          auctionHash: entry.auctionHashHex,
+          definition: entry.definition,
+          createdAtMs: entry.createdAtMs,
+        })),
+        nextCursor: page.nextCursor,
+      };
+    }
     if ((match = /^\/v1\/solver\/private-rfqs\/([0-9a-f]{64})\/(ack|response)$/.exec(path)) !== null && method === "POST") {
       const relay = requireDelivery();
       const envelopeHash = match[1] as string;
@@ -670,8 +686,9 @@ export const SOLVER_STREAM_PATH = "/v1/solver/stream";
  * message carrying the fields of a signed `GET /v1/solver/stream` request with an empty body; it
  * is verified exactly as an HTTP request is, nonce included, and anything else first closes the
  * connection. Then `orders` pushes open public orders after a cursor, as `GET /v1/solver/orders`
- * pages them, and `private-rfqs` pushes each pending envelope addressed to this solver once per
- * connection; acknowledgements and responses stay on the signed HTTP routes.
+ * pages them, `private-rfqs` pushes each pending envelope addressed to this solver once per
+ * connection, and `auctions` pushes immutable eligible auction definitions after a cursor.
+ * Acknowledgements, responses, commits, and reveals stay on the signed HTTP routes.
  */
 export function createSolverStream(options: SolverStreamOptions): {
   upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): boolean;
@@ -685,6 +702,7 @@ export function createSolverStream(options: SolverStreamOptions): {
     solverId?: string;
     orders?: { cursor: number };
     privateRfqs?: Set<string>;
+    auctions?: { cursor: number };
     readonly authTimer: ReturnType<typeof setTimeout>;
     readonly key: string;
   }
@@ -720,11 +738,30 @@ export function createSolverStream(options: SolverStreamOptions): {
     });
   };
 
+  const pushAuctions = (client: StreamClient) => {
+    if (client.auctions === undefined || client.solverId === undefined || options.delivery === undefined) return;
+    const page = options.delivery.eligibleAuctions(client.solverId, client.auctions.cursor, 100);
+    if (page.nextCursor === client.auctions.cursor) return;
+    client.auctions.cursor = page.nextCursor;
+    if (page.auctions.length === 0) return;
+    send(client, {
+      type: "auctions",
+      auctions: page.auctions.map((entry) => ({
+        cursor: entry.cursor,
+        auctionHash: entry.auctionHashHex,
+        definition: entry.definition,
+        createdAtMs: entry.createdAtMs,
+      })),
+      nextCursor: page.nextCursor,
+    });
+  };
+
   const timer = setInterval(() => {
     for (const client of clients) {
       try {
         pushOrders(client);
         pushPrivateRfqs(client);
+        pushAuctions(client);
       } catch {
         send(client, { type: "error", code: "STREAM_READ_FAILED", message: "A subscribed feed could not be read." });
       }
@@ -775,8 +812,8 @@ export function createSolverStream(options: SolverStreamOptions): {
       }
       return;
     }
-    if (message.op !== "subscribe" || (message.channel !== "orders" && message.channel !== "private-rfqs")) {
-      send(client, { type: "error", code: "INVALID_SUBSCRIPTION", message: "Subscribe to orders or private-rfqs." });
+    if (message.op !== "subscribe" || (message.channel !== "orders" && message.channel !== "private-rfqs" && message.channel !== "auctions")) {
+      send(client, { type: "error", code: "INVALID_SUBSCRIPTION", message: "Subscribe to orders, private-rfqs, or auctions." });
       return;
     }
     if (message.channel === "orders") {
@@ -798,9 +835,20 @@ export function createSolverStream(options: SolverStreamOptions): {
       send(client, { type: "error", code: "PRIVATE_DELIVERY_UNAVAILABLE", message: "No private delivery relay is configured on this server." });
       return;
     }
-    client.privateRfqs = new Set();
-    send(client, { type: "subscribed", channel: "private-rfqs" });
-    pushPrivateRfqs(client);
+    if (message.channel === "private-rfqs") {
+      client.privateRfqs = new Set();
+      send(client, { type: "subscribed", channel: "private-rfqs" });
+      pushPrivateRfqs(client);
+      return;
+    }
+    const after = message.after ?? 0;
+    if (typeof after !== "number" || !Number.isSafeInteger(after) || after < 0) {
+      send(client, { type: "error", code: "INVALID_SUBSCRIPTION", message: "after must be a nonnegative auction cursor." });
+      return;
+    }
+    client.auctions = { cursor: after };
+    send(client, { type: "subscribed", channel: "auctions", after });
+    pushAuctions(client);
   };
 
   return {

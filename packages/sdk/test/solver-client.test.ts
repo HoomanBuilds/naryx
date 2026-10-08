@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign, verify } from 'node:crypto';
 import { describe, test } from 'node:test';
-import { shardFillCommitment, solverRequestDigest, toHex, toProtocolJson, type SolverRequestMethod } from '@naryx/protocol-types';
+import { sealedAuctionHash, shardFillCommitment, solverRequestDigest, toHex, toProtocolJson, type SolverRequestMethod } from '@naryx/protocol-types';
 import { NaryxApiError, NaryxSolverClient, type FetchLike } from '../src/index.js';
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -76,5 +76,39 @@ describe('solver client', () => {
     await assert.rejects(reader([{ ...row, fill: { ...fill, size: 7n } }]).getShardFills('cash-and-carry-v1.sol-carry'), /does not match its commitment/);
     await assert.rejects(reader([{ ...row, shardHash: '52'.repeat(32) }]).getShardFills('cash-and-carry-v1.sol-carry'), /bound shard/);
     await assert.rejects(reader([row]).getShardFills('cash-and-carry-v1.eth-carry'), /another shard/);
+  });
+
+  test('eligible auction pages are validated before a solver acts on them', async () => {
+    const definition = {
+      version: 1,
+      auctionId: 'auction-1',
+      environment: 'testnet',
+      orderHash: '55'.repeat(32),
+      eligibleSolverIds: ['solver-a'],
+      timeUnit: 'EVM_UNIX_SECONDS' as const,
+      commitDeadlineValue: 1_900_000_010n,
+      revealDeadlineValue: 1_900_000_020n,
+      settlementDeadlineValue: 1_900_000_030n,
+      minimumValidReveals: 1,
+    };
+    const auctionHash = toHex(sealedAuctionHash(definition));
+    const serving = (hash: string): FetchLike => async () => ({
+      status: 200,
+      headers: { get: () => 'application/json' },
+      text: async () => JSON.stringify(toProtocolJson({
+        auctions: [{ cursor: 4, auctionHash: hash, definition, createdAtMs: 1_900_000_000_000 }],
+        nextCursor: 4,
+      })),
+    });
+    const client = (hash: string) => new NaryxSolverClient({
+      baseUrl: 'https://api.example',
+      solverId: 'solver-a',
+      keyId: 'q-1',
+      sign: signer,
+      fetch: serving(hash),
+    });
+    const page = await client(auctionHash).pollAuctions(0);
+    assert.deepEqual([page.auctions[0]?.auctionHash, page.nextCursor], [auctionHash, 4]);
+    await assert.rejects(client('66'.repeat(32)).pollAuctions(0), /does not hash to its served hash/);
   });
 });

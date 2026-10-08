@@ -3,6 +3,8 @@ import {
   fromProtocolJson,
   packageOrderHash,
   replayRouteDecision,
+  sealedAuctionDefinition,
+  sealedAuctionHash,
   solverRequestDigest,
   shardFillCommitment,
   toHex,
@@ -13,6 +15,8 @@ import {
   type ImpliedPackageQuoteInput,
   type PackageOrder,
   type PackageOrderInput,
+  type SealedAuctionDefinition,
+  type SealedAuctionDefinitionInput,
   type RouteDecisionInput,
   type RoutePayloadInput,
   type SolverQuoteInput,
@@ -39,6 +43,16 @@ function webCrypto(): WebCrypto {
 export interface OpenOrderPage {
   readonly orders: readonly { readonly cursor: number; readonly orderHash: string; readonly order: PackageOrder; readonly receivedAtMs: number }[];
   /** Pass back as `after` to continue; unchanged when the page is empty. */
+  readonly nextCursor: number;
+}
+
+export interface EligibleAuctionPage {
+  readonly auctions: readonly {
+    readonly cursor: number;
+    readonly auctionHash: string;
+    readonly definition: SealedAuctionDefinition;
+    readonly createdAtMs: number;
+  }[];
   readonly nextCursor: number;
 }
 
@@ -135,7 +149,11 @@ export class NaryxSolverClient {
    * channels. Every message is decoded from protocol JSON; open orders are re-hashed exactly as
    * `pollOrders` does before `onMessage` sees them.
    */
-  async openStream(channels: readonly ('orders' | 'private-rfqs')[], onMessage: (message: Record<string, unknown>) => void, options: { readonly ordersAfter?: number } = {}) {
+  async openStream(
+    channels: readonly ('orders' | 'private-rfqs' | 'auctions')[],
+    onMessage: (message: Record<string, unknown>) => void,
+    options: { readonly ordersAfter?: number; readonly auctionsAfter?: number } = {},
+  ) {
     const Socket = (globalThis as { WebSocket?: new (url: string) => { send(text: string): void; close(): void; addEventListener(type: string, listener: (event: { data?: unknown }) => void): void } }).WebSocket;
     if (Socket === undefined) throw new TypeError('no WebSocket implementation is available');
     const url = new URL(`${this.#baseUrl}/v1/solver/stream`);
@@ -153,7 +171,12 @@ export class NaryxSolverClient {
         return;
       }
       if (message.type === 'authenticated') {
-        for (const channel of channels) socket.send(JSON.stringify(toProtocolJson({ op: 'subscribe', channel, ...(channel === 'orders' ? { after: options.ordersAfter ?? 0 } : {}) })));
+        for (const channel of channels) {
+          const after = channel === 'orders'
+            ? options.ordersAfter ?? 0
+            : channel === 'auctions' ? options.auctionsAfter ?? 0 : undefined;
+          socket.send(JSON.stringify(toProtocolJson({ op: 'subscribe', channel, ...(after === undefined ? {} : { after }) })));
+        }
       }
       if (message.type === 'orders' && Array.isArray(message.orders)) {
         for (const [index, entry] of (message.orders as Record<string, unknown>[]).entries()) {
@@ -166,6 +189,21 @@ export class NaryxSolverClient {
           }
           if (entry.orderHash !== orderHash) {
             onMessage({ type: 'error', code: 'ORDER_HASH_MISMATCH', message: `orders[${index}] does not hash to its served hash` });
+            return;
+          }
+        }
+      }
+      if (message.type === 'auctions' && Array.isArray(message.auctions)) {
+        for (const [index, entry] of (message.auctions as Record<string, unknown>[]).entries()) {
+          let auctionHash: string;
+          try {
+            auctionHash = toHex(sealedAuctionHash(sealedAuctionDefinition(entry.definition as SealedAuctionDefinitionInput)));
+          } catch {
+            onMessage({ type: 'error', code: 'INVALID_AUCTION', message: `auctions[${index}] failed validation` });
+            return;
+          }
+          if (entry.auctionHash !== auctionHash) {
+            onMessage({ type: 'error', code: 'AUCTION_HASH_MISMATCH', message: `auctions[${index}] does not hash to its served hash` });
             return;
           }
         }
@@ -331,6 +369,45 @@ export class NaryxSolverClient {
 
   revealSealedQuote(auctionHash: string, opening: { readonly quoteHash: string; readonly netOutcomeAtoms: bigint; readonly salt: Uint8Array }) {
     return this.#call('POST', `/v1/solver/auctions/${auctionHash}/reveal`, opening);
+  }
+
+  /** Eligible sealed auctions in immutable creation order, suitable for restart recovery. */
+  async pollAuctions(after = 0): Promise<EligibleAuctionPage> {
+    if (!Number.isSafeInteger(after) || after < 0) throw new TypeError('after must be a nonnegative cursor');
+    const body = await this.#call('GET', `/v1/solver/auctions?after=${after}`);
+    if (!Array.isArray(body.auctions)) throw new NaryxEvidenceError('auctions is not an array');
+    let previous = after;
+    const auctions = body.auctions.map((entry: unknown, index: number) => {
+      const served = (typeof entry === 'object' && entry !== null ? entry : {}) as Record<string, unknown>;
+      const cursor = served.cursor;
+      if (typeof cursor !== 'number' || !Number.isSafeInteger(cursor) || cursor <= previous) {
+        throw new NaryxEvidenceError('auction cursors must strictly increase past the requested cursor');
+      }
+      previous = cursor;
+      let definition: SealedAuctionDefinition;
+      try {
+        definition = sealedAuctionDefinition(served.definition as SealedAuctionDefinitionInput);
+      } catch {
+        throw new NaryxEvidenceError(`auctions[${index}] failed validation`);
+      }
+      const auctionHash = toHex(sealedAuctionHash(definition));
+      if (served.auctionHash !== auctionHash) {
+        throw new NaryxEvidenceError(`auctions[${index}] does not hash to its served hash`);
+      }
+      if (!definition.eligibleSolverIds.some((solverId) => solverId === this.#options.solverId)) {
+        throw new NaryxEvidenceError(`auctions[${index}] is not addressed to this solver`);
+      }
+      const createdAtMs = served.createdAtMs;
+      if (typeof createdAtMs !== 'number' || !Number.isSafeInteger(createdAtMs) || createdAtMs < 0) {
+        throw new NaryxEvidenceError(`auctions[${index}] has no creation time`);
+      }
+      return Object.freeze({ cursor, auctionHash, definition, createdAtMs });
+    });
+    const nextCursor = body.nextCursor;
+    if (typeof nextCursor !== 'number' || !Number.isSafeInteger(nextCursor) || nextCursor < previous) {
+      throw new NaryxEvidenceError('the next cursor falls behind the last auction');
+    }
+    return Object.freeze({ auctions: Object.freeze(auctions), nextCursor });
   }
 
   /**

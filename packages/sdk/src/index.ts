@@ -44,7 +44,12 @@ export {
   type PackageBookAmendmentResult,
   type VerifiedTerminalEvidence,
 } from './client.js';
-export { NaryxSolverClient, type NaryxSolverClientOptions, type OpenOrderPage } from './solver-client.js';
+export {
+  NaryxSolverClient,
+  type EligibleAuctionPage,
+  type NaryxSolverClientOptions,
+  type OpenOrderPage,
+} from './solver-client.js';
 
 // Evidence verifiers an integrator can run without any Naryx service in the loop.
 export {
