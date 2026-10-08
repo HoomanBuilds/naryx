@@ -93,7 +93,7 @@ The private solver handoff is GET `/internal/solver/hyperliquid-testnet/attempts
 | `GET /v1/owners/{owner}/strategies` | an owner's strategies with their versions, hashes, and whether each is still live |
 | `GET /v1/owners/{owner}/strategy-receipts` | the owner's newest canonical strategy receipts across package domains, with lifecycle state, portfolio eligibility, selected route and solver commitment, settlement and evidence strength, summed observed leg gross notional, each explicit fee and cost component, and terminal residual value in the receipt's bound quote asset |
 | `GET /v1/strategy-quotes/{quoteHash}/proof` | the exact canonical order, graph, quote, and typed route behind an admitted strategy quote so clients can recompute every commitment locally |
-| `GET /v1/strategy-receipts/{receiptHash}/proof` | the terminal strategy receipt plus its complete admitted quote proof, allowing clients to recompute the receipt, all bound commitments, quantities, fees, signed caps, route, and solver signature locally |
+| `GET /v1/strategy-receipts/{receiptHash}/proof` | the terminal strategy receipt plus its complete admitted quote proof and, when observed, its canonical execution-intelligence record, allowing clients to recompute the receipt, all bound commitments, quantities, fees, signed caps, route, solver signature, execution quality, delivery evidence, and MEV attribution locally |
 | `GET /v1/positions/{strategyAccount}` | the latest signed snapshot of each source for the account, in full, with its age, labeled `OBSERVED` |
 | `GET /v1/collateral/{strategyAccount}` | the latest signed observation for every source, asset, risk domain, and collateral mode of the account, in full, with its age, labeled `OBSERVED` |
 | `GET /v1/risk/{strategyAccount}` | exact exposure and close cost over those positions in each accounting asset, and a fixed uniform 10% down and up stress with 150% close costs labeled `MODELED`; nothing converts between accounting assets |
@@ -105,6 +105,12 @@ The private solver handoff is GET `/internal/solver/hyperliquid-testnet/attempts
 | `POST /v1/orders/validate`, `/v1/routes/replay-decision`, `/v1/routes/compare`, `/v1/clearing/simulate`, `/v1/de-risk/validate` | side-effect-free kernel computation; route comparison takes solver scope from the registry, never from the caller; clearing simulation runs on an in-memory copy of the book |
 
 Query parameters are whitelisted, POST bodies are protocol JSON of at most 64 KiB, other methods are refused with 405, CORS allows any origin without credentials, and requests are rate limited per client window. `SqliteRegistryStore` holds immutable domain, market, package-template, and solver capability manifests; a solver manifest is admitted only with a valid Ed25519 operator signature over its manifest hash, an unchanged operator key, and a non-decreasing nonce.
+
+Strategy execution observers append one canonical execution-intelligence record per terminal
+receipt through loopback-only `POST /internal/strategy-packages/execution-intelligence`. The
+store requires the record to bind the stored order and selected quote outcome, cover every receipt
+leg, and contain an included delivery attempt. Records are append-only and conflicting repeats
+fail closed. The public proof route can read this evidence but cannot create or alter it.
 
 `createSolverApiHandler` serves the authenticated solver API under `/v1/solver/`, enabled by `NARYX_SOLVER_API_DB` together with `NARYX_REGISTRY_DB`. Manifest registration (`PUT /v1/solver/capability-manifest`, `POST /v1/solver/register`) is authenticated by the operator signature inside the manifest. Every other request carries `X-Naryx-Solver`, `X-Naryx-Key`, `X-Naryx-Timestamp`, `X-Naryx-Nonce`, and `X-Naryx-Signature`: an Ed25519 signature by a registered, currently valid quote key over `solverRequestDigest`, which binds the method, path and query, body hash, solver, key, time, and a single-use nonce. Requests outside a 30-second skew, reused nonces, unknown or expired keys, and altered bodies are refused with 401.
 

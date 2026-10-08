@@ -314,7 +314,7 @@ export interface PublicApiOptions {
   readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies" | "environmentName">;
   /** Durable admitted package intake; without it submission answers 503 while validation remains available. */
   readonly strategyPackages?: Pick<SqliteStrategyPackageStore, "registerOrder" | "registerQuote" | "recentAdmissions" | "receipt" | "receiptByQuote">
-    & Partial<Pick<SqliteStrategyPackageStore, "order" | "admissionByQuote" | "registerBoundQuote" | "lockPackageExecution" | "ownerReceipts">>;
+    & Partial<Pick<SqliteStrategyPackageStore, "order" | "admissionByQuote" | "registerBoundQuote" | "lockPackageExecution" | "ownerReceipts" | "executionIntelligence">>;
   /** Shared canonical strategy-order admission used by both the public API and the private terminal. */
   readonly strategyOrderIntake?: StrategyOrderIntakePort;
   /** Optional: requests a signed quote from the loopback reference solver for a stored order. */
@@ -1188,6 +1188,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       }
       const admission = store.admissionByQuote(quoteHash);
       if (admission === undefined) throw new RequestError(500, "CORRUPT_RECEIPT", "The terminal receipt has no admitted quote proof.");
+      const intelligence = store.executionIntelligence?.(receiptHash);
       return {
         version: 1,
         receiptHash,
@@ -1205,6 +1206,12 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           route: admission.route,
           recordedAtMs: admission.recordedAtMs,
         },
+        ...(intelligence === undefined ? {} : {
+          executionIntelligence: {
+            intelligence: intelligence.intelligence,
+            recordedAtMs: intelligence.recordedAtMs,
+          },
+        }),
       };
     }
     if ((match = /^\/v1\/strategy-receipts\/([0-9a-f]{64})$/.exec(path)) !== null) {

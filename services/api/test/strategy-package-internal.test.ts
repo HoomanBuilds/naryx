@@ -15,6 +15,7 @@ test("strategy package retrieval is loopback-only and returns the stored admissi
       ? ({ orderHashHex: orderHash, graphHashHex: "33".repeat(32) } as never)
       : undefined,
     recordReceipt: () => ({ created: true, receiptHashHex: "44".repeat(32) }),
+    recordExecutionIntelligence: () => ({ created: true, recordHashHex: "55".repeat(32) }),
   });
   const server = createServer((request, response) => {
     if (!handler(request, response)) response.end();
@@ -55,6 +56,7 @@ test("strategy receipt recording is loopback-only and body-bounded", async () =>
       recorded = receipt;
       return { created: true, receiptHashHex: "44".repeat(32) };
     },
+    recordExecutionIntelligence: () => ({ created: true, recordHashHex: "55".repeat(32) }),
   });
   const server = createServer((request, response) => {
     if (!handler(request, response)) response.end();
@@ -82,6 +84,47 @@ test("strategy receipt recording is loopback-only and body-bounded", async () =>
       body: stringifyProtocolJson({ receipt: {} }),
     })).status, 403);
     assert.equal((await fetch(url, { method: "POST", body: "{}" })).status, 415);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+  }
+});
+
+test("execution intelligence recording is loopback-only", async () => {
+  let recorded: unknown;
+  const handler = createStrategyPackageInternalHandler({
+    admissionByQuote: () => undefined,
+    order: () => undefined,
+    recordReceipt: () => ({ created: true, receiptHashHex: "44".repeat(32) }),
+    recordExecutionIntelligence: (intelligence) => {
+      recorded = intelligence;
+      return { created: true, recordHashHex: "55".repeat(32) };
+    },
+  });
+  const server = createServer((request, response) => {
+    if (!handler(request, response)) response.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("test server address is unavailable");
+  const url = `http://127.0.0.1:${address.port}/internal/strategy-packages/execution-intelligence`;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: stringifyProtocolJson({ intelligence: { version: 1, observerId: "observer-a" } }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(parseProtocolJson(await response.text()), {
+      version: 1,
+      created: true,
+      recordHashHex: "55".repeat(32),
+    });
+    assert.deepEqual(recorded, { version: 1, observerId: "observer-a" });
+    assert.equal((await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "https://terminal.example" },
+      body: stringifyProtocolJson({ intelligence: {} }),
+    })).status, 403);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
   }

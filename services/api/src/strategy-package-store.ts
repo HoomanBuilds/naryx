@@ -4,6 +4,7 @@ import type Database from "better-sqlite3";
 import {
   bytesEqual,
   commitmentHash,
+  executionIntelligence,
   packageGraph,
   packageGraphHash,
   packageQuoteExecutionBinding,
@@ -39,6 +40,8 @@ import {
   type StrategyState,
   type TypedStrategyRoute,
   type DomainRef,
+  type ExecutionIntelligence,
+  type ExecutionIntelligenceInput,
   type FieldEvidenceGrade,
 } from "@naryx/protocol-types";
 import { PublicKey } from "@solana/web3.js";
@@ -139,6 +142,15 @@ CREATE TABLE IF NOT EXISTS strategy_package_receipts (
   receipt_json TEXT NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS strategy_execution_intelligence (
+  record_hash BLOB PRIMARY KEY,
+  receipt_hash BLOB NOT NULL UNIQUE REFERENCES strategy_package_receipts(receipt_hash),
+  order_hash BLOB NOT NULL REFERENCES strategy_package_orders(order_hash),
+  record_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE TRIGGER IF NOT EXISTS reject_strategy_execution_intelligence_change BEFORE UPDATE ON strategy_execution_intelligence BEGIN SELECT RAISE(ABORT, 'execution intelligence is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_strategy_execution_intelligence_delete BEFORE DELETE ON strategy_execution_intelligence BEGIN SELECT RAISE(ABORT, 'execution intelligence is append-only'); END;
 CREATE TABLE IF NOT EXISTS strategy_native_positions (
   strategy_id TEXT PRIMARY KEY,
   owner_id TEXT NOT NULL,
@@ -316,6 +328,12 @@ export interface StoredStrategyPackageExecution {
 export interface StoredStrategyPackageReceipt {
   readonly receiptHashHex: string;
   readonly receipt: StrategyPackageReceipt;
+  readonly recordedAtMs: number;
+}
+
+export interface StoredStrategyExecutionIntelligence {
+  readonly recordHashHex: string;
+  readonly intelligence: ExecutionIntelligence;
   readonly recordedAtMs: number;
 }
 
@@ -534,6 +552,21 @@ export function validateStrategyReceiptEconomics(
     "FEE_LIMIT_EXCEEDED", "The receipt recovery cost exceeds the signed order cap.");
   requireCondition(receipt.terminalResidualValue.atoms <= order.maximumResidualValue.atoms,
     "RESIDUAL_LIMIT_EXCEEDED", "The receipt residual exceeds the signed order cap.");
+}
+
+export function validateStrategyExecutionIntelligence(
+  receipt: Pick<StrategyPackageReceipt, "orderHash" | "terminalState" | "legOutcomes">,
+  quote: Pick<StrategyPackageQuote, "netPackageOutcome">,
+  intelligence: ExecutionIntelligence,
+): void {
+  requireCondition(bytesEqual(intelligence.orderHash, receipt.orderHash),
+    "BINDING_MISMATCH", "Execution intelligence names another strategy order.");
+  requireCondition(intelligence.observation.expectedNetOutcomeAtoms === quote.netPackageOutcome.atoms,
+    "BINDING_MISMATCH", "Execution intelligence does not use the selected quote's expected net outcome.");
+  requireCondition(intelligence.observation.legCompletedAtValues.length === receipt.legOutcomes.length,
+    "BINDING_MISMATCH", "Execution intelligence must report one completion time per receipt leg.");
+  requireCondition(requiresSuccessfulReceipt(receipt.terminalState) && intelligence.delivery.included,
+    "BINDING_MISMATCH", "Execution intelligence requires a successful receipt and an included delivery attempt.");
 }
 
 function hashBuffer(hex: string): Buffer {
@@ -2109,6 +2142,68 @@ export class SqliteStrategyPackageStore {
     return receipt;
   }
 
+  recordExecutionIntelligence(input: ExecutionIntelligenceInput): { readonly created: boolean; readonly recordHashHex: string } {
+    let intelligence: ExecutionIntelligence;
+    try {
+      intelligence = executionIntelligence(input);
+    } catch (error) {
+      throw new StrategyPackageStoreError("INVALID_EXECUTION_INTELLIGENCE", `Execution intelligence failed validation: ${(error as Error).message}`);
+    }
+    const row = this.db.prepare(`
+      SELECT r.order_hash, r.receipt_json, q.quote_json
+      FROM strategy_package_receipts r
+      JOIN strategy_package_quotes q ON q.quote_hash = r.quote_hash
+      WHERE r.receipt_hash = ?
+    `).get(intelligence.receiptHash) as { order_hash: Uint8Array; receipt_json: string; quote_json: string } | undefined;
+    requireCondition(row !== undefined, "RECEIPT_NOT_FOUND", "Execution intelligence names no stored strategy receipt.");
+    const receipt = strategyPackageReceipt(parseProtocolJson(row.receipt_json) as StrategyPackageReceiptInput);
+    const quote = strategyPackageQuote(parseProtocolJson(row.quote_json) as StrategyPackageQuoteInput);
+    requireCondition(bytesEqual(intelligence.orderHash, row.order_hash),
+      "BINDING_MISMATCH", "Execution intelligence names another stored strategy order.");
+    validateStrategyExecutionIntelligence(receipt, quote, intelligence);
+    const normalized: ExecutionIntelligenceInput = {
+      version: intelligence.version,
+      receiptHash: intelligence.receiptHash,
+      orderHash: intelligence.orderHash,
+      observerId: intelligence.observerId,
+      clockUnit: intelligence.clockUnit,
+      observerEvidenceHash: intelligence.observerEvidenceHash,
+      observation: intelligence.observation,
+      deliveryPolicy: intelligence.deliveryPolicy,
+      deliveryAttempts: intelligence.deliveryAttempts,
+      observedAtValue: intelligence.observedAtValue,
+    };
+    const recordJson = stringifyProtocolJson(normalized);
+    const recordHashHex = toHex(intelligence.recordHash);
+    return this.db.transaction(() => {
+      const known = this.db.prepare("SELECT record_hash, record_json FROM strategy_execution_intelligence WHERE receipt_hash = ?")
+        .get(intelligence.receiptHash) as { record_hash: Uint8Array; record_json: string } | undefined;
+      if (known !== undefined) {
+        requireCondition(bytesEqual(known.record_hash, intelligence.recordHash) && known.record_json === recordJson,
+          "EXECUTION_INTELLIGENCE_CONFLICT", "This receipt already has another execution-intelligence record.");
+        return Object.freeze({ created: false, recordHashHex });
+      }
+      this.db.prepare("INSERT INTO strategy_execution_intelligence (record_hash, receipt_hash, order_hash, record_json, recorded_at_ms) VALUES (?, ?, ?, ?, ?)")
+        .run(intelligence.recordHash, intelligence.receiptHash, intelligence.orderHash, recordJson, this.clock());
+      return Object.freeze({ created: true, recordHashHex });
+    }).immediate();
+  }
+
+  executionIntelligence(receiptHashHex: string): StoredStrategyExecutionIntelligence | undefined {
+    const row = this.db.prepare("SELECT record_hash, record_json, recorded_at_ms FROM strategy_execution_intelligence WHERE receipt_hash = ?")
+      .get(hashBuffer(receiptHashHex)) as { record_hash: Uint8Array; record_json: string; recorded_at_ms: number } | undefined;
+    if (row === undefined) return undefined;
+    let intelligence: ExecutionIntelligence;
+    try {
+      intelligence = executionIntelligence(parseProtocolJson(row.record_json) as ExecutionIntelligenceInput);
+    } catch (error) {
+      throw new StrategyPackageStoreError("CORRUPT_ROW", `Stored execution intelligence failed validation: ${(error as Error).message}`);
+    }
+    requireCondition(bytesEqual(intelligence.receiptHash, hashBuffer(receiptHashHex)) && bytesEqual(intelligence.recordHash, row.record_hash),
+      "CORRUPT_ROW", "Stored execution intelligence does not match its receipt or record hash.");
+    return Object.freeze({ recordHashHex: toHex(row.record_hash), intelligence, recordedAtMs: row.recorded_at_ms });
+  }
+
   ownerReceipts(ownerId: string, limit = 50): readonly OwnerStrategyPackageReceipt[] {
     requireCondition(/^[A-Za-z0-9._:-]{1,128}$/.test(ownerId), "INVALID_OWNER", "The strategy receipt owner is malformed.");
     requireCondition(Number.isSafeInteger(limit) && limit >= 1 && limit <= 50,
@@ -2206,23 +2301,32 @@ export class SqliteStrategyPackageStore {
 }
 
 export function createStrategyPackageInternalHandler(
-  store: Pick<SqliteStrategyPackageStore, "admissionByQuote" | "order" | "recordReceipt">,
+  store: Pick<SqliteStrategyPackageStore, "admissionByQuote" | "order" | "recordReceipt" | "recordExecutionIntelligence">,
 ): (request: IncomingMessage, response: ServerResponse) => boolean {
   return (request, response) => {
     const url = new URL(request.url ?? "/", "http://internal.local");
     const quoteMatch = /^\/internal\/strategy-packages\/quotes\/([0-9a-f]{64})$/.exec(url.pathname);
     const orderMatch = /^\/internal\/strategy-packages\/orders\/([0-9a-f]{64})$/.exec(url.pathname);
     const recordsReceipt = url.pathname === "/internal/strategy-packages/receipts";
-    if (quoteMatch === null && orderMatch === null && !recordsReceipt) return false;
+    const recordsExecutionIntelligence = url.pathname === "/internal/strategy-packages/execution-intelligence";
+    if (quoteMatch === null && orderMatch === null && !recordsReceipt && !recordsExecutionIntelligence) return false;
     if (!internalCaller(request)) return sendError(response, 403, "FORBIDDEN", "Strategy package routes answer loopback callers only.");
     if (url.search !== "") return sendError(response, 400, "INVALID_REQUEST", "Strategy package routes accept no query parameters.");
-    if (recordsReceipt) {
+    if (recordsReceipt || recordsExecutionIntelligence) {
       if (request.method !== "POST") return sendError(response, 405, "METHOD_NOT_ALLOWED", "Only POST is allowed.");
       if (request.headers["content-type"]?.split(";", 1)[0]?.trim() !== "application/json") {
         return sendError(response, 415, "INVALID_CONTENT_TYPE", "Content-Type must be application/json.");
       }
       readInternalBody(request, response, (body) => {
         try {
+          if (recordsExecutionIntelligence) {
+            if (Object.keys(body).length !== 1 || body.intelligence === undefined) {
+              sendError(response, 400, "INVALID_REQUEST", "The body must contain only intelligence.");
+              return;
+            }
+            sendJson(response, 200, { version: 1, ...store.recordExecutionIntelligence(body.intelligence as ExecutionIntelligenceInput) });
+            return;
+          }
           if (Object.keys(body).length !== 1 || body.receipt === undefined) {
             sendError(response, 400, "INVALID_REQUEST", "The body must contain only receipt.");
             return;
