@@ -70,6 +70,8 @@ import {
   loadEvmStrategySolverKey,
   EvmNettingAllocationAuthorizationService,
   createEvmNettingAllocationAuthorizationInternalHandler,
+  SolanaNettingAllocationAuthorizationService,
+  createSolanaNettingAllocationAuthorizationInternalHandler,
   HttpNettingAllocationAdminClient,
   NettingAllocationLifecycleService,
   EvmStrategyExecutionObservationService,
@@ -588,9 +590,13 @@ const nettingAllocationAuthorizationEnabled = explicitBoolean(
   process.env.NARYX_NETTING_ALLOCATION_AUTHORIZATION_ENABLED,
   'NARYX_NETTING_ALLOCATION_AUTHORIZATION_ENABLED',
 );
+if (nettingAllocationAuthorizationEnabled && strategyPreparationService === undefined) {
+  throw new Error('netting allocation authorization requires a strategy preparation runtime');
+}
 if (nettingAllocationAuthorizationEnabled
-  && (strategyPreparationService === undefined || evmStrategySolver === undefined)) {
-  throw new Error('netting allocation authorization requires an EVM strategy runtime and solver key');
+  && evmStrategySolver === undefined
+  && solanaDevnetSolver?.strategySigner === undefined) {
+  throw new Error('netting allocation authorization requires at least one configured domain signer');
 }
 const nettingAllocationLifecycle = !nettingAllocationAuthorizationEnabled
     || strategyPreparationService === undefined
@@ -604,6 +610,17 @@ const evmNettingAllocationAuthorizationHandler = nettingAllocationLifecycle === 
   ? undefined
   : createEvmNettingAllocationAuthorizationInternalHandler(
       new EvmNettingAllocationAuthorizationService(nettingAllocationLifecycle, evmStrategySolver),
+    );
+const solanaNettingAllocationAuthorizationHandler = nettingAllocationLifecycle === undefined
+    || solanaTreasuryRuntime === undefined
+    || solanaDevnetSolver?.strategySigner === undefined
+  ? undefined
+  : createSolanaNettingAllocationAuthorizationInternalHandler(
+      new SolanaNettingAllocationAuthorizationService({
+        lifecycle: nettingAllocationLifecycle,
+        lanes: solanaTreasuryRuntime.executionLanes,
+        signer: solanaDevnetSolver.strategySigner,
+      }),
     );
 const evmObservationLanes = [...new Map([
   ...(evmOptionRuntime?.observationLanes ?? []),
@@ -662,6 +679,7 @@ const strategyRouteHandlers = [
   evmReverseBasisCollateralHandler,
   evmStrategyAuthorizationHandler,
   evmNettingAllocationAuthorizationHandler,
+  solanaNettingAllocationAuthorizationHandler,
   evmOptionObservationHandler,
   residualExecutionHandler,
   baseResidualExecutionHandler,

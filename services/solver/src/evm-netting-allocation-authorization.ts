@@ -3,7 +3,6 @@ import {
   isCanonicalEvmSignature,
   type EvmNettingOwnerTypedData,
 } from '@naryx/adapter-evm';
-import type { Hash32 } from '@naryx/protocol-types';
 import {
   getAddress,
   recoverTypedDataAddress,
@@ -12,19 +11,12 @@ import {
   type LocalAccount,
 } from 'viem';
 import type {
+  NettingAllocationExecutionRequest,
   NettingAllocationLifecycleService,
   RegisteredPreparedNettingAllocation,
 } from './netting-allocation-lifecycle.js';
 
 const TEST_CHAIN_IDS = new Set([84_532, 421_614, 31_337, 31_338]);
-
-export interface EvmNettingAllocationRequest {
-  readonly proofHash: Uint8Array | string;
-  readonly allocationReceiptHash: Uint8Array | string;
-  readonly quoteHash: Hash32;
-  readonly domainId: string;
-  readonly attemptId: string;
-}
 
 export interface EvmNettingAllocationChallenge {
   readonly version: 1;
@@ -62,7 +54,7 @@ export class EvmNettingAllocationAuthorizationService {
     this.#solver = solver;
   }
 
-  async challenge(input: EvmNettingAllocationRequest): Promise<EvmNettingAllocationChallenge> {
+  async challenge(input: NettingAllocationExecutionRequest): Promise<EvmNettingAllocationChallenge> {
     const registered = await this.#registered(input);
     const prepared = registered.prepared;
     requireCondition(prepared.kind === 'EVM_MULTI_STRATEGY_ACCOUNT', 'prepared allocation is not EVM');
@@ -82,7 +74,7 @@ export class EvmNettingAllocationAuthorizationService {
     });
   }
 
-  async authorize(input: EvmNettingAllocationRequest & Readonly<{
+  async authorize(input: NettingAllocationExecutionRequest & Readonly<{
     ownerSignature: Hex;
   }>): Promise<AuthorizedEvmNettingAllocation> {
     requireCondition(isCanonicalEvmSignature(input.ownerSignature), 'owner signature is not canonical ECDSA');
@@ -130,7 +122,7 @@ export class EvmNettingAllocationAuthorizationService {
     });
   }
 
-  async #registered(input: EvmNettingAllocationRequest): Promise<RegisteredPreparedNettingAllocation> {
+  async #registered(input: NettingAllocationExecutionRequest): Promise<RegisteredPreparedNettingAllocation> {
     return this.#lifecycle.prepareAndRegister(input);
   }
 }

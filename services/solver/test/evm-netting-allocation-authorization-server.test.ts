@@ -8,11 +8,11 @@ import {
 } from '@naryx/protocol-types';
 import {
   createEvmNettingAllocationAuthorizationInternalHandler,
-  type EvmNettingAllocationRequest,
+  type NettingAllocationExecutionRequest,
 } from '../src/index.js';
 
 test('serves the exact EVM allocation challenge to loopback callers', async () => {
-  let received: EvmNettingAllocationRequest | undefined;
+  let received: NettingAllocationExecutionRequest | undefined;
   const handler = createEvmNettingAllocationAuthorizationInternalHandler({
     challenge: async (input) => {
       received = input;

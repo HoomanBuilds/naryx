@@ -40,15 +40,20 @@ export {
 } from './netting-allocation-execution-preparer.js';
 export {
   NettingAllocationLifecycleService,
+  type NettingAllocationExecutionRequest,
   type RegisteredPreparedNettingAllocation,
 } from './netting-allocation-lifecycle.js';
 export {
   EvmNettingAllocationAuthorizationService,
   type AuthorizedEvmNettingAllocation,
   type EvmNettingAllocationChallenge,
-  type EvmNettingAllocationRequest,
 } from './evm-netting-allocation-authorization.js';
 export { createEvmNettingAllocationAuthorizationInternalHandler } from './evm-netting-allocation-authorization-server.js';
+export {
+  SolanaNettingAllocationAuthorizationService,
+  type AuthorizedSolanaNettingAllocation,
+} from './solana-netting-allocation-authorization.js';
+export { createSolanaNettingAllocationAuthorizationInternalHandler } from './solana-netting-allocation-authorization-server.js';
 export {
   GeneralizedStrategyQuoteError,
   GeneralizedStrategyQuoteService,

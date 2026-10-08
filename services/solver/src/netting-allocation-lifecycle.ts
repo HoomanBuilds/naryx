@@ -28,6 +28,14 @@ export interface RegisteredPreparedNettingAllocation {
   readonly attempt: RegisteredNettingAllocationAttempt;
 }
 
+export interface NettingAllocationExecutionRequest {
+  readonly proofHash: Uint8Array | string;
+  readonly allocationReceiptHash: Uint8Array | string;
+  readonly quoteHash: Hash32;
+  readonly domainId: string;
+  readonly attemptId: string;
+}
+
 function attemptId(value: string): string {
   if (!/^[A-Za-z0-9_-]{16,96}$/.test(value)) {
     throw new Error('netting allocation attempt ID is invalid');
@@ -50,13 +58,7 @@ export class NettingAllocationLifecycleService {
     this.#prepare = prepare;
   }
 
-  async prepareAndRegister(input: Readonly<{
-    proofHash: Uint8Array | string;
-    allocationReceiptHash: Uint8Array | string;
-    quoteHash: Hash32;
-    domainId: string;
-    attemptId: string;
-  }>): Promise<RegisteredPreparedNettingAllocation> {
+  async prepareAndRegister(input: NettingAllocationExecutionRequest): Promise<RegisteredPreparedNettingAllocation> {
     const proofHashHex = toHex(commitmentHash(input.proofHash, 'proofHash'));
     const allocationReceiptHashHex = toHex(commitmentHash(
       input.allocationReceiptHash,
