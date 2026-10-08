@@ -8,6 +8,7 @@ import { parseProtocolJson } from '@naryx/protocol-types';
 import { createCodeReader, loadCodeHashMonitorConfig, runCodeHashPass } from './code-hash-monitor.js';
 import { loadKeeperRpcUrls, solanaSlotReader } from './chain-identity.js';
 import { DependencyIncidentFileStore } from './dependency-incident-engine.js';
+import { DependencyIncidentStatusReader } from './dependency-incident-status.js';
 import { ed25519HashSigner, httpSnapshotPublisher, loadPositionSnapshotConfig, runPositionSnapshotPass } from './position-snapshot-pass.js';
 import { httpCollateralSnapshotPublisher, loadCollateralSnapshotConfig, runCollateralSnapshotPass } from './collateral-snapshot-pass.js';
 import {
@@ -57,18 +58,29 @@ const collector = new HyperliquidAuthoritativeEvidenceCollector(client);
 const runtime = new HyperliquidTestnetEvidenceRuntime(collector);
 const strategy = new HyperliquidStrategyAuthoritativeEvidenceCollector(client);
 const nettingResidual = new HyperliquidNettingResidualAuthoritativeEvidenceCollector(client);
-const server = createHyperliquidTestnetEvidenceServer({ runtime, strategy, nettingResidual });
 
 // The code-hash monitor only reads chain state; it quarantines a scope in its incident journal
 // when reviewed code drifts or disappears.
 const monitor = loadCodeHashMonitorConfig(process.env, (path) => readFileSync(path, 'utf8'), parseProtocolJson);
+const monitorJournals = monitor?.journals.map((entry) => ({
+  store: new DependencyIncidentFileStore(entry.journalPath),
+  readinessDecision: entry.readinessDecision,
+}));
+const dependencyIncidents = monitorJournals === undefined
+  ? undefined
+  : new DependencyIncidentStatusReader(monitorJournals.map((entry) => entry.store));
+const server = createHyperliquidTestnetEvidenceServer({
+  runtime,
+  strategy,
+  nettingResidual,
+  ...(dependencyIncidents === undefined ? {} : { dependencyIncidents }),
+});
 let monitorTimer: ReturnType<typeof setInterval> | undefined;
-if (monitor !== undefined) {
+if (monitor !== undefined && monitorJournals !== undefined) {
   const readers = Object.fromEntries([...monitor.rpcUrls].map(([chainRef, url]) => [chainRef, createCodeReader(chainRef, url)]));
-  const journals = monitor.journals.map((entry) => ({ store: new DependencyIncidentFileStore(entry.journalPath), readinessDecision: entry.readinessDecision }));
   const pass = async () => {
     try {
-      const observations = await runCodeHashPass({ targets: monitor.targets, readers, journals, nowMs: BigInt(Date.now()), evidenceTtlMs: monitor.evidenceTtlMs });
+      const observations = await runCodeHashPass({ targets: monitor.targets, readers, journals: monitorJournals, nowMs: BigInt(Date.now()), evidenceTtlMs: monitor.evidenceTtlMs });
       const flagged = observations.filter((entry) => entry.status !== 'MATCH');
       if (flagged.length > 0) process.stdout.write(`Code-hash monitor: ${flagged.map((entry) => `${entry.targetId} ${entry.chainRef} ${entry.status}${entry.detail === undefined ? '' : ` (${entry.detail})`}`).join(', ')}\n`);
     } catch (error) {

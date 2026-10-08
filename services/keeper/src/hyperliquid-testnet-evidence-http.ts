@@ -18,6 +18,7 @@ import type {
   HyperliquidNettingResidualAuthoritativeEvidenceCollector,
   HyperliquidNettingResidualEvidenceRequest,
 } from './hyperliquid-netting-residual-evidence.js';
+import type { DependencyIncidentStatusReader } from './dependency-incident-status.js';
 
 export const KEEPER_TESTNET_PREPARE_PATH = '/internal/keeper/hyperliquid-testnet/prepare';
 export const KEEPER_TESTNET_RECONCILE_PATH = '/internal/keeper/hyperliquid-testnet/reconcile';
@@ -25,6 +26,7 @@ export const KEEPER_TESTNET_STRATEGY_RECONCILE_PATH =
   '/internal/keeper/hyperliquid-testnet/strategy/reconcile';
 export const KEEPER_TESTNET_NETTING_RESIDUAL_RECONCILE_PATH =
   '/internal/keeper/hyperliquid-testnet/netting-residual/reconcile';
+export const KEEPER_DEPENDENCY_INCIDENT_STATUS_PATH = '/internal/keeper/dependency-incidents';
 
 const MAX_BODY_BYTES = 65_536;
 
@@ -37,6 +39,7 @@ export interface HyperliquidTestnetEvidenceHttpPorts {
   readonly runtime: Pick<HyperliquidTestnetEvidenceRuntime, 'prepare' | 'reconcile'>;
   readonly strategy?: Pick<HyperliquidStrategyAuthoritativeEvidenceCollector, 'collect'>;
   readonly nettingResidual?: Pick<HyperliquidNettingResidualAuthoritativeEvidenceCollector, 'collect'>;
+  readonly dependencyIncidents?: Pick<DependencyIncidentStatusReader, 'current'>;
 }
 
 class KeeperRequestError extends Error {
@@ -205,6 +208,26 @@ export function createHyperliquidTestnetEvidenceRequestHandler(
     const url = new URL(request.url ?? '/', 'http://keeper.local');
     if (url.search !== '') {
       reject(response, 404, 'NOT_FOUND', 'Route not found.');
+      return;
+    }
+    if (url.pathname === KEEPER_DEPENDENCY_INCIDENT_STATUS_PATH) {
+      if (request.method !== 'GET') {
+        response.setHeader('Allow', 'GET');
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only GET is allowed.');
+        return;
+      }
+      if (ports.dependencyIncidents === undefined) {
+        reject(response, 503, 'DEPENDENCY_INCIDENT_STATUS_DISABLED', 'Dependency incident status is unavailable.');
+        return;
+      }
+      try {
+        sendJson(response, 200, toProtocolJson(
+          await ports.dependencyIncidents.current(),
+          'keeper.dependencyIncidents.result',
+        ));
+      } catch {
+        reject(response, 503, 'DEPENDENCY_INCIDENT_STATUS_UNAVAILABLE', 'Dependency incident status is unavailable.');
+      }
       return;
     }
     if (url.pathname === KEEPER_TESTNET_PREPARE_PATH) {

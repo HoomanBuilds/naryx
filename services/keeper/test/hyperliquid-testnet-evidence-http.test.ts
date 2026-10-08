@@ -4,6 +4,7 @@ import test from 'node:test';
 import { stringifyProtocolJson } from '@naryx/protocol-types';
 import {
   createHyperliquidTestnetEvidenceServer,
+  KEEPER_DEPENDENCY_INCIDENT_STATUS_PATH,
   KEEPER_TESTNET_NETTING_RESIDUAL_RECONCILE_PATH,
   KEEPER_TESTNET_PREPARE_PATH,
   KEEPER_TESTNET_RECONCILE_PATH,
@@ -41,6 +42,48 @@ function planFixture(): Record<string, unknown> {
     commitments: { orderHash: new Uint8Array(32).fill(7) },
   };
 }
+
+test('dependency incident status is loopback read-only evidence', async () => {
+  const server = createHyperliquidTestnetEvidenceServer({
+    runtime: {
+      prepare: async () => { throw new Error('prepare must not be called'); },
+      reconcile: async () => { throw new Error('reconcile must not be called'); },
+    },
+    dependencyIncidents: {
+      current: async () => ({
+        version: 1,
+        observedAtMs: 1_000,
+        configuredScopeCount: 1,
+        unavailableScopeCount: 0,
+        scopes: [{
+          scopeId: 'hypercore-testnet-cash-carry-small',
+          scopeHash: `0x${'11'.repeat(32)}`,
+          domainId: 'hypercore:testnet',
+          state: 'EXIT_ONLY',
+          entryAllowed: false,
+          exitAllowed: true,
+          revision: '1',
+          evidenceCommitment: `0x${'22'.repeat(32)}`,
+          evidenceObservedAtMs: '900',
+          evidenceValidUntilMs: '1900',
+          evidenceFresh: true,
+          latestReceiptHash: `0x${'33'.repeat(32)}`,
+        }],
+      }),
+    },
+  });
+  const url = await listen(server);
+  try {
+    const response = await fetch(`${url}${KEEPER_DEPENDENCY_INCIDENT_STATUS_PATH}`);
+    assert.equal(response.status, 200);
+    const body = await response.json() as { scopes: { state: string }[] };
+    assert.equal(body.scopes[0]?.state, 'EXIT_ONLY');
+    const rejected = await fetch(`${url}${KEEPER_DEPENDENCY_INCIDENT_STATUS_PATH}`, { method: 'POST' });
+    assert.equal(rejected.status, 405);
+  } finally {
+    await close(server);
+  }
+});
 
 test('prepare success decodes strict protocol JSON and returns a sanitized typed response', async () => {
   let seenPlan: Record<string, unknown> | null = null;

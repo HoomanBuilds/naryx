@@ -22,6 +22,7 @@ import {
   type DependencyScopeInput,
   type QualificationEvidenceInput,
 } from '../src/dependency-incident-engine.js';
+import { DependencyIncidentStatusReader } from '../src/dependency-incident-status.js';
 
 const nowMs = 1_000_000n;
 const scope: DependencyScopeInput = {
@@ -160,6 +161,24 @@ test('durable journal survives restart with its receipt chain intact', async () 
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('incident status publishes validated journal evidence without mutating it', async () => {
+  const source = journal();
+  const missing = Object.assign(new Error('missing journal'), { code: 'ENOENT' });
+  const reader = new DependencyIncidentStatusReader([
+    { load: async () => source },
+    { load: async () => { throw missing; } },
+  ], () => 1_234_567);
+  const status = await reader.current();
+  assert.equal(status.observedAtMs, 1_234_567);
+  assert.equal(status.configuredScopeCount, 2);
+  assert.equal(status.unavailableScopeCount, 1);
+  assert.equal(status.scopes[0]?.domainId, 'hypercore:testnet');
+  assert.equal(status.scopes[0]?.state, 'ACTIVE');
+  assert.equal(status.scopes[0]?.evidenceFresh, false);
+  assert.equal(status.scopes[0]?.evidenceCommitment, source.latestEvidence.evidenceCommitment);
+  assert.equal(status.scopes[0]?.latestReceiptHash, null);
 });
 
 test('rejects restoration self-approval', () => {
