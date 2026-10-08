@@ -48,6 +48,8 @@ export const NARYX_TEST_PERP_MARKET_ABI = parseAbi([
   'function maxOracleAgeSeconds() view returns (uint32)',
   'function collateralScale() view returns (uint256)',
   'function opensPaused() view returns (bool)',
+  'function tradeBounded(bytes32 executionId, bytes32[2] args, uint256 minimumNotionalWad, uint256 maximumNotionalWad, uint256 maximumFeeWad) returns ((int256 balance, int256 size, uint256 entryNotional, uint256 entrySocialLossIndex, int256 entryFundingIndex) position)',
+  'event BoundedTradeExecuted(bytes32 indexed executionId, address indexed trader, int128 sizeDelta, uint256 fillPriceWad, uint256 notionalWad, uint256 feeWad)',
 ]);
 
 export const CHAINLINK_AGGREGATOR_ABI = parseAbi([
