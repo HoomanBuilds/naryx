@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { packageReopeningSnapshotHash, toHex } from "@naryx/protocol-types";
+import { packageReopeningSnapshotHash, toHex, type PackageBookHaltInput } from "@naryx/protocol-types";
 import type { SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { PackageExchangeStoreError } from "./package-exchange-store.js";
 import { internalCaller, readInternalBody, sendError, sendJson } from "./internal-http.js";
@@ -7,7 +7,7 @@ import { internalCaller, readInternalBody, sendError, sendJson } from "./interna
 export interface PackageReopeningAdminOptions {
   readonly exchange: Pick<
     SqlitePackageExchangeStore,
-    "getBook" | "getMatchingPolicy" | "clearReopeningAuction"
+    "getBook" | "getMatchingPolicy" | "haltBook" | "clearReopeningAuction"
   >;
   readonly nowValue: () => bigint;
 }
@@ -22,10 +22,11 @@ export function createPackageReopeningAdminHandler(
   options: PackageReopeningAdminOptions,
 ): (request: IncomingMessage, response: ServerResponse) => boolean {
   const snapshotPath = "/internal/package-book/reopening/snapshot";
+  const haltPath = "/internal/package-book/reopening/halt";
   const clearPath = "/internal/package-book/reopening/clear";
   return (request, response) => {
     const url = new URL(request.url ?? "/", "http://internal.local");
-    if (url.pathname !== snapshotPath && url.pathname !== clearPath) return false;
+    if (url.pathname !== snapshotPath && url.pathname !== haltPath && url.pathname !== clearPath) return false;
     if (!internalCaller(request)) {
       return sendError(response, 403, "FORBIDDEN", "Package reopening controls answer loopback callers only.");
     }
@@ -55,6 +56,17 @@ export function createPackageReopeningAdminHandler(
             openingSnapshotHash: toHex(packageReopeningSnapshotHash(policy, book)),
             queuedEntryCount: book.entries.length,
             asOfValue: options.nowValue(),
+          });
+          return;
+        }
+        if (haltPath === url.pathname) {
+          if (!exactKeys(body, ["halt"]) || typeof body.halt !== "object" || body.halt === null || Array.isArray(body.halt)) {
+            sendError(response, 400, "INVALID_REQUEST", "The body must contain only a halt object.");
+            return;
+          }
+          sendJson(response, 200, {
+            version: 1,
+            ...options.exchange.haltBook(body.halt as PackageBookHaltInput),
           });
           return;
         }

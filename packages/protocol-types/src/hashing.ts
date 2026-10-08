@@ -51,6 +51,7 @@ export const HASH_DOMAIN = Object.freeze({
   PACKAGE_TAKER_ORDER: 'CON/v1/package-taker-order',
   PACKAGE_BOOK_CANCELLATION: 'CON/v1/package-book-cancellation',
   PACKAGE_BOOK_AMENDMENT: 'CON/v1/package-book-amendment',
+  PACKAGE_BOOK_HALT: 'CON/v1/package-book-halt',
   PACKAGE_SETTLEMENT_COMMITMENT: 'CON/v1/package-settlement-commitment',
   PACKAGE_SETTLEMENT_HANDOFF: 'CON/v1/package-settlement-handoff',
   PACKAGE_SETTLEMENT_READINESS: 'CON/v1/package-settlement-readiness',

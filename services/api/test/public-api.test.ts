@@ -48,6 +48,18 @@ function submitBookOrder(store: SqlitePackageExchangeStore, input: ReturnType<ty
   return store.submitOrder(CLASS, input, NOW, settlement(input));
 }
 
+function haltBook(store: SqlitePackageExchangeStore, incident: number) {
+  const book = store.getBook(CLASS)!;
+  const policy = packageMatchingPolicy(store.getMatchingPolicy(book.matchingPolicyHash)!);
+  return store.haltBook({
+    version: 1,
+    executionClassId: CLASS,
+    expectedOpenSnapshotHash: packageReopeningSnapshotHash(policy, book),
+    incidentEvidenceHash: id(incident),
+    reasonCode: "test-incident",
+  });
+}
+
 async function withMarket(
   run: (get: (path: string, init?: RequestInit) => Promise<{ status: number; body: unknown; text: string }>, store: SqlitePackageExchangeStore) => Promise<void>,
   overrides: Partial<PublicApiOptions> = {},
@@ -136,7 +148,16 @@ test("allocation evidence verifies independently against the served policy", asy
 test("reopening evidence is published with independently verifiable settlement handoffs", async () => {
   await withMarket(async (get, store) => {
     registerAll(store);
-    store.setHalted(CLASS, true);
+    const halt = haltBook(store, 700);
+    const haltEvidence = await get(`/v1/package-book/halts/${halt.haltHashHex}`);
+    assert.equal(haltEvidence.status, 200, haltEvidence.text);
+    assert.deepEqual(
+      [
+        (haltEvidence.body as { haltHashHex: string }).haltHashHex,
+        (haltEvidence.body as { haltedSnapshotHashHex: string }).haltedSnapshotHashHex,
+      ],
+      [halt.haltHashHex, halt.haltedSnapshotHashHex],
+    );
     const ask = order(1, { side: "ASK", limitPriceTicks: 95n });
     const bid = order(2, { side: "BID", limitPriceTicks: 105n });
     store.queueReopeningOrder(CLASS, ask, NOW, settlement(ask));
@@ -466,7 +487,7 @@ test("signed public package orders create durable settlement handoffs and replay
       scheme: "ED25519",
       signature: bs58.encode(sign(null, Buffer.from(packageSettlementCommitmentBytes(reopeningCommitment)), keys.privateKey)),
     };
-    store.setHalted(CLASS, true);
+    haltBook(store, 701);
     const queued = await get("/v1/package-book/reopening/orders", post({
       order: reopeningOrder,
       settlementCommitment: reopeningCommitment,

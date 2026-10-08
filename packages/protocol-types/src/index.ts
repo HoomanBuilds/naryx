@@ -335,11 +335,16 @@ export {
 } from './package-matching.js';
 
 export {
+  PACKAGE_BOOK_HALT_VERSION,
   PACKAGE_REOPENING_RESULT_VERSION,
   PACKAGE_REOPENING_SETTLEMENT_HANDOFF_VERSION,
   PACKAGE_REOPENING_MAX_FILLS,
   packageReopeningSnapshotBytes,
   packageReopeningSnapshotHash,
+  packageBookHalt,
+  packageBookHaltBytes,
+  packageBookHaltHash,
+  applyPackageBookHalt,
   queuePackageReopeningOrder,
   packageReopeningResult,
   packageReopeningResultBytes,
@@ -351,6 +356,8 @@ export {
   verifyPackageReopeningResult,
   verifyPackageReopeningSettlementHandoff,
   type PackageReopeningAdmission,
+  type PackageBookHaltInput,
+  type PackageBookHalt,
   type PackageReopeningFill,
   type PackageReopeningResult,
   type PackageReopeningClearance,

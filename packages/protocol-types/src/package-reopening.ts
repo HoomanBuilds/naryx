@@ -1,5 +1,5 @@
 import { absBigInt, checkedSigned, checkedUnsigned } from './arithmetic.js';
-import { compareBytes, toHex } from './bytes.js';
+import { bytesEqual, compareBytes, toHex } from './bytes.js';
 import { canonicalBytes, type CanonicalWriter } from './encoding.js';
 import { MalformedInputError } from './errors.js';
 import { domainHash, HASH_DOMAIN } from './hashing.js';
@@ -11,6 +11,7 @@ import {
   matchPackageOrder,
   packageBookState,
   packageMatchingPolicy,
+  setPackageBookHalted,
   type PackageBookEntry,
   type PackageBookState,
   type PackageMatchingPolicy,
@@ -28,6 +29,7 @@ import {
 
 export const PACKAGE_REOPENING_RESULT_VERSION = 1;
 export const PACKAGE_REOPENING_SETTLEMENT_HANDOFF_VERSION = 1;
+export const PACKAGE_BOOK_HALT_VERSION = 1;
 export const PACKAGE_REOPENING_MAX_FILLS = 2_000;
 
 const U64_BITS = 64;
@@ -38,6 +40,22 @@ export interface PackageReopeningAdmission {
   readonly state: PackageBookState;
   readonly entry: PackageBookEntry;
   readonly expiredEntryIds: readonly CommitmentHash[];
+}
+
+export interface PackageBookHaltInput {
+  readonly version: number;
+  readonly executionClassId: string;
+  readonly expectedOpenSnapshotHash: Uint8Array | string;
+  readonly incidentEvidenceHash: Uint8Array | string;
+  readonly reasonCode: string;
+}
+
+export interface PackageBookHalt {
+  readonly version: 1;
+  readonly executionClassId: ProtocolId;
+  readonly expectedOpenSnapshotHash: CommitmentHash;
+  readonly incidentEvidenceHash: CommitmentHash;
+  readonly reasonCode: ProtocolId;
 }
 
 export interface PackageReopeningFill {
@@ -208,6 +226,62 @@ export function packageReopeningSnapshotHash(
     domainHash(HASH_DOMAIN.PACKAGE_REOPENING_SNAPSHOT, packageReopeningSnapshotBytes(policy, state)),
     'packageReopeningSnapshotHash',
   );
+}
+
+export function packageBookHalt(
+  input: PackageBookHaltInput,
+  context = 'packageBookHalt',
+): PackageBookHalt {
+  if (typeof input !== 'object' || input === null) throw new MalformedInputError(context, 'expected an object');
+  if (input.version !== PACKAGE_BOOK_HALT_VERSION) {
+    throw new MalformedInputError(`${context}.version`, `version must equal ${PACKAGE_BOOK_HALT_VERSION}`);
+  }
+  return Object.freeze({
+    version: PACKAGE_BOOK_HALT_VERSION,
+    executionClassId: protocolId(input.executionClassId, `${context}.executionClassId`),
+    expectedOpenSnapshotHash: commitmentHash(input.expectedOpenSnapshotHash, `${context}.expectedOpenSnapshotHash`),
+    incidentEvidenceHash: commitmentHash(input.incidentEvidenceHash, `${context}.incidentEvidenceHash`),
+    reasonCode: protocolId(input.reasonCode, `${context}.reasonCode`),
+  });
+}
+
+export function packageBookHaltBytes(
+  input: PackageBookHaltInput,
+  context = 'packageBookHalt',
+): Uint8Array {
+  const halt = packageBookHalt(input, context);
+  return canonicalBytes((writer) => {
+    writer.writeU32(halt.version, `${context}.version`);
+    encodeProtocolId(writer, halt.executionClassId, `${context}.executionClassId`);
+    encodeCommitmentHash(writer, halt.expectedOpenSnapshotHash, `${context}.expectedOpenSnapshotHash`);
+    encodeCommitmentHash(writer, halt.incidentEvidenceHash, `${context}.incidentEvidenceHash`);
+    encodeProtocolId(writer, halt.reasonCode, `${context}.reasonCode`);
+  });
+}
+
+export function packageBookHaltHash(input: PackageBookHaltInput): CommitmentHash {
+  return commitmentHash(
+    domainHash(HASH_DOMAIN.PACKAGE_BOOK_HALT, packageBookHaltBytes(input)),
+    'packageBookHaltHash',
+  );
+}
+
+export function applyPackageBookHalt(
+  policyInput: PackageMatchingPolicy,
+  stateInput: PackageBookState,
+  haltInput: PackageBookHaltInput,
+): PackageBookState {
+  const policy = packageMatchingPolicy(policyInput, 'applyPackageBookHalt.policy');
+  const state = packageBookState(policy, stateInput, 'applyPackageBookHalt.state');
+  const halt = packageBookHalt(haltInput, 'applyPackageBookHalt.halt');
+  if (halt.executionClassId !== state.executionClassId) {
+    throw new MalformedInputError('applyPackageBookHalt.halt.executionClassId', 'halt belongs to another execution class');
+  }
+  if (state.halted) throw new MalformedInputError('applyPackageBookHalt.state', 'book is already halted');
+  if (!bytesEqual(halt.expectedOpenSnapshotHash, packageReopeningSnapshotHash(policy, state))) {
+    throw new MalformedInputError('applyPackageBookHalt.halt.expectedOpenSnapshotHash', 'book changed before the halt was applied');
+  }
+  return setPackageBookHalted(state, true);
 }
 
 export function queuePackageReopeningOrder(

@@ -16,11 +16,6 @@ test("loopback reopening controls publish a snapshot and clear its exact auction
     executionClassSupport: CLASS_SUPPORT,
   });
   registerAll(store);
-  store.setHalted(CLASS, true);
-  const ask = order(1, { side: "ASK", limitPriceTicks: 95n });
-  const bid = order(2, { side: "BID", limitPriceTicks: 105n });
-  store.queueReopeningOrder(CLASS, ask, NOW, settlement(ask));
-  store.queueReopeningOrder(CLASS, bid, NOW, settlement(bid));
   const handler = createPackageReopeningAdminHandler({ exchange: store, nowValue: () => NOW });
   const server = createServer((request, response) => {
     if (!handler(request, response)) {
@@ -45,6 +40,24 @@ test("loopback reopening controls publish a snapshot and clear its exact auction
       { executionClassId: CLASS },
       { Origin: "https://example.com" },
     )).status, 403);
+    const openSnapshot = await post("/internal/package-book/reopening/snapshot", { executionClassId: CLASS });
+    const halt = {
+      version: 1,
+      executionClassId: CLASS,
+      expectedOpenSnapshotHash: (openSnapshot.body as { openingSnapshotHash: string }).openingSnapshotHash,
+      incidentEvidenceHash: id(700),
+      reasonCode: "oracle-divergence",
+    };
+    const halted = await post("/internal/package-book/reopening/halt", { halt });
+    assert.equal(halted.status, 200);
+    assert.equal((halted.body as { replayed: boolean }).replayed, false);
+    const replay = await post("/internal/package-book/reopening/halt", { halt });
+    assert.equal((replay.body as { replayed: boolean }).replayed, true);
+
+    const ask = order(1, { side: "ASK", limitPriceTicks: 95n });
+    const bid = order(2, { side: "BID", limitPriceTicks: 105n });
+    store.queueReopeningOrder(CLASS, ask, NOW, settlement(ask));
+    store.queueReopeningOrder(CLASS, bid, NOW, settlement(bid));
     const snapshot = await post("/internal/package-book/reopening/snapshot", { executionClassId: CLASS });
     assert.equal(snapshot.status, 200);
     const openingSnapshotHash = (snapshot.body as { openingSnapshotHash: string }).openingSnapshotHash;

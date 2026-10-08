@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   MalformedInputError,
+  applyPackageBookHalt,
   clearPackageReopeningAuction,
   emptyPackageBook,
+  packageBookHaltHash,
   packageMatchingPolicy,
   packageReopeningResultHash,
   packageReopeningSettlementHandoff,
@@ -67,6 +69,29 @@ function queue(
     state,
   );
 }
+
+describe('package book halt', () => {
+  test('binds the exact open snapshot and moves the book into reopening', () => {
+    const policy = packageMatchingPolicy(POLICY);
+    const open = emptyPackageBook(policy);
+    const halt = {
+      version: 1,
+      executionClassId: CLASS,
+      expectedOpenSnapshotHash: packageReopeningSnapshotHash(policy, open),
+      incidentEvidenceHash: id(700),
+      reasonCode: 'oracle-divergence',
+    } as const;
+    const halted = applyPackageBookHalt(policy, open, halt);
+
+    assert.equal(halted.halted, true);
+    assert.equal(toHex(packageBookHaltHash(halt)).length, 64);
+    assert.throws(() => applyPackageBookHalt(policy, halted, halt), MalformedInputError);
+    assert.throws(
+      () => applyPackageBookHalt(policy, { ...open, nextSequence: 2n }, halt),
+      MalformedInputError,
+    );
+  });
+});
 
 describe('package reopening auction', () => {
   test('clears every compatible order at one deterministic uniform price', () => {

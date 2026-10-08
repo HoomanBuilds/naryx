@@ -27,6 +27,7 @@ import {
   packageBookAmendment,
   packageBookAmendmentBytes,
   packageBookAmendmentHash,
+  packageBookHaltHash,
   packageBookCancellation,
   packageBookCancellationBytes,
   packageBookCancellationHash,
@@ -189,6 +190,7 @@ export type PublicExchangeStore = Pick<
   | "settlementProgress"
   | "reopeningResult"
   | "reopeningSettlementHandoff"
+  | "haltRecord"
   | "allocationTape"
   | "allocationsBetween"
   | "listBooks"
@@ -1266,6 +1268,18 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           settlementHandoffHash: toHex(packageReopeningSettlementHandoffHash(settlementHandoff)),
         }),
       };
+    }
+    if ((match = /^\/v1\/package-book\/halts\/([0-9a-f]{64})$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const haltHash = match[1] as string;
+      const record = exchange.haltRecord(haltHash);
+      if (record === undefined) {
+        throw new RequestError(404, "HALT_NOT_FOUND", "No package book halt exists for this hash.");
+      }
+      if (record.haltHashHex !== haltHash || toHex(packageBookHaltHash(record.halt)) !== haltHash) {
+        throw new RequestError(500, "INTERNAL_ERROR", "Package book halt identity is inconsistent.");
+      }
+      return record;
     }
     if ((match = /^\/v1\/allocations\/([^/]+)$/.exec(path)) !== null) {
       onlyParams(url, []);

@@ -48,6 +48,7 @@
     { "name": "package-taker-order-shared-payload", "domain": "CON/v1/package-taker-order", "payloadHex": "deadbeef", "digestHex": "5763ccc2164a2e9368c097eed5f67cde18b32037872296ad8252258c84062653" },
     { "name": "package-book-cancellation-shared-payload", "domain": "CON/v1/package-book-cancellation", "payloadHex": "deadbeef", "digestHex": "be35330bec0bb3e73798407df2771e4362af5388c9f05a3bee81f3788b407dbd" },
     { "name": "package-book-amendment-shared-payload", "domain": "CON/v1/package-book-amendment", "payloadHex": "deadbeef", "digestHex": "e56e027c670d6b13a64ce622a1e4f79682be2d4067f7ad6209345048fa591d0f" },
+    { "name": "package-book-halt-shared-payload", "domain": "CON/v1/package-book-halt", "payloadHex": "deadbeef", "digestHex": "ab1114a845a0df72b8696c5813d3537ca8f0ae8fdbd14cb1e389f3959abed931" },
     { "name": "package-settlement-commitment-shared-payload", "domain": "CON/v1/package-settlement-commitment", "payloadHex": "deadbeef", "digestHex": "69971ce45174ed98ccb1f673a1e9d277c7a77cf14ea44b92fd91f37a7f8c92b4" },
     { "name": "package-settlement-handoff-shared-payload", "domain": "CON/v1/package-settlement-handoff", "payloadHex": "deadbeef", "digestHex": "633f7cf9fa2090f1339b2ac2cf71e87eaabe5c1bfc8ead0778573666bf864036" },
     { "name": "package-settlement-readiness-shared-payload", "domain": "CON/v1/package-settlement-readiness", "payloadHex": "deadbeef", "digestHex": "748f70468bae3407f98cb17deabbda107ed378aeb77406d236809299836975a6" },

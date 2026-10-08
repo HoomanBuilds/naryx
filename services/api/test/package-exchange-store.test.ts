@@ -112,14 +112,27 @@ test("GTC orders expire with their signed settlement lease", () => {
 test("halted books queue settlement-backed orders and clear them at one reopening price", () => {
   withStore((store) => {
     registerAll(store);
-    store.setHalted(CLASS, true);
+    const policy = packageMatchingPolicy(POLICY);
+    const open = store.getBook(CLASS)!;
+    const halt = {
+      version: 1,
+      executionClassId: CLASS,
+      expectedOpenSnapshotHash: packageReopeningSnapshotHash(policy, open),
+      incidentEvidenceHash: id(700),
+      reasonCode: "oracle-divergence",
+    } as const;
+    assert.equal(store.haltBook(halt).replayed, false);
+    assert.equal(store.haltBook(halt).replayed, true);
+    assert.throws(
+      () => store.haltBook({ ...halt, incidentEvidenceHash: id(701) }),
+      { code: "INVALID_INPUT" },
+    );
     const ask = order(1, { side: "ASK", limitPriceTicks: 95n });
     const bid = order(2, { side: "BID", limitPriceTicks: 105n });
     assert.equal(store.queueReopeningOrder(CLASS, ask, NOW, settlement(ask)).replayed, false);
     assert.equal(store.queueReopeningOrder(CLASS, bid, NOW, settlement(bid)).replayed, false);
     assert.equal(store.queueReopeningOrder(CLASS, bid, NOW, settlement(bid)).replayed, true);
 
-    const policy = packageMatchingPolicy(POLICY);
     const opening = store.getBook(CLASS)!;
     const openingSnapshotHash = packageReopeningSnapshotHash(policy, opening);
     const cleared = store.clearReopeningAuction(CLASS, id(800), openingSnapshotHash, id(900), 100n, NOW);
@@ -258,10 +271,26 @@ test("cancellation authority, halts, and amendments persist", () => {
       expectedQuantity: 20n,
       quantity: 40n,
     }), { code: "INVALID_INPUT" });
-    store.setHalted(CLASS, true);
+    const policy = packageMatchingPolicy(POLICY);
+    const open = store.getBook(CLASS)!;
+    store.haltBook({
+      version: 1,
+      executionClassId: CLASS,
+      expectedOpenSnapshotHash: packageReopeningSnapshotHash(policy, open),
+      incidentEvidenceHash: id(702),
+      reasonCode: "test-incident",
+    });
     const blocked = order(2, { side: "BID" });
     assert.deepEqual(store.submitOrder(CLASS, blocked, NOW, settlement(blocked)), { accepted: false, rejection: "HALTED" });
-    store.setHalted(CLASS, false);
+    const halted = store.getBook(CLASS)!;
+    store.clearReopeningAuction(
+      CLASS,
+      id(802),
+      packageReopeningSnapshotHash(policy, halted),
+      id(902),
+      100n,
+      NOW,
+    );
     const cancellation = store.cancelEntry(CLASS, id(1), "maker-1");
     assert.equal(cancellation.replayed, false);
     assert.equal(store.cancelEntry(CLASS, id(1), "maker-1").replayed, true);

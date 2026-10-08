@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import {
   addImpliedLiquidity,
+  applyPackageBookHalt,
   amendPackageBookEntry,
   bytesEqual,
   cancelPackageBookEntry,
@@ -19,6 +20,8 @@ import {
   packageAllocationHash,
   packageBookAmendment,
   packageBookAmendmentHash,
+  packageBookHalt,
+  packageBookHaltHash,
   packageBookCancellation,
   packageBookCancellationHash,
   packageBookEntry,
@@ -44,7 +47,6 @@ import {
   seriesExecutionClass,
   seriesExecutionClassBytes,
   seriesExecutionClassHash,
-  setPackageBookHalted,
   stringifyProtocolJson,
   toHex,
   verifyPackageAllocation,
@@ -59,6 +61,8 @@ import type {
   ImpliedLiquidityInput,
   PackageAllocation,
   PackageBookAmendmentInput,
+  PackageBookHalt,
+  PackageBookHaltInput,
   PackageBookEntry,
   PackageBookState,
   PackageMatchingPolicy,
@@ -125,6 +129,21 @@ export interface PackageExchangeAmendmentResult {
   readonly amendmentHashHex: string;
   readonly entry: PackageBookEntry;
   readonly replayed: boolean;
+}
+
+export interface PackageExchangeHaltResult {
+  readonly halt: PackageBookHalt;
+  readonly haltHashHex: string;
+  readonly haltedSnapshotHashHex: string;
+  readonly recordedAtMs: number;
+  readonly replayed: boolean;
+}
+
+export interface PackageExchangeHaltRecord {
+  readonly halt: PackageBookHalt;
+  readonly haltHashHex: string;
+  readonly haltedSnapshotHashHex: string;
+  readonly recordedAtMs: number;
 }
 
 export interface PackageReopeningQueueResult {
@@ -286,6 +305,14 @@ CREATE TABLE IF NOT EXISTS package_book_amendments (
   amended_entry_json TEXT NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS package_book_halts (
+  halt_hash BLOB PRIMARY KEY,
+  execution_class_id TEXT NOT NULL REFERENCES package_books(execution_class_id),
+  expected_open_snapshot_hash BLOB NOT NULL,
+  halted_snapshot_hash BLOB NOT NULL,
+  halt_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS package_book_consumed_sources (
   source_key BLOB PRIMARY KEY,
   execution_class_id TEXT NOT NULL REFERENCES package_books(execution_class_id),
@@ -358,6 +385,12 @@ CREATE TRIGGER IF NOT EXISTS reject_amendment_change
 CREATE TRIGGER IF NOT EXISTS reject_amendment_delete
   BEFORE DELETE ON package_book_amendments
   BEGIN SELECT RAISE(ABORT, 'package amendments are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_halt_change
+  BEFORE UPDATE ON package_book_halts
+  BEGIN SELECT RAISE(ABORT, 'package halts are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_halt_delete
+  BEFORE DELETE ON package_book_halts
+  BEGIN SELECT RAISE(ABORT, 'package halts are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_consumed_source_change
   BEFORE UPDATE ON package_book_consumed_sources
   BEGIN SELECT RAISE(ABORT, 'consumed sources are append-only'); END;
@@ -1292,10 +1325,79 @@ export class SqlitePackageExchangeStore {
     });
   }
 
-  setHalted(executionClassId: string, halted: boolean): void {
-    this.transaction(() => {
-      const { book } = this.policyAndBook(executionClassId);
-      this.writeBook(setPackageBookHalted(book, halted));
+  haltBook(haltInput: PackageBookHaltInput): PackageExchangeHaltResult {
+    return this.transaction(() => {
+      const halt = guarded("INVALID_INPUT", "Package book halt is invalid.", () => packageBookHalt(haltInput));
+      const haltHash = packageBookHaltHash(halt);
+      const existing = this.haltRecord(haltHash);
+      if (existing !== undefined) {
+        return {
+          ...existing,
+          replayed: true,
+        };
+      }
+      const { policy, book } = this.policyAndBook(halt.executionClassId);
+      const halted = guarded("INVALID_INPUT", "Package book halt cannot be applied.", () =>
+        applyPackageBookHalt(policy, book, halt),
+      );
+      const haltedSnapshotHash = packageReopeningSnapshotHash(policy, halted);
+      const recordedAtMs = this.clock();
+      this.writeBook(halted);
+      this.db.prepare(`
+        INSERT INTO package_book_halts
+          (halt_hash, execution_class_id, expected_open_snapshot_hash, halted_snapshot_hash, halt_json, recorded_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        haltHash,
+        halt.executionClassId,
+        halt.expectedOpenSnapshotHash,
+        haltedSnapshotHash,
+        stringifyProtocolJson(halt),
+        recordedAtMs,
+      );
+      return {
+        halt,
+        haltHashHex: toHex(haltHash),
+        haltedSnapshotHashHex: toHex(haltedSnapshotHash),
+        recordedAtMs,
+        replayed: false,
+      };
+    });
+  }
+
+  haltRecord(haltHashInput: Uint8Array | string): PackageExchangeHaltRecord | undefined {
+    const haltHash = commitmentHash(haltHashInput, "haltRecord.haltHash");
+    const row = this.db.prepare(`
+      SELECT execution_class_id, expected_open_snapshot_hash, halted_snapshot_hash, halt_json, recorded_at_ms
+      FROM package_book_halts
+      WHERE halt_hash = ?
+    `).get(haltHash) as {
+      execution_class_id: unknown;
+      expected_open_snapshot_hash: unknown;
+      halted_snapshot_hash: unknown;
+      halt_json: unknown;
+      recorded_at_ms: unknown;
+    } | undefined;
+    if (row === undefined) return undefined;
+    const halt = guarded("CORRUPT_ROW", "Stored package book halt is invalid.", () =>
+      packageBookHalt(parseProtocolJson(jsonText(row.halt_json, "halt_json")) as PackageBookHaltInput),
+    );
+    if (
+      !bytesEqual(packageBookHaltHash(halt), haltHash)
+      || halt.executionClassId !== jsonText(row.execution_class_id, "execution_class_id")
+      || !bytesEqual(halt.expectedOpenSnapshotHash, hashBytes(row.expected_open_snapshot_hash, "expected_open_snapshot_hash"))
+    ) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored package book halt does not match its identity.");
+    }
+    const recordedAtMs = row.recorded_at_ms;
+    if (typeof recordedAtMs !== "number" || !Number.isSafeInteger(recordedAtMs) || recordedAtMs < 0) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored package book halt time is invalid.");
+    }
+    return Object.freeze({
+      halt,
+      haltHashHex: toHex(haltHash),
+      haltedSnapshotHashHex: toHex(hashBytes(row.halted_snapshot_hash, "halted_snapshot_hash")),
+      recordedAtMs,
     });
   }
 

@@ -240,6 +240,8 @@ export {
   type PackageExchangeStoreOptions,
   type PackageExchangeSubmitResult,
   type PackageExchangeAmendmentResult,
+  type PackageExchangeHaltResult,
+  type PackageExchangeHaltRecord,
   type PackageReopeningQueueResult,
   type PackageReopeningClearResult,
   type PackageSettlementObligation,
