@@ -8,6 +8,7 @@ import { commitmentHash, encodeCommitmentHash, type CommitmentHash } from './pac
 import { encodeProtocolId, protocolId, type ProtocolId } from './primitives.js';
 
 export const ROUTE_DECISION_VERSION = 1;
+export const EXECUTION_INTELLIGENCE_VERSION = 1;
 export const ROUTE_DECISION_MAX_CANDIDATES = 64;
 export const EXECUTION_QUALITY_MAX_MARKOUTS = 16;
 const BPS = 10_000n;
@@ -567,6 +568,9 @@ export function deliveryPathEvidence(policy: DeliveryPolicy, attempts: readonly 
     }
     return { attemptId, path: variant(DELIVERY_PATH, attempt.path, `${at}.path`), submittedAtValue, outcome: attempt.outcome, includedAtValue };
   }).sort((left, right) => (left.submittedAtValue === right.submittedAtValue ? (left.attemptId < right.attemptId ? -1 : 1) : left.submittedAtValue < right.submittedAtValue ? -1 : 1));
+  if (checked.some((attempt) => attempt.submittedAtValue > observedAt || (attempt.includedAtValue !== undefined && attempt.includedAtValue > observedAt))) {
+    throw new MalformedInputError(`${context}.observedAtValue`, 'observation precedes an attempt event');
+  }
 
   const first = checked[0] as (typeof checked)[number];
   const violations: DeliveryViolation[] = [];
@@ -610,5 +614,129 @@ export function deliveryPathEvidence(policy: DeliveryPolicy, attempts: readonly 
     censorshipSuspected: overdue,
     mevProtectionLabel,
     evidenceHash: commitmentHash(domainHash(HASH_DOMAIN.DELIVERY_EVIDENCE, bytes), 'deliveryEvidenceHash'),
+  });
+}
+
+export interface ExecutionIntelligenceInput {
+  readonly version: number;
+  readonly receiptHash: Uint8Array | string;
+  readonly orderHash: Uint8Array | string;
+  readonly observerId: string;
+  /** Unit shared by submission, inclusion, leg-completion, markout, and observation times. */
+  readonly clockUnit: string;
+  /** Hash of the exact RPC, venue, trace, or sequencer evidence retained by the observer. */
+  readonly observerEvidenceHash: Uint8Array | string;
+  readonly observation: ExecutionObservation;
+  readonly deliveryPolicy: DeliveryPolicy;
+  readonly deliveryAttempts: readonly DeliveryAttempt[];
+  readonly observedAtValue: bigint;
+}
+
+export interface ExecutionIntelligence {
+  readonly version: 1;
+  readonly receiptHash: CommitmentHash;
+  readonly orderHash: CommitmentHash;
+  readonly observerId: ProtocolId;
+  readonly clockUnit: ProtocolId;
+  readonly observerEvidenceHash: CommitmentHash;
+  readonly observation: ExecutionObservation;
+  readonly deliveryPolicy: DeliveryPolicy;
+  readonly deliveryAttempts: readonly DeliveryAttempt[];
+  readonly observedAtValue: bigint;
+  readonly quality: ExecutionQuality;
+  readonly delivery: DeliveryEvidence;
+  readonly recordHash: CommitmentHash;
+}
+
+export function executionIntelligence(input: ExecutionIntelligenceInput): ExecutionIntelligence {
+  const context = 'executionIntelligence';
+  object(input, context);
+  if (input.version !== EXECUTION_INTELLIGENCE_VERSION) {
+    throw new MalformedInputError(`${context}.version`, `version must equal ${EXECUTION_INTELLIGENCE_VERSION}`);
+  }
+  const receiptHash = commitmentHash(input.receiptHash, `${context}.receiptHash`);
+  const orderHash = commitmentHash(input.orderHash, `${context}.orderHash`);
+  const observerId = protocolId(input.observerId, `${context}.observerId`);
+  const clockUnit = protocolId(input.clockUnit, `${context}.clockUnit`);
+  const observerEvidenceHash = commitmentHash(input.observerEvidenceHash, `${context}.observerEvidenceHash`);
+  const quality = measureExecutionQuality(input.observation);
+  if (compareBytes(commitmentHash(input.observation.orderHash, `${context}.observation.orderHash`), orderHash) !== 0) {
+    throw new MalformedInputError(`${context}.observation.orderHash`, 'observation names another order');
+  }
+  const delivery = deliveryPathEvidence(input.deliveryPolicy, input.deliveryAttempts, input.observedAtValue);
+  const observedAtValue = unsigned(input.observedAtValue, U64_BITS, `${context}.observedAtValue`);
+  const permittedFallbacks = [...input.deliveryPolicy.permittedFallbacks]
+    .sort((left, right) => DELIVERY_PATH[left] - DELIVERY_PATH[right]);
+  const provenProtectedPaths = [...input.deliveryPolicy.provenProtectedPaths]
+    .sort((left, right) => DELIVERY_PATH[left] - DELIVERY_PATH[right]);
+  const deliveryPolicy = Object.freeze({
+    requestedPath: input.deliveryPolicy.requestedPath,
+    permittedFallbacks: Object.freeze(permittedFallbacks),
+    maximumInclusionDelayValue: input.deliveryPolicy.maximumInclusionDelayValue,
+    provenProtectedPaths: Object.freeze(provenProtectedPaths),
+  });
+  const deliveryAttempts = Object.freeze([...input.deliveryAttempts]
+    .sort((left, right) => left.submittedAtValue === right.submittedAtValue
+      ? left.attemptId.localeCompare(right.attemptId)
+      : left.submittedAtValue < right.submittedAtValue ? -1 : 1));
+  const recordHash = commitmentHash(
+    domainHash(
+      HASH_DOMAIN.EXECUTION_INTELLIGENCE,
+      canonicalBytes((writer) => {
+        writer.writeU32(EXECUTION_INTELLIGENCE_VERSION, 'version');
+        encodeCommitmentHash(writer, receiptHash, 'receiptHash');
+        encodeCommitmentHash(writer, orderHash, 'orderHash');
+        encodeProtocolId(writer, observerId, 'observerId');
+        encodeProtocolId(writer, clockUnit, 'clockUnit');
+        encodeCommitmentHash(writer, observerEvidenceHash, 'observerEvidenceHash');
+        writer.writeString(input.observation.side, 'side');
+        writer.writeU128(input.observation.quotedPrice, 'quotedPrice');
+        writer.writeU128(input.observation.inclusionReferencePrice, 'inclusionReferencePrice');
+        writer.writeU128(input.observation.executionPrice, 'executionPrice');
+        writer.writeArray(input.observation.markouts, (element, markout) => {
+          element.writeU64(markout.horizonValue, 'horizonValue');
+          element.writeU128(markout.referencePrice, 'referencePrice');
+        }, 'markouts');
+        writer.writeI128(input.observation.expectedNetOutcomeAtoms, 'expectedNetOutcomeAtoms');
+        writer.writeI128(input.observation.realizedNetOutcomeAtoms, 'realizedNetOutcomeAtoms');
+        writer.writeU64(input.observation.submittedAtValue, 'submittedAtValue');
+        writer.writeU64(input.observation.includedAtValue, 'includedAtValue');
+        writer.writeArray(input.observation.legCompletedAtValues, (element, value) => element.writeU64(value, 'completedAtValue'), 'legCompletedAtValues');
+        writer.writeBool(input.observation.ordering.sameActorBefore, 'sameActorBefore');
+        writer.writeBool(input.observation.ordering.sameActorAfter, 'sameActorAfter');
+        writer.writeOptional(input.observation.ordering.evidenceHash, (element, value) => encodeCommitmentHash(element, commitmentHash(value, 'orderingEvidenceHash'), 'orderingEvidenceHash'), 'orderingEvidenceHash');
+        writer.writeU64(input.observation.adverseMoveThresholdBps, 'adverseMoveThresholdBps');
+        writer.writeEnum(DELIVERY_PATH, deliveryPolicy.requestedPath, 'requestedPath');
+        writer.writeArray(deliveryPolicy.permittedFallbacks, (element, value) => element.writeEnum(DELIVERY_PATH, value, 'permittedFallback'), 'permittedFallbacks');
+        writer.writeU64(deliveryPolicy.maximumInclusionDelayValue, 'maximumInclusionDelayValue');
+        writer.writeArray(deliveryPolicy.provenProtectedPaths, (element, value) => element.writeEnum(DELIVERY_PATH, value, 'provenProtectedPath'), 'provenProtectedPaths');
+        writer.writeArray(deliveryAttempts, (element, attempt) => {
+          encodeProtocolId(element, protocolId(attempt.attemptId, 'attemptId'), 'attemptId');
+          element.writeEnum(DELIVERY_PATH, attempt.path, 'path');
+          element.writeU64(attempt.submittedAtValue, 'submittedAtValue');
+          element.writeString(attempt.outcome, 'outcome');
+          element.writeOptional(attempt.includedAtValue, (inner, value) => inner.writeU64(value, 'includedAtValue'), 'includedAtValue');
+        }, 'deliveryAttempts');
+        encodeCommitmentHash(writer, quality.measurementHash, 'measurementHash');
+        encodeCommitmentHash(writer, delivery.evidenceHash, 'deliveryEvidenceHash');
+        writer.writeU64(observedAtValue, 'observedAtValue');
+      }),
+    ),
+    `${context}.recordHash`,
+  );
+  return Object.freeze({
+    version: 1 as const,
+    receiptHash,
+    orderHash,
+    observerId,
+    clockUnit,
+    observerEvidenceHash,
+    observation: input.observation,
+    deliveryPolicy,
+    deliveryAttempts,
+    observedAtValue,
+    quality,
+    delivery,
+    recordHash,
   });
 }

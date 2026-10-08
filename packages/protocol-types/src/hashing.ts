@@ -101,6 +101,7 @@ export const HASH_DOMAIN = Object.freeze({
   ROUTE_DECISION: 'CON/v1/route-decision',
   EXECUTION_QUALITY: 'CON/v1/execution-quality',
   DELIVERY_EVIDENCE: 'CON/v1/delivery-evidence',
+  EXECUTION_INTELLIGENCE: 'CON/v1/execution-intelligence',
   INDEXED_PACKAGE_RECORD: 'CON/v1/indexed-package-record',
   PACKAGE_QUOTE_SHARD: 'CON/v1/package-quote-shard',
   RECONCILIATION_REPORT: 'CON/v1/reconciliation-report',

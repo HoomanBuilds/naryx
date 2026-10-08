@@ -356,6 +356,13 @@ violations; a private relay is labeled reduced exposure, only a domain-proven pa
 protected, any public-mempool attempt forfeits the label, and missed inclusion is a censorship
 suspicion rather than a finding.
 
+`executionIntelligence` binds one receipt and order to the observer, the hash of its retained raw
+evidence, an explicit clock unit, the complete price and timing observation, the requested and
+actual delivery path, the recomputed quality measurement, and the delivery-evidence hash under
+`CON/v1/execution-intelligence`. Delivery attempts and policy sets are canonicalized before
+hashing. A record cannot mix clock units implicitly, name another order, observe an event from
+the future, or turn inferred adverse movement into a factual MEV attribution.
+
 ## Package quote shards
 
 `packageQuoteShard` validates the specified `PackageQuoteShard`: one solver's levels for one

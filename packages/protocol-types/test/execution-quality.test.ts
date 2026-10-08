@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   deliveryPathEvidence,
+  executionIntelligence,
   measureExecutionQuality,
   replayRouteDecision,
   routeDecisionHash,
@@ -183,5 +184,28 @@ describe('delivery-path evidence', () => {
     assert.deepEqual(overdue.violations, ['NOT_INCLUDED_PAST_DEADLINE']);
     assert.equal(overdue.actualPath, null);
     assert.throws(() => deliveryPathEvidence(policy, [{ ...attempt('a1', 'PRIVATE_RELAY', 100n, 'DROPPED'), includedAtValue: 101n }], 110n), /only an included attempt/);
+    assert.throws(() => deliveryPathEvidence(policy, [attempt('a1', 'PRIVATE_RELAY', 100n, 'INCLUDED', 110n)], 105n), /precedes an attempt event/);
+  });
+
+  test('binds a quality measurement and delivery record to one receipt and observer evidence set', () => {
+    const intelligence = executionIntelligence({
+      version: 1,
+      receiptHash: hash(20),
+      orderHash: hash(1),
+      observerId: 'observer-a',
+      clockUnit: 'milliseconds',
+      observerEvidenceHash: hash(21),
+      observation,
+      deliveryPolicy: policy,
+      deliveryAttempts: [attempt('a1', 'PRIVATE_RELAY', 90n, 'INCLUDED', 100n)],
+      observedAtValue: 400n,
+    });
+    assert.equal(intelligence.quality.shortfallAtoms, 60n);
+    assert.equal(intelligence.delivery.actualPath, 'PRIVATE_RELAY');
+    assert.notEqual(toHex(intelligence.recordHash), toHex(executionIntelligence({
+      ...intelligence,
+      observerEvidenceHash: hash(22),
+    }).recordHash));
+    assert.throws(() => executionIntelligence({ ...intelligence, observation: { ...observation, orderHash: hash(2) } }), /another order/);
   });
 });

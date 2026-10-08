@@ -1203,6 +1203,7 @@ export {
 
 export {
   ROUTE_DECISION_VERSION,
+  EXECUTION_INTELLIGENCE_VERSION,
   ROUTE_DECISION_MAX_CANDIDATES,
   EXECUTION_QUALITY_MAX_MARKOUTS,
   ROUTE_EXCLUSION_REASON,
@@ -1214,6 +1215,7 @@ export {
   replayRouteDecision,
   measureExecutionQuality,
   deliveryPathEvidence,
+  executionIntelligence,
   type RouteExclusionReason,
   type SelectionObjectiveKind,
   type StateSnapshotRef,
@@ -1232,6 +1234,8 @@ export {
   type DeliveryAttempt,
   type DeliveryViolation,
   type DeliveryEvidence,
+  type ExecutionIntelligenceInput,
+  type ExecutionIntelligence,
 } from './execution-quality.js';
 
 export {
