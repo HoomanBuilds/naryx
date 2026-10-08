@@ -1017,5 +1017,14 @@ export {
   type PositionSnapshotPassResult,
   type WatchedPositionAccount,
 } from './position-snapshot-pass.js';
+export {
+  httpCollateralSnapshotPublisher,
+  loadCollateralSnapshotConfig,
+  runCollateralSnapshotPass,
+  type CollateralInfoReader,
+  type CollateralSnapshotConfig,
+  type CollateralSnapshotPassResult,
+  type WatchedCollateralAccount,
+} from './collateral-snapshot-pass.js';
 export * from './keeper-automation-pass.js';
 export * from './funding-mirror.js';

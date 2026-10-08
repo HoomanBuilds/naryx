@@ -9,6 +9,7 @@ import { createCodeReader, loadCodeHashMonitorConfig, runCodeHashPass } from './
 import { loadKeeperRpcUrls, solanaSlotReader } from './chain-identity.js';
 import { DependencyIncidentFileStore } from './dependency-incident-engine.js';
 import { ed25519HashSigner, httpSnapshotPublisher, loadPositionSnapshotConfig, runPositionSnapshotPass } from './position-snapshot-pass.js';
+import { httpCollateralSnapshotPublisher, loadCollateralSnapshotConfig, runCollateralSnapshotPass } from './collateral-snapshot-pass.js';
 import {
   baseSepoliaFundingPort,
   BASE_SEPOLIA_CHAIN_REF,
@@ -99,6 +100,31 @@ if (positionWatch !== undefined) {
   positionTimer = setInterval(() => void pass(), positionWatch.intervalMs);
 }
 
+const collateralWatch = loadCollateralSnapshotConfig(process.env, (path) => readFileSync(path, 'utf8'), parseProtocolJson);
+let collateralTimer: ReturnType<typeof setInterval> | undefined;
+if (collateralWatch !== undefined) {
+  const signHash = ed25519HashSigner(readFileSync(collateralWatch.authorityKeyPath, 'utf8'));
+  const publish = httpCollateralSnapshotPublisher(collateralWatch.apiBaseUrl);
+  const reader = {
+    clearinghouseState: async (user: `0x${string}`) => (await client.clearinghouseState(user)).payload,
+  };
+  const pass = async () => {
+    const results = await runCollateralSnapshotPass({
+      environment: collateralWatch.environment,
+      accounts: collateralWatch.accounts,
+      reader,
+      authority: collateralWatch.authority,
+      signHash,
+      publish,
+      nowMs: Date.now,
+    });
+    const failed = results.filter((entry) => entry.status === 'FAILED');
+    if (failed.length > 0) process.stderr.write(`Collateral snapshots failed: ${failed.map((entry) => `${entry.strategyAccount} ${entry.detail ?? ''}`).join('; ')}\n`);
+  };
+  void pass();
+  collateralTimer = setInterval(() => void pass(), collateralWatch.intervalMs);
+}
+
 // Funding mirror: reads Hyperliquid mainnet funding signerless and mirrors it onto the Base Sepolia
 // and Solana Devnet test perps. Off without NARYX_FUNDING_MIRROR_CONFIG; a dry run unless
 // NARYX_FUNDING_MIRROR_WRITES=enabled. Keys come only from the external files the env names.
@@ -147,6 +173,7 @@ function shutdown(): void {
   if (fundingTimer !== undefined) clearInterval(fundingTimer);
   if (monitorTimer !== undefined) clearInterval(monitorTimer);
   if (positionTimer !== undefined) clearInterval(positionTimer);
+  if (collateralTimer !== undefined) clearInterval(collateralTimer);
   server.close(() => {
     process.exitCode = 0;
   });
