@@ -39,6 +39,7 @@ export * from './multi-strategy-receipt.js';
 export * from './multi-strategy-materializer.js';
 export * from './inventory-materializer.js';
 export * from './venue-materializers.js';
+export * from './netting-residual.js';
 
 const U64_MAX = (1n << 64n) - 1n;
 const EXECUTION_DIGEST_DOMAIN = 'NARYX/conformance-execution/v1';
