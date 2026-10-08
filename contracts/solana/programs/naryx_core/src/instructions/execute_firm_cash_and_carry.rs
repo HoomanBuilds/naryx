@@ -31,12 +31,14 @@ use crate::{
             enforce_postconditions, execution_units, hash_pubkeys, live_program_code_identity,
             quote_intent_commitment, quoted_execution_digest, reconstruct_admission,
             require_solver_signature, resource_admission_commitment, resource_record_keys,
-            validate_basic_inputs, validate_expiry, validate_package_book_accounts,
-            validate_preconditions, validate_quote_series_binding_pair, validate_resource_indices,
-            CashCarryAction, CashCarryExecutionArgs, CashCarryQuoteArgs, CashCarryResourceAccounts,
-            CashCarryRuntimeAccounts, QuoteEvidence, OPEN_PACKAGE_VERSION, PACKAGE_ACCOUNTS_DOMAIN,
-            PACKAGE_BOOK_ACCOUNT_COUNT, PACKAGE_BOOK_QUOTE_MODE_FIRM_ONCHAIN,
-            PACKAGE_BOOK_QUOTE_SIDE_ASK, PACKAGE_BOOK_QUOTE_SIDE_BID, ROUTE_ACCOUNTS_DOMAIN,
+            validate_basic_inputs, validate_cash_carry_risk_domain, validate_expiry,
+            validate_package_book_accounts, validate_preconditions,
+            validate_quote_series_binding_pair, validate_resource_indices, CashCarryAction,
+            CashCarryExecutionArgs, CashCarryQuoteArgs, CashCarryResourceAccounts,
+            CashCarryRiskDomainAccounts, CashCarryRuntimeAccounts, QuoteEvidence,
+            OPEN_PACKAGE_VERSION, PACKAGE_ACCOUNTS_DOMAIN, PACKAGE_BOOK_ACCOUNT_COUNT,
+            PACKAGE_BOOK_QUOTE_MODE_FIRM_ONCHAIN, PACKAGE_BOOK_QUOTE_SIDE_ASK,
+            PACKAGE_BOOK_QUOTE_SIDE_BID, ROUTE_ACCOUNTS_DOMAIN,
         },
         resource_registry::{
             validate_cash_carry_admission, verify_code_identity, CashCarryResources,
@@ -56,9 +58,12 @@ use crate::{
         ProtocolConfig, SolverRegistry, FIRM_RESERVATION_SPOT_ADAPTER_CLASS_ID,
     },
     wire::{DomainRef, ProtocolId, HASH_BYTE_LENGTH},
-    CashCarryResourceAccountsBumps, CashCarryRuntimeAccountsBumps,
-    __client_accounts_cash_carry_resource_accounts, __client_accounts_cash_carry_runtime_accounts,
+    CashCarryResourceAccountsBumps, CashCarryRiskDomainAccountsBumps,
+    CashCarryRuntimeAccountsBumps, __client_accounts_cash_carry_resource_accounts,
+    __client_accounts_cash_carry_risk_domain_accounts,
+    __client_accounts_cash_carry_runtime_accounts,
     __cpi_client_accounts_cash_carry_resource_accounts,
+    __cpi_client_accounts_cash_carry_risk_domain_accounts,
     __cpi_client_accounts_cash_carry_runtime_accounts,
 };
 
@@ -75,7 +80,7 @@ const FIRM_QUOTE_LOCK_SEED: &[u8] = b"firm-quote-lock";
 const FIRM_QUOTE_ARGS_DOMAIN: &[u8] = b"NARYX/firm-quote-args/v1";
 const RESERVATION_ACTION_ENTRY: u8 = 1;
 const RESERVATION_ACTION_EXIT: u8 = 2;
-pub const FIRM_FIXED_ACCOUNT_COUNT: usize = 49 + PERP_VENUE_ACCOUNT_COUNT;
+pub const FIRM_FIXED_ACCOUNT_COUNT: usize = 51 + PERP_VENUE_ACCOUNT_COUNT;
 pub const FIRM_AUXILIARY_PROGRAM_COUNT: usize = 2;
 pub const MAX_FIRM_RISE_EXTRA_ACCOUNTS: usize =
     64 - FIRM_FIXED_ACCOUNT_COUNT - FIRM_AUXILIARY_PROGRAM_COUNT;
@@ -387,8 +392,14 @@ pub struct ExecuteFirmCashAndCarry<'info> {
     pub config: Box<Account<'info, ProtocolConfig>>,
     #[account(seeds = [SOLVER_REGISTRY_SEED], bump = solver_registry.bump)]
     pub solver_registry: Box<Account<'info, SolverRegistry>>,
-    #[account(mut, constraint = solver_registry.is_active(&solver.key()) @ ErrorCode::CashCarrySolverInvalid)]
-    pub solver: SystemAccount<'info>,
+    pub risk: CashCarryRiskDomainAccounts<'info>,
+    /// CHECK: The system ownership and active solver registry membership are checked here.
+    #[account(
+        mut,
+        owner = system_program::ID,
+        constraint = solver_registry.is_active(&solver.key()) @ ErrorCode::CashCarrySolverInvalid
+    )]
+    pub solver: UncheckedAccount<'info>,
     #[account(
         init, payer = trader, space = 8 + CashCarryExecutionReceipt::INIT_SPACE,
         seeds = [CASH_CARRY_RECEIPT_SEED, trader.key().as_ref(), order_hash.as_ref()], bump
@@ -531,6 +542,23 @@ pub(crate) fn handler<'info>(
         },
     )?;
     validate_resource_indices(resources, true)?;
+    validate_cash_carry_risk_domain(
+        &ctx.accounts.risk.risk_domain_index,
+        &ctx.accounts.risk.risk_domain_record,
+        ctx.accounts.risk.risk_domain_record.key(),
+        &resources.quote_asset_record.manifest.identity,
+        resources.spot_adapter_record.manifest.identity.subject_id,
+        resources.perp_adapter_record.manifest.identity.subject_id,
+        &ctx.accounts.open_package,
+        &args,
+        &domain,
+    )?;
+    let risk_policy = &ctx.accounts.risk.risk_domain_record.policy;
+    let risk_series = risk_policy
+        .eligible_series
+        .get(usize::from(args.risk_series_index))
+        .ok_or_else(|| error!(ErrorCode::RiskDomainSeriesUnsupported))?
+        .clone();
     validate_strategy_authority(
         &ctx.accounts.executor_authority,
         &domain,
@@ -714,6 +742,10 @@ pub(crate) fn handler<'info>(
         resource_admission_commitment: resource_commitment,
         route_accounts_commitment: route_commitment,
         entry_receipt,
+        risk_domain_id: args.risk_domain_id,
+        risk_policy_version: args.risk_policy_version,
+        risk_policy_manifest_hash: risk_policy.manifest_hash,
+        risk_series: risk_series.clone(),
         bump: ctx.bumps.receipt,
     });
     ctx.accounts.nonce_marker.set_inner(CashCarryNonce {
@@ -735,6 +767,10 @@ pub(crate) fn handler<'info>(
         package_accounts_commitment: package_commitment,
         spot_quantity_atoms: args.spot_quantity_atoms,
         perp_quantity_atoms: args.perp_quantity_atoms,
+        risk_domain_id: args.risk_domain_id,
+        risk_policy_version: args.risk_policy_version,
+        risk_policy_manifest_hash: risk_policy.manifest_hash,
+        risk_series: risk_series.clone(),
         bump: ctx.bumps.open_package,
     });
     emit!(CashCarryExecutionRecorded {
@@ -766,6 +802,10 @@ pub(crate) fn handler<'info>(
         resource_admission_commitment: resource_commitment,
         route_accounts_commitment: route_commitment,
         entry_receipt,
+        risk_domain_id: args.risk_domain_id,
+        risk_policy_version: args.risk_policy_version,
+        risk_policy_manifest_hash: risk_policy.manifest_hash,
+        risk_series,
     });
     Ok(())
 }
@@ -826,6 +866,23 @@ fn execute_firm_exit<'info>(
         },
     )?;
     validate_resource_indices(resources, false)?;
+    validate_cash_carry_risk_domain(
+        &ctx.accounts.risk.risk_domain_index,
+        &ctx.accounts.risk.risk_domain_record,
+        ctx.accounts.risk.risk_domain_record.key(),
+        &resources.quote_asset_record.manifest.identity,
+        resources.spot_adapter_record.manifest.identity.subject_id,
+        resources.perp_adapter_record.manifest.identity.subject_id,
+        &ctx.accounts.open_package,
+        &args,
+        &domain,
+    )?;
+    let risk_policy = &ctx.accounts.risk.risk_domain_record.policy;
+    let risk_series = risk_policy
+        .eligible_series
+        .get(usize::from(args.risk_series_index))
+        .ok_or_else(|| error!(ErrorCode::RiskDomainSeriesUnsupported))?
+        .clone();
     validate_strategy_authority(
         &ctx.accounts.executor_authority,
         &domain,
@@ -1017,6 +1074,10 @@ fn execute_firm_exit<'info>(
         resource_admission_commitment: resource_commitment,
         route_accounts_commitment: route_commitment,
         entry_receipt,
+        risk_domain_id: args.risk_domain_id,
+        risk_policy_version: args.risk_policy_version,
+        risk_policy_manifest_hash: risk_policy.manifest_hash,
+        risk_series: risk_series.clone(),
         bump: ctx.bumps.receipt,
     });
     ctx.accounts.nonce_marker.set_inner(CashCarryNonce {
@@ -1053,6 +1114,10 @@ fn execute_firm_exit<'info>(
         resource_admission_commitment: resource_commitment,
         route_accounts_commitment: route_commitment,
         entry_receipt,
+        risk_domain_id: args.risk_domain_id,
+        risk_policy_version: args.risk_policy_version,
+        risk_policy_manifest_hash: risk_policy.manifest_hash,
+        risk_series,
     });
     ctx.accounts
         .open_package
@@ -1575,6 +1640,8 @@ fn firm_route_accounts_commitment(ctx: &Context<ExecuteFirmCashAndCarry>) -> [u8
         accounts.quote_lock.key(),
         accounts.series_index.key(),
         accounts.series_record.key(),
+        accounts.risk.risk_domain_index.key(),
+        accounts.risk.risk_domain_record.key(),
         accounts.rise_strategy.key(),
     ];
     keys.extend(perp_venue_account_keys(&accounts.rise));
@@ -1590,6 +1657,8 @@ fn firm_execution_account_keys(ctx: &Context<ExecuteFirmCashAndCarry>) -> Vec<Pu
         accounts.trader.key(),
         accounts.config.key(),
         accounts.solver_registry.key(),
+        accounts.risk.risk_domain_index.key(),
+        accounts.risk.risk_domain_record.key(),
         accounts.solver.key(),
         accounts.receipt.key(),
         accounts.nonce_marker.key(),
@@ -1802,6 +1871,14 @@ mod tests {
             client_order_id: 1,
             expiry_slot: 100,
             nonce: 7,
+            risk_domain_id: [31; 32],
+            risk_policy_version: 1,
+            risk_series_index: 0,
+            risk_net_quote_atoms: 100,
+            risk_margin_quote_atoms: 200,
+            risk_recovery_reserve_quote_atoms: 50,
+            risk_observation_age_ms: 100,
+            risk_time_to_unwind_ms: 2_000,
         }
     }
 
@@ -1935,9 +2012,9 @@ mod tests {
     #[cfg(not(feature = "devnet-test-perp"))]
     #[test]
     fn firm_rise_account_limit_reserves_auxiliary_programs() {
-        assert_eq!(FIRM_FIXED_ACCOUNT_COUNT, 57);
+        assert_eq!(FIRM_FIXED_ACCOUNT_COUNT, 59);
         assert_eq!(FIRM_AUXILIARY_PROGRAM_COUNT, 2);
-        assert_eq!(MAX_FIRM_RISE_EXTRA_ACCOUNTS, 5);
+        assert_eq!(MAX_FIRM_RISE_EXTRA_ACCOUNTS, 3);
         assert_eq!(
             FIRM_FIXED_ACCOUNT_COUNT + FIRM_AUXILIARY_PROGRAM_COUNT + MAX_FIRM_RISE_EXTRA_ACCOUNTS,
             64

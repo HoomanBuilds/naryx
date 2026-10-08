@@ -37,6 +37,12 @@ pub struct RiskDomainDependencyLimit {
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, InitSpace, Debug)]
+pub struct RiskDomainDependencyExposure {
+    pub dependency_id: [u8; HASH_BYTE_LENGTH],
+    pub gross_quote_atoms: u128,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, InitSpace, Debug)]
 pub struct RiskDomainPolicyV1 {
     pub schema_version: u32,
     pub manifest_version: u32,
@@ -200,7 +206,7 @@ impl RiskDomainRecord {
         reserved_recovery_quote_atoms: u128,
         observation_age_ms: u64,
         time_to_unwind_ms: u64,
-        dependency_exposures: &[RiskDomainDependencyLimit],
+        dependency_exposures: &[RiskDomainDependencyExposure],
     ) -> Result<u128> {
         require!(
             self.active && self.lifecycle.allows_entry() && self.domain == *domain,
@@ -248,12 +254,33 @@ impl RiskDomainRecord {
                 .dependency_cap(&exposure.dependency_id)
                 .ok_or_else(|| error!(ErrorCode::RiskDomainDependencyInvalid))?;
             require!(
-                exposure.maximum_gross_quote_atoms <= cap,
+                exposure.gross_quote_atoms <= cap,
                 ErrorCode::RiskDomainDependencyExceeded
             );
             previous = Some(exposure.dependency_id);
         }
         Ok(required_margin)
+    }
+
+    pub fn validate_exit(
+        &self,
+        domain: &DomainRef,
+        series: &RiskDomainSeriesRef,
+        accounting_asset: &ManifestRef,
+    ) -> Result<()> {
+        require!(
+            self.active && self.lifecycle.allows_exit() && self.domain == *domain,
+            ErrorCode::RiskDomainIdentityMismatch
+        );
+        require!(
+            self.policy.supports_series(series),
+            ErrorCode::RiskDomainSeriesUnsupported
+        );
+        require!(
+            self.policy.accounting_asset == *accounting_asset,
+            ErrorCode::RiskDomainIdentityMismatch
+        );
+        Ok(())
     }
 }
 
@@ -329,9 +356,9 @@ mod tests {
                 100_000,
                 100,
                 2_000,
-                &[RiskDomainDependencyLimit {
+                &[RiskDomainDependencyExposure {
                     dependency_id: [0x77; 32],
-                    maximum_gross_quote_atoms: 3_000_000,
+                    gross_quote_atoms: 3_000_000,
                 }],
             )
             .unwrap();

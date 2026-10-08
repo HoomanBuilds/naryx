@@ -8,6 +8,102 @@
   },
   "instructions": [
     {
+      "name": "execute_typed_strategy_leg",
+      "discriminator": [
+        136,
+        195,
+        165,
+        238,
+        126,
+        9,
+        4,
+        44
+      ],
+      "accounts": [
+        {
+          "name": "strategy",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  115,
+                  116,
+                  45,
+                  112,
+                  101,
+                  114,
+                  112,
+                  45,
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "strategy.owner",
+                "account": "TestPerpStrategy"
+              },
+              {
+                "kind": "account",
+                "path": "strategy.strategy_id",
+                "account": "TestPerpStrategy"
+              }
+            ]
+          }
+        },
+        {
+          "name": "controller",
+          "signer": true
+        },
+        {
+          "name": "test_perp_program",
+          "address": "CHDFYrJTwg7rxB8uDC6d8DCjaiFsSbGtbTEgRUZ6nJLD"
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "collateral_vault",
+          "writable": true
+        },
+        {
+          "name": "fee_vault",
+          "writable": true
+        },
+        {
+          "name": "insurance_vault",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "payload",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
       "name": "initialize_test_perp_strategy",
       "discriminator": [
         236,
@@ -103,6 +199,106 @@
         222,
         38,
         230
+      ],
+      "accounts": [
+        {
+          "name": "strategy",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  115,
+                  116,
+                  45,
+                  112,
+                  101,
+                  114,
+                  112,
+                  45,
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "strategy.owner",
+                "account": "TestPerpStrategy"
+              },
+              {
+                "kind": "account",
+                "path": "strategy.strategy_id",
+                "account": "TestPerpStrategy"
+              }
+            ]
+          }
+        },
+        {
+          "name": "controller",
+          "signer": true
+        },
+        {
+          "name": "test_perp_program",
+          "address": "CHDFYrJTwg7rxB8uDC6d8DCjaiFsSbGtbTEgRUZ6nJLD"
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "collateral_vault",
+          "writable": true
+        },
+        {
+          "name": "fee_vault",
+          "writable": true
+        },
+        {
+          "name": "insurance_vault",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "TestPerpMarketOrderArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "test_perp_decrease_short",
+      "discriminator": [
+        61,
+        153,
+        184,
+        253,
+        159,
+        19,
+        140,
+        109
       ],
       "accounts": [
         {
@@ -291,6 +487,106 @@
           }
         }
       ]
+    },
+    {
+      "name": "test_perp_increase_short",
+      "discriminator": [
+        197,
+        29,
+        241,
+        75,
+        251,
+        179,
+        122,
+        219
+      ],
+      "accounts": [
+        {
+          "name": "strategy",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  115,
+                  116,
+                  45,
+                  112,
+                  101,
+                  114,
+                  112,
+                  45,
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "strategy.owner",
+                "account": "TestPerpStrategy"
+              },
+              {
+                "kind": "account",
+                "path": "strategy.strategy_id",
+                "account": "TestPerpStrategy"
+              }
+            ]
+          }
+        },
+        {
+          "name": "controller",
+          "signer": true
+        },
+        {
+          "name": "test_perp_program",
+          "address": "CHDFYrJTwg7rxB8uDC6d8DCjaiFsSbGtbTEgRUZ6nJLD"
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "collateral_vault",
+          "writable": true
+        },
+        {
+          "name": "fee_vault",
+          "writable": true
+        },
+        {
+          "name": "insurance_vault",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "TestPerpMarketOrderArgs"
+            }
+          }
+        }
+      ]
     }
   ],
   "accounts": [
@@ -366,18 +662,33 @@
     },
     {
       "code": 6011,
+      "name": "IncreasePositionInvalid",
+      "msg": "Increase requires an existing short within the delegated limit"
+    },
+    {
+      "code": 6012,
+      "name": "DecreasePositionInvalid",
+      "msg": "Decrease requires a strict partial reduction of an existing short"
+    },
+    {
+      "code": 6013,
       "name": "ClosePositionMismatch",
       "msg": "Close requires the exact current short position"
     },
     {
-      "code": 6012,
+      "code": 6014,
       "name": "PositionPostconditionFailed",
       "msg": "Authoritative test perp position postcondition failed"
     },
     {
-      "code": 6013,
+      "code": 6015,
       "name": "CollateralPostconditionFailed",
       "msg": "Authoritative test perp collateral postcondition failed"
+    },
+    {
+      "code": 6016,
+      "name": "TypedPayloadInvalid",
+      "msg": "Typed strategy payload is not a supported test perp adapter instruction"
     }
   ],
   "types": [

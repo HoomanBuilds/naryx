@@ -28,6 +28,13 @@ import {
   requireOnlyProfileVenueAccounts,
   solanaPerpVenueProfile,
 } from './perp-venue.js';
+import {
+  borshRiskArgs,
+  riskDigestParts,
+  type SolanaCashCarryRiskArgs,
+  type SolanaRiskDomainSeriesRef,
+  validateSolanaCashCarryRiskArgs,
+} from './risk-domain.js';
 
 const { BN, BorshCoder } = anchor;
 const U64_MAX = (1n << 64n) - 1n;
@@ -35,8 +42,8 @@ const U128_MAX = (1n << 128n) - 1n;
 const I64_MIN = -(1n << 63n);
 const I64_MAX = (1n << 63n) - 1n;
 const MAX_RESOLVED_ADDRESSES = 64;
-// Fixed exit addresses other than the perp venue accounts: 54 with the eight Rise accounts.
-const FIXED_EXIT_BASE_ADDRESS_COUNT = 46;
+// Fixed exit addresses other than the perp venue accounts: 56 with the eight Rise accounts.
+const FIXED_EXIT_BASE_ADDRESS_COUNT = 48;
 const LEGACY_TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 
 const HASH_DOMAINS = {
@@ -50,6 +57,8 @@ export const PUBLIC_CASH_CARRY_EXIT_ACCOUNT_NAMES = [
   'trader',
   'config',
   'solverRegistry',
+  'riskDomainIndex',
+  'riskDomainRecord',
   'receipt',
   'nonceMarker',
   'openPackage',
@@ -162,7 +171,7 @@ export interface PublicCashCarryExitTokenEvidence {
   readonly amountAtoms: bigint;
 }
 
-export interface PublicCashCarryExitExecutionArgs {
+export interface PublicCashCarryExitExecutionArgs extends SolanaCashCarryRiskArgs {
   readonly spotQuantityAtoms: bigint;
   readonly perpQuantityAtoms: bigint;
   readonly spotLimitQuoteAtomsPerBaseLot: bigint;
@@ -194,7 +203,7 @@ export interface PublicCashCarryHistoricalSeriesEvidence {
 }
 
 export interface PublicCashCarryHistoricalOpenPackageEvidence {
-  readonly version: 2;
+  readonly version: 3;
   readonly address: PublicKey | string;
   readonly domain: DomainRef;
   readonly trader: PublicKey | string;
@@ -209,6 +218,10 @@ export interface PublicCashCarryHistoricalOpenPackageEvidence {
   readonly spotQuantityAtoms: bigint;
   readonly perpQuantityAtoms: bigint;
   readonly entryPackageNonce: bigint;
+  readonly riskDomainId: Uint8Array;
+  readonly riskPolicyVersion: number;
+  readonly riskPolicyManifestHash: Uint8Array;
+  readonly riskSeries: SolanaRiskDomainSeriesRef;
 }
 
 export interface PublicCashCarryHistoricalEntryReceiptEvidence {
@@ -230,6 +243,10 @@ export interface PublicCashCarryHistoricalEntryReceiptEvidence {
   readonly routeAccountsCommitment: Uint8Array;
   readonly spotQuantityAtoms: bigint;
   readonly perpQuantityAtoms: bigint;
+  readonly riskDomainId: Uint8Array;
+  readonly riskPolicyVersion: number;
+  readonly riskPolicyManifestHash: Uint8Array;
+  readonly riskSeries: SolanaRiskDomainSeriesRef;
 }
 
 export type PublicCashCarryExitAuthorization =
@@ -350,6 +367,8 @@ const EXIT_PREFIX_SPECS: readonly AccountSpec[] = [
   { idlName: 'trader', bindingName: 'trader', signer: true, writable: true },
   { idlName: 'config', bindingName: 'config', signer: false, writable: false },
   { idlName: 'solver_registry', bindingName: 'solverRegistry', signer: false, writable: false },
+  { idlName: 'risk_domain_index', bindingName: 'riskDomainIndex', signer: false, writable: false },
+  { idlName: 'risk_domain_record', bindingName: 'riskDomainRecord', signer: false, writable: false },
   { idlName: 'receipt', bindingName: 'receipt', signer: false, writable: true },
   { idlName: 'nonce_marker', bindingName: 'nonceMarker', signer: false, writable: true },
   { idlName: 'open_package', bindingName: 'openPackage', signer: false, writable: true },
@@ -698,7 +717,7 @@ function validatePackage(admission: PackageAdmission, binding: AnyPublicCashCarr
 function validateHistoricalPackage(binding: AnyPublicCashCarryExitBinding, context: PublicCashCarryEntryContext): void {
   const open = binding.openPackage;
   const receipt = binding.entryReceipt;
-  requireCondition(open.version === 2, 'open package version mismatch');
+  requireCondition(open.version === 3, 'open package version mismatch');
   requireKey(open.address, context.openPackage, 'open package address');
   requireKey(open.trader, context.trader, 'open package trader');
   requireKey(open.entryReceipt, context.entryReceipt, 'open package entry receipt');
@@ -711,6 +730,8 @@ function validateHistoricalPackage(binding: AnyPublicCashCarryExitBinding, conte
   requireBytes(open.packageAccountsCommitment, context.packageAccountsCommitment, 'open package account commitment');
   requireCondition(open.spotQuantityAtoms === context.spotQuantityAtoms && open.perpQuantityAtoms === context.perpQuantityAtoms, 'open package quantity mismatch');
   requireCondition(open.entryPackageNonce === context.entryNonce, 'open package entry nonce mismatch');
+  requireBytes(open.riskDomainId, binding.executionArgs.riskDomainId, 'open package risk domain');
+  requireCondition(open.riskPolicyVersion === binding.executionArgs.riskPolicyVersion, 'open package risk policy version mismatch');
 
   requireKey(receipt.address, context.entryReceipt, 'historical entry receipt address');
   requireKey(context.entryReceipt, PublicKey.findProgramAddressSync([
@@ -729,6 +750,12 @@ function validateHistoricalPackage(binding: AnyPublicCashCarryExitBinding, conte
   requireBytes(receipt.resourceAdmissionCommitment, context.resourceAdmissionCommitment, 'historical entry resource commitment');
   requireBytes(receipt.routeAccountsCommitment, context.routeAccountsCommitment, 'historical entry route-account commitment');
   requireCondition(receipt.spotQuantityAtoms === context.spotQuantityAtoms && receipt.perpQuantityAtoms === context.perpQuantityAtoms, 'historical entry receipt quantity mismatch');
+  requireBytes(receipt.riskDomainId, open.riskDomainId, 'historical entry risk domain');
+  requireCondition(receipt.riskPolicyVersion === open.riskPolicyVersion, 'historical entry risk policy version mismatch');
+  requireBytes(receipt.riskPolicyManifestHash, open.riskPolicyManifestHash, 'historical entry risk policy manifest');
+  requireBytes(receipt.riskSeries.seriesId, open.riskSeries.seriesId, 'historical entry risk series');
+  requireCondition(receipt.riskSeries.manifestVersion === open.riskSeries.manifestVersion, 'historical entry risk series version mismatch');
+  requireBytes(receipt.riskSeries.manifestHash, open.riskSeries.manifestHash, 'historical entry risk series manifest');
 
   const series = binding.historicalSeries;
   const domainIdentity = domainHash('CON/v1/domain-ref-identity', domainBytes(context.domain));
@@ -841,6 +868,7 @@ function validateAmounts(binding: AnyPublicCashCarryExitBinding): void {
   checkedUnsigned(args.clientOrderId, U128_MAX, 'client order id');
   checkedPositiveU64(args.expirySlot, 'execution expiry');
   checkedPositiveU64(args.nonce, 'execution nonce');
+  validateSolanaCashCarryRiskArgs(args);
 }
 
 function validateTokens(binding: AnyPublicCashCarryExitBinding, addresses: ReadonlyMap<ExitAccountKey, PublicKey>, routes: ReadonlyMap<string, PackageAdmission['route']['accountBindings'][number]>, baseMint: PublicKey, quoteMint: PublicKey, trader: PublicKey): void {
@@ -870,13 +898,18 @@ function executionDigest(binding: AnyPublicCashCarryExitBinding, context: Public
   const solver = binding.authorization.mode === 'SOLVER_AUTHORIZED'
     ? publicKey(binding.authorization.activeSolver, 'active solver')
     : PublicKey.default;
+  const specs = exitIdlSpecs(solanaPerpVenueProfile(binding.perpVenueKind));
   const keys = [
     context.coreProgram,
     addresses.get('trader')!,
     addresses.get('config')!,
     addresses.get('solverRegistry')!,
+    ...specs.slice(3, 5).map((spec) => addresses.get(spec.bindingName)!),
     solver,
-    ...exitIdlSpecs(solanaPerpVenueProfile(binding.perpVenueKind)).slice(3).map((spec) => addresses.get(spec.bindingName)!),
+    ...specs.slice(5, -3).map((spec) => addresses.get(spec.bindingName)!),
+    addresses.get('tokenProgram')!,
+    addresses.get('systemProgram')!,
+    addresses.get('instructionsSysvar')!,
     ...binding.riseDynamicAccounts.map((account) => publicKey(account.address, 'Rise dynamic account')),
   ];
   const args = binding.executionArgs;
@@ -898,6 +931,7 @@ function executionDigest(binding: AnyPublicCashCarryExitBinding, context: Public
     bigEndian(args.clientOrderId, 16),
     bigEndian(args.expirySlot, 8),
     bigEndian(args.nonce, 8),
+    ...riskDigestParts(args),
     resource,
     bigEndian(BigInt(keys.length), 4),
     ...keys.map((key) => key.toBytes()),
@@ -918,6 +952,7 @@ function borshExecutionArgs(args: PublicCashCarryExitExecutionArgs, recovery: bo
     client_order_id: new BN(args.clientOrderId.toString()),
     expiry_slot: new BN(args.expirySlot.toString()),
     nonce: new BN(args.nonce.toString()),
+    ...borshRiskArgs(args),
   };
 }
 
@@ -968,6 +1003,19 @@ export function compilePublicCashCarryExitPlan(binding: AnyPublicCashCarryExitBi
   requireKey(addresses.get('trader')!, context.trader, 'exit trader');
   requireKey(addresses.get('config')!, context.config, 'exit config');
   requireKey(addresses.get('solverRegistry')!, context.solverRegistry, 'exit solver registry');
+  const riskDomainId = hash32(binding.executionArgs.riskDomainId, 'risk domain id');
+  requireKey(addresses.get('riskDomainIndex')!, PublicKey.findProgramAddressSync([
+    Buffer.from('risk-domain-index'), Buffer.from(riskDomainId),
+  ], context.coreProgram)[0], 'risk domain index PDA');
+  requireKey(addresses.get('riskDomainRecord')!, PublicKey.findProgramAddressSync([
+    Buffer.from('risk-domain-record'),
+    Buffer.from(riskDomainId),
+    Buffer.from(bigEndian(BigInt(binding.executionArgs.riskPolicyVersion), 4)),
+  ], context.coreProgram)[0], 'risk domain record PDA');
+  for (const name of ['riskDomainIndex', 'riskDomainRecord'] as const) {
+    const route = routes.get(accountBinding(binding, name).routeBindingId)!;
+    requireCondition(route.ownerIdentity === context.coreProgram.toBase58(), `${name} owner mismatch`);
+  }
   requireKey(context.config, PublicKey.findProgramAddressSync([Buffer.from('naryx-protocol-config')], context.coreProgram)[0], 'config PDA');
   requireKey(context.solverRegistry, PublicKey.findProgramAddressSync([Buffer.from('conformance-solver')], context.coreProgram)[0], 'solver registry PDA');
   requireKey(addresses.get('receipt')!, PublicKey.findProgramAddressSync([Buffer.from('cash-carry-receipt'), context.trader.toBuffer(), Buffer.from(binding.admission.orderHash)], context.coreProgram)[0], 'exit receipt PDA');

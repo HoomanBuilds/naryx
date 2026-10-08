@@ -129,6 +129,10 @@ pub struct CashCarryExecutionReceipt {
     pub resource_admission_commitment: [u8; 32],
     pub route_accounts_commitment: [u8; 32],
     pub entry_receipt: Pubkey,
+    pub risk_domain_id: [u8; 32],
+    pub risk_policy_version: u32,
+    pub risk_policy_manifest_hash: [u8; 32],
+    pub risk_series: RiskDomainSeriesRef,
     pub bump: u8,
 }
 
@@ -169,5 +173,9 @@ pub struct OpenCashCarryPackage {
     pub package_accounts_commitment: [u8; 32],
     pub spot_quantity_atoms: u64,
     pub perp_quantity_atoms: u64,
+    pub risk_domain_id: [u8; 32],
+    pub risk_policy_version: u32,
+    pub risk_policy_manifest_hash: [u8; 32],
+    pub risk_series: RiskDomainSeriesRef,
     pub bump: u8,
 }

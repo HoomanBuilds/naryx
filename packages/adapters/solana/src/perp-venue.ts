@@ -59,7 +59,7 @@ const RISE_PROFILE: SolanaPerpVenueProfile = Object.freeze({
   ] as const),
   venueSubject: 'riseGlobalConfig',
   marketSubject: 'riseOrderbook',
-  maxDynamicAccounts: 5,
+  maxDynamicAccounts: 3,
 });
 
 // The test perp market account is the subject of both the venue and the market record.

@@ -28,6 +28,16 @@ export type DecodedCashCarryExecutionReceipt = Readonly<{
   routeAccountsCommitment: Uint8Array;
   entryReceipt: string;
   executionSlot: bigint;
+  riskDomainId: Uint8Array;
+  riskPolicyVersion: number;
+  riskPolicyManifestHash: Uint8Array;
+  riskSeries: DecodedCashCarryRiskSeries;
+}>;
+
+export type DecodedCashCarryRiskSeries = Readonly<{
+  seriesId: Uint8Array;
+  manifestVersion: number;
+  manifestHash: Uint8Array;
 }>;
 
 export type DecodedOpenCashCarryPackage = Readonly<{
@@ -44,6 +54,10 @@ export type DecodedOpenCashCarryPackage = Readonly<{
   packageAccountsCommitment: Uint8Array;
   spotQuantityAtoms: bigint;
   perpQuantityAtoms: bigint;
+  riskDomainId: Uint8Array;
+  riskPolicyVersion: number;
+  riskPolicyManifestHash: Uint8Array;
+  riskSeries: DecodedCashCarryRiskSeries;
 }>;
 
 function record(value: unknown, name: string): Record<string, unknown> {
@@ -69,6 +83,13 @@ function unsigned(value: unknown, name: string): bigint {
   return result;
 }
 
+function version(value: unknown, name: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0 || value > 0xffff_ffff) {
+    throw new Error(`${name} is invalid`);
+  }
+  return value;
+}
+
 function domain(value: unknown): DecodedCashCarryDomain {
   const decoded = record(value, 'cash-carry domain');
   if (typeof decoded.domain_id !== 'string' || decoded.domain_id.length === 0) throw new Error('cash-carry domain id is invalid');
@@ -79,6 +100,18 @@ function domain(value: unknown): DecodedCashCarryDomain {
     domainId: decoded.domain_id,
     domainManifestVersion: decoded.domain_manifest_version,
     domainManifestHash: bytes32(decoded.domain_manifest_hash, 'cash-carry domain hash'),
+  });
+}
+
+function riskSeries(value: unknown, name: string): DecodedCashCarryRiskSeries {
+  const decoded = record(value, name);
+  if (typeof decoded.manifest_version !== 'number' || !Number.isSafeInteger(decoded.manifest_version) || decoded.manifest_version <= 0) {
+    throw new Error(`${name} version is invalid`);
+  }
+  return Object.freeze({
+    seriesId: bytes32(decoded.series_id, `${name} id`),
+    manifestVersion: decoded.manifest_version,
+    manifestHash: bytes32(decoded.manifest_hash, `${name} manifest hash`),
   });
 }
 
@@ -105,6 +138,10 @@ export function decodeCashCarryExecutionReceipt(idl: Idl, data: Uint8Array): Dec
     routeAccountsCommitment: bytes32(decoded.route_accounts_commitment, 'cash-carry receipt route accounts'),
     entryReceipt: publicKey(decoded.entry_receipt, 'cash-carry receipt entry receipt'),
     executionSlot: unsigned(decoded.execution_slot, 'cash-carry receipt execution slot'),
+    riskDomainId: bytes32(decoded.risk_domain_id, 'cash-carry receipt risk domain'),
+    riskPolicyVersion: version(decoded.risk_policy_version, 'cash-carry receipt risk policy version'),
+    riskPolicyManifestHash: bytes32(decoded.risk_policy_manifest_hash, 'cash-carry receipt risk policy manifest'),
+    riskSeries: riskSeries(decoded.risk_series, 'cash-carry receipt risk series'),
   });
 }
 
@@ -125,5 +162,9 @@ export function decodeOpenCashCarryPackage(idl: Idl, data: Uint8Array): DecodedO
     packageAccountsCommitment: bytes32(decoded.package_accounts_commitment, 'open cash-carry package accounts commitment'),
     spotQuantityAtoms: unsigned(decoded.spot_quantity_atoms, 'open cash-carry package spot quantity'),
     perpQuantityAtoms: unsigned(decoded.perp_quantity_atoms, 'open cash-carry package perp quantity'),
+    riskDomainId: bytes32(decoded.risk_domain_id, 'open cash-carry package risk domain'),
+    riskPolicyVersion: version(decoded.risk_policy_version, 'open cash-carry package risk policy version'),
+    riskPolicyManifestHash: bytes32(decoded.risk_policy_manifest_hash, 'open cash-carry package risk policy manifest'),
+    riskSeries: riskSeries(decoded.risk_series, 'open cash-carry package risk series'),
   });
 }

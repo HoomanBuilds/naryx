@@ -79,6 +79,14 @@ test('decodes the production cash-carry receipt account shape', async () => {
     resource_admission_commitment: Array.from(hash(8)),
     route_accounts_commitment: Array.from(hash(9)),
     entry_receipt: entryReceipt,
+    risk_domain_id: Array.from(hash(10)),
+    risk_policy_version: 1,
+    risk_policy_manifest_hash: Array.from(hash(11)),
+    risk_series: {
+      series_id: Array.from(hash(12)),
+      manifest_version: 1,
+      manifest_hash: Array.from(hash(13)),
+    },
     bump: 255,
   });
   const decoded = decodeCashCarryExecutionReceipt(coreIdl, data);
@@ -88,6 +96,9 @@ test('decodes the production cash-carry receipt account shape', async () => {
   assert.equal(decoded.nonce, 7n);
   assert.equal(decoded.spotQuantityAtoms, 10n);
   assert.equal(decoded.perpQuantityAtoms, 11n);
+  assert.deepEqual(decoded.riskDomainId, hash(10));
+  assert.equal(decoded.riskPolicyVersion, 1);
+  assert.deepEqual(decoded.riskSeries.seriesId, hash(12));
   assert.equal(hex(decoded.routeAccountsCommitment), hex(hash(9)));
 });
 
@@ -191,6 +202,20 @@ function quoteArgsForCoder(binding: FirmCashCarryBinding) {
   };
 }
 
+function riskArgsForCoder(binding: FirmCashCarryBinding) {
+  const value = binding.executionArgs;
+  return {
+    risk_domain_id: Array.from(value.riskDomainId),
+    risk_policy_version: value.riskPolicyVersion,
+    risk_series_index: value.riskSeriesIndex,
+    risk_net_quote_atoms: new BN(value.riskNetQuoteAtoms.toString()),
+    risk_margin_quote_atoms: new BN(value.riskMarginQuoteAtoms.toString()),
+    risk_recovery_reserve_quote_atoms: new BN(value.riskRecoveryReserveQuoteAtoms.toString()),
+    risk_observation_age_ms: new BN(value.riskObservationAgeMs.toString()),
+    risk_time_to_unwind_ms: new BN(value.riskTimeToUnwindMs.toString()),
+  };
+}
+
 function fixture(dynamicCount = 0): { admission: PackageAdmission; binding: FirmCashCarryBinding } {
   const domain = {
     domainId: 'svm:local-firm',
@@ -224,6 +249,7 @@ function fixture(dynamicCount = 0): { admission: PackageAdmission; binding: Firm
   const quoteHash = hash(42);
   const routeHash = hash(43);
   const resourceCommitment = hash(44);
+  const riskDomainId = hash(45);
   const domainIdentity = domainHash('CON/v1/domain-ref-identity', domainBytes(domain));
   const reservationClass = PublicKey.findProgramAddressSync([
     Buffer.from('reservation-class'),
@@ -279,6 +305,12 @@ function fixture(dynamicCount = 0): { admission: PackageAdmission; binding: Firm
     spotVenue: ['venue', hash(75)], perpVenue: ['venue', hash(76)],
     baseAsset: ['asset', hash(77)], quoteAsset: ['asset', hash(78)],
   } as const;
+  accountAddresses.riskDomainIndex = PublicKey.findProgramAddressSync([
+    Buffer.from('risk-domain-index'), Buffer.from(riskDomainId),
+  ], coreProgram)[0].toBase58();
+  accountAddresses.riskDomainRecord = PublicKey.findProgramAddressSync([
+    Buffer.from('risk-domain-record'), Buffer.from(riskDomainId), Buffer.from(bigEndian(1n, 4)),
+  ], coreProgram)[0].toBase58();
   for (const [name, [kind, subjectId]] of Object.entries(resourceSeeds)) {
     accountAddresses[`${name}Index` as FirmCashCarryAccountName] = PublicKey.findProgramAddressSync([
       Buffer.from('naryx-resource-index'), Buffer.from(kind), Buffer.from(subjectId),
@@ -357,6 +389,7 @@ function fixture(dynamicCount = 0): { admission: PackageAdmission; binding: Firm
     routeBindingId: accounts[name].routeBindingId,
     accountIdentity: accountAddresses[name],
     ...(codeByAccount.has(name) ? { codeIdentity: hex(codeByAccount.get(name)!) } : {}),
+    ...((name === 'riskDomainIndex' || name === 'riskDomainRecord') ? { ownerIdentity: coreProgram.toBase58() } : {}),
     ...((name in authorityByToken) ? {
       ownerIdentity: LEGACY_TOKEN_PROGRAM_ID.toBase58(),
       authorityIdentity: authorityByToken[name as keyof typeof authorityByToken].toBase58(),
@@ -509,14 +542,14 @@ function fixture(dynamicCount = 0): { admission: PackageAdmission; binding: Firm
       executorQuote: { mint: quoteMint, authority: executorAuthority, amountAtoms: 0n },
     },
     resources: {
-      spotAdapter: { manifestHash: spotAdapter.adapterManifestHash, subjectAddress: reservationProgram, programId: reservationProgram, codeIdentity: reservationCode, adapterClassId: 'naryx.solana.spot-firm-reservation' },
-      perpAdapter: { manifestHash: perpAdapter.adapterManifestHash, subjectAddress: perpAdapterProgram, programId: perpAdapterProgram, codeIdentity: perpAdapterCode },
-      spotMarket: { manifestHash: spotMarket.manifestHash, subjectAddress: reservationClass, programId: reservationProgram, codeIdentity: reservationCode },
-      perpMarket: { manifestHash: perpMarket.manifestHash, subjectAddress: accountAddresses.riseOrderbook, programId: perpVenueProgram, codeIdentity: perpVenueCode },
-      spotVenue: { manifestHash: spotVenue.manifestHash, subjectAddress: reservationClass, programId: reservationProgram, codeIdentity: reservationCode },
-      perpVenue: { manifestHash: perpVenue.manifestHash, subjectAddress: accountAddresses.riseGlobalConfig, programId: perpVenueProgram, codeIdentity: perpVenueCode },
-      baseAsset: { manifestHash: baseAsset.assetManifestHash, subjectAddress: baseMint, programId: LEGACY_TOKEN_PROGRAM_ID },
-      quoteAsset: { manifestHash: quoteAsset.assetManifestHash, subjectAddress: quoteMint, programId: LEGACY_TOKEN_PROGRAM_ID },
+      spotAdapter: { subjectId: resourceSeeds.spotAdapter[1], manifestHash: spotAdapter.adapterManifestHash, subjectAddress: reservationProgram, programId: reservationProgram, codeIdentity: reservationCode, adapterClassId: 'naryx.solana.spot-firm-reservation' },
+      perpAdapter: { subjectId: resourceSeeds.perpAdapter[1], manifestHash: perpAdapter.adapterManifestHash, subjectAddress: perpAdapterProgram, programId: perpAdapterProgram, codeIdentity: perpAdapterCode },
+      spotMarket: { subjectId: resourceSeeds.spotMarket[1], manifestHash: spotMarket.manifestHash, subjectAddress: reservationClass, programId: reservationProgram, codeIdentity: reservationCode },
+      perpMarket: { subjectId: resourceSeeds.perpMarket[1], manifestHash: perpMarket.manifestHash, subjectAddress: accountAddresses.riseOrderbook, programId: perpVenueProgram, codeIdentity: perpVenueCode },
+      spotVenue: { subjectId: resourceSeeds.spotVenue[1], manifestHash: spotVenue.manifestHash, subjectAddress: reservationClass, programId: reservationProgram, codeIdentity: reservationCode },
+      perpVenue: { subjectId: resourceSeeds.perpVenue[1], manifestHash: perpVenue.manifestHash, subjectAddress: accountAddresses.riseGlobalConfig, programId: perpVenueProgram, codeIdentity: perpVenueCode },
+      baseAsset: { subjectId: resourceSeeds.baseAsset[1], manifestHash: baseAsset.assetManifestHash, subjectAddress: baseMint, programId: LEGACY_TOKEN_PROGRAM_ID },
+      quoteAsset: { subjectId: resourceSeeds.quoteAsset[1], manifestHash: quoteAsset.assetManifestHash, subjectAddress: quoteMint, programId: LEGACY_TOKEN_PROGRAM_ID },
       spotBaseLotAtoms: 1n,
       perpBaseLotAtoms: 1n,
       perpQuoteTickAtomsPerBaseLot: 1n,
@@ -593,6 +626,14 @@ function fixture(dynamicCount = 0): { admission: PackageAdmission; binding: Firm
       clientOrderId: 6n,
       expirySlot: 480n,
       nonce: 7n,
+      riskDomainId,
+      riskPolicyVersion: 1,
+      riskSeriesIndex: 0,
+      riskNetQuoteAtoms: 0n,
+      riskMarginQuoteAtoms: 40n,
+      riskRecoveryReserveQuoteAtoms: 10n,
+      riskObservationAgeMs: 100n,
+      riskTimeToUnwindMs: 1_000n,
     },
     quoteArgs,
     firmQuoteAtoms: 50n,
@@ -633,6 +674,8 @@ function attachPublicExit(
   const exitRouteHash = hash(95);
   const entryReceiptHash = hash(96);
   const settlementManifestHash = hash(97);
+  const riskPolicyManifestHash = hash(46);
+  const riskSeries = { seriesId: hash(47), manifestVersion: 1, manifestHash: hash(48) };
 
   const resourceInputs = {
     spotAdapter: { protocolSubjectId: 'orca', subjectId: hash(81), manifestHash: hash(101), subjectAddress: spotAdapterProgram, programId: spotAdapterProgram, programDataAddress: spotAdapterData, codeIdentity: spotAdapterCode },
@@ -662,6 +705,8 @@ function attachPublicExit(
     trader: trader.toBase58(),
     config: new PublicKey(firm.accounts.config.address).toBase58(),
     solverRegistry: new PublicKey(firm.accounts.solverRegistry.address).toBase58(),
+    riskDomainIndex: new PublicKey(firm.accounts.riskDomainIndex.address).toBase58(),
+    riskDomainRecord: new PublicKey(firm.accounts.riskDomainRecord.address).toBase58(),
     receipt: PublicKey.findProgramAddressSync([Buffer.from('cash-carry-receipt'), trader.toBuffer(), Buffer.from(exitOrderHash)], coreProgram)[0].toBase58(),
     nonceMarker: PublicKey.findProgramAddressSync([Buffer.from('cash-carry-nonce'), trader.toBuffer(), Buffer.from(bigEndian(8n, 8))], coreProgram)[0].toBase58(),
     openPackage: new PublicKey(firm.accounts.openPackage.address).toBase58(),
@@ -850,7 +895,7 @@ function attachPublicExit(
   const routeNames: readonly FirmCashCarryAccountName[] = [
     'traderBase', 'traderQuote', 'executorBase', 'executorQuote', 'solverQuote', 'reservationClass',
     'reservationCapacity', 'reservation', 'livePair', 'reservationVault', 'quoteLock', 'seriesIndex',
-    'seriesRecord', 'riseStrategy', 'riseLogAuthority', 'riseGlobalConfig', 'riseTraderAccount',
+    'seriesRecord', 'riskDomainIndex', 'riskDomainRecord', 'riseStrategy', 'riseLogAuthority', 'riseGlobalConfig', 'riseTraderAccount',
     'risePerpAssetMap', 'riseGlobalTraderIndexHeader', 'riseActiveTraderBufferHeader', 'riseOrderbook', 'riseSplineCollection',
   ];
   const routeKeys = [...routeNames.map((name) => new PublicKey(firm.accounts[name].address)), ...firm.riseDynamicAccounts.map((account) => new PublicKey(account.address))];
@@ -948,7 +993,7 @@ function attachPublicExit(
       record: firm.accounts.seriesRecord.address,
     },
     openPackage: {
-      version: 2 as const,
+      version: 3 as const,
       address: firm.accounts.openPackage.address,
       domain: firm.domain,
       trader,
@@ -963,6 +1008,10 @@ function attachPublicExit(
       spotQuantityAtoms: firm.executionArgs.spotQuantityAtoms,
       perpQuantityAtoms: firm.executionArgs.perpQuantityAtoms,
       entryPackageNonce: firm.executionArgs.nonce,
+      riskDomainId: firm.executionArgs.riskDomainId,
+      riskPolicyVersion: firm.executionArgs.riskPolicyVersion,
+      riskPolicyManifestHash,
+      riskSeries,
     },
     entryReceipt: {
       address: firm.accounts.receipt.address,
@@ -983,6 +1032,10 @@ function attachPublicExit(
       routeAccountsCommitment: entryRouteAccountsCommitment,
       spotQuantityAtoms: firm.executionArgs.spotQuantityAtoms,
       perpQuantityAtoms: firm.executionArgs.perpQuantityAtoms,
+      riskDomainId: firm.executionArgs.riskDomainId,
+      riskPolicyVersion: firm.executionArgs.riskPolicyVersion,
+      riskPolicyManifestHash,
+      riskSeries,
     },
     executionArgs: {
       spotQuantityAtoms: 10n,
@@ -995,6 +1048,14 @@ function attachPublicExit(
       clientOrderId: 10n,
       expirySlot: 680n,
       nonce: 8n,
+      riskDomainId: firm.executionArgs.riskDomainId,
+      riskPolicyVersion: firm.executionArgs.riskPolicyVersion,
+      riskSeriesIndex: firm.executionArgs.riskSeriesIndex,
+      riskNetQuoteAtoms: 0n,
+      riskMarginQuoteAtoms: 40n,
+      riskRecoveryReserveQuoteAtoms: 10n,
+      riskObservationAgeMs: 100n,
+      riskTimeToUnwindMs: 1_000n,
     },
     postconditions: {
       expectedSpotBaseDebitAtoms: 10n,
@@ -1120,6 +1181,7 @@ test('compiles separate solver lock and atomic trader firm entry from the genera
       client_order_id: new BN('6'),
       expiry_slot: new BN('480'),
       nonce: new BN('7'),
+      ...riskArgsForCoder(binding),
     },
     quote_args: quoteArgsForCoder(binding),
     firm_quote_atoms: new BN('50'),
@@ -1163,13 +1225,36 @@ test('rejects replayed reservation and mismatched quote lock evidence', () => {
   assert.throws(() => compileFirmCashCarryPlan(mismatched.admission, mismatched.binding), /quote lock order commitment mismatch/);
 });
 
-test('rejects six dynamic Rise accounts', () => {
-  const { admission, binding } = fixture(6);
-  assert.throws(() => compileFirmCashCarryPlan(admission, binding), /at most 5 perp venue dynamic accounts/);
+test('rejects invalid risk domain bindings before execution', () => {
+  const wrongDomain = fixture();
+  (wrongDomain.binding.executionArgs as { riskDomainId: Uint8Array }).riskDomainId = hash(99);
+  assert.throws(
+    () => compileFirmCashCarryPlan(wrongDomain.admission, wrongDomain.binding),
+    /risk domain index PDA mismatch/,
+  );
+
+  const zeroVersion = fixture();
+  (zeroVersion.binding.executionArgs as { riskPolicyVersion: number }).riskPolicyVersion = 0;
+  assert.throws(
+    () => compileFirmCashCarryPlan(zeroVersion.admission, zeroVersion.binding),
+    /risk policy version is out of range/,
+  );
+
+  const invalidSeries = fixture();
+  (invalidSeries.binding.executionArgs as { riskSeriesIndex: number }).riskSeriesIndex = 256;
+  assert.throws(
+    () => compileFirmCashCarryPlan(invalidSeries.admission, invalidSeries.binding),
+    /risk series index is out of range/,
+  );
+});
+
+test('rejects four dynamic Rise accounts', () => {
+  const { admission, binding } = fixture(4);
+  assert.throws(() => compileFirmCashCarryPlan(admission, binding), /at most 3 perp venue dynamic accounts/);
 });
 
 test('accepts the exact 64 resolved-address boundary', () => {
-  const { admission, binding } = fixture(5);
+  const { admission, binding } = fixture(3);
   const result = compileFirmCashCarryPlan(admission, binding);
   assert.equal(result.traderEntry.resolvedAddressCount, 64);
 });
@@ -1208,7 +1293,7 @@ test('encodes solver-authorized and trader-recovery public exits with distinct a
 
 test('proves the 64-address public-exit boundary and full unsigned envelope', () => {
   const value = fixture();
-  const exit = attachPublicExit(value, 'SOLVER_AUTHORIZED', 8);
+  const exit = attachPublicExit(value, 'SOLVER_AUTHORIZED', 6);
   const lookupTable = new AddressLookupTableAccount({
     key: namedAddress('exit-lookup-table'),
     state: {
@@ -1228,13 +1313,13 @@ test('proves the 64-address public-exit boundary and full unsigned envelope', ()
     assert.equal(plan.resolvedAddressCount, 64);
     assert.equal(plan.messageSize.status, 'PROVEN');
     if (plan.messageSize.status === 'PROVEN') {
-      assert.deepEqual([plan.messageSize.serializedMessageBytes, plan.messageSize.serializedTransactionBytes], [684, 749]);
+      assert.deepEqual([plan.messageSize.serializedMessageBytes, plan.messageSize.serializedTransactionBytes], [785, 850]);
       assert.equal(plan.messageSize.fitsPacketDataLimit, plan.messageSize.serializedTransactionBytes <= PACKET_DATA_SIZE);
     }
   }
 
   const over = fixture();
-  attachPublicExit(over, 'SOLVER_AUTHORIZED', 9);
+  attachPublicExit(over, 'SOLVER_AUTHORIZED', 7);
   assert.throws(() => compileFirmCashCarryPlan(over.admission, over.binding), /public exit exceeds 64 resolved addresses/);
 });
 
@@ -1246,7 +1331,7 @@ test('rejects a public exit whose open package points at another entry receipt',
 });
 
 test('proves the full unsigned v0 transaction envelope size with concrete message context', () => {
-  const { admission, binding } = fixture(5);
+  const { admission, binding } = fixture(3);
   const lookupTable = new AddressLookupTableAccount({
     key: address(250),
     state: {
@@ -1352,7 +1437,7 @@ test('rejects wrong genesis and an uncompressed oversized entry before materiali
   );
   assert.deepEqual(wrongHarness.rpc.calls, ['genesis']);
 
-  const oversized = fixture(5);
+  const oversized = fixture(3);
   useDevnet(oversized);
   const oversizedHarness = materializerHarness(oversized, SOLANA_DEVNET_GENESIS_HASH, false);
   await assert.rejects(
@@ -1498,7 +1583,12 @@ test('compiles a firm buy-back exit for the test perp and fails closed on entry-
   assert.equal((decoded?.data as { quote_args: { expected_side: number } }).quote_args.expected_side, 1);
   assert.deepEqual(Array.from(result.traderExit.instructions[1]!.data.subarray(112)), Array.from(result.executionDigest));
   assert.equal(instruction.keys.filter((key) => key.isSigner).length, 1);
-  assert.equal(instruction.keys[33]!.pubkey.toBase58(), solverBase);
+  const firmInstruction = testPerpIdl.instructions.find((item) => item.name === 'execute_firm_cash_and_carry')!;
+  const flatten = (items: typeof firmInstruction.accounts): { name: string }[] =>
+    items.flatMap((item) => ('accounts' in item ? flatten(item.accounts) : [item]));
+  const solverQuoteIndex = flatten(firmInstruction.accounts).findIndex((item) => item.name === 'solver_quote');
+  assert.notEqual(solverQuoteIndex, -1);
+  assert.equal(instruction.keys[solverQuoteIndex]!.pubkey.toBase58(), solverBase);
   const entryDigest = compileFirmCashCarryPlan(testAdmission, testBinding).executionDigest;
   assert.notDeepEqual(Array.from(result.executionDigest), Array.from(entryDigest));
 

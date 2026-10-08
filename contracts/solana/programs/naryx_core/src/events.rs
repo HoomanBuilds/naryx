@@ -246,6 +246,10 @@ pub struct CashCarryExecutionRecorded {
     pub resource_admission_commitment: [u8; 32],
     pub route_accounts_commitment: [u8; 32],
     pub entry_receipt: Pubkey,
+    pub risk_domain_id: [u8; HASH_BYTE_LENGTH],
+    pub risk_policy_version: u32,
+    pub risk_policy_manifest_hash: [u8; HASH_BYTE_LENGTH],
+    pub risk_series: crate::state::RiskDomainSeriesRef,
 }
 
 #[event]

@@ -448,6 +448,115 @@
       "args": []
     },
     {
+      "name": "place_bounded_residual_order",
+      "discriminator": [
+        72,
+        32,
+        149,
+        76,
+        50,
+        178,
+        95,
+        142
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "market",
+          "writable": true,
+          "relations": [
+            "position"
+          ]
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "collateral_vault",
+          "writable": true
+        },
+        {
+          "name": "fee_vault",
+          "writable": true
+        },
+        {
+          "name": "insurance_vault",
+          "writable": true
+        },
+        {
+          "name": "receipt",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  101,
+                  116,
+                  116,
+                  105,
+                  110,
+                  103,
+                  45,
+                  114,
+                  101,
+                  115,
+                  105,
+                  100,
+                  117,
+                  97,
+                  108,
+                  45,
+                  114,
+                  101,
+                  99,
+                  101,
+                  105,
+                  112,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position"
+              },
+              {
+                "kind": "arg",
+                "path": "args.intent_hash"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "PlaceBoundedResidualArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "place_market_order",
       "discriminator": [
         90,
@@ -674,6 +783,19 @@
   ],
   "accounts": [
     {
+      "name": "NettingResidualReceipt",
+      "discriminator": [
+        1,
+        239,
+        126,
+        21,
+        183,
+        28,
+        69,
+        223
+      ]
+    },
+    {
       "name": "TestPerpMarket",
       "discriminator": [
         86,
@@ -701,6 +823,19 @@
     }
   ],
   "events": [
+    {
+      "name": "BoundedResidualFilled",
+      "discriminator": [
+        97,
+        9,
+        19,
+        226,
+        242,
+        220,
+        123,
+        241
+      ]
+    },
     {
       "name": "FundingRateSet",
       "discriminator": [
@@ -881,9 +1016,80 @@
       "code": 6027,
       "name": "InvalidFaucetMint",
       "msg": "Mint is not a faucet test collateral mint"
+    },
+    {
+      "code": 6028,
+      "name": "InvalidResidualIntent",
+      "msg": "Netting residual intent hash is zero"
+    },
+    {
+      "code": 6029,
+      "name": "ResidualFeeExceeded",
+      "msg": "Netting residual fee exceeds the signed maximum"
     }
   ],
   "types": [
+    {
+      "name": "BoundedResidualFilled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "receipt",
+            "type": "pubkey"
+          },
+          {
+            "name": "intent_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "side",
+            "type": {
+              "defined": {
+                "name": "OrderSide"
+              }
+            }
+          },
+          {
+            "name": "base_lots",
+            "type": "u64"
+          },
+          {
+            "name": "fill_price_per_lot",
+            "type": "u64"
+          },
+          {
+            "name": "gross_quote_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "fee_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "execution_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
     {
       "name": "FundingRateSet",
       "type": {
@@ -986,6 +1192,87 @@
       }
     },
     {
+      "name": "NettingResidualReceipt",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "intent_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "side",
+            "type": {
+              "defined": {
+                "name": "OrderSide"
+              }
+            }
+          },
+          {
+            "name": "base_lots",
+            "type": "u64"
+          },
+          {
+            "name": "limit_price_in_ticks",
+            "type": "u64"
+          },
+          {
+            "name": "maximum_fee_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "fill_price_per_lot",
+            "type": "u64"
+          },
+          {
+            "name": "gross_quote_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "fee_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "post_base_lots",
+            "type": "i64"
+          },
+          {
+            "name": "post_collateral_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "execution_slot",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
       "name": "OrderFilled",
       "type": {
         "kind": "struct",
@@ -1055,6 +1342,51 @@
           },
           {
             "name": "Ask"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PlaceBoundedResidualArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "intent_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "side",
+            "type": {
+              "defined": {
+                "name": "OrderSide"
+              }
+            }
+          },
+          {
+            "name": "base_lots",
+            "type": "u64"
+          },
+          {
+            "name": "limit_price_in_ticks",
+            "type": "u64"
+          },
+          {
+            "name": "last_valid_slot",
+            "type": "u64"
+          },
+          {
+            "name": "reduce_only",
+            "type": "bool"
+          },
+          {
+            "name": "maximum_fee_atoms",
+            "type": "u64"
           }
         ]
       }

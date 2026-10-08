@@ -32,6 +32,12 @@ import {
   requireOnlyProfileVenueAccounts,
   solanaPerpVenueProfile,
 } from './perp-venue.js';
+import {
+  borshRiskArgs,
+  riskDigestParts,
+  type SolanaCashCarryRiskArgs,
+  validateSolanaCashCarryRiskArgs,
+} from './risk-domain.js';
 
 const { BN, BorshCoder } = anchor;
 const U64_MAX = (1n << 64n) - 1n;
@@ -44,8 +50,8 @@ const FIRM_QUOTE_MODE = 2;
 const FIRM_QUOTE_SIDE = 2;
 const FIRM_EXIT_QUOTE_SIDE = 1;
 const RESERVATION_CLASS_VERSION = 2;
-// Fixed firm entry addresses other than the perp venue accounts: 57 with the eight Rise accounts.
-const FIXED_FIRM_ENTRY_BASE_ADDRESS_COUNT = 49;
+// Fixed firm entry addresses other than the perp venue accounts: 59 with the eight Rise accounts.
+const FIXED_FIRM_ENTRY_BASE_ADDRESS_COUNT = 51;
 const MAX_RESOLVED_ADDRESSES = 64;
 const LEGACY_TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
@@ -68,6 +74,8 @@ export const FIRM_CASH_CARRY_ACCOUNT_NAMES = [
   'trader',
   'config',
   'solverRegistry',
+  'riskDomainIndex',
+  'riskDomainRecord',
   'solver',
   'receipt',
   'nonceMarker',
@@ -173,6 +181,7 @@ export interface FirmCashCarryDeployments {
 }
 
 export interface FirmResourceManifestEvidence {
+  readonly subjectId: Uint8Array;
   readonly manifestHash: Uint8Array;
   readonly subjectAddress: PublicKey | string;
   readonly programId: PublicKey | string;
@@ -266,7 +275,7 @@ export interface FirmTokenAccountEvidence {
   readonly amountAtoms: bigint;
 }
 
-export interface FirmCashCarryExecutionArgs {
+export interface FirmCashCarryExecutionArgs extends SolanaCashCarryRiskArgs {
   readonly spotQuantityAtoms: bigint;
   readonly perpQuantityAtoms: bigint;
   readonly spotLimitQuoteAtomsPerBaseLot: bigint;
@@ -433,6 +442,8 @@ const ENTRY_PREFIX_SPECS: readonly AccountSpec[] = [
   { idlName: 'trader', bindingName: 'trader', signer: true, writable: true },
   { idlName: 'config', bindingName: 'config', signer: false, writable: false },
   { idlName: 'solver_registry', bindingName: 'solverRegistry', signer: false, writable: false },
+  { idlName: 'risk_domain_index', bindingName: 'riskDomainIndex', signer: false, writable: false },
+  { idlName: 'risk_domain_record', bindingName: 'riskDomainRecord', signer: false, writable: false },
   { idlName: 'solver', bindingName: 'solver', signer: false, writable: true },
   { idlName: 'receipt', bindingName: 'receipt', signer: false, writable: true },
   { idlName: 'nonce_marker', bindingName: 'nonceMarker', signer: false, writable: true },
@@ -745,6 +756,7 @@ function borshExecutionArgs(args: FirmCashCarryExecutionArgs, exit: boolean) {
     client_order_id: bn(args.clientOrderId),
     expiry_slot: bn(args.expirySlot),
     nonce: bn(args.nonce),
+    ...borshRiskArgs(args),
   };
 }
 
@@ -875,6 +887,7 @@ function validateProgramsAndResources(
     ['quote asset', binding.resources.quoteAsset, spot.quoteAsset.assetManifestHash],
   ] as const;
   for (const [name, resource, expectedHash] of resourcePairs) {
+    hash32(resource.subjectId, `${name} subject id`);
     requireBytes(hash32(resource.manifestHash, `${name} manifest hash`), expectedHash, `${name} manifest commitment`);
   }
 
@@ -958,7 +971,6 @@ function validateSeriesAndAmounts(admission: PackageAdmission, binding: AnyFirmC
   requireCondition(execution.nonce === admission.order.nonce, 'execution nonce mismatch');
   checkedPositiveU64(binding.firmQuoteAtoms, 'firm quote amount');
   requireCondition(binding.firmQuoteAtoms === admission.quote.expectedSpotNotional.atoms, 'firm quote amount mismatch');
-
   for (const [name, value] of [
     ['reference sequence', quote.expectedReferenceSequence],
     ['shard sequence', quote.expectedShardSequence],
@@ -1141,9 +1153,25 @@ function executionDigest(
   addresses: ReadonlyMap<FirmAccountKey, PublicKey>,
 ): Uint8Array {
   const execution = binding.executionArgs;
+  const profile = bindingProfile(binding);
+  const orderedNames: readonly FirmAccountKey[] = [
+    'trader', 'config', 'solverRegistry', 'riskDomainIndex', 'riskDomainRecord', 'solver',
+    'receipt', 'nonceMarker', 'openPackage', 'executorAuthority',
+    'spotAdapterIndex', 'perpAdapterIndex', 'spotMarketIndex', 'perpMarketIndex',
+    'spotVenueIndex', 'perpVenueIndex', 'baseAssetIndex', 'quoteAssetIndex',
+    'spotAdapterRecord', 'perpAdapterRecord', 'spotMarketRecord', 'perpMarketRecord',
+    'spotVenueRecord', 'perpVenueRecord', 'baseAssetRecord', 'quoteAssetRecord',
+    'reservationProgram', 'reservationProgramData', 'coreProgram', 'coreProgramData',
+    'perpAdapterProgram', 'perpAdapterProgramData', 'perpVenueProgram', 'perpVenueProgramData',
+    'reservationClass', 'reservationCapacity', 'reservation', 'livePair', 'reservationVault',
+    'solverQuote', 'traderBase', 'traderQuote', 'executorBase', 'executorQuote',
+    'quoteLock', 'seriesIndex', 'seriesRecord', 'riseStrategy',
+    ...profile.accounts.map((account) => account.bindingName),
+    'tokenProgram', 'instructionsSysvar', 'systemProgram',
+  ];
   const keys = [
     publicKey(binding.deployments.core.programId, 'core program'),
-    ...entryIdlSpecs(bindingProfile(binding)).map((spec) => addresses.get(spec.bindingName)!),
+    ...orderedNames.map((name) => addresses.get(name)!),
     ...binding.riseDynamicAccounts.map((account) => publicKey(account.address, 'Rise dynamic account')),
   ];
   const base = domainHash(
@@ -1164,6 +1192,7 @@ function executionDigest(
     bigEndian(execution.clientOrderId, 16),
     bigEndian(execution.expirySlot, 8),
     bigEndian(execution.nonce, 8),
+    ...riskDigestParts(execution),
     hash32(binding.resourceAdmissionCommitment, 'resource admission commitment'),
     lengthPrefix(keys.length),
     ...keys.map((key) => key.toBytes()),
@@ -1219,7 +1248,7 @@ function firmRouteAccountsCommitment(
   const names: readonly FirmAccountKey[] = [
     'traderBase', 'traderQuote', 'executorBase', 'executorQuote', 'solverQuote',
     'reservationClass', 'reservationCapacity', 'reservation', 'livePair', 'reservationVault',
-    'quoteLock', 'seriesIndex', 'seriesRecord', 'riseStrategy',
+    'quoteLock', 'seriesIndex', 'seriesRecord', 'riskDomainIndex', 'riskDomainRecord', 'riseStrategy',
     ...bindingProfile(binding).accounts.map((account) => account.bindingName),
   ];
   const keys = [
@@ -1274,7 +1303,22 @@ function compileFirmInstructions(admission: PackageAdmission, binding: AnyFirmCa
   requireCondition(admission.route.actions.length > 0 && admission.route.actions.every((action) => action.authorityBindingId === binding.traderRouteBindingId), 'firm entry route actions must use trader authority');
   requireCondition(binding.riseDynamicAccounts.length <= profile.maxDynamicAccounts, `firm entry supports at most ${profile.maxDynamicAccounts} perp venue dynamic accounts`);
 
+  const coreProgram = publicKey(binding.deployments.core.programId, 'core program');
   const identities = validateProgramsAndResources(admission, binding, addresses, routes);
+  validateSolanaCashCarryRiskArgs(binding.executionArgs);
+  const riskDomainId = hash32(binding.executionArgs.riskDomainId, 'risk domain id');
+  requireKey(addresses.get('riskDomainIndex')!, PublicKey.findProgramAddressSync([
+    Buffer.from('risk-domain-index'), Buffer.from(riskDomainId),
+  ], coreProgram)[0], 'risk domain index PDA');
+  requireKey(addresses.get('riskDomainRecord')!, PublicKey.findProgramAddressSync([
+    Buffer.from('risk-domain-record'),
+    Buffer.from(riskDomainId),
+    Buffer.from(bigEndian(BigInt(binding.executionArgs.riskPolicyVersion), 4)),
+  ], coreProgram)[0], 'risk domain record PDA');
+  for (const name of ['riskDomainIndex', 'riskDomainRecord'] as const) {
+    const route = routes.get(accountBinding(binding, name).routeBindingId)!;
+    requireCondition(route.ownerIdentity === coreProgram.toBase58(), `${name} owner mismatch`);
+  }
   validateSeriesAndAmounts(admission, binding);
   const quoteArgs = borshQuoteArgs(binding.quoteArgs);
   const quoteArgsHash = domainHash(
@@ -1284,7 +1328,6 @@ function compileFirmInstructions(admission: PackageAdmission, binding: AnyFirmCa
   validateReservation(admission, binding, addresses, identities, quoteArgsHash);
   validateTokens(binding, addresses, routes, identities);
 
-  const coreProgram = publicKey(binding.deployments.core.programId, 'core program');
   const lockKeys = [
     ...accountKeys(LOCK_IDL_SPECS, lockIdl.accounts, addresses),
     ...explicitKeys(LOCK_REMAINING_SPECS, addresses),

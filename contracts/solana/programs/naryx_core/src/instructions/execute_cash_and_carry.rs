@@ -16,7 +16,8 @@ use crate::{
         CASH_CARRY_EXECUTOR_SEED, CASH_CARRY_NONCE_SEED, CASH_CARRY_OPEN_SEED,
         CASH_CARRY_RECEIPT_SEED, CASH_CARRY_SERIES_INDEX_SEED, CASH_CARRY_SERIES_RECORD_SEED,
         PACKAGE_BOOK_CLASS_SEED, PACKAGE_BOOK_PROGRAM_ID, PACKAGE_QUOTE_LEVEL_PAGE_SEED,
-        PACKAGE_QUOTE_SHARD_SEED, PROTOCOL_CONFIG_SEED, SOLVER_REGISTRY_SEED,
+        PACKAGE_QUOTE_SHARD_SEED, PROTOCOL_CONFIG_SEED, RISK_DOMAIN_INDEX_SEED,
+        RISK_DOMAIN_RECORD_SEED, SOLVER_REGISTRY_SEED,
     },
     error::ErrorCode,
     events::CashCarryExecutionRecorded,
@@ -42,7 +43,8 @@ use crate::{
         CashCarryExecutionReceipt, CashCarryNonce, CashCarrySeriesBindingIndex,
         CashCarrySeriesBindingRecord, CashCarrySeriesBindingV1, CashCarryStrategyAuthority,
         ManifestRef, OpenCashCarryPackage, ProtocolConfig, ResourceIndex, ResourceRecord,
-        SettlementClass, SolverRegistry, CASH_CARRY_SERIES_ENTRY_SIDE_ASK, SPOT_ADAPTER_CLASS_ID,
+        RiskDomainDependencyExposure, RiskDomainIndex, RiskDomainRecord, SettlementClass,
+        SolverRegistry, CASH_CARRY_SERIES_ENTRY_SIDE_ASK, SPOT_ADAPTER_CLASS_ID,
     },
     wire::{DomainRef, HASH_BYTE_LENGTH},
 };
@@ -65,7 +67,7 @@ pub(crate) const PACKAGE_BOOK_ACCOUNT_COUNT: usize = 7;
 const SERIES_INDEX_ACCOUNT_INDEX: usize = PACKAGE_BOOK_ACCOUNT_COUNT;
 const SERIES_RECORD_ACCOUNT_INDEX: usize = SERIES_INDEX_ACCOUNT_INDEX + 1;
 pub(crate) const QUOTED_ENTRY_ACCOUNT_COUNT: usize = SERIES_RECORD_ACCOUNT_INDEX + 1;
-pub(crate) const OPEN_PACKAGE_VERSION: u8 = 2;
+pub(crate) const OPEN_PACKAGE_VERSION: u8 = 3;
 pub const RISE_COLLATERAL_MUST_BE_PREFUNDED: bool = true;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +106,14 @@ pub struct CashCarryExecutionArgs {
     pub client_order_id: u128,
     pub expiry_slot: u64,
     pub nonce: u64,
+    pub risk_domain_id: [u8; HASH_BYTE_LENGTH],
+    pub risk_policy_version: u32,
+    pub risk_series_index: u8,
+    pub risk_net_quote_atoms: u128,
+    pub risk_margin_quote_atoms: u128,
+    pub risk_recovery_reserve_quote_atoms: u128,
+    pub risk_observation_age_ms: u64,
+    pub risk_time_to_unwind_ms: u64,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
@@ -164,6 +174,7 @@ pub struct ExecuteCashAndCarry<'info> {
     pub config: Box<Account<'info, ProtocolConfig>>,
     #[account(seeds = [SOLVER_REGISTRY_SEED], bump = solver_registry.bump)]
     pub solver_registry: Box<Account<'info, SolverRegistry>>,
+    pub risk: CashCarryRiskDomainAccounts<'info>,
     #[account(
         init,
         payer = trader,
@@ -211,6 +222,24 @@ pub struct ExecuteCashAndCarry<'info> {
     pub rise: CashCarryRiseAccounts<'info>,
     pub runtime: CashCarryRuntimeAccounts<'info>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CashCarryRiskDomainAccounts<'info> {
+    #[account(
+        seeds = [RISK_DOMAIN_INDEX_SEED, risk_domain_index.risk_domain_id.as_ref()],
+        bump = risk_domain_index.bump
+    )]
+    pub risk_domain_index: Box<Account<'info, RiskDomainIndex>>,
+    #[account(
+        seeds = [
+            RISK_DOMAIN_RECORD_SEED,
+            risk_domain_record.risk_domain_id.as_ref(),
+            risk_domain_record.policy.manifest_version.to_be_bytes().as_ref()
+        ],
+        bump = risk_domain_record.bump
+    )]
+    pub risk_domain_record: Box<Account<'info, RiskDomainRecord>>,
 }
 
 #[derive(Accounts)]
@@ -317,6 +346,14 @@ pub fn execution_digest(
     data.extend_from_slice(&args.client_order_id.to_be_bytes());
     data.extend_from_slice(&args.expiry_slot.to_be_bytes());
     data.extend_from_slice(&args.nonce.to_be_bytes());
+    data.extend_from_slice(&args.risk_domain_id);
+    data.extend_from_slice(&args.risk_policy_version.to_be_bytes());
+    data.push(args.risk_series_index);
+    data.extend_from_slice(&args.risk_net_quote_atoms.to_be_bytes());
+    data.extend_from_slice(&args.risk_margin_quote_atoms.to_be_bytes());
+    data.extend_from_slice(&args.risk_recovery_reserve_quote_atoms.to_be_bytes());
+    data.extend_from_slice(&args.risk_observation_age_ms.to_be_bytes());
+    data.extend_from_slice(&args.risk_time_to_unwind_ms.to_be_bytes());
     data.extend_from_slice(&resource_admission_commitment);
     data.extend_from_slice(&(account_keys.len() as u32).to_be_bytes());
     for key in account_keys {
@@ -516,6 +553,7 @@ fn execute<'info>(
         economic_package_commitment,
         package_accounts_commitment,
     )?;
+    validate_risk_domain(&ctx.accounts, &args, &execution_domain)?;
     match args.action {
         CashCarryAction::Entry => {
             validate_cash_carry_admission(&ctx.accounts.config, &admission, &resources)?;
@@ -687,6 +725,12 @@ fn execute<'info>(
         CashCarryAction::Entry => ctx.accounts.receipt.key(),
         CashCarryAction::Exit => ctx.accounts.open_package.entry_receipt,
     };
+    let risk_policy = &ctx.accounts.risk.risk_domain_record.policy;
+    let risk_series = risk_policy
+        .eligible_series
+        .get(usize::from(args.risk_series_index))
+        .ok_or_else(|| error!(ErrorCode::RiskDomainSeriesUnsupported))?
+        .clone();
     ctx.accounts.receipt.set_inner(CashCarryExecutionReceipt {
         domain: execution_domain.clone(),
         order_hash,
@@ -715,6 +759,10 @@ fn execute<'info>(
         resource_admission_commitment,
         route_accounts_commitment,
         entry_receipt,
+        risk_domain_id: args.risk_domain_id,
+        risk_policy_version: args.risk_policy_version,
+        risk_policy_manifest_hash: risk_policy.manifest_hash,
+        risk_series: risk_series.clone(),
         bump: ctx.bumps.receipt,
     });
     ctx.accounts.nonce_marker.set_inner(CashCarryNonce {
@@ -738,6 +786,10 @@ fn execute<'info>(
             package_accounts_commitment,
             spot_quantity_atoms: args.spot_quantity_atoms,
             perp_quantity_atoms: args.perp_quantity_atoms,
+            risk_domain_id: args.risk_domain_id,
+            risk_policy_version: args.risk_policy_version,
+            risk_policy_manifest_hash: risk_policy.manifest_hash,
+            risk_series: risk_series.clone(),
             bump: ctx.bumps.open_package,
         });
     }
@@ -771,6 +823,10 @@ fn execute<'info>(
         resource_admission_commitment,
         route_accounts_commitment,
         entry_receipt,
+        risk_domain_id: args.risk_domain_id,
+        risk_policy_version: args.risk_policy_version,
+        risk_policy_manifest_hash: risk_policy.manifest_hash,
+        risk_series,
     });
 
     if args.action == CashCarryAction::Exit {
@@ -1192,6 +1248,10 @@ pub(crate) fn validate_basic_inputs(
         args.spot_sqrt_price_limit != 0,
         ErrorCode::CashCarryRouteDirectionInvalid
     );
+    require!(
+        args.risk_domain_id != [0u8; HASH_BYTE_LENGTH] && args.risk_policy_version != 0,
+        ErrorCode::RiskDomainIdentityMismatch
+    );
     Ok(())
 }
 
@@ -1520,9 +1580,123 @@ fn validate_package_lifecycle(
                         == open.entry_resource_admission_commitment
                     && entry.route_accounts_commitment == open.entry_route_accounts_commitment
                     && entry.spot_quantity_atoms == args.spot_quantity_atoms
-                    && entry.perp_quantity_atoms == args.perp_quantity_atoms,
+                    && entry.perp_quantity_atoms == args.perp_quantity_atoms
+                    && entry.risk_domain_id == open.risk_domain_id
+                    && entry.risk_policy_version == open.risk_policy_version
+                    && entry.risk_policy_manifest_hash == open.risk_policy_manifest_hash
+                    && entry.risk_series == open.risk_series,
                 ErrorCode::CashCarryEntryReceiptInvalid
             );
+            require!(
+                args.risk_domain_id == open.risk_domain_id
+                    && args.risk_policy_version == open.risk_policy_version,
+                ErrorCode::RiskDomainIdentityMismatch
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_risk_domain(
+    accounts: &ExecuteCashAndCarry,
+    args: &CashCarryExecutionArgs,
+    execution_domain: &DomainRef,
+) -> Result<()> {
+    validate_cash_carry_risk_domain(
+        &accounts.risk.risk_domain_index,
+        &accounts.risk.risk_domain_record,
+        accounts.risk.risk_domain_record.key(),
+        &accounts.resources.quote_asset_record.manifest.identity,
+        accounts
+            .resources
+            .spot_adapter_record
+            .manifest
+            .identity
+            .subject_id,
+        accounts
+            .resources
+            .perp_adapter_record
+            .manifest
+            .identity
+            .subject_id,
+        &accounts.open_package,
+        args,
+        execution_domain,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate_cash_carry_risk_domain(
+    index: &RiskDomainIndex,
+    record: &RiskDomainRecord,
+    record_key: Pubkey,
+    quote_asset: &ManifestRef,
+    spot_dependency: [u8; HASH_BYTE_LENGTH],
+    perp_dependency: [u8; HASH_BYTE_LENGTH],
+    open_package: &OpenCashCarryPackage,
+    args: &CashCarryExecutionArgs,
+    execution_domain: &DomainRef,
+) -> Result<()> {
+    require!(
+        index.risk_domain_id == args.risk_domain_id
+            && record.risk_domain_id == args.risk_domain_id
+            && record.policy.manifest_version == args.risk_policy_version
+            && record.policy.accounting_asset == *quote_asset,
+        ErrorCode::RiskDomainIdentityMismatch
+    );
+    let risk_series = record
+        .policy
+        .eligible_series
+        .get(usize::from(args.risk_series_index))
+        .ok_or_else(|| error!(ErrorCode::RiskDomainSeriesUnsupported))?;
+    match args.action {
+        CashCarryAction::Entry => {
+            require!(
+                index.active_record == record_key && !index.entry_paused,
+                ErrorCode::RiskDomainEntryUnavailable
+            );
+            let package_notional = u128::from(args.package_notional_atoms);
+            let dependency_exposures = record
+                .policy
+                .dependency_limits
+                .iter()
+                .map(|limit| RiskDomainDependencyExposure {
+                    dependency_id: limit.dependency_id,
+                    gross_quote_atoms: if limit.dependency_id == spot_dependency
+                        || limit.dependency_id == perp_dependency
+                    {
+                        package_notional
+                    } else {
+                        0
+                    },
+                })
+                .collect::<Vec<_>>();
+            require!(
+                record.policy.dependency_cap(&spot_dependency).is_some()
+                    && record.policy.dependency_cap(&perp_dependency).is_some(),
+                ErrorCode::RiskDomainDependencyInvalid
+            );
+            record.validate_entry(
+                execution_domain,
+                risk_series,
+                package_notional,
+                args.risk_net_quote_atoms,
+                args.risk_margin_quote_atoms,
+                args.risk_recovery_reserve_quote_atoms,
+                args.risk_observation_age_ms,
+                args.risk_time_to_unwind_ms,
+                &dependency_exposures,
+            )?;
+        }
+        CashCarryAction::Exit => {
+            require!(
+                args.risk_domain_id == open_package.risk_domain_id
+                    && args.risk_policy_version == open_package.risk_policy_version
+                    && record.policy.manifest_hash == open_package.risk_policy_manifest_hash
+                    && *risk_series == open_package.risk_series,
+                ErrorCode::RiskDomainIdentityMismatch
+            );
+            record.validate_exit(execution_domain, risk_series, quote_asset)?;
         }
     }
     Ok(())
@@ -1963,6 +2137,8 @@ fn execution_account_keys(
         accounts.trader.key(),
         accounts.config.key(),
         accounts.solver_registry.key(),
+        accounts.risk.risk_domain_index.key(),
+        accounts.risk.risk_domain_record.key(),
         solver,
         accounts.receipt.key(),
         accounts.nonce_marker.key(),
@@ -2095,6 +2271,14 @@ mod tests {
             client_order_id: 14,
             expiry_slot: 40,
             nonce: 16,
+            risk_domain_id: [31; 32],
+            risk_policy_version: 1,
+            risk_series_index: 0,
+            risk_net_quote_atoms: 500,
+            risk_margin_quote_atoms: 1_000,
+            risk_recovery_reserve_quote_atoms: 250,
+            risk_observation_age_ms: 100,
+            risk_time_to_unwind_ms: 2_000,
         }
     }
 
@@ -2321,6 +2505,14 @@ mod tests {
             client_order_id: 14,
             expiry_slot: 15,
             nonce: 16,
+            risk_domain_id: [31; 32],
+            risk_policy_version: 1,
+            risk_series_index: 0,
+            risk_net_quote_atoms: 500,
+            risk_margin_quote_atoms: 1_000,
+            risk_recovery_reserve_quote_atoms: 250,
+            risk_observation_age_ms: 100,
+            risk_time_to_unwind_ms: 2_000,
         };
         let keys = [Pubkey::new_unique(), Pubkey::new_unique()];
         let resource = [17; 32];
@@ -2387,20 +2579,17 @@ mod tests {
 
     #[test]
     fn postconditions_enforce_exact_spot_and_rise_deltas() {
-        let args = CashCarryExecutionArgs {
-            action: CashCarryAction::Entry,
-            recovery: false,
-            spot_quantity_atoms: 100,
-            perp_quantity_atoms: 10,
-            spot_limit_quote_atoms_per_base_lot: 200,
-            perp_limit_quote_atoms_per_base_lot: 300,
-            package_notional_atoms: 3_000,
-            spot_sqrt_price_limit: 1,
-            minimum_rise_collateral_quote_lots: 5,
-            client_order_id: 1,
-            expiry_slot: 2,
-            nonce: 1,
-        };
+        let mut args = execution_args();
+        args.spot_quantity_atoms = 100;
+        args.perp_quantity_atoms = 10;
+        args.spot_limit_quote_atoms_per_base_lot = 200;
+        args.perp_limit_quote_atoms_per_base_lot = 300;
+        args.package_notional_atoms = 3_000;
+        args.spot_sqrt_price_limit = 1;
+        args.minimum_rise_collateral_quote_lots = 5;
+        args.client_order_id = 1;
+        args.expiry_slot = 2;
+        args.nonce = 1;
         assert_eq!(
             enforce_postconditions(&args, 10, 110, 1_000, 850, 0, -10, 5, 10, 200).unwrap(),
             150
@@ -2551,6 +2740,14 @@ mod tests {
             package_accounts_commitment: package_accounts,
             spot_quantity_atoms: entry.spot_quantity_atoms,
             perp_quantity_atoms: entry.perp_quantity_atoms,
+            risk_domain_id: [48; 32],
+            risk_policy_version: 1,
+            risk_policy_manifest_hash: [49; 32],
+            risk_series: crate::state::RiskDomainSeriesRef {
+                series_id: [50; 32],
+                manifest_version: 1,
+                manifest_hash: [51; 32],
+            },
             bump: 1,
         };
         assert!(validate_open_package_identity(
