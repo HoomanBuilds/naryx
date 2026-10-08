@@ -66,6 +66,8 @@ import {
   strategyPackageOrderHash,
   strategyPackageQuote,
   strategyPackageQuoteHash,
+  strategyPackageReceipt,
+  strategyPackageReceiptHash,
   typedStrategyRouteHash,
   type StrategyCommandInput,
   type StrategyState,
@@ -167,6 +169,8 @@ import {
   type StrategyPackageOrderInput,
   type StrategyPackageQuote,
   type StrategyPackageQuoteInput,
+  type StrategyPackageReceipt,
+  type StrategyPackageReceiptInput,
   type TypedStrategyRoute,
 } from '@naryx/protocol-types';
 import { verifyTypedData, type Hex } from 'viem';
@@ -547,6 +551,12 @@ export interface VerifiedStrategyQuoteProof {
   readonly signatureVerified: boolean;
 }
 
+export interface VerifiedStrategyReceiptProof extends VerifiedStrategyQuoteProof {
+  readonly receiptHash: string;
+  readonly receipt: StrategyPackageReceipt;
+  readonly receiptRecordedAtMs: number;
+}
+
 export interface VerifiedRouteDecision {
   readonly decisionHash: string;
   readonly solverId: string;
@@ -642,6 +652,16 @@ function sameDomainRef(left: DomainRef, right: DomainRef): boolean {
   return left.domainId === right.domainId
     && left.domainManifestVersion === right.domainManifestVersion
     && bytesEqual(left.domainManifestHash, right.domainManifestHash);
+}
+
+function sameAssetRef(left: AssetRef, right: AssetRef): boolean {
+  return left.assetId === right.assetId
+    && left.decimals === right.decimals
+    && bytesEqual(left.assetManifestHash, right.assetManifestHash);
+}
+
+function feeCap(caps: StrategyPackageOrder['maximumServiceFeesByAsset'], asset: AssetRef): bigint {
+  return caps.find((cap) => sameAssetRef(cap.asset, asset))?.maxAtoms ?? 0n;
 }
 
 function sameAdapterRef(
@@ -787,6 +807,100 @@ export async function verifyStrategyQuoteProof(expectedQuoteHash: string, value:
     route,
     recordedAtMs: count(body.recordedAtMs, 'recordedAtMs'),
     signatureVerified,
+  });
+}
+
+/** Rebuilds a terminal receipt and verifies its complete order, graph, quote, and route proof. */
+export async function verifyStrategyReceiptProof(expectedReceiptHash: string, value: unknown): Promise<VerifiedStrategyReceiptProof> {
+  const requested = hashHex(expectedReceiptHash, 'receipt hash');
+  const body = record(value, 'strategy receipt proof');
+  requireStrategyProof(body.version === 1, 'strategy receipt proof has an unsupported version');
+  let receipt: StrategyPackageReceipt;
+  let receiptHash: string;
+  try {
+    receipt = strategyPackageReceipt(body.receipt as StrategyPackageReceiptInput);
+    receiptHash = toHex(strategyPackageReceiptHash(receipt));
+  } catch (error) {
+    throw new NaryxEvidenceError(`strategy receipt proof is malformed: ${(error as Error).message}`);
+  }
+  requireStrategyProof(hashHex(body.receiptHash, 'served receipt hash') === receiptHash && receiptHash === requested,
+    'strategy receipt does not hash to the requested hash');
+  const quoteProof = await verifyStrategyQuoteProof(toHex(receipt.quoteHash), body.quoteProof);
+  requireStrategyProof(toHex(receipt.orderHash) === quoteProof.orderHash
+    && toHex(receipt.graphHash) === quoteProof.graphHash
+    && toHex(receipt.quoteHash) === quoteProof.quoteHash
+    && toHex(receipt.routeHash) === quoteProof.routeHash,
+  'strategy receipt does not bind the proved order, graph, quote, and route');
+  requireStrategyProof(receipt.environment === quoteProof.order.environment
+    && receipt.owner === quoteProof.order.owner
+    && receipt.templateId === quoteProof.order.templateId
+    && receipt.templateVersion === quoteProof.order.templateVersion
+    && bytesEqual(receipt.packageTemplateManifestHash, quoteProof.order.packageTemplateManifestHash),
+  'strategy receipt order identity differs');
+  requireStrategyProof(receipt.seriesId === quoteProof.order.seriesId
+    && receipt.seriesVersion === quoteProof.order.seriesVersion
+    && bytesEqual(receipt.seriesManifestHash, quoteProof.order.seriesManifestHash),
+  'strategy receipt series identity differs');
+  requireStrategyProof(receipt.executionClassId === quoteProof.order.executionClassId
+    && receipt.executionClassVersion === quoteProof.order.executionClassVersion
+    && bytesEqual(receipt.executionClassManifestHash, quoteProof.order.executionClassManifestHash),
+  'strategy receipt execution class differs');
+  requireStrategyProof(receipt.lifecycleAction === quoteProof.order.lifecycleAction.toLowerCase().replaceAll('_', '-')
+    && receipt.settlementClass === quoteProof.order.settlementClass
+    && receipt.solverId === quoteProof.quote.solverId
+    && sameAssetRef(receipt.quoteAsset, quoteProof.order.quoteAsset),
+  'strategy receipt lifecycle, settlement, solver, or quote asset differs');
+  requireStrategyProof(receipt.domains.length === quoteProof.quote.domains.length
+    && receipt.domains.every((domain, index) => sameDomainRef(domain, quoteProof.quote.domains[index]!)),
+  'strategy receipt domains differ from the selected quote');
+
+  const graphLegs = [...quoteProof.graph.legs].sort((left, right) => left.legId.localeCompare(right.legId));
+  const quoteLegs = [...quoteProof.quote.legEconomics].sort((left, right) => left.legId.localeCompare(right.legId));
+  const outcomes = [...receipt.legOutcomes].sort((left, right) => left.legId.localeCompare(right.legId));
+  requireStrategyProof(graphLegs.length === outcomes.length, 'strategy receipt does not report every graph leg');
+  for (let index = 0; index < graphLegs.length; index += 1) {
+    const graphLeg = graphLegs[index]!;
+    const quoteLeg = quoteLegs[index]!;
+    const outcome = outcomes[index]!;
+    const settled = outcome.settledQuantity.atoms < 0n ? -outcome.settledQuantity.atoms : outcome.settledQuantity.atoms;
+    requireStrategyProof(outcome.legId === graphLeg.legId && quoteLeg.legId === graphLeg.legId,
+      `strategy receipt leg ${graphLeg.legId} is missing or reordered`);
+    requireStrategyProof(sameDomainRef(outcome.domain, graphLeg.domain)
+      && sameAssetRef(outcome.requestedQuantity.asset, graphLeg.quantityAsset)
+      && outcome.requestedQuantity.atoms === graphLeg.quantityAtoms
+      && sameAssetRef(outcome.settledQuantity.asset, graphLeg.quantityAsset)
+      && settled <= graphLeg.quantityAtoms,
+    `strategy receipt quantity or domain differs for ${graphLeg.legId}`);
+    requireStrategyProof(outcome.status !== 'EXECUTED' || settled >= graphLeg.minimumQuantityAtoms,
+      `strategy receipt executed less than the minimum for ${graphLeg.legId}`);
+    requireStrategyProof(outcome.venueFee.atoms <= quoteLeg.venueFee.atoms,
+      `strategy receipt venue fee exceeds the quote for ${graphLeg.legId}`);
+  }
+
+  const quoteCharge = (category: 'PROTOCOL' | 'SOLVER'): bigint => quoteProof.quote.serviceCharges
+    .find((charge) => charge.category === category)?.amount.atoms ?? 0n;
+  const quoteCost = (category: 'VENUE' | 'NETWORK'): bigint => quoteProof.quote.passThroughCosts
+    .find((cost) => cost.category === category)?.amount.atoms ?? 0n;
+  requireStrategyProof(receipt.serviceFee.atoms <= quoteCharge('PROTOCOL'), 'strategy receipt service fee exceeds the quote');
+  requireStrategyProof(receipt.solverFee.atoms <= quoteCharge('SOLVER'), 'strategy receipt solver fee exceeds the quote');
+  requireStrategyProof(receipt.venueFees.atoms <= quoteCost('VENUE'), 'strategy receipt venue fees exceed the quote');
+  requireStrategyProof(receipt.networkCost.atoms <= quoteCost('NETWORK'), 'strategy receipt network cost exceeds the quote');
+  requireStrategyProof(receipt.serviceFee.atoms + receipt.solverFee.atoms
+      <= feeCap(quoteProof.order.maximumServiceFeesByAsset, receipt.quoteAsset),
+  'strategy receipt service fees exceed the signed cap');
+  requireStrategyProof(receipt.venueFees.atoms <= feeCap(quoteProof.order.maximumVenueFeesByAsset, receipt.quoteAsset),
+    'strategy receipt venue fees exceed the signed cap');
+  requireStrategyProof(receipt.networkCost.atoms <= feeCap(quoteProof.order.maximumNetworkFeesByAsset, receipt.quoteAsset),
+    'strategy receipt network cost exceeds the signed cap');
+  requireStrategyProof(receipt.recoveryCost.atoms <= feeCap(quoteProof.order.maximumRecoveryCostByAsset, receipt.quoteAsset),
+    'strategy receipt recovery cost exceeds the signed cap');
+  requireStrategyProof(receipt.terminalResidualValue.atoms <= quoteProof.order.maximumResidualValue.atoms,
+    'strategy receipt residual exceeds the signed cap');
+  return Object.freeze({
+    ...quoteProof,
+    receiptHash,
+    receipt,
+    receiptRecordedAtMs: count(body.recordedAtMs, 'receiptRecordedAtMs'),
   });
 }
 
@@ -1718,6 +1832,15 @@ export class NaryxClient {
     return verifyStrategyQuoteProof(
       requested,
       await this.#request('GET', `/v1/strategy-quotes/${requested}/proof`),
+    );
+  }
+
+  /** Reads and independently verifies a terminal strategy receipt and every document it binds. */
+  async getStrategyReceiptProof(receiptHash: string): Promise<VerifiedStrategyReceiptProof> {
+    const requested = hashHex(receiptHash, 'receipt hash');
+    return verifyStrategyReceiptProof(
+      requested,
+      await this.#request('GET', `/v1/strategy-receipts/${requested}/proof`),
     );
   }
 

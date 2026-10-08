@@ -795,6 +795,7 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
     route: { version: 1, routeExpiryValue: 4n },
     recordedAtMs: 120_000,
   };
+  const receiptDocument = { version: 1, receiptNonce: 7n, quoteHash: Uint8Array.from(Buffer.from("22".repeat(32), "hex")) };
   await withMarket(async (get) => {
     const result = await get("/v1/strategy-packages/recent?limit=7");
     assert.equal(result.status, 200);
@@ -805,7 +806,7 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
     assert.equal((await get("/v1/strategy-packages/recent?other=1")).status, 400);
     const receipt = await get(`/v1/strategy-receipts/${"44".repeat(32)}`);
     assert.equal(receipt.status, 200);
-    assert.deepEqual(receipt.body, { version: 1, receiptHash: "44".repeat(32), receipt: { version: 1, receiptNonce: 7n } });
+    assert.deepEqual(receipt.body, { version: 1, receiptHash: "44".repeat(32), receipt: receiptDocument });
     assert.equal((await get(`/v1/strategy-receipts/${"55".repeat(32)}`)).status, 404);
     const byQuote = await get(`/v1/strategy-receipts/by-quote/${"22".repeat(32)}`);
     assert.equal(byQuote.status, 200);
@@ -813,10 +814,31 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
       version: 1,
       quoteHash: "22".repeat(32),
       receiptHashHex: "44".repeat(32),
-      receipt: { version: 1, receiptNonce: 7n },
+      receipt: receiptDocument,
       recordedAtMs: 120_001,
     });
     assert.equal((await get(`/v1/strategy-receipts/by-quote/${"33".repeat(32)}`)).status, 404);
+    const receiptProof = await get(`/v1/strategy-receipts/${"44".repeat(32)}/proof`);
+    assert.equal(receiptProof.status, 200);
+    assert.deepEqual(receiptProof.body, {
+      version: 1,
+      receiptHash: "44".repeat(32),
+      receipt: receiptDocument,
+      recordedAtMs: 120_001,
+      quoteProof: {
+        version: 1,
+        orderHash: quoteProof.orderHashHex,
+        graphHash: quoteProof.graphHashHex,
+        quoteHash: quoteProof.quoteHashHex,
+        routeHash: quoteProof.routeHashHex,
+        order: quoteProof.order,
+        graph: quoteProof.graph,
+        quote: quoteProof.quote,
+        route: quoteProof.route,
+        recordedAtMs: quoteProof.recordedAtMs,
+      },
+    });
+    assert.equal((await get(`/v1/strategy-receipts/${"55".repeat(32)}/proof`)).status, 404);
     const proof = await get(`/v1/strategy-quotes/${"22".repeat(32)}/proof`);
     assert.equal(proof.status, 200);
     assert.deepEqual(proof.body, {
@@ -849,10 +871,10 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
         requestedLimit = limit;
         return [summary];
       },
-      receipt: (hash) => hash === "44".repeat(32) ? ({ version: 1, receiptNonce: 7n } as never) : undefined,
+      receipt: (hash) => hash === "44".repeat(32) ? (receiptDocument as never) : undefined,
       receiptByQuote: (hash) => hash === "22".repeat(32) ? ({
         receiptHashHex: "44".repeat(32),
-        receipt: { version: 1, receiptNonce: 7n } as never,
+        receipt: receiptDocument as never,
         recordedAtMs: 120_001,
       }) : undefined,
       admissionByQuote: (hash) => hash === "22".repeat(32) ? quoteProof as never : undefined,

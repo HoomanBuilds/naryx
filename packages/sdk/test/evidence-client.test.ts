@@ -27,6 +27,8 @@ import {
   strategyPackageOrderHash,
   strategyPackageQuote,
   strategyPackageQuoteHash,
+  strategyPackageReceipt,
+  strategyPackageReceiptHash,
   typedStrategyRouteHash,
   requireStrategyTemplateDefinition,
   domainRef,
@@ -63,6 +65,7 @@ import {
   type SolverQuoteInput,
   type StrategyPackageOrderInput,
   type StrategyPackageQuoteInput,
+  type StrategyPackageReceiptInput,
   type TerminalOutcomeInput,
   type TypedStrategyRoute,
 } from '@naryx/protocol-types';
@@ -932,6 +935,66 @@ describe('order intake and terminal evidence', () => {
     await assert.rejects(
       client({ [path]: { body: { ...proof, route: { ...route, legs: [{ ...route.legs[0]!, stage: 1 }, route.legs[1]!] } } } }).getStrategyQuoteProof(quoteHash),
       /strategy route does not hash to its served hash/,
+    );
+
+    const receiptInput: StrategyPackageReceiptInput = {
+      version: 1,
+      environment: order.environment,
+      domains: [domain],
+      orderHash: strategyPackageOrderHash(order),
+      graphHash: packageGraphHash(graph),
+      quoteHash: strategyPackageQuoteHash(quote),
+      routeHash: typedStrategyRouteHash(route),
+      templateId: order.templateId,
+      templateVersion: order.templateVersion,
+      packageTemplateManifestHash: order.packageTemplateManifestHash,
+      seriesId: order.seriesId,
+      seriesVersion: order.seriesVersion,
+      seriesManifestHash: order.seriesManifestHash,
+      executionClassId: order.executionClassId,
+      executionClassVersion: order.executionClassVersion,
+      executionClassManifestHash: order.executionClassManifestHash,
+      lifecycleAction: order.lifecycleAction,
+      owner: order.owner,
+      solverId: quote.solverId,
+      settlementClass: order.settlementClass,
+      terminalState: 'FINALIZED_COMPLETE',
+      quoteAsset,
+      legOutcomes: graph.legs.map((entry, index) => ({
+        legId: entry.legId,
+        positionLegId: entry.legId,
+        domain: entry.domain,
+        status: 'EXECUTED' as const,
+        requestedQuantity: assetAmount(entry.quantityAsset, entry.quantityAtoms),
+        settledQuantity: assetAmount(entry.quantityAsset, entry.side === 'SELL' ? -entry.quantityAtoms : entry.quantityAtoms),
+        grossNotional: assetAmount(quoteAsset, 100n),
+        venueFee: zero,
+        residualValue: zero,
+        evidenceGrade: 'CONSENSUS_VERIFIED' as const,
+        onchainEnforced: true,
+        evidenceHash: new Uint8Array(32).fill(50 + index),
+      })),
+      serviceFee: zero,
+      solverFee: zero,
+      venueFees: zero,
+      networkCost: zero,
+      recoveryCost: zero,
+      terminalResidualValue: zero,
+      finalityStatus: 'FINALIZED',
+      executedAtValue: 800n,
+      receiptNonce: 1n,
+    };
+    const receipt = strategyPackageReceipt(receiptInput);
+    const receiptHash = toHex(strategyPackageReceiptHash(receipt));
+    const receiptPath = `GET /v1/strategy-receipts/${receiptHash}/proof`;
+    const receiptProof = { version: 1, receiptHash, receipt, recordedAtMs: 12_400, quoteProof: proof };
+    const verifiedReceipt = await client({ [receiptPath]: { body: receiptProof } }).getStrategyReceiptProof(receiptHash);
+    assert.equal(verifiedReceipt.receiptHash, receiptHash);
+    assert.equal(verifiedReceipt.receipt.terminalState, 'FINALIZED_COMPLETE');
+    assert.equal(verifiedReceipt.signatureVerified, true);
+    await assert.rejects(
+      client({ [receiptPath]: { body: { ...receiptProof, receipt: { ...receipt, solverId: 'solver-b' } } } }).getStrategyReceiptProof(receiptHash),
+      /strategy receipt does not hash to the requested hash/,
     );
   });
 

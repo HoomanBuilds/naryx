@@ -305,17 +305,25 @@ export function ActivityView() {
   const strategyReceiptsUnavailable = strategyReceiptQueries.some((query) => query.isError);
   const proofReceipt = strategyReceipts.find((receipt) => receipt.receiptHash === proofReceiptHash) ?? null;
   const strategyProof = useQuery({
-    queryKey: ["strategy-quote-proof", publicApiBaseUrl, proofReceipt?.quoteHash],
+    queryKey: ["strategy-receipt-proof", publicApiBaseUrl, proofReceipt?.receiptHash],
     enabled: publicApiBaseUrl !== null && proofReceipt !== null,
     retry: false,
     queryFn: async () => {
       if (publicApiBaseUrl === null || proofReceipt === null) throw new Error("No strategy receipt is selected.");
-      const proof = await new NaryxClient({ baseUrl: publicApiBaseUrl }).getStrategyQuoteProof(proofReceipt.quoteHash);
+      const proof = await new NaryxClient({ baseUrl: publicApiBaseUrl }).getStrategyReceiptProof(proofReceipt.receiptHash);
       if (proof.orderHash !== proofReceipt.orderHash || proof.quoteHash !== proofReceipt.quoteHash
         || proof.routeHash !== proofReceipt.executionEvidence.routeHash
         || proof.quote.solverId !== proofReceipt.executionEvidence.solverId
-        || proof.route.settlementClass !== proofReceipt.executionEvidence.settlementClass) {
-        throw new Error("The selected receipt does not bind this quote and route proof.");
+        || proof.route.settlementClass !== proofReceipt.executionEvidence.settlementClass
+        || proof.receipt.terminalState !== proofReceipt.terminalState
+        || proof.receipt.finalityStatus !== proofReceipt.finalityStatus
+        || proof.receipt.serviceFee.atoms !== proofReceipt.executionEconomics.serviceFeeAtoms
+        || proof.receipt.solverFee.atoms !== proofReceipt.executionEconomics.solverFeeAtoms
+        || proof.receipt.venueFees.atoms !== proofReceipt.executionEconomics.venueFeeAtoms
+        || proof.receipt.networkCost.atoms !== proofReceipt.executionEconomics.networkCostAtoms
+        || proof.receipt.recoveryCost.atoms !== proofReceipt.executionEconomics.recoveryCostAtoms
+        || proof.receipt.terminalResidualValue.atoms !== proofReceipt.executionEconomics.terminalResidualValueAtoms) {
+        throw new Error("The selected summary does not match its terminal receipt proof.");
       }
       return proof;
     },
@@ -448,7 +456,7 @@ export function ActivityView() {
                           className={styles.ghost}
                           onClick={() => setProofReceiptHash((current) => current === receipt.receiptHash ? null : receipt.receiptHash)}
                         >
-                          {proofReceiptHash === receipt.receiptHash ? "Hide proof" : "Verify route"}
+                          {proofReceiptHash === receipt.receiptHash ? "Hide proof" : "Verify receipt"}
                         </button>
                         {portfolioHref ? <Link href={portfolioHref}>{receipt.lifecycleAction === "ENTRY" ? "Record" : "Apply"}</Link> : null}
                       </span>
@@ -461,22 +469,25 @@ export function ActivityView() {
         </div>
         {proofReceipt !== null ? (
           <div className={styles.cardBody}>
-            {strategyProof.isPending ? <p className={styles.notice}>Recomputing the selected order, graph, quote, route, and signature locally.</p> : null}
+            {strategyProof.isPending ? <p className={styles.notice}>Recomputing the terminal receipt, order, graph, quote, route, and signature locally.</p> : null}
             {strategyProof.isError ? <p className={styles.noticeError}>{strategyProof.error.message}</p> : null}
             {strategyProof.data ? (
               <>
                 <p className={strategyProof.data.signatureVerified ? styles.noticeOk : styles.notice}>
                   {strategyProof.data.signatureVerified
-                    ? "Order, graph, quote, route, cross-links, and the embedded quote-key signature verified locally."
-                    : "Order, graph, quote, route, and cross-links verified locally. This runtime could not verify Ed25519."}
+                    ? "Receipt, fees, order, graph, quote, route, cross-links, and the embedded quote-key signature verified locally."
+                    : "Receipt, fees, order, graph, quote, route, and cross-links verified locally. This runtime could not verify Ed25519."}
                 </p>
                 <dl className={styles.facts}>
+                  <dt>Receipt</dt><dd className={styles.mono} title={strategyProof.data.receiptHash}>{compact(strategyProof.data.receiptHash, 12, 8)}</dd>
                   <dt>Order</dt><dd className={styles.mono} title={strategyProof.data.orderHash}>{compact(strategyProof.data.orderHash, 12, 8)}</dd>
                   <dt>Graph</dt><dd className={styles.mono} title={strategyProof.data.graphHash}>{compact(strategyProof.data.graphHash, 12, 8)}</dd>
                   <dt>Quote</dt><dd className={styles.mono} title={strategyProof.data.quoteHash}>{compact(strategyProof.data.quoteHash, 12, 8)}</dd>
                   <dt>Route</dt><dd className={styles.mono} title={strategyProof.data.routeHash}>{compact(strategyProof.data.routeHash, 12, 8)}</dd>
                   <dt>Solver</dt><dd>{strategyProof.data.quote.solverId}</dd>
                   <dt>Settlement</dt><dd>{stateText(strategyProof.data.route.settlementClass)}</dd>
+                  <dt>Terminal state</dt><dd>{stateText(strategyProof.data.receipt.terminalState)}</dd>
+                  <dt>Finality</dt><dd>{stateText(strategyProof.data.receipt.finalityStatus)}</dd>
                   <dt>Route expiry</dt><dd className={styles.mono}>{strategyProof.data.route.routeExpiryValue.toString()} {stateText(strategyProof.data.route.routeExpiryUnit)}</dd>
                   <dt>Domain plans</dt>
                   <dd>{strategyProof.data.route.domainPlans.map((plan) => `${plan.domain.domainId}: ${stateText(plan.executionPlanKind)} (${plan.legIds.length} legs, ${plan.stageCount} stages)`).join("; ")}</dd>

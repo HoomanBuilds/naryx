@@ -1172,6 +1172,41 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       if (stored === undefined) throw new RequestError(404, "RECEIPT_NOT_FOUND", "This quote has no terminal strategy package receipt.");
       return { version: 1, quoteHash, ...stored };
     }
+    if ((match = /^\/v1\/strategy-receipts\/([0-9a-f]{64})\/proof$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const store = requireStrategyPackages();
+      if (store.admissionByQuote === undefined) {
+        throw new RequestError(503, "STRATEGY_PROOF_UNAVAILABLE", "Strategy receipt proof lookup is unavailable on this server.");
+      }
+      const receiptHash = match[1] as string;
+      const receipt = store.receipt(receiptHash);
+      if (receipt === undefined) throw new RequestError(404, "RECEIPT_NOT_FOUND", "No such strategy package receipt.");
+      const quoteHash = toHex(commitmentHash(receipt.quoteHash, "strategy receipt quote hash"));
+      const stored = store.receiptByQuote(quoteHash);
+      if (stored === undefined || stored.receiptHashHex !== receiptHash) {
+        throw new RequestError(500, "CORRUPT_RECEIPT", "The terminal receipt does not match its quote index.");
+      }
+      const admission = store.admissionByQuote(quoteHash);
+      if (admission === undefined) throw new RequestError(500, "CORRUPT_RECEIPT", "The terminal receipt has no admitted quote proof.");
+      return {
+        version: 1,
+        receiptHash,
+        receipt,
+        recordedAtMs: stored.recordedAtMs,
+        quoteProof: {
+          version: 1,
+          orderHash: admission.orderHashHex,
+          graphHash: admission.graphHashHex,
+          quoteHash: admission.quoteHashHex,
+          routeHash: admission.routeHashHex,
+          order: admission.order,
+          graph: admission.graph,
+          quote: admission.quote,
+          route: admission.route,
+          recordedAtMs: admission.recordedAtMs,
+        },
+      };
+    }
     if ((match = /^\/v1\/strategy-receipts\/([0-9a-f]{64})$/.exec(path)) !== null) {
       onlyParams(url, []);
       const receiptHash = match[1] as string;
