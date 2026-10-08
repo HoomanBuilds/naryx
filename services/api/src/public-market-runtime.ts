@@ -29,13 +29,18 @@ import { createCoordinationInternalHandler, SqliteCoordinationStore } from "./co
 import { createStrategyPackageInternalHandler, SqliteStrategyPackageStore } from "./strategy-package-store.js";
 import { createPackageReopeningAdminHandler } from "./package-reopening-admin.js";
 import { HttpGeneralizedStrategyQuoteClient } from "./generalized-strategy-quote-client.js";
-import { HttpHyperliquidNettingResidualExecutionClient } from "./hyperliquid-netting-residual-execution-client.js";
+import {
+  HttpHyperliquidCrossBatchResidualExecutionClient,
+  HttpHyperliquidNettingResidualExecutionClient,
+} from "./hyperliquid-netting-residual-execution-client.js";
 import { HttpBaseSepoliaNettingResidualExecutionClient } from "./base-sepolia-netting-residual-execution-client.js";
 import { HttpSolanaDevnetNettingResidualExecutionClient } from "./solana-devnet-netting-residual-execution-client.js";
 import {
   NettingExecutionCoordinator,
   NettingExternalExecutionRouter,
 } from "./netting-execution-coordinator.js";
+import { CrossBatchClearingCoordinator } from "./cross-batch-clearing-coordinator.js";
+import { createCrossBatchClearingAdminHandler } from "./cross-batch-clearing-admin.js";
 import { SqliteNettingAllocationAttemptStore } from "./netting-allocation-attempt-store.js";
 import {
   EvmNettingAllocationObservationRoute,
@@ -539,6 +544,14 @@ export function loadPublicMarketRuntime(
         new NettingExternalExecutionRouter(nettingExecutionRoutes),
       )
       : undefined;
+    const crossBatchExecution = hyperliquidNettingExecutionSetting === "true"
+      ? new CrossBatchClearingCoordinator(
+        store,
+        new HttpHyperliquidCrossBatchResidualExecutionClient(
+          environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
+        ),
+      )
+      : undefined;
     const allocationSettlementSetting = environment.NARYX_NETTING_ALLOCATION_SETTLEMENT_ENABLED ?? "false";
     if (allocationSettlementSetting !== "true" && allocationSettlementSetting !== "false") {
       throw new PublicMarketConfigError("NARYX_NETTING_ALLOCATION_SETTLEMENT_ENABLED must be true or false.");
@@ -617,6 +630,10 @@ export function loadPublicMarketRuntime(
       : () => BigInt(Math.floor(clockMs()));
     const internalHandlers = [
       createPackageReopeningAdminHandler({ exchange: store, nowValue }),
+      createCrossBatchClearingAdminHandler({
+        exchange: store,
+        ...(crossBatchExecution === undefined ? {} : { execution: crossBatchExecution }),
+      }),
       ...(keeper === undefined ? [] : [createKeeperExecutorHandler({ executor: keeper, nowIn: keeperClock(clockMs) })]),
       ...(coordination === undefined ? [] : [createCoordinationInternalHandler(coordination)]),
       ...(strategyPackages === undefined ? [] : [createStrategyPackageInternalHandler(strategyPackages)]),

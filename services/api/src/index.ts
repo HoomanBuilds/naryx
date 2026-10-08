@@ -664,6 +664,10 @@ export {
   type CrossBatchExternalExecutionPort,
 } from "./cross-batch-clearing-coordinator.js";
 export {
+  createCrossBatchClearingAdminHandler,
+  type CrossBatchClearingAdminOptions,
+} from "./cross-batch-clearing-admin.js";
+export {
   NettingAllocationObservationRouter,
   NettingAllocationSettlementCoordinator,
   type NettingAllocationObservationPort,
@@ -682,7 +686,9 @@ export {
   type NettingAllocationReconciliation,
 } from './netting-allocation-authorization-client.js';
 export {
+  API_HYPERLIQUID_CROSS_BATCH_RESIDUAL_EXECUTION_PATH,
   API_HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH,
+  HttpHyperliquidCrossBatchResidualExecutionClient,
   HttpHyperliquidNettingResidualExecutionClient,
   HyperliquidNettingResidualExecutionClientError,
   type HyperliquidNettingResidualExecutionClientErrorCode,
