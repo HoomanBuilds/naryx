@@ -635,10 +635,12 @@ test("a sealed auction accepts commits before its deadline, reveals after, and p
     const opening = { solverId: "solver-a", quoteHash: "77".repeat(32), netOutcomeAtoms: 500n, salt };
     const commitment = sealedQuoteCommitment(hash, opening);
     assert.equal((await api.call("POST", `/v1/solver/auctions/${hash}/commit`, { commitment: toHex(commitment) })).status, 200);
+    assert.equal((await api.call("POST", `/v1/solver/auctions/${hash}/commit`, { commitment: toHex(commitment) })).status, 200);
     const early = await api.call("POST", `/v1/solver/auctions/${hash}/reveal`, { quoteHash: opening.quoteHash, netOutcomeAtoms: 500n, salt });
     assert.equal((early.body.error as { code: string }).code, "EARLY_REVEAL");
     assert.deepEqual(((await api.plain("GET", `/v1/auctions/sealed/${hash}`)).body as { phase: string; commitmentCount: number }).commitmentCount, 1);
     api.setClock(NOW_MS + 11_000);
+    assert.equal((await api.call("POST", `/v1/solver/auctions/${hash}/reveal`, { quoteHash: opening.quoteHash, netOutcomeAtoms: 500n, salt })).status, 200);
     assert.equal((await api.call("POST", `/v1/solver/auctions/${hash}/reveal`, { quoteHash: opening.quoteHash, netOutcomeAtoms: 500n, salt })).status, 200);
     const view = (await api.plain("GET", `/v1/auctions/sealed/${hash}`)).body as { phase: string; result: { outcome: string; winner: { solverId: string } }; events: readonly unknown[] };
     assert.deepEqual([view.phase, view.result.outcome, view.result.winner.solverId, view.events.length], ["CLOSED", "AWARDED", "solver-a", 2]);

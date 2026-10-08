@@ -1,7 +1,9 @@
 import type Database from "better-sqlite3";
 import {
   applySealedAuctionEvent,
+  bytesEqual,
   closeSealedAuction,
+  commitmentHash,
   openSealedAuction,
   parseProtocolJson,
   privateRfqEnvelope,
@@ -9,6 +11,7 @@ import {
   sealedAuctionDefinition,
   sealedAuctionHash,
   sealedAuctionPublicView,
+  sealedQuoteCommitment,
   stringifyProtocolJson,
   toHex,
 } from "@naryx/protocol-types";
@@ -398,8 +401,24 @@ export class SqlitePrivateDeliveryStore {
   appendAuctionEvent(auctionHashHex: string, event: SealedAuctionEvent): { readonly accepted: true } | { readonly accepted: false; readonly reason: SealedAuctionRejection | "TOO_MANY_EVENTS" } {
     return this.transaction(() => {
       const { definition, events } = this.load(auctionHashHex);
+      const state = this.replay(definition, events);
+      if (event.kind === "COMMIT") {
+        const existing = state.commitments.find((entry) => entry.solverId === event.solverId);
+        if (existing !== undefined && bytesEqual(existing.commitment, commitmentHash(event.commitment, "sealedAuctionEvent.commitment"))) {
+          return { accepted: true as const };
+        }
+      } else if (event.kind === "REVEAL") {
+        const existing = state.reveals.find((entry) => entry.solverId === event.solverId);
+        const commitment = sealedQuoteCommitment(state.auctionHash, event);
+        if (existing !== undefined
+          && existing.netOutcomeAtoms === event.netOutcomeAtoms
+          && bytesEqual(existing.quoteHash, commitmentHash(event.quoteHash, "sealedAuctionEvent.quoteHash"))
+          && bytesEqual(existing.commitment, commitment)) {
+          return { accepted: true as const };
+        }
+      }
       if (events.length >= MAX_AUCTION_EVENTS) return { accepted: false as const, reason: "TOO_MANY_EVENTS" as const };
-      const applied = applySealedAuctionEvent(this.replay(definition, events), event);
+      const applied = applySealedAuctionEvent(state, event);
       if (!applied.accepted) return applied;
       this.db
         .prepare("INSERT INTO sealed_auction_events (auction_hash, sequence, event_json) VALUES (?, ?, ?)")
