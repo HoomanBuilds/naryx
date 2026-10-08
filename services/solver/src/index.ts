@@ -765,6 +765,17 @@ export {
   type HyperliquidNettingResidualRuntimeOptions,
 } from './hyperliquid-netting-residual-runtime.js';
 export {
+  EvmNettingResidualRuntimeError,
+  EvmTestPerpNettingResidualRuntime,
+  type EvmNettingResidualAttempt,
+  type EvmNettingResidualAttemptStatus,
+  type EvmNettingResidualChainPort,
+  type EvmNettingResidualJournalPort,
+  type EvmNettingResidualRuntimeErrorCode,
+  type EvmNettingResidualRuntimeLane,
+  type EvmNettingResidualRuntimeLaneResolver,
+} from './evm-netting-residual-runtime.js';
+export {
   HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH,
   createHyperliquidNettingResidualExecutionInternalHandler,
 } from './hyperliquid-netting-residual-execution-http.js';
