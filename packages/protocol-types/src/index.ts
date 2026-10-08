@@ -612,6 +612,34 @@ export {
 } from './netting-settlement.js';
 
 export {
+  CROSS_BATCH_CLEARING_POLICY_VERSION,
+  CROSS_BATCH_CLEARING_PLAN_VERSION,
+  CROSS_BATCH_EXECUTION_INTENT_VERSION,
+  CROSS_BATCH_EXECUTION_EVIDENCE_VERSION,
+  CROSS_BATCH_CLEARING_RECEIPT_VERSION,
+  CROSS_BATCH_MAX_SOURCE_INTENTS,
+  CROSS_BATCH_MAX_SOURCE_BATCHES,
+  crossBatchClearingPolicy,
+  crossBatchClearingPlan,
+  verifyCrossBatchClearingPlan,
+  crossBatchExternalExecutionIntent,
+  verifyCrossBatchExternalExecutionIntent,
+  crossBatchExternalExecutionEvidence,
+  verifyCrossBatchExternalExecutionEvidence,
+  crossBatchClearingReceipt,
+  verifyCrossBatchClearingReceipt,
+  type CrossBatchClearingPolicyInput,
+  type CrossBatchClearingPolicy,
+  type CrossBatchSourceAllocation,
+  type CrossBatchClearingPlan,
+  type CrossBatchExternalExecutionIntent,
+  type CrossBatchExternalExecutionEvidenceInput,
+  type CrossBatchExternalExecutionEvidence,
+  type CrossBatchSourceReceipt,
+  type CrossBatchClearingReceipt,
+} from './cross-batch-clearing.js';
+
+export {
   NETTING_ALLOCATION_SETTLEMENT_EVIDENCE_VERSION,
   NETTING_SETTLEMENT_COMPLETION_RECEIPT_VERSION,
   NETTING_SETTLEMENT_STATE_KIND,
