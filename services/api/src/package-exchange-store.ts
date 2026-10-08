@@ -17,8 +17,11 @@ import {
   matchPackageOrder,
   packageAllocation,
   packageAllocationHash,
+  packageBookAmendment,
+  packageBookAmendmentHash,
   packageBookCancellation,
   packageBookCancellationHash,
+  packageBookEntry,
   packageBookState,
   packageMatchingPolicy,
   packageMatchingPolicyBytes,
@@ -55,7 +58,7 @@ import type {
   EconomicStrategySeriesSupportInput,
   ImpliedLiquidityInput,
   PackageAllocation,
-  PackageBookAmendment,
+  PackageBookAmendmentInput,
   PackageBookEntry,
   PackageBookState,
   PackageMatchingPolicy,
@@ -115,6 +118,12 @@ export interface PackageTapeRecord {
 
 export interface PackageExchangeCancellationResult {
   readonly cancellationHashHex: string;
+  readonly replayed: boolean;
+}
+
+export interface PackageExchangeAmendmentResult {
+  readonly amendmentHashHex: string;
+  readonly entry: PackageBookEntry;
   readonly replayed: boolean;
 }
 
@@ -268,6 +277,15 @@ CREATE TABLE IF NOT EXISTS package_book_cancellations (
   recorded_at_ms INTEGER NOT NULL,
   UNIQUE (execution_class_id, entry_id)
 ) STRICT;
+CREATE TABLE IF NOT EXISTS package_book_amendments (
+  amendment_hash BLOB PRIMARY KEY,
+  execution_class_id TEXT NOT NULL REFERENCES package_books(execution_class_id),
+  entry_id BLOB NOT NULL,
+  participant_id TEXT NOT NULL,
+  amendment_json TEXT NOT NULL,
+  amended_entry_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS package_book_consumed_sources (
   source_key BLOB PRIMARY KEY,
   execution_class_id TEXT NOT NULL REFERENCES package_books(execution_class_id),
@@ -334,6 +352,12 @@ CREATE TRIGGER IF NOT EXISTS reject_cancellation_change
 CREATE TRIGGER IF NOT EXISTS reject_cancellation_delete
   BEFORE DELETE ON package_book_cancellations
   BEGIN SELECT RAISE(ABORT, 'package cancellations are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_amendment_change
+  BEFORE UPDATE ON package_book_amendments
+  BEGIN SELECT RAISE(ABORT, 'package amendments are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_amendment_delete
+  BEFORE DELETE ON package_book_amendments
+  BEGIN SELECT RAISE(ABORT, 'package amendments are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_consumed_source_change
   BEFORE UPDATE ON package_book_consumed_sources
   BEGIN SELECT RAISE(ABORT, 'consumed sources are append-only'); END;
@@ -1216,12 +1240,55 @@ export class SqlitePackageExchangeStore {
     });
   }
 
-  amendEntry(executionClassId: string, amendment: PackageBookAmendment): void {
-    this.transaction(() => {
-      const { policy, book } = this.policyAndBook(executionClassId);
-      this.writeBook(
-        guarded("INVALID_INPUT", "Amendment is invalid.", () => amendPackageBookEntry(policy, book, amendment)),
+  amendEntry(amendmentInput: PackageBookAmendmentInput): PackageExchangeAmendmentResult {
+    return this.transaction(() => {
+      const amendment = guarded("INVALID_INPUT", "Amendment is invalid.", () => packageBookAmendment(amendmentInput));
+      const amendmentHash = packageBookAmendmentHash(amendment);
+      const existing = this.db.prepare(`
+        SELECT amended_entry_json
+        FROM package_book_amendments
+        WHERE amendment_hash = ?
+      `).get(amendmentHash) as { amended_entry_json: unknown } | undefined;
+      const { policy, book } = this.policyAndBook(amendment.executionClassId);
+      if (existing !== undefined) {
+        const entry = guarded("CORRUPT_ROW", "Stored amendment entry is invalid.", () =>
+          packageBookEntry(
+            policy,
+            parseProtocolJson(jsonText(existing.amended_entry_json, "amended_entry_json")) as PackageBookEntry,
+          ),
+        );
+        return { amendmentHashHex: toHex(amendmentHash), entry, replayed: true };
+      }
+      const progress = this.settlementProgress(toHex(amendment.entryId));
+      if (progress === undefined) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Direct package entry lost its settlement commitment.");
+      }
+      const amendedQuantity = amendment.quantity ?? amendment.expectedQuantity;
+      if (amendedQuantity > progress.readiness.remainingQuantity) {
+        throw new PackageExchangeStoreError("INVALID_INPUT", "Amendment quantity exceeds its remaining settlement commitment.");
+      }
+      const next = guarded("INVALID_INPUT", "Amendment is invalid.", () =>
+        amendPackageBookEntry(policy, book, amendment),
       );
+      const entry = next.entries.find((candidate) => bytesEqual(candidate.entryId, amendment.entryId));
+      if (entry === undefined) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Amended entry disappeared from the package book.");
+      }
+      this.writeBook(next);
+      this.db.prepare(`
+        INSERT INTO package_book_amendments
+          (amendment_hash, execution_class_id, entry_id, participant_id, amendment_json, amended_entry_json, recorded_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        amendmentHash,
+        amendment.executionClassId,
+        amendment.entryId,
+        amendment.participantId,
+        stringifyProtocolJson(amendment),
+        stringifyProtocolJson(entry),
+        this.clock(),
+      );
+      return { amendmentHashHex: toHex(amendmentHash), entry, replayed: false };
     });
   }
 

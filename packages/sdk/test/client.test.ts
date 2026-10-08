@@ -6,6 +6,8 @@ import {
   emptyPackageBook,
   matchPackageOrder,
   packageAllocationHash,
+  packageBookAmendmentBytes,
+  packageBookAmendmentHash,
   packageBookCancellationBytes,
   packageBookCancellationHash,
   packageSettlementCommitment,
@@ -424,6 +426,35 @@ describe('public API client', () => {
     });
     assert.equal(queued.queuedForReopening, true);
     assert.deepEqual(reopeningSignedBytes, packageSettlementCommitmentBytes(reopeningCommitment));
+
+    const amendment = {
+      version: 1,
+      executionClassId: CLASS,
+      entryId: reopeningOrderId,
+      participantId,
+      expectedQuantity: reopeningOrder.quantity,
+      expectedPriceTicks: reopeningOrder.limitPriceTicks,
+      priceTicks: 99n,
+    } as const;
+    let amendmentSignedBytes: Uint8Array | undefined;
+    const amendmentHash = toHex(packageBookAmendmentHash(amendment));
+    const amended = await client({
+      'POST /v1/package-book/amendments': {
+        body: {
+          amended: true,
+          packageMarketId: CLASS,
+          entryId: reopeningOrderId,
+          amendmentHash,
+          replayed: false,
+          entry: { ...admission.entry, priceTicks: 99n },
+        },
+      },
+    }).amendPackageBookOrder(amendment, async (bytes) => {
+      amendmentSignedBytes = bytes;
+      return new Uint8Array(sign(null, bytes, keys.privateKey));
+    });
+    assert.equal(amended.amendmentHash, amendmentHash);
+    assert.deepEqual(amendmentSignedBytes, packageBookAmendmentBytes(amendment));
 
     await assert.rejects(
       client({ 'POST /v1/package-book/orders': { body: { accepted: true, packageMarketId: CLASS, orderId, replayed: false, allocation: matched.allocation, allocationHash: 'ff'.repeat(32), settlementCommitmentHash, matchingPolicy: policy } } })

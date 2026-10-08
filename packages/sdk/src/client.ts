@@ -27,6 +27,9 @@ import {
   packageOrderBytes,
   packageOrderHash,
   packageTakerOrderHash,
+  packageBookAmendment,
+  packageBookAmendmentBytes,
+  packageBookAmendmentHash,
   packageBookCancellationBytes,
   packageBookCancellationHash,
   packageSettlementCommitment,
@@ -106,6 +109,8 @@ import {
   type PackageReceipt,
   type PackageReceiptInput,
   type PackageTakerOrderInput,
+  type PackageBookAmendment,
+  type PackageBookAmendmentInput,
   type PackageBookCancellationInput,
   type PackageSettlementCommitmentInput,
   type PackageSettlementCommitment,
@@ -298,6 +303,13 @@ export interface PackageBookCancellationResult {
   readonly packageMarketId: string;
   readonly entryId: string;
   readonly cancellationHash: string;
+  readonly replayed: boolean;
+}
+
+export interface PackageBookAmendmentResult {
+  readonly amended: true;
+  readonly amendment: PackageBookAmendment;
+  readonly amendmentHash: string;
   readonly replayed: boolean;
 }
 
@@ -1246,6 +1258,51 @@ export class NaryxClient {
       ...(settlementHandoff === undefined || settlementHandoffHash === undefined
         ? {}
         : { settlementHandoff, settlementHandoffHash }),
+    });
+  }
+
+  /** Compare-and-swaps one live package-book entry with its participant key. */
+  async amendPackageBookOrder(
+    amendmentInput: PackageBookAmendmentInput,
+    sign: OrderSigner,
+  ): Promise<PackageBookAmendmentResult> {
+    const amendment = packageBookAmendment(amendmentInput);
+    if (base58Decode(amendment.participantId)?.length !== 32) {
+      throw new TypeError('participant id must be a canonical Ed25519 public key');
+    }
+    if (typeof sign !== 'function') throw new TypeError('an order signer is required');
+    const signature = await sign(packageBookAmendmentBytes(amendment));
+    if (!(signature instanceof Uint8Array) || signature.length !== 64) {
+      throw new TypeError('the signer must return a 64-byte signature');
+    }
+    const expectedHash = toHex(packageBookAmendmentHash(amendment));
+    const body = record(
+      await this.#request('POST', '/v1/package-book/amendments', {
+        amendment,
+        authorization: { scheme: 'ED25519', signature: base58Encode(signature) },
+      }),
+      'package book amendment',
+    );
+    const entry = record(body.entry, 'amended package book entry');
+    if (
+      body.amended !== true
+      || body.packageMarketId !== amendment.executionClassId
+      || body.entryId !== toHex(amendment.entryId)
+      || body.amendmentHash !== expectedHash
+      || typeof body.replayed !== 'boolean'
+      || !(entry.entryId instanceof Uint8Array)
+      || toHex(entry.entryId) !== toHex(amendment.entryId)
+      || entry.participantId !== amendment.participantId
+      || entry.quantity !== (amendment.quantity ?? amendment.expectedQuantity)
+      || entry.priceTicks !== (amendment.priceTicks ?? amendment.expectedPriceTicks)
+    ) {
+      throw new NaryxEvidenceError('package book amendment response is inconsistent');
+    }
+    return Object.freeze({
+      amended: true,
+      amendment,
+      amendmentHash: expectedHash,
+      replayed: body.replayed,
     });
   }
 

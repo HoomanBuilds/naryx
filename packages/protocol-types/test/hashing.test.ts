@@ -104,6 +104,7 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/package-matching-policy',
         'CON/v1/package-taker-order',
         'CON/v1/package-book-cancellation',
+        'CON/v1/package-book-amendment',
         'CON/v1/package-settlement-commitment',
         'CON/v1/package-settlement-handoff',
         'CON/v1/package-settlement-readiness',

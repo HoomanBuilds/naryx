@@ -240,8 +240,24 @@ test("cancellation authority, halts, and amendments persist", () => {
     const maker = order(1, { quantity: 30n });
     store.submitOrder(CLASS, maker, NOW, settlement(maker));
     assert.throws(() => store.cancelEntry(CLASS, id(1), "intruder"), { code: "INVALID_INPUT" });
-    store.amendEntry(CLASS, { entryId: id(1), participantId: "maker-1", quantity: 20n });
+    const amendment = {
+      version: 1,
+      executionClassId: CLASS,
+      entryId: id(1),
+      participantId: "maker-1",
+      expectedQuantity: 30n,
+      expectedPriceTicks: 100n,
+      quantity: 20n,
+    } as const;
+    assert.equal(store.amendEntry(amendment).replayed, false);
+    assert.equal(store.amendEntry(amendment).replayed, true);
     assert.equal(store.getBook(CLASS)?.entries[0]?.quantity, 20n);
+    assert.throws(() => store.amendEntry({ ...amendment, quantity: 10n }), { code: "INVALID_INPUT" });
+    assert.throws(() => store.amendEntry({
+      ...amendment,
+      expectedQuantity: 20n,
+      quantity: 40n,
+    }), { code: "INVALID_INPUT" });
     store.setHalted(CLASS, true);
     const blocked = order(2, { side: "BID" });
     assert.deepEqual(store.submitOrder(CLASS, blocked, NOW, settlement(blocked)), { accepted: false, rejection: "HALTED" });
@@ -250,6 +266,21 @@ test("cancellation authority, halts, and amendments persist", () => {
     assert.equal(cancellation.replayed, false);
     assert.equal(store.cancelEntry(CLASS, id(1), "maker-1").replayed, true);
     assert.equal(store.getBook(CLASS)?.entries.length, 0);
+
+    const partialMaker = order(3, { quantity: 30n });
+    const partialTaker = order(4, { side: "BID", timeInForce: "IOC" });
+    store.submitOrder(CLASS, partialMaker, NOW, settlement(partialMaker));
+    store.submitOrder(CLASS, partialTaker, NOW, settlement(partialTaker));
+    assert.equal(store.getBook(CLASS)?.entries[0]?.quantity, 20n);
+    assert.throws(() => store.amendEntry({
+      version: 1,
+      executionClassId: CLASS,
+      entryId: partialMaker.orderId,
+      participantId: partialMaker.participantId,
+      expectedQuantity: 20n,
+      expectedPriceTicks: partialMaker.limitPriceTicks,
+      quantity: 30n,
+    }), { code: "INVALID_INPUT" });
   });
 });
 

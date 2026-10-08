@@ -85,6 +85,25 @@ function rest(state: PackageBookState, ...orders: PackageTakerOrderInput[]): Pac
   return orders.reduce((book, input) => accepted(matchPackageOrder(policy, book, input, NOW)).state, state);
 }
 
+function amendmentFor(
+  book: PackageBookState,
+  entryId: string,
+  changes: { readonly participantId?: string; readonly quantity?: bigint; readonly priceTicks?: bigint },
+) {
+  const entry = book.entries.find((candidate) => toHex(candidate.entryId) === entryId);
+  if (entry === undefined) throw new Error('test entry is missing');
+  return {
+    version: 1,
+    executionClassId: CLASS,
+    entryId,
+    participantId: changes.participantId ?? entry.participantId,
+    expectedQuantity: entry.quantity,
+    expectedPriceTicks: entry.priceTicks,
+    ...(changes.quantity === undefined ? {} : { quantity: changes.quantity }),
+    ...(changes.priceTicks === undefined ? {} : { priceTicks: changes.priceTicks }),
+  } as const;
+}
+
 function impliedAsk(spot: number, perp: number, overrides: { quantity?: bigint; spotPrice?: bigint } = {}) {
   return deriveImpliedPackageQuote(policy, {
     executionClassId: CLASS,
@@ -428,27 +447,27 @@ describe('book state validation', () => {
 describe('amendment and cancellation authority', () => {
   test('a size reduction keeps priority while a price change or increase loses it', () => {
     const book = rest(emptyPackageBook(policy), order(1, { quantity: 30n }), order(2, { limitPriceTicks: 101n }));
-    const reduced = amendPackageBookEntry(policy, book, { entryId: id(1), participantId: 'maker-1', quantity: 20n });
+    const reduced = amendPackageBookEntry(policy, book, amendmentFor(book, id(1), { quantity: 20n }));
     assert.equal(reduced.entries.find((entry) => toHex(entry.entryId) === id(1))?.sequence, 1n);
-    const repriced = amendPackageBookEntry(policy, book, { entryId: id(1), participantId: 'maker-1', priceTicks: 102n });
+    const repriced = amendPackageBookEntry(policy, book, amendmentFor(book, id(1), { priceTicks: 102n }));
     assert.equal(repriced.entries.find((entry) => toHex(entry.entryId) === id(1))?.sequence, 3n);
-    const increased = amendPackageBookEntry(policy, book, { entryId: id(1), participantId: 'maker-1', quantity: 40n });
+    const increased = amendPackageBookEntry(policy, book, amendmentFor(book, id(1), { quantity: 40n }));
     assert.equal(increased.entries.find((entry) => toHex(entry.entryId) === id(1))?.sequence, 3n);
   });
 
   test('only the owner may amend or cancel, and implied entries are never amended', () => {
     const book = withImplied(rest(emptyPackageBook(policy), order(1, { limitPriceTicks: 90n })));
     assert.throws(() => cancelPackageBookEntry(book, id(1), 'someone-else'), /only the entry owner/);
-    assert.throws(() => amendPackageBookEntry(policy, book, { entryId: id(1), participantId: 'x', quantity: 10n }), /only the entry owner/);
+    assert.throws(() => amendPackageBookEntry(policy, book, amendmentFor(book, id(1), { participantId: 'x', quantity: 20n })), /only the entry owner/);
     assert.equal(cancelPackageBookEntry(book, id(1), 'maker-1').entries.length, 1);
     const implied = toHex(impliedAsk(1, 1).entryId);
-    assert.throws(() => amendPackageBookEntry(policy, book, { entryId: implied, participantId: 'solver-a', quantity: 10n }), /never amended/);
+    assert.throws(() => amendPackageBookEntry(policy, book, amendmentFor(book, implied, { quantity: 10n })), /never amended/);
   });
 
   test('an amendment cannot cross the book', () => {
     const book = rest(emptyPackageBook(policy), order(1, { side: 'BID', limitPriceTicks: 90n }), order(2));
     assert.throws(
-      () => amendPackageBookEntry(policy, book, { entryId: id(1), participantId: 'maker-1', priceTicks: 100n }),
+      () => amendPackageBookEntry(policy, book, amendmentFor(book, id(1), { priceTicks: 100n })),
       /cannot cross/,
     );
   });

@@ -1,7 +1,9 @@
 import {
+  packageBookAmendmentHash,
   packageBookCancellationHash,
   packageSettlementCommitmentHash,
   toHex,
+  type PackageBookAmendment,
   type PackageBookCancellation,
   type PackageSettlementCommitment,
 } from "@naryx/protocol-types";
@@ -70,6 +72,39 @@ export function packageCancellationAuthorizationTypedData(cancellation: PackageB
   });
 }
 
+export function packageAmendmentAuthorizationTypedData(amendment: PackageBookAmendment) {
+  return Object.freeze({
+    domain: Object.freeze({ name: "Naryx Package Book Testnet", version: "1" }),
+    types: Object.freeze({
+      PackageAmendmentAuthorization: Object.freeze([
+        { name: "amendmentHash", type: "bytes32" },
+        { name: "executionClassId", type: "string" },
+        { name: "entryId", type: "bytes32" },
+        { name: "participant", type: "address" },
+        { name: "expectedQuantity", type: "uint256" },
+        { name: "expectedPriceTicks", type: "int256" },
+        { name: "changesQuantity", type: "bool" },
+        { name: "quantity", type: "uint256" },
+        { name: "changesPrice", type: "bool" },
+        { name: "priceTicks", type: "int256" },
+      ]),
+    }),
+    primaryType: "PackageAmendmentAuthorization" as const,
+    message: Object.freeze({
+      amendmentHash: `0x${toHex(packageBookAmendmentHash(amendment))}`,
+      executionClassId: amendment.executionClassId,
+      entryId: `0x${toHex(amendment.entryId)}`,
+      participant: amendment.participantId,
+      expectedQuantity: amendment.expectedQuantity,
+      expectedPriceTicks: amendment.expectedPriceTicks,
+      changesQuantity: amendment.quantity !== undefined,
+      quantity: amendment.quantity ?? 0n,
+      changesPrice: amendment.priceTicks !== undefined,
+      priceTicks: amendment.priceTicks ?? 0n,
+    }),
+  });
+}
+
 export async function verifyEvmPackageSettlementAuthorization(
   commitment: PackageSettlementCommitment,
   signatureInput: unknown,
@@ -118,6 +153,33 @@ export async function verifyEvmPackageCancellationAuthorization(
         cancellationHash: typedData.message.cancellationHash as Hex,
         entryId: typedData.message.entryId as Hex,
         participant: cancellation.participantId as Hex,
+      },
+      signature: signature as Hex,
+    });
+  } catch {
+    return false;
+  }
+}
+
+export async function verifyEvmPackageAmendmentAuthorization(
+  amendment: PackageBookAmendment,
+  signatureInput: unknown,
+): Promise<boolean> {
+  if (!isEvmPackageBookParticipant(amendment.participantId) || typeof signatureInput !== "string") return false;
+  const signature = signatureInput.toLowerCase();
+  if (!EVM_SIGNATURE.test(signature)) return false;
+  const typedData = packageAmendmentAuthorizationTypedData(amendment);
+  try {
+    return await verifyTypedData({
+      address: amendment.participantId as Hex,
+      domain: typedData.domain,
+      types: { PackageAmendmentAuthorization: [...typedData.types.PackageAmendmentAuthorization] },
+      primaryType: typedData.primaryType,
+      message: {
+        ...typedData.message,
+        amendmentHash: typedData.message.amendmentHash as Hex,
+        entryId: typedData.message.entryId as Hex,
+        participant: amendment.participantId as Hex,
       },
       signature: signature as Hex,
     });

@@ -239,6 +239,7 @@ export {
   type ExchangeDocumentKind,
   type PackageExchangeStoreOptions,
   type PackageExchangeSubmitResult,
+  type PackageExchangeAmendmentResult,
   type PackageReopeningQueueResult,
   type PackageReopeningClearResult,
   type PackageSettlementObligation,

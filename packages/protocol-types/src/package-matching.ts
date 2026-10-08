@@ -30,6 +30,7 @@ import type { ExactSignedRatio } from './strategy-series.js';
 export const PACKAGE_MATCHING_POLICY_VERSION = 1;
 export const PACKAGE_ALLOCATION_VERSION = 1;
 export const PACKAGE_BOOK_CANCELLATION_VERSION = 1;
+export const PACKAGE_BOOK_AMENDMENT_VERSION = 1;
 export const IMPLIED_PACKAGE_QUOTE_VERSION = 1;
 // Multi-package implication stays gated until bounded-depth conservation proofs exist.
 export const PACKAGE_MATCHING_MAX_IMPLICATION_DEPTH = 1;
@@ -540,6 +541,14 @@ function checkedEntry(policy: PackageMatchingPolicy, input: PackageBookEntry, co
   });
 }
 
+export function packageBookEntry(
+  policy: PackageMatchingPolicy,
+  input: PackageBookEntry,
+  context = 'packageBookEntry',
+): PackageBookEntry {
+  return checkedEntry(packageMatchingPolicy(policy, `${context}.policy`), input, context);
+}
+
 const SOURCE_KEY = /^[0-9a-f]{64}$/;
 
 /** Revalidates book state supplied by a caller or loaded from storage against its policy. */
@@ -742,22 +751,94 @@ export function cancelPackageBookEntry(
   return withState(state, { entries: state.entries.filter((candidate) => candidate !== entry) });
 }
 
-export interface PackageBookAmendment {
+export interface PackageBookAmendmentInput {
+  readonly version: number;
+  readonly executionClassId: string;
   readonly entryId: Uint8Array | string;
   readonly participantId: string;
+  readonly expectedQuantity: bigint;
+  readonly expectedPriceTicks: bigint;
   readonly quantity?: bigint;
   readonly priceTicks?: bigint;
+}
+
+export interface PackageBookAmendment {
+  readonly version: 1;
+  readonly executionClassId: ProtocolId;
+  readonly entryId: CommitmentHash;
+  readonly participantId: ProtocolId;
+  readonly expectedQuantity: bigint;
+  readonly expectedPriceTicks: bigint;
+  readonly quantity?: bigint;
+  readonly priceTicks?: bigint;
+}
+
+export function packageBookAmendment(
+  input: PackageBookAmendmentInput,
+  context = 'packageBookAmendment',
+): PackageBookAmendment {
+  object(input, context);
+  if (input.version !== PACKAGE_BOOK_AMENDMENT_VERSION) {
+    throw new MalformedInputError(`${context}.version`, `version must equal ${PACKAGE_BOOK_AMENDMENT_VERSION}`);
+  }
+  const expectedQuantity = positive(input.expectedQuantity, U128_BITS, `${context}.expectedQuantity`);
+  const expectedPriceTicks = signedTicks(input.expectedPriceTicks, `${context}.expectedPriceTicks`);
+  const quantity = input.quantity === undefined ? undefined : positive(input.quantity, U128_BITS, `${context}.quantity`);
+  const priceTicks = input.priceTicks === undefined ? undefined : signedTicks(input.priceTicks, `${context}.priceTicks`);
+  if (quantity === undefined && priceTicks === undefined) {
+    throw new MalformedInputError(context, 'an amendment must change quantity or price');
+  }
+  if ((quantity === undefined || quantity === expectedQuantity) && (priceTicks === undefined || priceTicks === expectedPriceTicks)) {
+    throw new MalformedInputError(context, 'an amendment must change the expected entry state');
+  }
+  return Object.freeze({
+    version: PACKAGE_BOOK_AMENDMENT_VERSION,
+    executionClassId: protocolId(input.executionClassId, `${context}.executionClassId`),
+    entryId: commitmentHash(input.entryId, `${context}.entryId`),
+    participantId: protocolId(input.participantId, `${context}.participantId`),
+    expectedQuantity,
+    expectedPriceTicks,
+    ...(quantity === undefined ? {} : { quantity }),
+    ...(priceTicks === undefined ? {} : { priceTicks }),
+  });
+}
+
+export function packageBookAmendmentBytes(
+  input: PackageBookAmendmentInput,
+  context = 'packageBookAmendment',
+): Uint8Array {
+  const amendment = packageBookAmendment(input, context);
+  return canonicalBytes((writer) => {
+    writer.writeU32(amendment.version, `${context}.version`);
+    encodeProtocolId(writer, amendment.executionClassId, `${context}.executionClassId`);
+    encodeCommitmentHash(writer, amendment.entryId, `${context}.entryId`);
+    encodeProtocolId(writer, amendment.participantId, `${context}.participantId`);
+    writer.writeU128(amendment.expectedQuantity, `${context}.expectedQuantity`);
+    writer.writeI128(amendment.expectedPriceTicks, `${context}.expectedPriceTicks`);
+    writer.writeOptional(amendment.quantity, (inner, value) => inner.writeU128(value, `${context}.quantity`));
+    writer.writeOptional(amendment.priceTicks, (inner, value) => inner.writeI128(value, `${context}.priceTicks`));
+  });
+}
+
+export function packageBookAmendmentHash(input: PackageBookAmendmentInput): CommitmentHash {
+  return commitmentHash(
+    domainHash(HASH_DOMAIN.PACKAGE_BOOK_AMENDMENT, packageBookAmendmentBytes(input)),
+    'packageBookAmendmentHash',
+  );
 }
 
 /** A size reduction keeps time priority; any price change or size increase takes a new sequence. */
 export function amendPackageBookEntry(
   policy: PackageMatchingPolicy,
   stateInput: PackageBookState,
-  amendment: PackageBookAmendment,
+  amendmentInput: PackageBookAmendmentInput,
   context = 'amendPackageBookEntry',
 ): PackageBookState {
   const { policy: checked, state } = bookFor(policy, stateInput, context);
-  object(amendment, context);
+  const amendment = packageBookAmendment(amendmentInput, context);
+  if (amendment.executionClassId !== state.executionClassId) {
+    throw new MalformedInputError(`${context}.executionClassId`, 'amendment belongs to another execution class');
+  }
   const id = toHex(commitmentHash(amendment.entryId, `${context}.entryId`));
   const entry = state.entries.find((candidate) => toHex(candidate.entryId) === id);
   if (entry === undefined) {
@@ -768,6 +849,9 @@ export function amendPackageBookEntry(
   }
   if (entry.source !== 'DIRECT') {
     throw new MalformedInputError(`${context}.entryId`, 'implied liquidity is re-derived, never amended');
+  }
+  if (entry.quantity !== amendment.expectedQuantity || entry.priceTicks !== amendment.expectedPriceTicks) {
+    throw new MalformedInputError(context, 'entry state changed before the amendment was applied');
   }
   const quantity =
     amendment.quantity === undefined ? entry.quantity : positive(amendment.quantity, U128_BITS, `${context}.quantity`);

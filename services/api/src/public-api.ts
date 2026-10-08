@@ -24,6 +24,9 @@ import {
   bytesEqual,
   commitmentHash,
   packageTakerOrderHash,
+  packageBookAmendment,
+  packageBookAmendmentBytes,
+  packageBookAmendmentHash,
   packageBookCancellation,
   packageBookCancellationBytes,
   packageBookCancellationHash,
@@ -64,6 +67,7 @@ import type {
   PackageGraphInput,
   PackageTemplateManifestInput,
   PackageOrderInput,
+  PackageBookAmendmentInput,
   PackageBookCancellationInput,
   PackageSettlementCommitmentInput,
   StrategyCommandInput,
@@ -109,8 +113,10 @@ import {
 } from "./strategy-order-intake.js";
 import {
   isEvmPackageBookParticipant,
+  packageAmendmentAuthorizationTypedData,
   packageCancellationAuthorizationTypedData,
   packageSettlementAuthorizationTypedData,
+  verifyEvmPackageAmendmentAuthorization,
   verifyEvmPackageCancellationAuthorization,
   verifyEvmPackageSettlementAuthorization,
 } from "./package-book-authorization.js";
@@ -193,6 +199,7 @@ export type PublicExchangeStore = Pick<
   | "latestTrade"
   | "submitOrder"
   | "queueReopeningOrder"
+  | "amendEntry"
   | "cancelEntry"
 >;
 
@@ -1305,6 +1312,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/package-book/orders/authorization",
       "/v1/package-book/reopening/orders",
       "/v1/package-book/reopening/orders/authorization",
+      "/v1/package-book/amendments",
+      "/v1/package-book/amendments/authorization",
       "/v1/package-book/cancellations",
       "/v1/package-book/cancellations/authorization",
       "/v1/de-risk/validate",
@@ -1387,6 +1396,57 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         order,
         settlementCommitment,
         settlementCommitmentHash: toHex(packageSettlementCommitmentHash(settlementCommitment)),
+      };
+    }
+    if (path === "/v1/package-book/amendments" || path === "/v1/package-book/amendments/authorization") {
+      const amendment = packageBookAmendment(
+        object(body.amendment, "amendment") as unknown as PackageBookAmendmentInput,
+      );
+      const amendmentHash = toHex(packageBookAmendmentHash(amendment));
+      const participantKey = senderPublicKey(amendment.participantId);
+      if (path.endsWith("/authorization")) {
+        if (isEvmPackageBookParticipant(amendment.participantId)) {
+          return {
+            version: 1,
+            scheme: "EIP712_SECP256K1",
+            participantId: amendment.participantId,
+            amendmentHash,
+            typedData: packageAmendmentAuthorizationTypedData(amendment),
+          };
+        }
+        if (participantKey === undefined) {
+          throw new RequestError(400, "UNSUPPORTED_AUTHORIZATION", "The package participant has no supported wallet authorization.");
+        }
+        return {
+          version: 1,
+          scheme: "ED25519",
+          participantId: amendment.participantId,
+          amendmentHash,
+          messageHex: toHex(packageBookAmendmentBytes(amendment)),
+        };
+      }
+      const authorization = object(body.authorization, "authorization");
+      const ed25519Authorization = ed25519Signature(authorization.signature);
+      const valid = authorization.scheme === "ED25519"
+        ? participantKey !== undefined
+          && ed25519Authorization !== undefined
+          && verifyEd25519(participantKey, packageBookAmendmentBytes(amendment), ed25519Authorization)
+        : authorization.scheme === "EIP712_SECP256K1"
+          && await verifyEvmPackageAmendmentAuthorization(amendment, authorization.signature);
+      if (!valid) {
+        throw new RequestError(400, "INVALID_SIGNATURE", "The signature does not authorize this package book amendment.");
+      }
+      const result = exchange.amendEntry(amendment);
+      if (result.amendmentHashHex !== amendmentHash) {
+        throw new RequestError(500, "INTERNAL_ERROR", "Stored amendment identity is inconsistent.");
+      }
+      return {
+        amended: true,
+        packageMarketId: amendment.executionClassId,
+        entryId: toHex(amendment.entryId),
+        amendmentHash,
+        replayed: result.replayed,
+        entry: result.entry,
       };
     }
     if (path === "/v1/package-book/cancellations" || path === "/v1/package-book/cancellations/authorization") {

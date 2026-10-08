@@ -13,6 +13,8 @@ import {
   commitmentHash,
   toProtocolJson,
   packageAllocationHash,
+  packageBookAmendmentBytes,
+  packageBookAmendmentHash,
   packageMatchingPolicy,
   packageTakerOrderHash,
   packageSettlementCommitment,
@@ -405,6 +407,30 @@ test("signed public package orders create durable settlement handoffs and replay
     };
     assert.equal((await get("/v1/package-book/orders", post({ order: passiveOrder, settlementCommitment: passiveCommitment, authorization: passiveAuthorization }))).status, 200);
     assert.equal(store.getBook(CLASS)?.entries.length, 1);
+    const amendment = {
+      version: 1,
+      executionClassId: CLASS,
+      entryId: passiveOrder.orderId,
+      participantId,
+      expectedQuantity: passiveOrder.quantity,
+      expectedPriceTicks: passiveOrder.limitPriceTicks,
+      priceTicks: 91n,
+    } as const;
+    const amendmentAuthorization = {
+      scheme: "ED25519",
+      signature: bs58.encode(sign(null, Buffer.from(packageBookAmendmentBytes(amendment)), keys.privateKey)),
+    };
+    const amended = await get("/v1/package-book/amendments", post({ amendment, authorization: amendmentAuthorization }));
+    assert.equal(amended.status, 200, amended.text);
+    assert.deepEqual(
+      [
+        (amended.body as { amendmentHash: string }).amendmentHash,
+        (amended.body as { entry: { priceTicks: bigint } }).entry.priceTicks,
+        (amended.body as { replayed: boolean }).replayed,
+      ],
+      [toHex(packageBookAmendmentHash(amendment)), 91n, false],
+    );
+    assert.equal((await get("/v1/package-book/amendments", post({ amendment, authorization: amendmentAuthorization }))).status, 200);
     const cancellation = { version: 1, executionClassId: CLASS, entryId: passiveOrder.orderId, participantId };
     const cancellationAuthorization = {
       scheme: "ED25519",
@@ -475,7 +501,7 @@ test("signed public package orders create durable settlement handoffs and replay
   });
 });
 
-test("EVM owners authorize and cancel native package-book orders with chainless typed data", async () => {
+test("EVM owners authorize, amend, and cancel native package-book orders with chainless typed data", async () => {
   const owner = privateKeyToAccount(generatePrivateKey());
   const stranger = privateKeyToAccount(generatePrivateKey());
   const participantId = owner.address.toLowerCase();
@@ -539,6 +565,26 @@ test("EVM owners authorize and cancel native package-book orders with chainless 
     assert.equal(submitted.status, 200, submitted.text);
     assert.equal((submitted.body as { accepted: boolean }).accepted, true);
     assert.equal(store.getBook(CLASS)?.entries.length, 1);
+
+    const amendment = {
+      version: 1,
+      executionClassId: CLASS,
+      entryId: orderId,
+      participantId,
+      expectedQuantity: packageOrder.quantity,
+      expectedPriceTicks: packageOrder.limitPriceTicks,
+      priceTicks: 102n,
+    } as const;
+    const amendmentChallengeResponse = await get("/v1/package-book/amendments/authorization", post({ amendment }));
+    assert.equal(amendmentChallengeResponse.status, 200, amendmentChallengeResponse.text);
+    const amendmentChallenge = amendmentChallengeResponse.body as { typedData: unknown };
+    const amendmentSignature = await owner.signTypedData(amendmentChallenge.typedData as never);
+    const amended = await get("/v1/package-book/amendments", post({
+      amendment,
+      authorization: { scheme: "EIP712_SECP256K1", signature: amendmentSignature },
+    }));
+    assert.equal(amended.status, 200, amended.text);
+    assert.equal((amended.body as { entry: { priceTicks: bigint } }).entry.priceTicks, 102n);
 
     const cancellation = { version: 1, executionClassId: CLASS, entryId: orderId, participantId };
     const cancellationChallengeResponse = await get("/v1/package-book/cancellations/authorization", post({ cancellation }));
