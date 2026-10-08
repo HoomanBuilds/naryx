@@ -74,7 +74,14 @@ export interface SolanaMultiStrategyEnvelope {
   readonly domain: DomainRef;
   readonly owner: PublicKey;
   readonly solver: PublicKey;
+  readonly packageId: Uint8Array;
   readonly orderHash: Uint8Array;
+  readonly graphHash: Uint8Array;
+  readonly quoteHash: Uint8Array;
+  readonly routeHash: Uint8Array;
+  readonly operation: SolanaStrategyOperation;
+  readonly previousStateHash: Uint8Array;
+  readonly nextStateHash: Uint8Array;
   readonly nonce: bigint;
   readonly deadlineSlot: bigint;
   readonly strategyAccount: PublicKey;
@@ -452,7 +459,14 @@ export function compileSolanaMultiStrategyAccountEnvelope(input: Readonly<{
     domain: plan.domain,
     owner,
     solver,
+    packageId: Uint8Array.from(packageId),
     orderHash: Uint8Array.from(hash32(compiled.orderHash, 'order hash')),
+    graphHash: Uint8Array.from(hash32(compiled.graphHash, 'graph hash')),
+    quoteHash: Uint8Array.from(hash32(compiled.quoteHash, 'quote hash')),
+    routeHash: Uint8Array.from(hash32(compiled.routeHash, 'route hash')),
+    operation,
+    previousStateHash: Uint8Array.from(previousStateHash),
+    nextStateHash: Uint8Array.from(nextStateHash),
     nonce: input.nonce,
     deadlineSlot: input.deadlineSlot,
     strategyAccount,

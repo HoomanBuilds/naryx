@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import type { CompiledStrategyExecution } from '@naryx/adapter-core';
 import {
@@ -13,6 +14,8 @@ import {
   compileSolanaMultiStrategyAccountEnvelope,
   compileSolanaNettingAllocationEnvelope,
   deriveSolanaMultiStrategyAccount,
+  observeSolanaNettingAllocation,
+  solanaMultiStrategyReceiptHash,
   type SolanaStrategyAdapterPolicy,
   type SolanaStrategyInstructionPlan,
 } from '../src/index.js';
@@ -153,6 +156,70 @@ function nettingAuthorization(
   });
 }
 
+function receiptData(
+  netting: ReturnType<typeof compileSolanaNettingAllocationEnvelope>,
+  slot: bigint,
+): Uint8Array {
+  const { envelope } = netting;
+  const evidenceRoot = hash(41);
+  const receiptHash = solanaMultiStrategyReceiptHash({
+    executionHash: envelope.executionHash,
+    callsHash: envelope.callsHash,
+    evidenceRoot,
+  });
+  const data = Buffer.alloc(532);
+  createHash('sha256').update('account:StrategyReceipt', 'ascii').digest().copy(data, 0, 0, 8);
+  let offset = 8;
+  data[offset++] = 1;
+  for (const value of [
+    envelope.packageId,
+    envelope.orderHash,
+    envelope.graphHash,
+    envelope.quoteHash,
+    envelope.routeHash,
+  ]) {
+    Buffer.from(value).copy(data, offset);
+    offset += 32;
+  }
+  data[offset++] = 0;
+  for (const value of [
+    envelope.previousStateHash,
+    envelope.nextStateHash,
+    envelope.callsHash,
+    evidenceRoot,
+    receiptHash,
+    netting.authorizationHash,
+  ]) {
+    Buffer.from(value).copy(data, offset);
+    offset += 32;
+  }
+  const fees = envelope.fees!;
+  data[offset++] = 0;
+  Buffer.from(fees.quoteAssetSubjectId).copy(data, offset);
+  offset += 32;
+  data.writeUInt32LE(fees.quoteAssetManifestVersion, offset);
+  offset += 4;
+  Buffer.from(fees.quoteAssetManifestHash).copy(data, offset);
+  offset += 32;
+  data.writeUInt32LE(fees.policyVersion, offset);
+  offset += 4;
+  Buffer.from(fees.policyManifestHash).copy(data, offset);
+  offset += 32;
+  data.writeBigUInt64LE(fees.protocolFeeAtoms, offset);
+  offset += 8;
+  data.writeBigUInt64LE(fees.solverFeeAtoms, offset);
+  offset += 8;
+  data.writeBigUInt64LE(envelope.nonce, offset);
+  offset += 8;
+  envelope.solver.toBuffer().copy(data, offset);
+  offset += 32;
+  data.writeBigUInt64LE(slot, offset);
+  offset += 8;
+  data[offset++] = 1;
+  assert.equal(offset, data.length);
+  return Uint8Array.from(data);
+}
+
 test('compiles a solver-authorized typed strategy instruction', () => {
   assert.equal(
     deriveSolanaMultiStrategyAccount({ programId: multiStrategyProgram, owner }).toBase58(),
@@ -230,5 +297,41 @@ test('rejects a netting authorization for another Solana call plan', () => {
       },
     }),
     /execution plan mismatch/,
+  );
+});
+
+test('observes only the exact finalized Solana netting execution', () => {
+  const envelope = compileSolanaMultiStrategyAccountEnvelope(baseInput());
+  const netting = compileSolanaNettingAllocationEnvelope({
+    envelope,
+    authorization: nettingAuthorization(envelope),
+  });
+  const slot = 490n;
+  const instruction = {
+    programId: netting.instruction.programId.toBase58(),
+    accounts: netting.instruction.keys.map((account) => account.pubkey.toBase58()),
+    data: Uint8Array.from(netting.instruction.data),
+  };
+  const account = {
+    address: envelope.receipt.toBase58(),
+    owner: netting.instruction.programId.toBase58(),
+    data: receiptData(netting, slot),
+  };
+  const observation = observeSolanaNettingAllocation({
+    netting,
+    slot,
+    instructions: [instruction],
+    receiptAccount: account,
+  });
+  assert.equal(observation.observedAtValue, slot);
+  assert.deepEqual(observation.authorizationHash, netting.authorizationHash);
+  assert.throws(
+    () => observeSolanaNettingAllocation({
+      netting,
+      slot,
+      instructions: [instruction],
+      receiptAccount: { ...account, data: receiptData(netting, slot + 1n) },
+    }),
+    /receipt differs/,
   );
 });

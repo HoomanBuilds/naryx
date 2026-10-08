@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { PublicKey } from '@solana/web3.js';
+import type { SolanaNettingAllocationEnvelope } from './multi-strategy-account.js';
 
 const ACCOUNT_DISCRIMINATOR = createHash('sha256')
   .update('account:StrategyReceipt', 'ascii')
@@ -71,6 +72,21 @@ export interface DecodedSolanaStrategyAdapterLegEvent {
   readonly adapterSubjectId: Uint8Array;
   readonly stage: number;
   readonly evidenceHash: Uint8Array;
+}
+
+export interface SolanaObservedNettingInstruction {
+  readonly programId: string;
+  readonly accounts: readonly string[];
+  readonly data: Uint8Array;
+}
+
+export interface SolanaNettingAllocationObservation {
+  readonly observedAtUnit: 'SOLANA_SLOT';
+  readonly observedAtValue: bigint;
+  readonly receiptAccount: string;
+  readonly receiptHash: Uint8Array;
+  readonly evidenceRoot: Uint8Array;
+  readonly authorizationHash: Uint8Array;
 }
 
 function fail(message: string): never {
@@ -198,5 +214,81 @@ export function decodeSolanaMultiStrategyReceipt(value: Uint8Array): DecodedSola
     solver,
     executionSlot,
     bump,
+  });
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return Buffer.from(left).equals(Buffer.from(right));
+}
+
+function sameAddresses(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+export function observeSolanaNettingAllocation(input: Readonly<{
+  netting: SolanaNettingAllocationEnvelope;
+  slot: bigint;
+  instructions: readonly SolanaObservedNettingInstruction[];
+  receiptAccount: Readonly<{ address: string; owner: string; data: Uint8Array }>;
+}>): SolanaNettingAllocationObservation {
+  if (input.slot <= 0n) fail('observation slot must be positive');
+  const expected = input.netting.instruction;
+  const expectedAccounts = expected.keys.map((account) => account.pubkey.toBase58());
+  const matchingInstructions = input.instructions.filter((instruction) =>
+    instruction.programId === expected.programId.toBase58()
+      && sameAddresses(instruction.accounts, expectedAccounts)
+      && sameBytes(instruction.data, expected.data));
+  if (matchingInstructions.length !== 1) fail('finalized transaction must contain the exact netting instruction once');
+  if (input.receiptAccount.address !== input.netting.envelope.receipt.toBase58()) {
+    fail('receipt account address is invalid');
+  }
+  if (input.receiptAccount.owner !== expected.programId.toBase58()) fail('receipt account owner is invalid');
+  const receipt = decodeSolanaMultiStrategyReceipt(input.receiptAccount.data);
+  const envelope = input.netting.envelope;
+  if (
+    !sameBytes(receipt.packageId, envelope.packageId)
+      || !sameBytes(receipt.orderHash, envelope.orderHash)
+      || !sameBytes(receipt.graphHash, envelope.graphHash)
+      || !sameBytes(receipt.quoteHash, envelope.quoteHash)
+      || !sameBytes(receipt.routeHash, envelope.routeHash)
+      || receipt.operation !== envelope.operation
+      || !sameBytes(receipt.previousStateHash, envelope.previousStateHash)
+      || !sameBytes(receipt.nextStateHash, envelope.nextStateHash)
+      || !sameBytes(receipt.callsHash, envelope.callsHash)
+      || !sameBytes(receipt.nettingAuthorizationHash, input.netting.authorizationHash)
+      || receipt.nonce !== envelope.nonce
+      || !receipt.solver.equals(envelope.solver)
+      || receipt.executionSlot !== input.slot
+  ) {
+    fail('stored receipt differs from the authorized netting execution');
+  }
+  const fees = envelope.fees;
+  if (fees === undefined) fail('authorized netting execution has no fee terms');
+  const direction = envelope.operation === 'ENTRY' || envelope.operation === 'INCREASE' ? 'ENTRY' : 'EXIT';
+  if (
+    receipt.fees.direction !== direction
+      || !sameBytes(receipt.fees.quoteAssetSubjectId, fees.quoteAssetSubjectId)
+      || receipt.fees.quoteAssetManifestVersion !== fees.quoteAssetManifestVersion
+      || !sameBytes(receipt.fees.quoteAssetManifestHash, fees.quoteAssetManifestHash)
+      || receipt.fees.policyVersion !== fees.policyVersion
+      || !sameBytes(receipt.fees.policyManifestHash, fees.policyManifestHash)
+      || receipt.fees.protocolFeeAtoms !== fees.protocolFeeAtoms
+      || receipt.fees.solverFeeAtoms !== fees.solverFeeAtoms
+  ) {
+    fail('stored receipt fee terms differ from the authorized netting execution');
+  }
+  const expectedReceiptHash = solanaMultiStrategyReceiptHash({
+    executionHash: envelope.executionHash,
+    callsHash: envelope.callsHash,
+    evidenceRoot: receipt.evidenceRoot,
+  });
+  if (!sameBytes(receipt.receiptHash, expectedReceiptHash)) fail('stored receipt hash is invalid');
+  return Object.freeze({
+    observedAtUnit: 'SOLANA_SLOT',
+    observedAtValue: input.slot,
+    receiptAccount: input.receiptAccount.address,
+    receiptHash: Uint8Array.from(receipt.receiptHash),
+    evidenceRoot: Uint8Array.from(receipt.evidenceRoot),
+    authorizationHash: Uint8Array.from(receipt.nettingAuthorizationHash),
   });
 }
