@@ -44,8 +44,10 @@ import {
   nettingPolicyManifest,
   nettingPolicyManifestHash,
   nettingResultHash,
+  nettingFinalAllocationReceipt,
   verifyNettingExternalExecutionEvidence,
   verifyNettingExternalExecutionIntent,
+  verifyNettingFinalAllocationReceipt,
   PACKAGE_SETTLEMENT_MAX_ALLOCATIONS,
   parseProtocolJson,
   protocolId,
@@ -88,6 +90,7 @@ import type {
   NettingResult,
   NettingExternalExecutionIntent,
   NettingExternalExecutionEvidence,
+  NettingFinalAllocationReceipt,
   SeriesExecutionClass,
   SeriesExecutionClassInput,
   SeriesExecutionClassSupportInput,
@@ -216,6 +219,7 @@ export interface PreparedNettingBatch {
   readonly result: NettingResult;
   readonly externalExecutions: readonly NettingExternalExecutionRecord[];
   readonly externalExecutionStatus: "NOT_REQUIRED" | "PENDING" | "EXACT_FILLED" | "RECOVERY_REQUIRED";
+  readonly finalAllocationReceipt?: NettingFinalAllocationReceipt;
   readonly packages: readonly PreparedNettingBatchPackage[];
   readonly recordedAtMs: number;
 }
@@ -424,6 +428,12 @@ CREATE TABLE IF NOT EXISTS netting_external_execution_evidence (
   evidence_json TEXT NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS netting_final_allocation_receipts (
+  proof_hash BLOB PRIMARY KEY REFERENCES netting_batches(proof_hash),
+  receipt_hash BLOB NOT NULL UNIQUE,
+  receipt_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
 CREATE TRIGGER IF NOT EXISTS reject_exchange_document_change
   BEFORE UPDATE ON exchange_documents
   BEGIN SELECT RAISE(ABORT, 'exchange documents are immutable'); END;
@@ -529,6 +539,12 @@ CREATE TRIGGER IF NOT EXISTS reject_netting_external_evidence_change
 CREATE TRIGGER IF NOT EXISTS reject_netting_external_evidence_delete
   BEFORE DELETE ON netting_external_execution_evidence
   BEGIN SELECT RAISE(ABORT, 'netting external execution evidence is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_final_allocation_receipt_change
+  BEFORE UPDATE ON netting_final_allocation_receipts
+  BEGIN SELECT RAISE(ABORT, 'netting final allocation receipts are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_final_allocation_receipt_delete
+  BEFORE DELETE ON netting_final_allocation_receipts
+  BEGIN SELECT RAISE(ABORT, 'netting final allocation receipts are append-only'); END;
 CREATE INDEX IF NOT EXISTS package_book_allocations_by_time ON package_book_allocations(execution_class_id, recorded_at_ms);
 CREATE INDEX IF NOT EXISTS package_book_reopening_obligations_by_order ON package_book_reopening_obligations(package_order_id);
 CREATE TABLE IF NOT EXISTS package_book_trades (
@@ -1725,7 +1741,8 @@ export class SqlitePackageExchangeStore {
         ) {
           throw new PackageExchangeStoreError("NETTING_BATCH_CONFLICT", "The proof hash is already bound to another netting batch.");
         }
-        return Object.freeze({ batch: existing, replayed: true });
+        this.ensureNettingFinalAllocationReceipt(proofHash);
+        return Object.freeze({ batch: this.nettingBatch(proofHash)!, replayed: true });
       }
       const recordedAtMs = this.clock();
       guarded("NETTING_PACKAGE_CONFLICT", "A package is already assigned to another prepared netting batch.", () => {
@@ -1762,7 +1779,10 @@ export class SqlitePackageExchangeStore {
           );
         }
       });
-      const externalExecutions = Object.freeze(externalIntents.map((intent) => Object.freeze({ intent })));
+      const externalExecutions: readonly NettingExternalExecutionRecord[] = Object.freeze(
+        externalIntents.map((intent) => Object.freeze({ intent })),
+      );
+      const finalAllocationReceipt = this.ensureNettingFinalAllocationReceipt(proofHash);
       return Object.freeze({
         batch: Object.freeze({
           status: "PREPARED" as const,
@@ -1771,6 +1791,7 @@ export class SqlitePackageExchangeStore {
           result: input.result,
           externalExecutions,
           externalExecutionStatus: nettingExternalExecutionStatus(externalExecutions),
+          ...(finalAllocationReceipt === undefined ? {} : { finalAllocationReceipt }),
           packages: Object.freeze(packages),
           recordedAtMs,
         }),
@@ -1844,7 +1865,7 @@ export class SqlitePackageExchangeStore {
       evidence_hash: unknown;
       evidence_json: unknown;
     }[];
-    const externalExecutions = Object.freeze(executionRows.map((entry) => {
+    const externalExecutions: readonly NettingExternalExecutionRecord[] = Object.freeze(executionRows.map((entry): NettingExternalExecutionRecord => {
       const intent = parseProtocolJson(jsonText(entry.intent_json, "intent_json")) as NettingExternalExecutionIntent;
       guarded("CORRUPT_ROW", "Stored external execution intent failed validation.", () =>
         verifyNettingExternalExecutionIntent(intent, result, policy));
@@ -1873,6 +1894,28 @@ export class SqlitePackageExchangeStore {
     ) {
       throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored external execution intents do not cover the exact net residuals.");
     }
+    const finalAllocationRow = this.db.prepare(`
+      SELECT receipt_hash, receipt_json
+      FROM netting_final_allocation_receipts
+      WHERE proof_hash = ?
+    `).get(proofHash) as { receipt_hash: unknown; receipt_json: unknown } | undefined;
+    let finalAllocationReceipt: NettingFinalAllocationReceipt | undefined;
+    if (finalAllocationRow !== undefined) {
+      finalAllocationReceipt = parseProtocolJson(
+        jsonText(finalAllocationRow.receipt_json, "receipt_json"),
+      ) as NettingFinalAllocationReceipt;
+      guarded("CORRUPT_ROW", "Stored final allocation receipt failed validation.", () =>
+        verifyNettingFinalAllocationReceipt(
+          finalAllocationReceipt!,
+          result,
+          policy,
+          externalExecutions.map((record) => record.intent),
+          externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
+        ));
+      if (!bytesEqual(finalAllocationReceipt.receiptHash, hashBytes(finalAllocationRow.receipt_hash, "receipt_hash"))) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored final allocation receipt identity is inconsistent.");
+      }
+    }
     return Object.freeze({
       status: "PREPARED",
       proofHashHex: toHex(proofHash),
@@ -1880,6 +1923,7 @@ export class SqlitePackageExchangeStore {
       result,
       externalExecutions,
       externalExecutionStatus: nettingExternalExecutionStatus(externalExecutions),
+      ...(finalAllocationReceipt === undefined ? {} : { finalAllocationReceipt }),
       packages,
       recordedAtMs,
     });
@@ -1914,6 +1958,7 @@ export class SqlitePackageExchangeStore {
         ) {
           throw new PackageExchangeStoreError("NETTING_EVIDENCE_CONFLICT", "External execution intent already has different terminal evidence.");
         }
+        this.ensureNettingFinalAllocationReceipt(proofHash);
         return Object.freeze({ evidence, replayed: true });
       }
       this.db.prepare(`
@@ -1921,8 +1966,34 @@ export class SqlitePackageExchangeStore {
           (evidence_hash, intent_hash, evidence_json, recorded_at_ms)
         VALUES (?, ?, ?, ?)
       `).run(evidence.evidenceHash, intent.intentHash, stringifyProtocolJson(evidence), this.clock());
+      this.ensureNettingFinalAllocationReceipt(proofHash);
       return Object.freeze({ evidence, replayed: false });
     });
+  }
+
+  private ensureNettingFinalAllocationReceipt(
+    proofHashInput: Uint8Array | string,
+  ): NettingFinalAllocationReceipt | undefined {
+    const proofHash = commitmentHash(proofHashInput);
+    const batch = this.nettingBatch(proofHash);
+    if (batch === undefined) throw new PackageExchangeStoreError("CORRUPT_ROW", "Netting batch disappeared.");
+    if (batch.finalAllocationReceipt !== undefined) return batch.finalAllocationReceipt;
+    if (batch.externalExecutionStatus !== "NOT_REQUIRED" && batch.externalExecutionStatus !== "EXACT_FILLED") {
+      return undefined;
+    }
+    const receipt = guarded("CORRUPT_ROW", "Final allocation receipt could not be derived.", () =>
+      nettingFinalAllocationReceipt(
+        batch.result,
+        batch.policy,
+        batch.externalExecutions.map((record) => record.intent),
+        batch.externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
+      ));
+    this.db.prepare(`
+      INSERT INTO netting_final_allocation_receipts
+        (proof_hash, receipt_hash, receipt_json, recorded_at_ms)
+      VALUES (?, ?, ?, ?)
+    `).run(proofHash, receipt.receiptHash, stringifyProtocolJson(receipt), this.clock());
+    return receipt;
   }
 
   settlementHandoff(allocationHash: Uint8Array | string): PackageSettlementHandoff | undefined {

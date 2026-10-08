@@ -286,23 +286,35 @@ export async function prepareAuthoritativeNettingBatch(
     .map((summary) => {
       const contributors = result.allocations
         .filter((allocation) => allocation.instrumentId === summary.instrumentId && allocation.externalQuantityAtoms !== 0n)
-        .map((allocation) => metadata.get(`${toHex(allocation.packageOrderId)}:${allocation.legId}`));
-      if (contributors.some((value) => value === undefined)) {
+        .map((allocation) => ({
+          allocation,
+          metadata: metadata.get(`${toHex(allocation.packageOrderId)}:${allocation.legId}`),
+        }));
+      if (contributors.some((value) => value.metadata === undefined)) {
         fail("INTERNAL_ERROR", `External residual ${summary.instrumentId} lost its source metadata.`);
       }
       const checked = contributors as {
-        maximumFeeQuoteAtoms: bigint;
-        validUntilUnit: ReturnType<typeof packageGraph>["expiryUnit"];
-        validUntilValue: bigint;
+        allocation: (typeof result.allocations)[number];
+        metadata: {
+          maximumFeeQuoteAtoms: bigint;
+          validUntilUnit: ReturnType<typeof packageGraph>["expiryUnit"];
+          validUntilValue: bigint;
+        };
       }[];
-      if (new Set(checked.map((value) => value.validUntilUnit)).size !== 1) {
+      if (new Set(checked.map((value) => value.metadata.validUntilUnit)).size !== 1) {
         fail("CLOCK_MISMATCH", `External residual ${summary.instrumentId} combines incompatible expiry clocks.`);
       }
       return nettingExternalExecutionIntent(result, policy, {
         instrumentId: summary.instrumentId,
-        validUntilUnit: checked[0]!.validUntilUnit,
-        validUntilValue: checked.reduce((minimum, value) => value.validUntilValue < minimum ? value.validUntilValue : minimum, checked[0]!.validUntilValue),
-        maximumFeeQuoteAtoms: checked.reduce((total, value) => total + value.maximumFeeQuoteAtoms, 0n),
+        validUntilUnit: checked[0]!.metadata.validUntilUnit,
+        validUntilValue: checked.reduce(
+          (minimum, value) => value.metadata.validUntilValue < minimum ? value.metadata.validUntilValue : minimum,
+          checked[0]!.metadata.validUntilValue,
+        ),
+        sourceFeeCaps: checked.map((value) => ({
+          obligationId: value.allocation.obligationId,
+          maximumFeeQuoteAtoms: value.metadata.maximumFeeQuoteAtoms,
+        })),
       });
     });
   return exchange.recordPreparedNettingBatch({

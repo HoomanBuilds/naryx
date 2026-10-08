@@ -186,6 +186,7 @@ test("owner authorization and prepared netting evidence are immutable and replay
     assert.equal(created.batch.status, "PREPARED");
     assert.equal(created.batch.result.underlyings[0]?.externalNetAtoms, 0n);
     assert.equal(created.batch.externalExecutionStatus, "NOT_REQUIRED");
+    assert.ok(created.batch.finalAllocationReceipt);
     assert.equal(store.recordPreparedNettingBatch({ policy, result, externalIntents: [], packages }).replayed, true);
     assert.deepEqual(store.nettingBatch(created.batch.proofHashHex), created.batch);
 
@@ -209,7 +210,10 @@ test("owner authorization and prepared netting evidence are immutable and replay
       instrumentId: instrument.instrumentId,
       validUntilUnit: "SOLANA_SLOT",
       validUntilValue: 2_000n,
-      maximumFeeQuoteAtoms: 2n,
+      sourceFeeCaps: [{
+        obligationId: residual.allocations[0]!.obligationId,
+        maximumFeeQuoteAtoms: 2n,
+      }],
     });
     const residualPackage = [{
       packageOrderIdHex: secondMaker.orderId as string,
@@ -239,7 +243,9 @@ test("owner authorization and prepared netting evidence are immutable and replay
     }, intent);
     assert.equal(store.recordVerifiedNettingExternalExecutionEvidence(evidence).replayed, false);
     assert.equal(store.recordVerifiedNettingExternalExecutionEvidence(evidence).replayed, true);
-    assert.equal(store.nettingBatch(residual.proofHash)?.externalExecutionStatus, "EXACT_FILLED");
+    const finalized = store.nettingBatch(residual.proofHash);
+    assert.equal(finalized?.externalExecutionStatus, "EXACT_FILLED");
+    assert.ok(finalized?.finalAllocationReceipt);
   });
 });
 
