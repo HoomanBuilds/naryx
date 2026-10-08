@@ -134,7 +134,8 @@ describe('package matching policy', () => {
   });
 
   test('unimplemented or inconsistent policies fail closed', () => {
-    assert.throws(() => packageMatchingPolicy({ ...POLICY_INPUT, maximumImplicationDepth: 2 }), RangeViolationError);
+    assert.equal(packageMatchingPolicy({ ...POLICY_INPUT, maximumImplicationDepth: 2 }).maximumImplicationDepth, 2);
+    assert.throws(() => packageMatchingPolicy({ ...POLICY_INPUT, maximumImplicationDepth: 5 }), RangeViolationError);
     assert.throws(() => packageMatchingPolicy({ ...POLICY_INPUT, minimumExecutionQuantity: 15n }), MalformedInputError);
     assert.throws(() => packageMatchingPolicy({ ...POLICY_INPUT, quantityIncrement: 0n }), MalformedInputError);
     assert.throws(() => packageMatchingPolicy({ ...POLICY_INPUT, matchingPolicyVersion: 2 }), MalformedInputError);
@@ -424,6 +425,14 @@ describe('implied liquidity', () => {
       solverCommitment: id(88),
     });
     assert.throws(() => withImplied(resting, selfDerived), /cannot source another implied package/);
+  });
+
+  test('admission rejects an implied quote whose identity was forged', () => {
+    const quote = impliedAsk(1, 1);
+    assert.throws(
+      () => withImplied(emptyPackageBook(policy), { ...quote, priceTicks: quote.priceTicks + 1n }),
+      /entry id does not bind/,
+    );
   });
 });
 

@@ -283,6 +283,8 @@ export {
   encodePackageMatchingPolicy,
   packageMatchingPolicyBytes,
   packageMatchingPolicyHash,
+  impliedPackageQuote,
+  verifyImpliedPackageQuote,
   deriveImpliedPackageQuote,
   emptyPackageBook,
   packageBookEntry,
@@ -320,6 +322,7 @@ export {
   type ImpliedLegSourceInput,
   type ImpliedPackageQuoteInput,
   type ImpliedPackageQuote,
+  type ImpliedPackageQuoteBodyInput,
   type PackageBookEntry,
   type PackageBookState,
   type ImpliedLiquidityInput,
@@ -333,6 +336,23 @@ export {
   type PackageMatchResult,
   type PackageBookLevel,
 } from './package-matching.js';
+
+export {
+  PACKAGE_IMPLICATION_PROOF_VERSION,
+  PACKAGE_IMPLICATION_MAX_COMPONENTS,
+  PACKAGE_IMPLICATION_MAX_ANCESTORS,
+  derivePackageImplicationProof,
+  verifyPackageImplicationProof,
+  addMultiPackageImpliedLiquidity,
+  type PackageExposureComponentInput,
+  type PackageSeriesExposureInput,
+  type PackageSeriesExposure,
+  type PackageImplicationSourceInput,
+  type PackageImplicationSource,
+  type PackageImplicationProofInput,
+  type PackageImplicationProof,
+  type MultiPackageImpliedLiquidityInput,
+} from './package-implication.js';
 
 export {
   PACKAGE_BOOK_HALT_VERSION,

@@ -32,8 +32,7 @@ export const PACKAGE_ALLOCATION_VERSION = 1;
 export const PACKAGE_BOOK_CANCELLATION_VERSION = 1;
 export const PACKAGE_BOOK_AMENDMENT_VERSION = 1;
 export const IMPLIED_PACKAGE_QUOTE_VERSION = 1;
-// Multi-package implication stays gated until bounded-depth conservation proofs exist.
-export const PACKAGE_MATCHING_MAX_IMPLICATION_DEPTH = 1;
+export const PACKAGE_MATCHING_MAX_IMPLICATION_DEPTH = 4;
 export const PACKAGE_IMPLIED_MAX_SOURCES = 16;
 
 const U8_BITS = 8;
@@ -292,6 +291,17 @@ export interface ImpliedPackageQuote {
   readonly solverCommitment?: CommitmentHash;
 }
 
+export interface ImpliedPackageQuoteBodyInput {
+  readonly executionClassId: string;
+  readonly side: PackageBookSide;
+  readonly evidence: ImplicationEvidence;
+  readonly priceTicks: bigint;
+  readonly quantity: bigint;
+  readonly derivationDepth: number;
+  readonly sources: readonly ImpliedSourceRef[];
+  readonly solverCommitment?: Uint8Array | string;
+}
+
 function opposite(side: PackageBookSide): PackageBookSide {
   return side === 'BID' ? 'ASK' : 'BID';
 }
@@ -321,6 +331,89 @@ function encodeImpliedSources(writer: CanonicalWriter, sources: readonly Implied
     },
     context,
   );
+}
+
+export function impliedPackageQuote(
+  input: ImpliedPackageQuoteBodyInput,
+  context = 'impliedPackageQuote',
+): ImpliedPackageQuote {
+  object(input, context);
+  const executionClassId = protocolId(input.executionClassId, `${context}.executionClassId`);
+  const side = variant(PACKAGE_BOOK_SIDE, input.side, `${context}.side`);
+  const evidence = variant(IMPLICATION_EVIDENCE, input.evidence, `${context}.evidence`);
+  const priceTicks = signedTicks(input.priceTicks, `${context}.priceTicks`);
+  const quantity = positive(input.quantity, U128_BITS, `${context}.quantity`);
+  if (!Number.isInteger(input.derivationDepth) || input.derivationDepth < 1
+    || input.derivationDepth > PACKAGE_MATCHING_MAX_IMPLICATION_DEPTH) {
+    throw new RangeViolationError(`${context}.derivationDepth`, 'implication depth is outside the implemented bound');
+  }
+  if (!Array.isArray(input.sources) || input.sources.length === 0 || input.sources.length > PACKAGE_IMPLIED_MAX_SOURCES) {
+    throw new MalformedInputError(`${context}.sources`, 'implied liquidity needs a bounded nonempty source list');
+  }
+  const seen = new Set<string>();
+  const sources = input.sources.map((source, index) => {
+    const at = `${context}.sources[${index}]`;
+    object(source, at);
+    const sourceId = protocolId(source.sourceId, `${at}.sourceId`);
+    if (seen.has(sourceId)) throw new DuplicateElementError(`${context}.sources`, 'duplicate implied source');
+    seen.add(sourceId);
+    const reservationId = source.reservationId === undefined
+      ? undefined
+      : commitmentHash(source.reservationId, `${at}.reservationId`);
+    if (evidence === 'RESERVATION_BACKED_IMPLIED' && reservationId === undefined) {
+      throw new MalformedInputError(`${at}.reservationId`, 'reservation-backed implication needs every source reserved');
+    }
+    return Object.freeze({
+      sourceId,
+      sourceVersion: bigintIn(source.sourceVersion, U64_BITS, `${at}.sourceVersion`),
+      ...(reservationId === undefined ? {} : { reservationId }),
+    });
+  });
+  const solverCommitment = input.solverCommitment === undefined
+    ? undefined
+    : commitmentHash(input.solverCommitment, `${context}.solverCommitment`);
+  if ((evidence === 'SOLVER_BACKED_IMPLIED') !== (solverCommitment !== undefined)) {
+    throw new MalformedInputError(`${context}.solverCommitment`, 'a solver commitment is required exactly for solver-backed implication');
+  }
+  const body = {
+    executionClassId,
+    side,
+    evidence,
+    priceTicks,
+    quantity,
+    derivationDepth: input.derivationDepth,
+    sources: Object.freeze(sources),
+    ...(solverCommitment === undefined ? {} : { solverCommitment }),
+  };
+  const bytes = canonicalBytes((writer) => {
+    writer.writeU32(IMPLIED_PACKAGE_QUOTE_VERSION, `${context}.version`);
+    encodeProtocolId(writer, executionClassId, `${context}.executionClassId`);
+    writer.writeEnum(PACKAGE_BOOK_SIDE, side, `${context}.side`);
+    writer.writeEnum(IMPLICATION_EVIDENCE, evidence, `${context}.evidence`);
+    writer.writeI128(priceTicks, `${context}.priceTicks`);
+    writer.writeU128(quantity, `${context}.quantity`);
+    writer.writeU8(body.derivationDepth, `${context}.derivationDepth`);
+    encodeImpliedSources(writer, body.sources, `${context}.sources`);
+    writer.writeOptional(solverCommitment, (inner, value) =>
+      encodeCommitmentHash(inner, value, `${context}.solverCommitment`),
+    );
+  });
+  return Object.freeze({
+    entryId: commitmentHash(domainHash(HASH_DOMAIN.IMPLIED_PACKAGE_QUOTE, bytes), `${context}.entryId`),
+    ...body,
+  });
+}
+
+export function verifyImpliedPackageQuote(
+  input: ImpliedPackageQuote,
+  context = 'verifyImpliedPackageQuote',
+): ImpliedPackageQuote {
+  object(input, context);
+  const expected = impliedPackageQuote(input, context);
+  if (compareBytes(expected.entryId, commitmentHash(input.entryId, `${context}.entryId`)) !== 0) {
+    throw new MalformedInputError(`${context}.entryId`, 'entry id does not bind the implied quote');
+  }
+  return expected;
 }
 
 /**
@@ -393,33 +486,16 @@ export function deriveImpliedPackageQuote(
   if ((evidence === 'SOLVER_BACKED_IMPLIED') !== (solverCommitment !== undefined)) {
     throw new MalformedInputError(`${context}.solverCommitment`, 'a solver commitment is required exactly for solver-backed implication');
   }
-  const body = {
+  return impliedPackageQuote({
     executionClassId,
     side,
     evidence,
     priceTicks,
     quantity: executable,
     derivationDepth: 1,
-    sources: Object.freeze(sources),
+    sources,
     ...(solverCommitment === undefined ? {} : { solverCommitment }),
-  };
-  const bytes = canonicalBytes((writer) => {
-    writer.writeU32(IMPLIED_PACKAGE_QUOTE_VERSION, `${context}.version`);
-    encodeProtocolId(writer, executionClassId, `${context}.executionClassId`);
-    writer.writeEnum(PACKAGE_BOOK_SIDE, side, `${context}.side`);
-    writer.writeEnum(IMPLICATION_EVIDENCE, evidence, `${context}.evidence`);
-    writer.writeI128(priceTicks, `${context}.priceTicks`);
-    writer.writeU128(executable, `${context}.quantity`);
-    writer.writeU8(body.derivationDepth, `${context}.derivationDepth`);
-    encodeImpliedSources(writer, body.sources, `${context}.sources`);
-    writer.writeOptional(solverCommitment, (inner, value) =>
-      encodeCommitmentHash(inner, value, `${context}.solverCommitment`),
-    );
-  });
-  return Object.freeze({
-    entryId: commitmentHash(domainHash(HASH_DOMAIN.IMPLIED_PACKAGE_QUOTE, bytes), `${context}.entryId`),
-    ...body,
-  });
+  }, context);
 }
 
 // ------------------------------------------------------------------ book state
@@ -466,7 +542,10 @@ export function emptyPackageBook(policy: PackageMatchingPolicy): PackageBookStat
 
 function checkedEntry(policy: PackageMatchingPolicy, input: PackageBookEntry, context: string): PackageBookEntry {
   object(input, context);
+  const entryId = commitmentHash(input.entryId, `${context}.entryId`);
+  const side = variant(PACKAGE_BOOK_SIDE, input.side, `${context}.side`);
   const source = variant(PACKAGE_LIQUIDITY_SOURCE, input.source, `${context}.source`);
+  const priceTicks = signedTicks(input.priceTicks, `${context}.priceTicks`);
   const quantity = positive(input.quantity, U128_BITS, `${context}.quantity`);
   multipleOf(quantity, policy.quantityIncrement, `${context}.quantity`);
   const minimumFillQuantity = positive(input.minimumFillQuantity, U128_BITS, `${context}.minimumFillQuantity`);
@@ -523,14 +602,27 @@ function checkedEntry(policy: PackageMatchingPolicy, input: PackageBookEntry, co
       sources: Object.freeze(checkedSources),
       ...(solverCommitment === undefined ? {} : { solverCommitment }),
     });
+    const expected = impliedPackageQuote({
+      executionClassId: policy.executionClassId,
+      side,
+      evidence: implied.evidence,
+      priceTicks,
+      quantity,
+      derivationDepth: implied.derivationDepth,
+      sources: implied.sources,
+      ...(implied.solverCommitment === undefined ? {} : { solverCommitment: implied.solverCommitment }),
+    }, `${context}.quote`);
+    if (compareBytes(entryId, expected.entryId) !== 0) {
+      throw new MalformedInputError(`${context}.entryId`, 'entry id does not bind the implied quote');
+    }
   }
   const expiresAtValue =
     input.expiresAtValue === undefined ? undefined : bigintIn(input.expiresAtValue, U64_BITS, `${context}.expiresAtValue`);
   return Object.freeze({
-    entryId: commitmentHash(input.entryId, `${context}.entryId`),
-    side: variant(PACKAGE_BOOK_SIDE, input.side, `${context}.side`),
+    entryId,
+    side,
     source,
-    priceTicks: signedTicks(input.priceTicks, `${context}.priceTicks`),
+    priceTicks,
     quantity,
     minimumFillQuantity,
     sequence: positive(input.sequence, U64_BITS, `${context}.sequence`),
@@ -651,8 +743,7 @@ export function addImpliedLiquidity(
 ): { readonly state: PackageBookState; readonly entry: PackageBookEntry } {
   const { policy: checked, state: book } = bookFor(policy, stateInput, context);
   object(input, context);
-  const quote = input.quote;
-  object(quote, `${context}.quote`);
+  const quote = verifyImpliedPackageQuote(input.quote, `${context}.quote`);
   if (quote.executionClassId !== checked.executionClassId) {
     throw new MalformedInputError(`${context}.quote`, 'implied quote is outside the book execution class');
   }

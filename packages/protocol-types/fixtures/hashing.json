@@ -54,6 +54,7 @@
     { "name": "package-settlement-readiness-shared-payload", "domain": "CON/v1/package-settlement-readiness", "payloadHex": "deadbeef", "digestHex": "748f70468bae3407f98cb17deabbda107ed378aeb77406d236809299836975a6" },
     { "name": "package-quote-execution-binding-shared-payload", "domain": "CON/v1/package-quote-execution-binding", "payloadHex": "deadbeef", "digestHex": "271b0e5aa1860d0ee449b042ed3ae683676fa7aad4249d53b130cf263815e29f" },
     { "name": "implied-package-quote-shared-payload", "domain": "CON/v1/implied-package-quote", "payloadHex": "deadbeef", "digestHex": "c71834e1884ff4d7cf5fe295887e971d0df04fddc27acc37d91c020f49adcea7" },
+    { "name": "package-implication-proof-shared-payload", "domain": "CON/v1/package-implication-proof", "payloadHex": "deadbeef", "digestHex": "fc7c6e2789ab0a9bd96b7fd8454de78145ac8f8aa52d3d4b4bdc21bc0162919e" },
     { "name": "package-allocation-shared-payload", "domain": "CON/v1/package-allocation", "payloadHex": "deadbeef", "digestHex": "f36bb2a7456fe3483e928476811d4be01d396adb5c15f1d1ba9eafd3c755b439" },
     { "name": "package-reopening-snapshot-shared-payload", "domain": "CON/v1/package-reopening-snapshot", "payloadHex": "deadbeef", "digestHex": "be82b1bb7314e2feba32b1a2e1f3dfb93469454cfe806ab137f4d6af5c70a5a9" },
     { "name": "package-reopening-result-shared-payload", "domain": "CON/v1/package-reopening-result", "payloadHex": "deadbeef", "digestHex": "c807860aa2dcfb04d7f89792a84d20e0b8015d4018fb78c9da633d03cdc0c7df" },
