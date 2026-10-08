@@ -782,6 +782,13 @@ export {
   type BaseSepoliaResidualReceipt,
 } from './base-sepolia-netting-residual-chain.js';
 export {
+  BASE_SEPOLIA_NETTING_RESIDUAL_CONFIG_VERSION,
+  BASE_SEPOLIA_NETTING_RESIDUAL_ENABLED_ENV,
+  BaseSepoliaNettingResidualLaneRegistry,
+  loadBaseSepoliaNettingResidualRuntime,
+  type BaseSepoliaNettingResidualLoadedRuntime,
+} from './base-sepolia-netting-residual-config.js';
+export {
   HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH,
   createHyperliquidNettingResidualExecutionInternalHandler,
 } from './hyperliquid-netting-residual-execution-http.js';
