@@ -4632,7 +4632,7 @@ export function GeneralizedStrategyPreparationPanel({
     setNettingAuthorizationHash("");
     setNettingExecutionReference("");
     try {
-      if (evmLane) {
+      if (executionDomain === "base") {
         if (strategyOwner === null || signEvmStrategyExecution === undefined
           || sendEvmTransaction === undefined || waitForEvmReceipt === undefined) {
           throw new Error("Connect the EVM wallet on the selected strategy testnet.");
@@ -6342,7 +6342,7 @@ export function GeneralizedStrategyPreparationPanel({
                 className={styles.primaryAction}
                 disabled={privateApiBaseUrl === null || nettingBusy !== null || nettingPackageSettled
                   || pendingNettingAllocationHashes.length === 0 || nettingExecutionReference !== ""
-                  || (!evmLane && !solanaLane)}
+                  || (!solanaLane && executionDomain !== "base")}
                 onClick={() => void executeNettingAllocation()}
               >
                 {nettingBusy === "EXECUTE" ? "Submitting bound allocation"
@@ -6360,6 +6360,8 @@ export function GeneralizedStrategyPreparationPanel({
               <p className={styles.fieldContext} role="status">
                 {nettingPackageSettled
                   ? "Every final allocation for this package domain has authoritative settlement evidence."
+                  : executionDomain === "arbitrum"
+                    ? "Arbitrum allocations use the bonded asynchronous coordinator and are not submitted through this synchronous wallet path."
                   : nettingExecutionReference !== ""
                     ? "The submitted testnet transaction is durably bound. Refresh finality before signing the next allocation."
                     : "Each final allocation is independently wallet-authorized against the batch proof and settlement-bound quote."}
