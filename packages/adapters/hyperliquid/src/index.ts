@@ -29,6 +29,7 @@ import {
 } from './wire-format.js';
 
 export * from './strategy-planner.js';
+export * from './netting-residual.js';
 export {
   formatHypercorePrice,
   formatHypercoreSize,
