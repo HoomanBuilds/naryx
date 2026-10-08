@@ -113,6 +113,7 @@ import {
 } from "./reference-history.js";
 import type { DomainId } from "./terminal-types.js";
 import type { StrategyExecutionLaneCapability } from "./strategy-program-view.js";
+import { loadDependencyIncidentStatusClient } from "./dependency-incident-status-client.js";
 import {
   createHyperliquidGeneralizedOrderPort,
   loadHyperliquidGeneralizedOrderProfile,
@@ -202,6 +203,7 @@ const orderRuntime = startup.localAtomicRuntimeMode === "PHASE4_FIXTURE"
       manifestRuntime.readSlot,
     );
 const solverOrigin = process.env.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788";
+const dependencyIncidentStatus = loadDependencyIncidentStatusClient(process.env);
 const solverClient = new HttpInternalSolverQuoteClient(solverOrigin);
 const generalizedStrategyPreparationSetting = process.env.NARYX_GENERALIZED_STRATEGY_PREPARATION_ENABLED ?? "false";
 if (generalizedStrategyPreparationSetting !== "true" && generalizedStrategyPreparationSetting !== "false") {
@@ -1178,6 +1180,7 @@ const server = createPrivateTerminalServer(
   solanaStrategyExecutionAuthorization,
   solanaStrategyExecutionObservation,
   nettingAllocationAuthorization,
+  dependencyIncidentStatus,
 );
 
 const publicServer = publicMarket?.listener === undefined

@@ -554,6 +554,15 @@ export {
   type PrivateTerminalServerConfig,
 } from "./http-server.js";
 export {
+  HttpDependencyIncidentStatusClient,
+  loadDependencyIncidentStatusClient,
+  parseDependencyIncidentStatus,
+  type DependencyIncidentScopeStatus,
+  type DependencyIncidentState,
+  type DependencyIncidentStatusPort,
+  type DependencyIncidentStatusSnapshot,
+} from "./dependency-incident-status-client.js";
+export {
   strategyProgramView,
   type StrategyExecutionLaneCapability,
   type StrategyProgramActivation,

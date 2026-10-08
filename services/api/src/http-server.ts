@@ -87,6 +87,10 @@ import {
   type HyperliquidTestnetRuntimeConfig,
 } from "./hyperliquid-testnet-runtime-client.js";
 import type { HyperliquidTestnetTerminalContext } from "./hyperliquid-testnet-order-context.js";
+import type {
+  DependencyIncidentStatusPort,
+  DependencyIncidentStatusSnapshot,
+} from "./dependency-incident-status-client.js";
 import {
   ExecutionReadinessError,
   type ExecutionHandoff,
@@ -417,6 +421,7 @@ export function createPrivateTerminalRequestHandler(
   solanaStrategyExecutionAuthorization?: SolanaStrategyExecutionAuthorizationPort,
   solanaStrategyExecutionObservation?: SolanaStrategyExecutionObservationPort,
   nettingAllocationAuthorization?: NettingAllocationAuthorizationPort,
+  dependencyIncidentStatus?: DependencyIncidentStatusPort,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -762,7 +767,21 @@ export function createPrivateTerminalRequestHandler(
           currentExecutionReadinessAvailable = false;
         }
       }
-      const currentStatus = executionReadinessAvailable && !currentExecutionReadinessAvailable
+      let dependencyIncidents: DependencyIncidentStatusSnapshot | undefined;
+      let dependencyIncidentStatusAvailable = false;
+      if (dependencyIncidentStatus !== undefined) {
+        try {
+          dependencyIncidents = await dependencyIncidentStatus.current();
+          dependencyIncidentStatusAvailable = true;
+        } catch {
+          dependencyIncidents = undefined;
+        }
+      }
+      const dependencyIncidentStatusHealthy = dependencyIncidents !== undefined &&
+        dependencyIncidents.unavailableScopeCount === 0 &&
+        dependencyIncidents.scopes.every((scope) => scope.evidenceFresh);
+      const currentStatus = (executionReadinessAvailable && !currentExecutionReadinessAvailable) ||
+          (dependencyIncidentStatus !== undefined && !dependencyIncidentStatusHealthy)
         ? "degraded"
         : summary.status;
       sendJson(response, 200, {
@@ -780,6 +799,8 @@ export function createPrivateTerminalRequestHandler(
         evmTestnetAsyncObservationAvailable: evmTestnetPorts.asyncObservation !== undefined && currentExecutionReadinessAvailable,
         executionReadinessAvailable: currentExecutionReadinessAvailable,
         ...(executionReadiness === undefined ? {} : { executionReadiness }),
+        dependencyIncidentStatusAvailable,
+        ...(dependencyIncidents === undefined ? {} : { dependencyIncidents }),
         lifecycleReadAvailable: lifecycleStore !== undefined,
         solverQuotingAvailable: solverQuotePort !== undefined,
         executionIntentAvailable: executionIntentStore !== undefined,
@@ -2983,6 +3004,7 @@ export function createPrivateTerminalServer(
   solanaStrategyExecutionAuthorization?: SolanaStrategyExecutionAuthorizationPort,
   solanaStrategyExecutionObservation?: SolanaStrategyExecutionObservationPort,
   nettingAllocationAuthorization?: NettingAllocationAuthorizationPort,
+  dependencyIncidentStatus?: DependencyIncidentStatusPort,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -3025,6 +3047,7 @@ export function createPrivateTerminalServer(
     solanaStrategyExecutionAuthorization,
     solanaStrategyExecutionObservation,
     nettingAllocationAuthorization,
+    dependencyIncidentStatus,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as
