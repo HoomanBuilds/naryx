@@ -28,6 +28,14 @@ export {
   type StrategyQuoteSigner,
 } from './strategy-quote-builder.js';
 export {
+  PortfolioOptimizationService,
+  PortfolioOptimizationServiceError,
+  type PortfolioOptimizationRequest,
+  type PortfolioOptimizationServiceErrorCode,
+  type PortfolioOptimizer,
+  type SelectedPortfolioOptimization,
+} from './portfolio-optimization-service.js';
+export {
   HttpNettingAllocationAdminClient,
   NettingAllocationAdminClientError,
   type NettingAllocationPreparation,
