@@ -120,6 +120,10 @@ import {
   prepareAuthoritativeNettingBatch,
 } from "./authoritative-netting.js";
 import {
+  HyperliquidNettingResidualExecutionClientError,
+} from "./hyperliquid-netting-residual-execution-client.js";
+import type { NettingExecutionCoordinator } from "./netting-execution-coordinator.js";
+import {
   isEvmPackageBookParticipant,
   packageAmendmentAuthorizationTypedData,
   packageCancellationAuthorizationTypedData,
@@ -294,6 +298,8 @@ export interface PublicApiOptions {
   readonly strategyOrderIntake?: StrategyOrderIntakePort;
   /** Optional: requests a signed quote from the loopback reference solver for a stored order. */
   readonly strategyQuotes?: GeneralizedStrategyQuotePort;
+  /** Optional: executes already authorized Testnet residual intents through the loopback solver. */
+  readonly nettingExecution?: Pick<NettingExecutionCoordinator, "execute">;
   /** Builder manifests and attributions; without it the builder routes answer 503. */
   readonly builders?: Pick<SqliteBuilderStore, "registerManifest" | "latest" | "attribute" | "attributions" | "revenue">;
   /** Cross-domain coordinations and manual recovery incidents; without it those routes answer 503. */
@@ -477,6 +483,13 @@ export function createPublicApiHandler(options: PublicApiOptions) {
   function requireStrategyQuotes(): GeneralizedStrategyQuotePort {
     if (options.strategyQuotes === undefined) throw new RequestError(503, "STRATEGY_QUOTES_UNAVAILABLE", "No generalized strategy quote service is configured on this server.");
     return options.strategyQuotes;
+  }
+
+  function requireNettingExecution(): Pick<NettingExecutionCoordinator, "execute"> {
+    if (options.nettingExecution === undefined) {
+      throw new RequestError(503, "NETTING_EXECUTION_UNAVAILABLE", "Netting residual execution is disabled.");
+    }
+    return options.nettingExecution;
   }
 
   function wallClockIn(unit: string): bigint {
@@ -1432,6 +1445,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     const path = url.pathname;
     const privateRfqAcceptanceMatch = /^\/v1\/rfqs\/private\/([0-9a-f]{64})\/accept$/.exec(path);
     const sealedAuctionAwardMatch = /^\/v1\/auctions\/sealed\/([0-9a-f]{64})\/award$/.exec(path);
+    const nettingExecutionMatch = /^\/v1\/netting\/batches\/([0-9a-f]{64})\/execute$/.exec(path);
     if (![
       "/v1/orders/validate",
       "/v1/routes/replay-decision",
@@ -1467,10 +1481,31 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/strategies/commands",
       "/v1/builders",
       "/v1/builders/attributions",
-    ].includes(path) && sealedAuctionAwardMatch === null && privateRfqAcceptanceMatch === null) {
+    ].includes(path) && sealedAuctionAwardMatch === null && privateRfqAcceptanceMatch === null
+      && nettingExecutionMatch === null) {
       throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
     }
     const body = object(await readProtocolBody(request), "Request body");
+    if (nettingExecutionMatch !== null) {
+      if (Object.keys(body).length !== 0) {
+        throw new RequestError(400, "INVALID_REQUEST", "A netting execution request has no caller-selected fields.");
+      }
+      const proofHash = nettingExecutionMatch[1] as string;
+      if (exchange.nettingBatch(proofHash) === undefined) {
+        throw new RequestError(404, "NETTING_BATCH_NOT_FOUND", "No prepared netting batch exists for this proof hash.");
+      }
+      try {
+        return await requireNettingExecution().execute(proofHash);
+      } catch (error) {
+        if (error instanceof HyperliquidNettingResidualExecutionClientError) {
+          if (error.code === "EVIDENCE_PENDING") {
+            throw new RequestError(409, "NETTING_EVIDENCE_PENDING", error.message);
+          }
+          throw new RequestError(502, "NETTING_EXECUTION_FAILED", error.message);
+        }
+        throw error;
+      }
+    }
     if (privateRfqAcceptanceMatch !== null) {
       if (Object.keys(body).length !== 0) {
         throw new RequestError(400, "INVALID_REQUEST", "A private RFQ acceptance request has no caller-selected fields.");

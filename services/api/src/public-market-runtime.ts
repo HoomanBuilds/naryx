@@ -29,6 +29,8 @@ import { createCoordinationInternalHandler, SqliteCoordinationStore } from "./co
 import { createStrategyPackageInternalHandler, SqliteStrategyPackageStore } from "./strategy-package-store.js";
 import { createPackageReopeningAdminHandler } from "./package-reopening-admin.js";
 import { HttpGeneralizedStrategyQuoteClient } from "./generalized-strategy-quote-client.js";
+import { HttpHyperliquidNettingResidualExecutionClient } from "./hyperliquid-netting-residual-execution-client.js";
+import { NettingExecutionCoordinator } from "./netting-execution-coordinator.js";
 import { applyPublicMarketBootstrap, loadPublicMarketBootstrap } from "./public-market-bootstrap.js";
 import {
   createStrategyOrderIntake,
@@ -451,6 +453,26 @@ export function loadPublicMarketRuntime(
         environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
       )
       : undefined;
+    const nettingExecutionSetting = environment.NARYX_HYPERLIQUID_TESTNET_NETTING_EXECUTION_ENABLED
+      ?? "false";
+    if (nettingExecutionSetting !== "true" && nettingExecutionSetting !== "false") {
+      throw new PublicMarketConfigError(
+        "NARYX_HYPERLIQUID_TESTNET_NETTING_EXECUTION_ENABLED must be true or false.",
+      );
+    }
+    if (nettingExecutionSetting === "true" && publicEnvironment !== "testnet") {
+      throw new PublicMarketConfigError(
+        "Hyperliquid Testnet netting execution requires NARYX_PUBLIC_ENVIRONMENT=testnet.",
+      );
+    }
+    const nettingExecution = nettingExecutionSetting === "true"
+      ? new NettingExecutionCoordinator(
+        store,
+        new HttpHyperliquidNettingResidualExecutionClient(
+          environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
+        ),
+      )
+      : undefined;
     const pinnedSuiteIds = (environment.NARYX_RFQ_PINNED_SUITES ?? "").split(",").map((value) => value.trim()).filter((value) => value !== "");
     const nowValue = support.clockUnit === "UNIX_SECONDS"
       ? () => BigInt(Math.floor(clockMs() / 1_000))
@@ -482,6 +504,7 @@ export function loadPublicMarketRuntime(
       ...(strategyPackages === undefined ? {} : { strategyPackageSources: strategyPackages }),
       ...(strategyPackages === undefined ? {} : { strategyPackageExecutions: strategyPackages }),
       ...(strategyQuotes === undefined ? {} : { strategyQuotes }),
+      ...(nettingExecution === undefined ? {} : { nettingExecution }),
       ...(builders === undefined ? {} : { builders }),
       ...(keeper === undefined ? {} : { health: keeper }),
       ...(coordination === undefined ? {} : { coordination }),
