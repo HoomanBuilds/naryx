@@ -7,6 +7,7 @@ import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import {NaryxMultiStrategyAccount} from "../src/NaryxMultiStrategyAccount.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
+import {RiskDomainRegistry} from "../src/RiskDomainRegistry.sol";
 import {SolverRegistry} from "../src/SolverRegistry.sol";
 import {StrategyFeePolicyRegistry} from "../src/StrategyFeePolicyRegistry.sol";
 import {TypedStrategyAdapterRegistry} from "../src/TypedStrategyAdapterRegistry.sol";
@@ -64,6 +65,11 @@ contract NaryxMultiStrategyAccountTest is Test {
     bytes32 private constant TEMPLATE_MANIFEST_HASH = keccak256("funding-spread-template-v1");
     bytes32 private constant FEE_POLICY_SUBJECT_ID = keccak256("multi-strategy-fees");
     bytes32 private constant FEE_POLICY_MANIFEST_HASH = keccak256("multi-strategy-fees-v1");
+    bytes32 private constant RISK_DOMAIN_ID = keccak256("sol-relative-value");
+    bytes32 private constant RISK_POLICY_MANIFEST_HASH = keccak256("sol-relative-value-v1");
+    bytes32 private constant SERIES_ID = keccak256("sol-funding-spread");
+    bytes32 private constant SERIES_MANIFEST_HASH = keccak256("sol-funding-spread-v1");
+    bytes32 private constant DEPENDENCY_ID = ADAPTER_ID;
     bytes32 private constant STATE_ONE = keccak256("state-one");
     bytes32 private constant EVIDENCE_ONE = keccak256("evidence-one");
     bytes32 private constant EVIDENCE_TWO = keccak256("evidence-two");
@@ -82,6 +88,7 @@ contract NaryxMultiStrategyAccountTest is Test {
     SolverRegistry private solvers;
     TypedStrategyAdapterRegistry private adapters;
     StrategyFeePolicyRegistry private feePolicies;
+    RiskDomainRegistry private riskDomains;
     NaryxMultiStrategyAccount private account;
     MultiStrategyToken private base;
     MultiStrategyToken private quote;
@@ -94,9 +101,12 @@ contract NaryxMultiStrategyAccountTest is Test {
         solvers = new SolverRegistry(config, solver);
         adapters = new TypedStrategyAdapterRegistry(config);
         feePolicies = new StrategyFeePolicyRegistry(config);
+        riskDomains = new RiskDomainRegistry(config);
         base = new MultiStrategyToken("Base", "BASE");
         quote = new MultiStrategyToken("Quote", "QUOTE");
-        account = new NaryxMultiStrategyAccount(owner, config, solvers, adapters, feePolicies, FEE_POLICY_SUBJECT_ID);
+        account = new NaryxMultiStrategyAccount(
+            owner, config, solvers, adapters, feePolicies, riskDomains, FEE_POLICY_SUBJECT_ID
+        );
         adapter = new MultiStrategyAdapter(address(account), base, quote);
 
         vm.prank(PROPOSER);
@@ -109,6 +119,11 @@ contract NaryxMultiStrategyAccountTest is Test {
         vm.warp(block.timestamp + 1);
         vm.prank(GOVERNANCE_EXECUTOR);
         feePolicies.activate(FEE_POLICY_SUBJECT_ID);
+        vm.prank(PROPOSER);
+        riskDomains.proposePolicy(RISK_DOMAIN_ID, _riskPolicy(), _riskSeriesSet(), _riskDependencyLimits());
+        vm.warp(block.timestamp + 1);
+        vm.prank(GOVERNANCE_EXECUTOR);
+        riskDomains.activate(RISK_DOMAIN_ID);
         vm.prank(PROPOSER);
         config.scheduleUnpause();
         vm.warp(block.timestamp + 1);
@@ -153,6 +168,24 @@ contract NaryxMultiStrategyAccountTest is Test {
 
         vm.expectRevert(StrategyFeePolicyRegistry.FeeExceedsPolicy.selector);
         account.execute(execution, calls, ownerSignature, solverSignature);
+    }
+
+    function testRiskDomainRejectsExposureBeforeAdapterExecution() public {
+        NaryxMultiStrategyAccount.Execution memory execution = _execution(account.ENTER(), bytes32(0), STATE_ONE, 0);
+        execution.risk.netQuoteAtoms = 101 ether;
+        NaryxMultiStrategyAccount.AdapterCall[] memory calls = _calls(
+            true,
+            address(quote),
+            25 ether,
+            abi.encode(uint8(1), IERC20(address(quote)), RECIPIENT, 25 ether, EVIDENCE_ONE)
+        );
+
+        bytes memory ownerSignature = _sign(ownerKey, account.ownerDigest(execution, calls));
+        bytes memory solverSignature = _sign(solverKey, account.solverDigest(execution, calls));
+        vm.expectRevert(RiskDomainRegistry.RiskLimitExceeded.selector);
+        account.execute(execution, calls, ownerSignature, solverSignature);
+        assertEq(quote.balanceOf(RECIPIENT), 0);
+        assertEq(account.nextNonce(), 0);
     }
 
     function testExecutesFundingSpreadLifecycleAndClearsAllowance() public {
@@ -252,6 +285,9 @@ contract NaryxMultiStrategyAccountTest is Test {
             abi.encode(uint8(2), IERC20(address(quote)), RECIPIENT, 25 ether, EVIDENCE_TWO)
         );
         execution.totalGrossNotionalAtoms = 100 ether;
+        execution.risk.grossQuoteAtoms = 100 ether;
+        execution.risk.marginQuoteAtoms = 20 ether;
+        execution.risk.dependencyExposures[0].grossQuoteAtoms = 100 ether;
         bytes memory ownerSignature = _sign(ownerKey, account.ownerDigest(execution, calls));
         bytes memory solverSignature = _sign(solverKey, account.solverDigest(execution, calls));
 
@@ -474,6 +510,7 @@ contract NaryxMultiStrategyAccountTest is Test {
             previousStateHash: previousState,
             nextStateHash: nextState,
             totalGrossNotionalAtoms: 50 ether,
+            risk: _riskTerms(),
             fees: NaryxMultiStrategyAccount.FeeTerms({
                 policyVersion: 1,
                 policyManifestHash: FEE_POLICY_MANIFEST_HASH,
@@ -537,6 +574,54 @@ contract NaryxMultiStrategyAccountTest is Test {
             maximumSolverFeeBps: 15,
             paused: false
         });
+    }
+
+    function _riskTerms() private view returns (NaryxMultiStrategyAccount.RiskTerms memory terms) {
+        RiskDomainRegistry.DependencyExposure[] memory dependencies = new RiskDomainRegistry.DependencyExposure[](1);
+        dependencies[0] = RiskDomainRegistry.DependencyExposure(DEPENDENCY_ID, 50 ether);
+        terms = NaryxMultiStrategyAccount.RiskTerms({
+            riskDomainId: RISK_DOMAIN_ID,
+            policyVersion: 1,
+            policyManifestHash: RISK_POLICY_MANIFEST_HASH,
+            series: RiskDomainRegistry.SeriesRef(SERIES_ID, 1, SERIES_MANIFEST_HASH),
+            accountingToken: address(quote),
+            grossQuoteAtoms: 50 ether,
+            netQuoteAtoms: 10 ether,
+            marginQuoteAtoms: 10 ether,
+            reservedRecoveryQuoteAtoms: 5 ether,
+            observationAgeMs: 100,
+            timeToUnwindMs: 2_000,
+            dependencyExposures: dependencies
+        });
+    }
+
+    function _riskPolicy() private view returns (RiskDomainRegistry.PolicyConfig memory) {
+        return RiskDomainRegistry.PolicyConfig({
+            manifestVersion: 1,
+            manifestHash: RISK_POLICY_MANIFEST_HASH,
+            domainManifestVersion: 1,
+            domainManifestHash: DOMAIN_HASH,
+            accountingToken: address(quote),
+            expectedTokenCodeHash: address(quote).codehash,
+            grossCapQuoteAtoms: 1_000 ether,
+            netCapQuoteAtoms: 100 ether,
+            minimumMarginFloorQuoteAtoms: 10 ether,
+            maximumLeverageBps: 50_000,
+            maximumStalenessMs: 5_000,
+            maximumTimeToUnwindMs: 60_000,
+            requiredRecoveryReserveQuoteAtoms: 5 ether,
+            aggregateHaircutBps: 3_000
+        });
+    }
+
+    function _riskSeriesSet() private pure returns (RiskDomainRegistry.SeriesRef[] memory series) {
+        series = new RiskDomainRegistry.SeriesRef[](1);
+        series[0] = RiskDomainRegistry.SeriesRef(SERIES_ID, 1, SERIES_MANIFEST_HASH);
+    }
+
+    function _riskDependencyLimits() private pure returns (RiskDomainRegistry.DependencyLimit[] memory dependencies) {
+        dependencies = new RiskDomainRegistry.DependencyLimit[](1);
+        dependencies[0] = RiskDomainRegistry.DependencyLimit(DEPENDENCY_ID, 1_000 ether);
     }
 
     function _sign(uint256 key, bytes32 digest) private view returns (bytes memory) {

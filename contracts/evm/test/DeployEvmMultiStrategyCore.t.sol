@@ -29,6 +29,7 @@ contract DeployEvmMultiStrategyCoreTest is Test {
 
         assertEq(address(deployment.adapterRegistry.config()), address(config));
         assertEq(address(deployment.feePolicyRegistry.config()), address(config));
+        assertEq(address(deployment.riskDomainRegistry.config()), address(config));
         assertEq(address(deployment.accountFactory.config()), address(config));
         assertEq(address(deployment.accountFactory.solverRegistry()), address(solverRegistry));
         assertEq(address(deployment.accountFactory.adapterRegistry()), address(deployment.adapterRegistry));

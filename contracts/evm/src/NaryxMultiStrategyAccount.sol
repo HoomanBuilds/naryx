@@ -7,6 +7,7 @@ import {ECDSA} from "openzeppelin-contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "openzeppelin-contracts/utils/cryptography/MessageHashUtils.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/utils/ReentrancyGuard.sol";
 import {ProtocolConfig} from "./ProtocolConfig.sol";
+import {RiskDomainRegistry} from "./RiskDomainRegistry.sol";
 import {SolverRegistry} from "./SolverRegistry.sol";
 import {StrategyFeePolicyRegistry} from "./StrategyFeePolicyRegistry.sol";
 import {TypedStrategyAdapterRegistry} from "./TypedStrategyAdapterRegistry.sol";
@@ -56,10 +57,26 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         bytes32 previousStateHash;
         bytes32 nextStateHash;
         uint256 totalGrossNotionalAtoms;
+        RiskTerms risk;
         FeeTerms fees;
         address solver;
         uint256 nonce;
         uint256 deadline;
+    }
+
+    struct RiskTerms {
+        bytes32 riskDomainId;
+        uint32 policyVersion;
+        bytes32 policyManifestHash;
+        RiskDomainRegistry.SeriesRef series;
+        address accountingToken;
+        uint256 grossQuoteAtoms;
+        uint256 netQuoteAtoms;
+        uint256 marginQuoteAtoms;
+        uint256 reservedRecoveryQuoteAtoms;
+        uint64 observationAgeMs;
+        uint64 timeToUnwindMs;
+        RiskDomainRegistry.DependencyExposure[] dependencyExposures;
     }
 
     struct FeeTerms {
@@ -84,6 +101,10 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
 
     struct PackageState {
         TypedStrategyAdapterRegistry.TemplateRef template;
+        bytes32 riskDomainId;
+        uint32 riskPolicyVersion;
+        bytes32 riskPolicyManifestHash;
+        RiskDomainRegistry.SeriesRef series;
         bytes32 stateHash;
         bytes32 lastReceiptHash;
         bool active;
@@ -100,6 +121,9 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         bytes32 nextStateHash;
         bytes32 callsHash;
         bytes32 evidenceRoot;
+        bytes32 riskDomainId;
+        uint32 riskPolicyVersion;
+        bytes32 riskPolicyManifestHash;
         FeeTerms fees;
         uint256 nonce;
         address solver;
@@ -182,6 +206,7 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
     SolverRegistry public immutable solverRegistry;
     TypedStrategyAdapterRegistry public immutable adapterRegistry;
     StrategyFeePolicyRegistry public immutable feePolicyRegistry;
+    RiskDomainRegistry public immutable riskDomainRegistry;
     bytes32 public immutable feePolicySubjectId;
     uint256 public immutable deploymentChainId;
     bytes32 public immutable deploymentDomainIdHash;
@@ -189,6 +214,7 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
     bytes32 public immutable solverRegistryCodeHash;
     bytes32 public immutable adapterRegistryCodeHash;
     bytes32 public immutable feePolicyRegistryCodeHash;
+    bytes32 public immutable riskDomainRegistryCodeHash;
 
     uint256 public nextNonce;
     uint256 public nextCollateralNonce;
@@ -202,15 +228,17 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         SolverRegistry solverRegistry_,
         TypedStrategyAdapterRegistry adapterRegistry_,
         StrategyFeePolicyRegistry feePolicyRegistry_,
+        RiskDomainRegistry riskDomainRegistry_,
         bytes32 feePolicySubjectId_
     ) {
         if (
             owner_ == address(0) || owner_ == address(this) || address(config_).code.length == 0
                 || address(solverRegistry_).code.length == 0 || address(adapterRegistry_).code.length == 0
-                || address(feePolicyRegistry_).code.length == 0 || feePolicySubjectId_ == bytes32(0)
-                || address(solverRegistry_.config()) != address(config_)
+                || address(feePolicyRegistry_).code.length == 0 || address(riskDomainRegistry_).code.length == 0
+                || feePolicySubjectId_ == bytes32(0) || address(solverRegistry_.config()) != address(config_)
                 || address(adapterRegistry_.config()) != address(config_)
                 || address(feePolicyRegistry_.config()) != address(config_)
+                || address(riskDomainRegistry_.config()) != address(config_)
         ) revert InvalidConfiguration();
         (string memory domainId,,) = config_.domain();
         owner = owner_;
@@ -219,6 +247,7 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         solverRegistry = solverRegistry_;
         adapterRegistry = adapterRegistry_;
         feePolicyRegistry = feePolicyRegistry_;
+        riskDomainRegistry = riskDomainRegistry_;
         feePolicySubjectId = feePolicySubjectId_;
         deploymentChainId = block.chainid;
         deploymentDomainIdHash = keccak256(bytes(domainId));
@@ -226,6 +255,7 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         solverRegistryCodeHash = address(solverRegistry_).codehash;
         adapterRegistryCodeHash = address(adapterRegistry_).codehash;
         feePolicyRegistryCodeHash = address(feePolicyRegistry_).codehash;
+        riskDomainRegistryCodeHash = address(riskDomainRegistry_).codehash;
     }
 
     function packageState(bytes32 packageId) external view returns (PackageState memory) {
@@ -435,6 +465,9 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
             nextStateHash: execution.nextStateHash,
             callsHash: callCommitment,
             evidenceRoot: evidenceRoot,
+            riskDomainId: execution.risk.riskDomainId,
+            riskPolicyVersion: execution.risk.policyVersion,
+            riskPolicyManifestHash: execution.risk.policyManifestHash,
             fees: execution.fees,
             nonce: execution.nonce,
             solver: execution.solver
@@ -445,6 +478,10 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         } else {
             PackageState storage state = _packages[execution.packageId];
             state.template = execution.template;
+            state.riskDomainId = execution.risk.riskDomainId;
+            state.riskPolicyVersion = execution.risk.policyVersion;
+            state.riskPolicyManifestHash = execution.risk.policyManifestHash;
+            state.series = execution.risk.series;
             state.stateHash = execution.nextStateHash;
             state.lastReceiptHash = receiptHash;
             state.active = true;
@@ -559,6 +596,7 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
                 || address(solverRegistry).codehash != solverRegistryCodeHash
                 || address(adapterRegistry).codehash != adapterRegistryCodeHash
                 || address(feePolicyRegistry).codehash != feePolicyRegistryCodeHash
+                || address(riskDomainRegistry).codehash != riskDomainRegistryCodeHash
         ) revert InvalidConfiguration();
         if (
             execution.packageId == bytes32(0) || execution.orderHash == bytes32(0) || execution.graphHash == bytes32(0)
@@ -613,6 +651,61 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         }
         if (grossNotionalAtoms != execution.totalGrossNotionalAtoms) revert InvalidExecution();
         if (hasRiskIncreasingCall && config.entryPaused()) revert EntryPaused();
+        _validateRisk(execution, calls, hasRiskIncreasingCall);
+    }
+
+    function _validateRisk(Execution calldata execution, AdapterCall[] calldata calls, bool riskIncreasing)
+        private
+        view
+    {
+        RiskTerms calldata risk = execution.risk;
+        if (
+            risk.riskDomainId == bytes32(0) || risk.policyVersion == 0 || risk.policyManifestHash == bytes32(0)
+                || risk.series.seriesId == bytes32(0) || risk.series.manifestVersion == 0
+                || risk.series.manifestHash == bytes32(0) || risk.accountingToken == address(0)
+        ) revert InvalidExecution();
+        if (riskIncreasing) {
+            if (risk.grossQuoteAtoms != execution.totalGrossNotionalAtoms) revert InvalidExecution();
+            for (uint256 callIndex; callIndex < calls.length; ++callIndex) {
+                if (!calls[callIndex].riskIncreasing) continue;
+                bool covered;
+                for (uint256 dependencyIndex; dependencyIndex < risk.dependencyExposures.length; ++dependencyIndex) {
+                    if (risk.dependencyExposures[dependencyIndex].dependencyId == calls[callIndex].adapter.subjectId) {
+                        covered = true;
+                        break;
+                    }
+                }
+                if (!covered) revert InvalidExecution();
+            }
+            for (uint256 dependencyIndex; dependencyIndex < risk.dependencyExposures.length; ++dependencyIndex) {
+                RiskDomainRegistry.DependencyExposure calldata exposure = risk.dependencyExposures[dependencyIndex];
+                uint256 executionExposure;
+                for (uint256 callIndex; callIndex < calls.length; ++callIndex) {
+                    if (calls[callIndex].riskIncreasing && calls[callIndex].adapter.subjectId == exposure.dependencyId) executionExposure += calls[callIndex].grossNotionalAtoms;
+                }
+                if (exposure.grossQuoteAtoms < executionExposure) revert InvalidExecution();
+            }
+            riskDomainRegistry.validateEntry(
+                risk.riskDomainId,
+                risk.policyVersion,
+                risk.policyManifestHash,
+                risk.series,
+                RiskDomainRegistry.EntryRisk({
+                    accountingToken: risk.accountingToken,
+                    grossQuoteAtoms: risk.grossQuoteAtoms,
+                    netQuoteAtoms: risk.netQuoteAtoms,
+                    marginQuoteAtoms: risk.marginQuoteAtoms,
+                    reservedRecoveryQuoteAtoms: risk.reservedRecoveryQuoteAtoms,
+                    observationAgeMs: risk.observationAgeMs,
+                    timeToUnwindMs: risk.timeToUnwindMs
+                }),
+                risk.dependencyExposures
+            );
+        } else {
+            riskDomainRegistry.validateExit(
+                risk.riskDomainId, risk.policyVersion, risk.policyManifestHash, risk.series, risk.accountingToken
+            );
+        }
     }
 
     function _nettingDigest(
@@ -640,6 +733,12 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
                 || state.template.templateId != execution.template.templateId
                 || state.template.templateVersion != execution.template.templateVersion
                 || state.template.templateManifestHash != execution.template.templateManifestHash
+                || state.riskDomainId != execution.risk.riskDomainId
+                || state.riskPolicyVersion != execution.risk.policyVersion
+                || state.riskPolicyManifestHash != execution.risk.policyManifestHash
+                || state.series.seriesId != execution.risk.series.seriesId
+                || state.series.manifestVersion != execution.risk.series.manifestVersion
+                || state.series.manifestHash != execution.risk.series.manifestHash
         ) revert InvalidPackageState();
         if ((execution.operation == EXIT || execution.operation == EMERGENCY_UNWIND)
                 ? execution.nextStateHash != bytes32(0)

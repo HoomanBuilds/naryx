@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {Create2} from "openzeppelin-contracts/utils/Create2.sol";
 import {NaryxMultiStrategyAccount} from "./NaryxMultiStrategyAccount.sol";
 import {ProtocolConfig} from "./ProtocolConfig.sol";
+import {RiskDomainRegistry} from "./RiskDomainRegistry.sol";
 import {SolverRegistry} from "./SolverRegistry.sol";
 import {StrategyFeePolicyRegistry} from "./StrategyFeePolicyRegistry.sol";
 import {TypedStrategyAdapterRegistry} from "./TypedStrategyAdapterRegistry.sol";
@@ -14,12 +15,14 @@ contract NaryxMultiStrategyAccountFactory is INaryxMultiStrategyAccountFactory {
     SolverRegistry public immutable solverRegistry;
     TypedStrategyAdapterRegistry public immutable adapterRegistry;
     StrategyFeePolicyRegistry public immutable feePolicyRegistry;
+    RiskDomainRegistry public immutable riskDomainRegistry;
     bytes32 public immutable feePolicySubjectId;
     uint256 public immutable deploymentChainId;
     bytes32 public immutable configCodeHash;
     bytes32 public immutable solverRegistryCodeHash;
     bytes32 public immutable adapterRegistryCodeHash;
     bytes32 public immutable feePolicyRegistryCodeHash;
+    bytes32 public immutable riskDomainRegistryCodeHash;
     address public immutable referenceAccount;
     bytes32 public immutable override accountCodeHash;
 
@@ -36,30 +39,41 @@ contract NaryxMultiStrategyAccountFactory is INaryxMultiStrategyAccountFactory {
         SolverRegistry solverRegistry_,
         TypedStrategyAdapterRegistry adapterRegistry_,
         StrategyFeePolicyRegistry feePolicyRegistry_,
+        RiskDomainRegistry riskDomainRegistry_,
         bytes32 feePolicySubjectId_
     ) {
         if (
             address(config_).code.length == 0 || address(solverRegistry_).code.length == 0
                 || address(adapterRegistry_).code.length == 0 || address(feePolicyRegistry_).code.length == 0
-                || feePolicySubjectId_ == bytes32(0) || address(solverRegistry_.config()) != address(config_)
+                || address(riskDomainRegistry_).code.length == 0 || feePolicySubjectId_ == bytes32(0)
+                || address(solverRegistry_.config()) != address(config_)
                 || address(adapterRegistry_.config()) != address(config_)
                 || address(feePolicyRegistry_.config()) != address(config_)
+                || address(riskDomainRegistry_.config()) != address(config_)
         ) revert InvalidConfiguration();
 
         config = config_;
         solverRegistry = solverRegistry_;
         adapterRegistry = adapterRegistry_;
         feePolicyRegistry = feePolicyRegistry_;
+        riskDomainRegistry = riskDomainRegistry_;
         feePolicySubjectId = feePolicySubjectId_;
         deploymentChainId = block.chainid;
         configCodeHash = address(config_).codehash;
         solverRegistryCodeHash = address(solverRegistry_).codehash;
         adapterRegistryCodeHash = address(adapterRegistry_).codehash;
         feePolicyRegistryCodeHash = address(feePolicyRegistry_).codehash;
+        riskDomainRegistryCodeHash = address(riskDomainRegistry_).codehash;
 
         address referenceAccount_ = address(
             new NaryxMultiStrategyAccount(
-                address(this), config_, solverRegistry_, adapterRegistry_, feePolicyRegistry_, feePolicySubjectId_
+                address(this),
+                config_,
+                solverRegistry_,
+                adapterRegistry_,
+                feePolicyRegistry_,
+                riskDomainRegistry_,
+                feePolicySubjectId_
             )
         );
         referenceAccount = referenceAccount_;
@@ -72,7 +86,15 @@ contract NaryxMultiStrategyAccountFactory is INaryxMultiStrategyAccountFactory {
             keccak256(
                 abi.encodePacked(
                     type(NaryxMultiStrategyAccount).creationCode,
-                    abi.encode(owner, config, solverRegistry, adapterRegistry, feePolicyRegistry, feePolicySubjectId)
+                    abi.encode(
+                        owner,
+                        config,
+                        solverRegistry,
+                        adapterRegistry,
+                        feePolicyRegistry,
+                        riskDomainRegistry,
+                        feePolicySubjectId
+                    )
                 )
             )
         );
@@ -85,7 +107,13 @@ contract NaryxMultiStrategyAccountFactory is INaryxMultiStrategyAccountFactory {
         if (predicted.code.length == 0) {
             address created = address(
                 new NaryxMultiStrategyAccount{salt: _salt(owner)}(
-                    owner, config, solverRegistry, adapterRegistry, feePolicyRegistry, feePolicySubjectId
+                    owner,
+                    config,
+                    solverRegistry,
+                    adapterRegistry,
+                    feePolicyRegistry,
+                    riskDomainRegistry,
+                    feePolicySubjectId
                 )
             );
             if (created != predicted || created.codehash != accountCodeHash) revert AccountCodeMismatch();
@@ -102,6 +130,7 @@ contract NaryxMultiStrategyAccountFactory is INaryxMultiStrategyAccountFactory {
                 || address(solverRegistry).codehash != solverRegistryCodeHash
                 || address(adapterRegistry).codehash != adapterRegistryCodeHash
                 || address(feePolicyRegistry).codehash != feePolicyRegistryCodeHash
+                || address(riskDomainRegistry).codehash != riskDomainRegistryCodeHash
         ) revert InvalidConfiguration();
     }
 

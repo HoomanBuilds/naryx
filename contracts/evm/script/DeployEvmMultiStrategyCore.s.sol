@@ -5,6 +5,7 @@ import {Script} from "forge-std/Script.sol";
 import {Strings} from "openzeppelin-contracts/utils/Strings.sol";
 import {NaryxMultiStrategyAccountFactory} from "../src/NaryxMultiStrategyAccountFactory.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
+import {RiskDomainRegistry} from "../src/RiskDomainRegistry.sol";
 import {SolverRegistry} from "../src/SolverRegistry.sol";
 import {StrategyFeePolicyRegistry} from "../src/StrategyFeePolicyRegistry.sol";
 import {TypedStrategyAdapterRegistry} from "../src/TypedStrategyAdapterRegistry.sol";
@@ -24,6 +25,7 @@ contract DeployEvmMultiStrategyCore is Script {
     struct Deployment {
         TypedStrategyAdapterRegistry adapterRegistry;
         StrategyFeePolicyRegistry feePolicyRegistry;
+        RiskDomainRegistry riskDomainRegistry;
         NaryxMultiStrategyAccountFactory accountFactory;
     }
 
@@ -56,11 +58,13 @@ contract DeployEvmMultiStrategyCore is Script {
 
         deployment.adapterRegistry = new TypedStrategyAdapterRegistry(parameters.config);
         deployment.feePolicyRegistry = new StrategyFeePolicyRegistry(parameters.config);
+        deployment.riskDomainRegistry = new RiskDomainRegistry(parameters.config);
         deployment.accountFactory = new NaryxMultiStrategyAccountFactory(
             parameters.config,
             parameters.solverRegistry,
             deployment.adapterRegistry,
             deployment.feePolicyRegistry,
+            deployment.riskDomainRegistry,
             parameters.feePolicySubjectId
         );
     }
