@@ -887,12 +887,17 @@ export {
   type NotSubmittedSubmission,
 } from './hyperliquid-testnet-runtime.js';
 export {
+  HyperliquidNettingResidualTestnetHttpEvidence,
   HyperliquidStrategyTestnetHttpEvidence,
   HyperliquidTestnetHttpStructuralEvidence,
   SOLVER_TESTNET_EVIDENCE_PREPARE_PATH,
   SOLVER_TESTNET_EVIDENCE_RECONCILE_PATH,
+  SOLVER_TESTNET_NETTING_RESIDUAL_EVIDENCE_RECONCILE_PATH,
   SOLVER_TESTNET_STRATEGY_EVIDENCE_RECONCILE_PATH,
   createHyperliquidTestnetLoopbackCoordinator,
+  type HyperliquidNettingResidualEvidenceBinding,
+  type HyperliquidNettingResidualEvidenceCollectInput,
+  type HyperliquidNettingResidualEvidenceResult,
   type HyperliquidStrategyEvidenceCollectInput,
   type HyperliquidStrategyEvidenceLeg,
   type HyperliquidStrategyEvidenceResult,

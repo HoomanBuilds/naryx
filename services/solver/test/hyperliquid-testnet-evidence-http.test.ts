@@ -4,10 +4,12 @@ import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import { parseProtocolJson, stringifyProtocolJson } from '@naryx/protocol-types';
 import {
+  HyperliquidNettingResidualTestnetHttpEvidence,
   HyperliquidStrategyTestnetHttpEvidence,
   HyperliquidTestnetHttpStructuralEvidence,
   SOLVER_TESTNET_EVIDENCE_PREPARE_PATH,
   SOLVER_TESTNET_EVIDENCE_RECONCILE_PATH,
+  SOLVER_TESTNET_NETTING_RESIDUAL_EVIDENCE_RECONCILE_PATH,
   SOLVER_TESTNET_STRATEGY_EVIDENCE_RECONCILE_PATH,
   createHyperliquidTestnetLoopbackCoordinator,
 } from '../src/hyperliquid-testnet-evidence-http.js';
@@ -415,6 +417,67 @@ test('generalized strategy evidence preserves canonical leg fill atoms', async (
     assert.equal(result.status, 'COMPLETE');
     assert.equal(result.legs[0]?.filledSignedBaseAtoms, 100n);
     assert.equal(result.legs[0]?.venueFeeQuoteAtoms, 6n);
+  } finally {
+    await server.close();
+  }
+});
+
+test('netting residual evidence preserves terminal quantity and fee atoms', async () => {
+  const server = await startServer((captured, request, response) => {
+    assert.equal(request.method, 'POST');
+    assert.equal(request.url, SOLVER_TESTNET_NETTING_RESIDUAL_EVIDENCE_RECONCILE_PATH);
+    const decoded = parseProtocolJson(captured.rawBody,
+      'test.netting-residual.reconcile.request') as Record<string, unknown>;
+    assert.deepEqual(Object.keys(decoded).sort(), [
+      'account', 'actionHash', 'attemptId', 'binding', 'clientOrderId',
+      'durableRevision', 'instrumentHash', 'intentHash', 'plan',
+      'requestCommitment', 'window',
+    ]);
+    jsonResponse(response, 200, stringifyProtocolJson({
+      status: 'COMPLETE',
+      observation: {
+        clientOrderId: `0x${'31'.repeat(16)}`,
+        terminalStatus: 'FILLED',
+        filledSignedQuantityAtoms: 100n,
+        grossQuoteAtoms: 600n,
+        feeQuoteAtoms: 2n,
+        submittedAtMs: 949_900n,
+        observedAtMs: 949_999n,
+        executionReferenceHash: `0x${'41'.repeat(32)}`,
+        authoritativeEvidenceHash: `0x${'42'.repeat(32)}`,
+      },
+      rawResponseCommitments: [],
+    }, 'test.netting-residual.reconcile.response'));
+  });
+  try {
+    const client = new HyperliquidNettingResidualTestnetHttpEvidence({
+      keeperOrigin: server.origin,
+    });
+    const result = await client.collect({
+      handoff: {
+        collector: 'HYPERLIQUID_TESTNET_AUTHORITATIVE_EVIDENCE',
+        attemptId: 'net-residual-attempt-1',
+        account: account as never,
+        actionHash: `0x${'aa'.repeat(32)}`,
+        actionCommitmentScheme: 'NARYX_CANONICAL_HYPERCORE_ACTION_SHA256_V1',
+        requestCommitment: `0x${'bb'.repeat(32)}`,
+        durableRevision: 'sqlite-net-residual-v1:1',
+        clientOrderId: `0x${'31'.repeat(16)}`,
+        intentHash: new Uint8Array(32).fill(2) as never,
+        instrumentHash: new Uint8Array(32).fill(3) as never,
+      },
+      binding: {
+        assetId: 3,
+        marketKind: 'PERPETUAL',
+        baseFeeToken: 'SOL',
+        quoteFeeToken: 'USDC',
+      },
+      plan: planFixture() as never,
+      window,
+    });
+    assert.equal(result.status, 'COMPLETE');
+    assert.equal(result.observation.filledSignedQuantityAtoms, 100n);
+    assert.equal(result.observation.feeQuoteAtoms, 2n);
   } finally {
     await server.close();
   }

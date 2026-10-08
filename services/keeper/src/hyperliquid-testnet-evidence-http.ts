@@ -14,11 +14,17 @@ import type {
   HyperliquidStrategyAuthoritativeEvidenceCollector,
   HyperliquidStrategyEvidenceRequest,
 } from './hyperliquid-strategy-evidence.js';
+import type {
+  HyperliquidNettingResidualAuthoritativeEvidenceCollector,
+  HyperliquidNettingResidualEvidenceRequest,
+} from './hyperliquid-netting-residual-evidence.js';
 
 export const KEEPER_TESTNET_PREPARE_PATH = '/internal/keeper/hyperliquid-testnet/prepare';
 export const KEEPER_TESTNET_RECONCILE_PATH = '/internal/keeper/hyperliquid-testnet/reconcile';
 export const KEEPER_TESTNET_STRATEGY_RECONCILE_PATH =
   '/internal/keeper/hyperliquid-testnet/strategy/reconcile';
+export const KEEPER_TESTNET_NETTING_RESIDUAL_RECONCILE_PATH =
+  '/internal/keeper/hyperliquid-testnet/netting-residual/reconcile';
 
 const MAX_BODY_BYTES = 65_536;
 
@@ -30,6 +36,7 @@ export interface KeeperServerConfig {
 export interface HyperliquidTestnetEvidenceHttpPorts {
   readonly runtime: Pick<HyperliquidTestnetEvidenceRuntime, 'prepare' | 'reconcile'>;
   readonly strategy?: Pick<HyperliquidStrategyAuthoritativeEvidenceCollector, 'collect'>;
+  readonly nettingResidual?: Pick<HyperliquidNettingResidualAuthoritativeEvidenceCollector, 'collect'>;
 }
 
 class KeeperRequestError extends Error {
@@ -170,6 +177,23 @@ function parseStrategyReconcileRequest(value: unknown): HyperliquidStrategyEvide
   return value as unknown as HyperliquidStrategyEvidenceRequest;
 }
 
+function parseNettingResidualReconcileRequest(
+  value: unknown,
+): HyperliquidNettingResidualEvidenceRequest {
+  const keys = [
+    'account', 'actionHash', 'attemptId', 'binding', 'clientOrderId',
+    'durableRevision', 'instrumentHash', 'intentHash', 'plan',
+    'requestCommitment', 'window',
+  ];
+  if (!isRecord(value) || !hasExactKeys(value, keys)) {
+    throw new KeeperRequestError(
+      'INVALID_REQUEST',
+      'Netting residual reconcile request fields are invalid.',
+    );
+  }
+  return value as unknown as HyperliquidNettingResidualEvidenceRequest;
+}
+
 export function createHyperliquidTestnetEvidenceRequestHandler(
   ports: HyperliquidTestnetEvidenceHttpPorts,
 ) {
@@ -274,6 +298,40 @@ export function createHyperliquidTestnetEvidenceRequestHandler(
         sendJson(response, 200, toProtocolJson(result, 'keeper.strategy.reconcile.result'));
       } catch {
         reject(response, 400, 'INVALID_REQUEST', 'Strategy reconcile request failed closed.');
+      }
+      return;
+    }
+    if (url.pathname === KEEPER_TESTNET_NETTING_RESIDUAL_RECONCILE_PATH) {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST');
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
+        return;
+      }
+      if (ports.nettingResidual === undefined) {
+        reject(response, 503, 'NETTING_RESIDUAL_EVIDENCE_DISABLED',
+          'Netting residual evidence is unavailable.');
+        return;
+      }
+      let raw: unknown;
+      try {
+        raw = await readProtocolJson(request, 'keeper.netting-residual.reconcile.request');
+      } catch (error) {
+        if (error instanceof KeeperRequestError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        reject(response, 400, 'INVALID_JSON', 'Request body must be strict protocol JSON.');
+        return;
+      }
+      try {
+        const result = await ports.nettingResidual.collect(
+          parseNettingResidualReconcileRequest(raw),
+        );
+        sendJson(response, 200, toProtocolJson(result,
+          'keeper.netting-residual.reconcile.result'));
+      } catch {
+        reject(response, 400, 'INVALID_REQUEST',
+          'Netting residual reconcile request failed closed.');
       }
       return;
     }

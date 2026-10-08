@@ -4,6 +4,7 @@ import test from 'node:test';
 import { stringifyProtocolJson } from '@naryx/protocol-types';
 import {
   createHyperliquidTestnetEvidenceServer,
+  KEEPER_TESTNET_NETTING_RESIDUAL_RECONCILE_PATH,
   KEEPER_TESTNET_PREPARE_PATH,
   KEEPER_TESTNET_RECONCILE_PATH,
   KEEPER_TESTNET_STRATEGY_RECONCILE_PATH,
@@ -254,6 +255,71 @@ test('strategy reconcile forwards the exact generalized evidence request', async
     assert.equal(decoded.status, 'COMPLETE');
     assert.equal(seenAttempt, 'strategy-attempt-1');
     assert.deepEqual(decoded.legs[0].filledSignedBaseAtoms, {
+      $naryxType: 'bigint', value: '100',
+    });
+  } finally {
+    await close(server);
+  }
+});
+
+test('netting residual reconcile forwards only the exact evidence request', async () => {
+  let seenAttempt = '';
+  const server = createHyperliquidTestnetEvidenceServer({
+    runtime: {
+      prepare: async () => { throw new Error('must not be called'); },
+      reconcile: async () => { throw new Error('must not be called'); },
+    },
+    nettingResidual: {
+      collect: async (input) => {
+        seenAttempt = input.attemptId;
+        return {
+          status: 'COMPLETE',
+          observation: {
+            clientOrderId: `0x${'31'.repeat(16)}`,
+            terminalStatus: 'FILLED',
+            filledSignedQuantityAtoms: 100n,
+            grossQuoteAtoms: 600n,
+            feeQuoteAtoms: 1n,
+            submittedAtMs: 990n,
+            observedAtMs: 1_000n,
+            executionReferenceHash: `0x${'41'.repeat(32)}`,
+            authoritativeEvidenceHash: `0x${'42'.repeat(32)}`,
+          },
+          rawResponseCommitments: [],
+        };
+      },
+    },
+  });
+  const url = await listen(server);
+  try {
+    const body = stringifyProtocolJson({
+      account,
+      actionHash: `0x${'aa'.repeat(32)}`,
+      attemptId: 'net-residual-attempt-1',
+      binding: {
+        assetId: 3, marketKind: 'PERPETUAL', baseFeeToken: 'SOL', quoteFeeToken: 'USDC',
+      },
+      clientOrderId: `0x${'31'.repeat(16)}`,
+      durableRevision: 'sqlite-net-residual-v1:1',
+      instrumentHash: new Uint8Array(32).fill(3),
+      intentHash: new Uint8Array(32).fill(2),
+      plan: planFixture(),
+      requestCommitment: `0x${'bb'.repeat(32)}`,
+      window,
+    }, 'keeper.test.netting-residual.reconcile');
+    const response = await fetch(`${url}${KEEPER_TESTNET_NETTING_RESIDUAL_RECONCILE_PATH}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    assert.equal(response.status, 200);
+    const decoded = (await response.json()) as {
+      status: string;
+      observation: { filledSignedQuantityAtoms: unknown };
+    };
+    assert.equal(decoded.status, 'COMPLETE');
+    assert.equal(seenAttempt, 'net-residual-attempt-1');
+    assert.deepEqual(decoded.observation.filledSignedQuantityAtoms, {
       $naryxType: 'bigint', value: '100',
     });
   } finally {

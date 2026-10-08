@@ -4,9 +4,14 @@ import {
 } from '@naryx/protocol-types';
 import type {
   HyperliquidReconciliationHandoff,
+  HyperliquidNettingResidualReconciliationHandoff,
   HyperliquidStrategyReconciliationHandoff,
 } from './index.js';
-import type { HyperliquidStrategyExecutionPlan } from '@naryx/adapter-hyperliquid';
+import type {
+  HyperliquidNettingResidualObservation,
+  HyperliquidNettingResidualPlan,
+  HyperliquidStrategyExecutionPlan,
+} from '@naryx/adapter-hyperliquid';
 import type { HyperliquidStrategyEvidenceBinding } from './hyperliquid-strategy-testnet-runtime.js';
 import {
   HyperliquidTestnetRuntimeCoordinator,
@@ -27,6 +32,8 @@ export const SOLVER_TESTNET_EVIDENCE_RECONCILE_PATH =
   '/internal/keeper/hyperliquid-testnet/reconcile';
 export const SOLVER_TESTNET_STRATEGY_EVIDENCE_RECONCILE_PATH =
   '/internal/keeper/hyperliquid-testnet/strategy/reconcile';
+export const SOLVER_TESTNET_NETTING_RESIDUAL_EVIDENCE_RECONCILE_PATH =
+  '/internal/keeper/hyperliquid-testnet/netting-residual/reconcile';
 
 const MAX_RESPONSE_BYTES = 65_536;
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -83,6 +90,31 @@ export interface HyperliquidStrategyEvidenceCollectInput {
   readonly plan: HyperliquidStrategyExecutionPlan;
   readonly window: HyperliquidTestnetRuntimeEvidenceWindow;
 }
+
+export interface HyperliquidNettingResidualEvidenceBinding {
+  readonly assetId: number;
+  readonly marketKind: 'SPOT' | 'PERPETUAL';
+  readonly baseFeeToken: string;
+  readonly quoteFeeToken: string;
+}
+
+export interface HyperliquidNettingResidualEvidenceCollectInput {
+  readonly handoff: HyperliquidNettingResidualReconciliationHandoff;
+  readonly binding: HyperliquidNettingResidualEvidenceBinding;
+  readonly plan: HyperliquidNettingResidualPlan;
+  readonly window: HyperliquidTestnetRuntimeEvidenceWindow;
+}
+
+export type HyperliquidNettingResidualEvidenceResult = Readonly<{
+  status: 'COMPLETE';
+  observation: HyperliquidNettingResidualObservation;
+  rawResponseCommitments: readonly unknown[];
+}> | Readonly<{
+  status: 'INCOMPLETE';
+  observation: null;
+  reasons: readonly string[];
+  rawResponseCommitments: readonly unknown[];
+}>;
 
 function isLoopbackHostname(hostname: string): boolean {
   if (hostname === 'localhost' || hostname === '::1' || hostname === '[::1]') return true;
@@ -252,6 +284,39 @@ function decodeStrategyReconcileResult(value: unknown): HyperliquidStrategyEvide
   return value as unknown as HyperliquidStrategyEvidenceResult;
 }
 
+function decodeNettingResidualReconcileResult(
+  value: unknown,
+): HyperliquidNettingResidualEvidenceResult {
+  if (!isRecord(value) || (value.status !== 'COMPLETE' && value.status !== 'INCOMPLETE')
+    || !Array.isArray(value.rawResponseCommitments)) {
+    throw new Error('keeper netting residual evidence result is invalid');
+  }
+  if (value.status === 'INCOMPLETE') {
+    if (value.observation !== null || !Array.isArray(value.reasons)
+      || value.reasons.some((reason) => typeof reason !== 'string')) {
+      throw new Error('keeper netting residual evidence result is invalid');
+    }
+    return value as unknown as HyperliquidNettingResidualEvidenceResult;
+  }
+  if (!isRecord(value.observation) || 'reasons' in value
+    || typeof value.observation.clientOrderId !== 'string'
+    || !/^0x[0-9a-f]{32}$/.test(value.observation.clientOrderId)
+    || !['FILLED', 'PARTIALLY_FILLED_IOC_CANCELLED', 'UNFILLED_IOC_CANCELLED', 'REJECTED']
+      .includes(String(value.observation.terminalStatus))
+    || typeof value.observation.filledSignedQuantityAtoms !== 'bigint'
+    || typeof value.observation.grossQuoteAtoms !== 'bigint'
+    || typeof value.observation.feeQuoteAtoms !== 'bigint'
+    || typeof value.observation.submittedAtMs !== 'bigint'
+    || typeof value.observation.observedAtMs !== 'bigint'
+    || typeof value.observation.executionReferenceHash !== 'string'
+    || !/^0x[0-9a-f]{64}$/.test(value.observation.executionReferenceHash)
+    || typeof value.observation.authoritativeEvidenceHash !== 'string'
+    || !/^0x[0-9a-f]{64}$/.test(value.observation.authoritativeEvidenceHash)) {
+    throw new Error('keeper netting residual evidence result is invalid');
+  }
+  return value as unknown as HyperliquidNettingResidualEvidenceResult;
+}
+
 async function postProtocolJson(
   origin: string,
   path: string,
@@ -418,6 +483,53 @@ export class HyperliquidStrategyTestnetHttpEvidence {
       return decodeStrategyReconcileResult(decoded);
     } catch {
       throw new Error('keeper strategy evidence request failed');
+    }
+  }
+}
+
+export class HyperliquidNettingResidualTestnetHttpEvidence {
+  readonly #origin: string;
+  readonly #fetch: typeof fetch;
+  readonly #timeoutMs: number;
+
+  constructor(options: HyperliquidTestnetEvidenceHttpOptions) {
+    this.#origin = requireLoopbackKeeperOrigin(options.keeperOrigin);
+    this.#fetch = options.fetchImplementation ?? fetch;
+    this.#timeoutMs = checkedTimeout(options.timeoutMs);
+  }
+
+  async collect(input: HyperliquidNettingResidualEvidenceCollectInput):
+  Promise<HyperliquidNettingResidualEvidenceResult> {
+    const body = {
+      account: input.handoff.account,
+      actionHash: input.handoff.actionHash,
+      attemptId: input.handoff.attemptId,
+      binding: input.binding,
+      clientOrderId: input.handoff.clientOrderId,
+      durableRevision: input.handoff.durableRevision,
+      instrumentHash: input.handoff.instrumentHash,
+      intentHash: input.handoff.intentHash,
+      plan: input.plan,
+      requestCommitment: input.handoff.requestCommitment,
+      window: input.window,
+    };
+    let decoded: unknown;
+    try {
+      decoded = await postProtocolJson(
+        this.#origin,
+        SOLVER_TESTNET_NETTING_RESIDUAL_EVIDENCE_RECONCILE_PATH,
+        body,
+        'solver.netting-residual.evidence.reconcile',
+        this.#timeoutMs,
+        this.#fetch,
+      );
+    } catch {
+      throw new Error('keeper netting residual evidence request failed');
+    }
+    try {
+      return decodeNettingResidualReconcileResult(decoded);
+    } catch {
+      throw new Error('keeper netting residual evidence request failed');
     }
   }
 }
