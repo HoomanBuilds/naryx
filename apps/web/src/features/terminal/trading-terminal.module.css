@@ -1094,6 +1094,87 @@
   padding-top: 9px;
 }
 
+.quoteComparison {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 9px;
+}
+
+.quoteCandidateGrid {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.quoteCandidate,
+.quoteCandidateSelected {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: var(--canvas);
+  color: var(--text-secondary);
+  padding: 9px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.quoteCandidate:hover,
+.quoteCandidateSelected {
+  border-color: var(--line-strong);
+}
+
+.quoteCandidateSelected {
+  box-shadow: inset 2px 0 0 var(--yellow);
+}
+
+.quoteCandidate:focus-visible,
+.quoteCandidateSelected:focus-visible {
+  outline: 1px solid var(--yellow);
+  outline-offset: 1px;
+}
+
+.quoteCandidate > span,
+.quoteCandidateSelected > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.quoteCandidate small,
+.quoteCandidateSelected small {
+  color: var(--text-dim);
+  font-size: 9.5px;
+}
+
+.quoteCandidate strong,
+.quoteCandidateSelected strong {
+  overflow: hidden;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10px;
+  font-weight: 500;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quoteCandidateHead {
+  border-bottom: 1px solid var(--line-soft);
+  padding-bottom: 5px;
+}
+
+.quoteCandidateHead strong {
+  color: var(--text-primary);
+  text-align: left;
+}
+
+@media (max-width: 720px) {
+  .quoteCandidateGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .quoteMetrics {
   color: var(--text-secondary);
   font-size: 10.5px;

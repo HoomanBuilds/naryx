@@ -150,6 +150,14 @@ type PackageQuoteReview = Readonly<{
   metrics: readonly QuoteMetric[];
 }>;
 
+type QuoteOrigin = "DIRECT" | "POST_MATCH" | "PRIVATE_RFQ" | "SEALED_AUCTION";
+
+type QuoteCandidate = Readonly<{
+  review: PackageQuoteReview;
+  origin: QuoteOrigin;
+  receivedAtMs: number;
+}>;
+
 type AuctionSolverSummary = Readonly<{
   solverId: string;
   environment: string;
@@ -2513,6 +2521,13 @@ function compact(value: string, head = 10, tail = 8): string {
   return value.length > head + tail + 3 ? `${value.slice(0, head)}...${value.slice(-tail)}` : value;
 }
 
+function quoteOriginLabel(origin: QuoteOrigin): string {
+  if (origin === "PRIVATE_RFQ") return "Private RFQ";
+  if (origin === "SEALED_AUCTION") return "Sealed auction";
+  if (origin === "POST_MATCH") return "Post-match";
+  return "Direct quote";
+}
+
 async function failureMessage(response: Response): Promise<string> {
   try {
     const body = record(await response.json(), "Error response");
@@ -2600,7 +2615,8 @@ export function GeneralizedStrategyPreparationPanel({
   const [quoteRequestKey, setQuoteRequestKey] = useState("");
   const [quoteReview, setQuoteReview] = useState<PackageQuoteReview | null>(null);
   const [quoteHash, setQuoteHash] = useState("");
-  const [quoteOrigin, setQuoteOrigin] = useState<"DIRECT" | "POST_MATCH" | "PRIVATE_RFQ" | null>(null);
+  const [quoteOrigin, setQuoteOrigin] = useState<QuoteOrigin | null>(null);
+  const [quoteCandidates, setQuoteCandidates] = useState<readonly QuoteCandidate[]>([]);
   const [nettingProofHash, setNettingProofHash] = useState("");
   const [nettingSelection, setNettingSelection] = useState<NettingAllocationSelection | null>(null);
   const [nettingCurrentAllocationHash, setNettingCurrentAllocationHash] = useState("");
@@ -2754,7 +2770,11 @@ export function GeneralizedStrategyPreparationPanel({
     setSettlementReadiness(null);
     setPackageAmendQuantity("");
     setPackageAmendPriceTicks("");
+    setQuoteRequestKey("");
+    setQuoteReview(null);
+    setQuoteHash("");
     setQuoteOrigin(null);
+    setQuoteCandidates([]);
     setPrivateRfqOrderContext(null);
     setPrivateRfqSession(null);
     setPrivateRfqBusy(null);
@@ -2765,7 +2785,7 @@ export function GeneralizedStrategyPreparationPanel({
     resetNettingAllocation();
   }
 
-  function acceptQuote(parsed: PackageQuoteReview, origin: "DIRECT" | "POST_MATCH" | "PRIVATE_RFQ") {
+  function activateQuote(parsed: PackageQuoteReview, origin: QuoteOrigin) {
     setQuoteReview(parsed);
     setQuoteHash(parsed.quoteHash);
     setQuoteOrigin(origin);
@@ -2782,6 +2802,14 @@ export function GeneralizedStrategyPreparationPanel({
     setExecutionResult(null);
     setExecutionProgress(null);
     setStrategyReceipt(null);
+  }
+
+  function acceptQuote(parsed: PackageQuoteReview, origin: QuoteOrigin) {
+    setQuoteCandidates((current) => Object.freeze([
+      ...current.filter((candidate) => candidate.review.quoteHash !== parsed.quoteHash),
+      Object.freeze({ review: parsed, origin, receivedAtMs: Date.now() }),
+    ].slice(-16)));
+    activateQuote(parsed, origin);
   }
 
   function clearSealedAuction() {
@@ -4475,7 +4503,7 @@ export function GeneralizedStrategyPreparationPanel({
       });
       if (!response.ok) throw new Error(await failureMessage(response));
       const parsed = parseSealedAuctionAward(await response.json(), sealedAuction);
-      acceptQuote(parsed, "DIRECT");
+      acceptQuote(parsed, "SEALED_AUCTION");
       setSealedAuctionAwardedQuote(parsed.quoteHash);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Sealed auction award failed closed.");
@@ -4985,6 +5013,16 @@ export function GeneralizedStrategyPreparationPanel({
   const packageAmendmentChanged = restingPackageOrder !== null
     && (packageAmendQuantity !== restingPackageOrder.quantity
       || packageAmendPriceTicks !== restingPackageOrder.priceTicks);
+  const comparableQuotes = [...quoteCandidates].sort((left, right) => {
+    const leftQuote = left.review;
+    const rightQuote = right.review;
+    if (leftQuote.quoteAsset === rightQuote.quoteAsset && leftQuote.quoteDecimals === rightQuote.quoteDecimals) {
+      const leftOutcome = BigInt(leftQuote.netOutcomeAtoms);
+      const rightOutcome = BigInt(rightQuote.netOutcomeAtoms);
+      if (leftOutcome !== rightOutcome) return leftOutcome > rightOutcome ? -1 : 1;
+    }
+    return right.receivedAtMs - left.receivedAtMs;
+  });
 
   if (!laneSupportsTemplate) {
     return (
@@ -6149,6 +6187,41 @@ export function GeneralizedStrategyPreparationPanel({
           )}
         </div>
       ) : null}
+      {comparableQuotes.length > 1 ? (
+        <div className={styles.quoteComparison}>
+          <div className={styles.evidenceHeading}>
+            <h3>Complete-package quotes</h3>
+            <span>{comparableQuotes.length} OPTIONS</span>
+          </div>
+          <div className={styles.quoteCandidateGrid}>
+            {comparableQuotes.map((candidate) => {
+              const quote = candidate.review;
+              const selected = quote.quoteHash === quoteHash;
+              const totalCost = BigInt(quote.passThroughCostAtoms) + BigInt(quote.serviceFeeAtoms);
+              return (
+                <button
+                  key={quote.quoteHash}
+                  type="button"
+                  className={selected ? styles.quoteCandidateSelected : styles.quoteCandidate}
+                  aria-pressed={selected}
+                  onClick={() => activateQuote(quote, candidate.origin)}
+                >
+                  <span className={styles.quoteCandidateHead}>
+                    <strong>{quote.solverId}</strong>
+                    <small>{quoteOriginLabel(candidate.origin)}</small>
+                  </span>
+                  <span><small>Net outcome</small><strong>{formatAtomicAmount(quote.netOutcomeAtoms, quote.quoteDecimals, quote.quoteAsset)}</strong></span>
+                  <span><small>Total cost</small><strong>{formatAtomicAmount(totalCost, quote.quoteDecimals, quote.quoteAsset)}</strong></span>
+                  <span><small>Margin</small><strong>{formatAtomicAmount(quote.marginDeltaAtoms, quote.quoteDecimals, quote.quoteAsset)}</strong></span>
+                  <span><small>Settlement</small><strong>{quote.settlementClass.replaceAll("_", " ")}</strong></span>
+                  <span><small>Valid until</small><strong>{expiryText(quote.validUntilUnit, quote.validUntilValue)}</strong></span>
+                </button>
+              );
+            })}
+          </div>
+          <p className={styles.fieldContext}>Quotes are ranked by exact net outcome only when their quote asset and decimals match. Selecting one does not sign or execute it.</p>
+        </div>
+      ) : null}
       {quoteReview ? (
         <div className={styles.quoteReview}>
           <div className={styles.reviewEconomics}>
@@ -6212,6 +6285,7 @@ export function GeneralizedStrategyPreparationPanel({
               value={matchingAdmissions.some((admission) => admission.quoteHash === quoteHash) ? quoteHash : ""}
               onChange={(event) => {
                 setQuoteHash(event.target.value);
+                setQuoteReview(null);
                 setQuoteOrigin(null);
                 setReview(null);
                 setExecutionAttempt(null);
@@ -6248,6 +6322,7 @@ export function GeneralizedStrategyPreparationPanel({
           placeholder="64 lowercase hex characters"
           onChange={(event) => {
             setQuoteHash(event.target.value.trim());
+            setQuoteReview(null);
             setQuoteOrigin(null);
             setReview(null);
             setExecutionAttempt(null);
