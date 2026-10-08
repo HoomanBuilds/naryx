@@ -266,7 +266,8 @@ test('returns finalized evidence only for the exact prepared Solana instruction 
   assert.equal(observation.receipt.finalityStatus, 'FINALIZED');
   assert.equal(observation.receipt.serviceFee.atoms, 100_000n);
   assert.equal(observation.receipt.solverFee.atoms, 50_000n);
-  assert.equal(observation.receipt.legOutcomes[0]?.evidenceGrade, 'CONSENSUS_VERIFIED');
+  assert.equal(observation.receipt.legOutcomes[0]?.evidenceGrade, 'CONTROLLER_ATTESTED');
+  assert.equal(observation.receipt.legOutcomes[0]?.onchainEnforced, false);
 
   const changed = new SolanaStrategyExecutionObservationService({
     packages: { getByQuote: async () => documents() },

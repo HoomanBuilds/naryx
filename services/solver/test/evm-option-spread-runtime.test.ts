@@ -591,6 +591,8 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
   assert.deepEqual(observed.receipt.legOutcomes.map((leg) => leg.settledQuantity.atoms), [QUANTITY, -QUANTITY]);
   assert.equal(observed.receipt.serviceFee.atoms, envelope.execution.fees.protocolFeeAtoms);
   assert.equal(observed.receipt.solverFee.atoms, envelope.execution.fees.solverFeeAtoms);
+  assert.ok(observed.receipt.legOutcomes.every((leg) =>
+    leg.evidenceGrade === 'CONTROLLER_ATTESTED' && !leg.onchainEnforced));
   storedQuoteHash = evmHash('0');
   await assert.rejects(
     () => observer.observe({ quoteHash, transactionHash: TRANSACTION_HASH }),

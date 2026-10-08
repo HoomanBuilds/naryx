@@ -169,8 +169,10 @@ function canonicalReceipt(
       grossNotional: economics.grossNotional,
       venueFee: economics.venueFee,
       residualValue: zero,
-      evidenceGrade: 'CONSENSUS_VERIFIED' as const,
-      onchainEnforced: true,
+      // The event proves this evidence hash and settlement, but the current event schema does not
+      // reveal the preimage needed to verify the reported notional and venue fee independently.
+      evidenceGrade: 'CONTROLLER_ATTESTED' as const,
+      onchainEnforced: false,
       evidenceHash,
     });
   });
