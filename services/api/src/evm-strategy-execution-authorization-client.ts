@@ -102,7 +102,11 @@ function signature(value: unknown, name: string): Hex {
   return value as Hex;
 }
 
-function authorization(value: unknown, expectedQuoteHash: string, expectedOwnerSignature: string): AuthorizedEvmStrategyExecution {
+export function validateAuthorizedEvmStrategyExecution(
+  value: unknown,
+  expectedQuoteHash: string,
+  expectedOwnerSignature: string,
+): AuthorizedEvmStrategyExecution {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new EvmStrategyExecutionAuthorizationClientError('INVALID_RESPONSE', 'authorization response must be an object');
   }
@@ -176,6 +180,6 @@ export class HttpEvmStrategyExecutionAuthorizationClient implements EvmStrategyE
     });
     if (response.status === 404) throw new EvmStrategyExecutionAuthorizationClientError('NOT_FOUND', 'Strategy package was not found');
     if (!response.ok) throw new EvmStrategyExecutionAuthorizationClientError('UPSTREAM_REJECTED', `authorization failed with HTTP ${response.status}`);
-    return authorization(await responseJson(response), quoteHashValue, ownerSignature);
+    return validateAuthorizedEvmStrategyExecution(await responseJson(response), quoteHashValue, ownerSignature);
   }
 }

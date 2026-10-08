@@ -128,7 +128,10 @@ async function responseJson(response: Response): Promise<unknown> {
   }
 }
 
-function authorization(value: unknown, expectedQuoteHash: string): AuthorizedSolanaStrategyExecution {
+export function validateAuthorizedSolanaStrategyExecution(
+  value: unknown,
+  expectedQuoteHash: string,
+): AuthorizedSolanaStrategyExecution {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return fail('authorization response must be an object');
   const root = value as Record<string, unknown>;
   if (Object.keys(root).sort().join(',') !== 'authorization,version' || root.version !== 1
@@ -292,6 +295,6 @@ export class HttpSolanaStrategyExecutionAuthorizationClient implements SolanaStr
       throw new SolanaStrategyExecutionAuthorizationClientError('UPSTREAM_REJECTED',
         `authorization failed with HTTP ${response.status}`);
     }
-    return authorization(await responseJson(response), quoteHashValue);
+    return validateAuthorizedSolanaStrategyExecution(await responseJson(response), quoteHashValue);
   }
 }

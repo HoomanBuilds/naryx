@@ -154,6 +154,7 @@ import { HttpSolanaStrategyExecutionObservationClient } from './solana-strategy-
 import { HttpEvmReverseBasisCollateralClient } from './evm-reverse-basis-collateral-client.js';
 import { HttpEvmStrategyExecutionAuthorizationClient } from './evm-strategy-execution-authorization-client.js';
 import { HttpEvmStrategyExecutionObservationClient } from './evm-strategy-execution-observation-client.js';
+import { HttpNettingAllocationAuthorizationClient } from './netting-allocation-authorization-client.js';
 
 function absolutePath(value: string, name: string): string {
   if (!isAbsolute(value)) throw new Error(`${name} must be an absolute path.`);
@@ -1110,6 +1111,9 @@ const evmStrategyExecutionAuthorization = evmStrategyAuthorizationEnabled
 const evmStrategyExecutionObservation = evmStrategyAuthorizationEnabled
   ? new HttpEvmStrategyExecutionObservationClient(solverOrigin)
   : undefined;
+const nettingAllocationAuthorization = explicitlyEnabled('NARYX_NETTING_ALLOCATION_AUTHORIZATION_ENABLED')
+  ? new HttpNettingAllocationAuthorizationClient(solverOrigin)
+  : undefined;
 
 const server = createPrivateTerminalServer(
   config,
@@ -1173,6 +1177,7 @@ const server = createPrivateTerminalServer(
   solanaTreasuryHedgeProvisioning,
   solanaStrategyExecutionAuthorization,
   solanaStrategyExecutionObservation,
+  nettingAllocationAuthorization,
 );
 
 const publicServer = publicMarket?.listener === undefined

@@ -33,6 +33,12 @@ export interface AuthorizedEvmNettingAllocation extends EvmNettingAllocationChal
   readonly data: Hex;
   readonly ownerSignature: Hex;
   readonly solverSignature: Hex;
+  readonly packageId: Hex;
+  readonly orderHash: Hex;
+  readonly quoteHash: Hex;
+  readonly routeHash: Hex;
+  readonly expectedNextStateHash: Hex;
+  readonly deadline: bigint;
 }
 
 type LifecyclePort = Pick<NettingAllocationLifecycleService, 'prepareAndRegister'>;
@@ -119,6 +125,12 @@ export class EvmNettingAllocationAuthorizationService {
       data,
       ownerSignature: input.ownerSignature,
       solverSignature,
+      packageId: netting.envelope.execution.packageId,
+      orderHash: netting.envelope.execution.orderHash,
+      quoteHash: netting.envelope.execution.quoteHash,
+      routeHash: netting.envelope.execution.routeHash,
+      expectedNextStateHash: netting.envelope.execution.nextStateHash,
+      deadline: netting.envelope.execution.deadline,
     });
   }
 

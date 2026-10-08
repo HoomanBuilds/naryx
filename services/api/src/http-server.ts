@@ -178,6 +178,11 @@ import {
   EvmStrategyExecutionObservationClientError,
   type EvmStrategyExecutionObservationPort,
 } from './evm-strategy-execution-observation-client.js';
+import {
+  NettingAllocationAuthorizationClientError,
+  type NettingAllocationAuthorizationPort,
+  type NettingAllocationAuthorizationRequest,
+} from './netting-allocation-authorization-client.js';
 
 const MAX_BODY_BYTES = 4_096;
 
@@ -408,6 +413,7 @@ export function createPrivateTerminalRequestHandler(
   solanaTreasuryHedgeProvisioning?: SolanaTreasuryHedgeProvisioningPort,
   solanaStrategyExecutionAuthorization?: SolanaStrategyExecutionAuthorizationPort,
   solanaStrategyExecutionObservation?: SolanaStrategyExecutionObservationPort,
+  nettingAllocationAuthorization?: NettingAllocationAuthorizationPort,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -738,6 +744,7 @@ export function createPrivateTerminalRequestHandler(
         evmOptionSpreadProvisioningAvailable: evmOptionSpreadProvisioning !== undefined,
         evmReverseBasisCollateralAvailable: evmReverseBasisCollateral !== undefined,
         strategyPackageAuthorizationAvailable: strategyPackageAuthorization !== undefined,
+        nettingAllocationAuthorizationAvailable: nettingAllocationAuthorization !== undefined,
         ...(runtimeHealth === undefined ? {} : { runtime: runtimeHealth }),
       });
       return;
@@ -1840,6 +1847,78 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
+    const evmNettingChallenge = url.pathname === '/internal/terminal/netting/allocation-executions/evm/challenge';
+    const evmNettingAuthorization = url.pathname === '/internal/terminal/netting/allocation-executions/evm/authorize';
+    const solanaNettingAuthorization = url.pathname === '/internal/terminal/netting/allocation-executions/solana/authorize';
+    if (evmNettingChallenge || evmNettingAuthorization || solanaNettingAuthorization) {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST, OPTIONS');
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
+        return;
+      }
+      if (nettingAllocationAuthorization === undefined) {
+        reject(response, 503, 'NETTING_ALLOCATION_AUTHORIZATION_UNAVAILABLE',
+          'Netting allocation authorization is unavailable.');
+        return;
+      }
+      try {
+        const requestBody = await readJson(request);
+        if (typeof requestBody !== 'object' || requestBody === null || Array.isArray(requestBody)) {
+          throw new NettingAllocationAuthorizationClientError('INVALID_REQUEST', 'Request body must be an object.');
+        }
+        const values = requestBody as Record<string, unknown>;
+        const expected = evmNettingAuthorization
+          ? 'allocationReceiptHash,attemptId,domainId,ownerSignature,proofHash,quoteHash'
+          : 'allocationReceiptHash,attemptId,domainId,proofHash,quoteHash';
+        if (Object.keys(values).sort().join(',') !== expected
+          || typeof values.proofHash !== 'string'
+          || typeof values.allocationReceiptHash !== 'string'
+          || typeof values.quoteHash !== 'string'
+          || typeof values.domainId !== 'string'
+          || typeof values.attemptId !== 'string'
+          || (evmNettingAuthorization && typeof values.ownerSignature !== 'string')) {
+          throw new NettingAllocationAuthorizationClientError(
+            'INVALID_REQUEST',
+            `Request must contain exactly ${expected}.`,
+          );
+        }
+        const input: NettingAllocationAuthorizationRequest = {
+          proofHash: values.proofHash,
+          allocationReceiptHash: values.allocationReceiptHash,
+          quoteHash: values.quoteHash,
+          domainId: values.domainId,
+          attemptId: values.attemptId,
+        };
+        if (evmNettingChallenge) {
+          sendJson(response, 200, {
+            status: 'OWNER_SIGNATURE_REQUIRED',
+            challenge: toProtocolJson(await nettingAllocationAuthorization.challengeEvm(input)),
+          });
+        } else if (evmNettingAuthorization) {
+          sendJson(response, 200, {
+            status: 'READY_FOR_WALLET_SUBMISSION',
+            authorization: toProtocolJson(await nettingAllocationAuthorization.authorizeEvm(
+              input,
+              values.ownerSignature as string,
+            )),
+          });
+        } else {
+          sendJson(response, 200, {
+            status: 'OWNER_SIGNATURE_REQUIRED',
+            authorization: toProtocolJson(await nettingAllocationAuthorization.authorizeSolana(input)),
+          });
+        }
+      } catch (error) {
+        if (error instanceof NettingAllocationAuthorizationClientError) {
+          reject(response, error.code === 'INVALID_REQUEST' ? 400 : 502, error.code, error.message);
+          return;
+        }
+        reject(response, 502, 'NETTING_ALLOCATION_AUTHORIZATION_FAILED',
+          'Netting allocation authorization failed closed.');
+      }
+      return;
+    }
+
     if (url.pathname === '/internal/terminal/strategy-executions/observe-evm') {
       if (request.method !== 'POST') {
         response.setHeader('Allow', 'POST, OPTIONS');
@@ -2791,6 +2870,7 @@ export function createPrivateTerminalServer(
   solanaTreasuryHedgeProvisioning?: SolanaTreasuryHedgeProvisioningPort,
   solanaStrategyExecutionAuthorization?: SolanaStrategyExecutionAuthorizationPort,
   solanaStrategyExecutionObservation?: SolanaStrategyExecutionObservationPort,
+  nettingAllocationAuthorization?: NettingAllocationAuthorizationPort,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -2832,6 +2912,7 @@ export function createPrivateTerminalServer(
     solanaTreasuryHedgeProvisioning,
     solanaStrategyExecutionAuthorization,
     solanaStrategyExecutionObservation,
+    nettingAllocationAuthorization,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as

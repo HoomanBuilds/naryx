@@ -22,8 +22,12 @@ export interface AuthorizedSolanaNettingAllocation {
   readonly blockhashContextSlot: number;
   readonly lastValidBlockHeight: number;
   readonly strategyAccount: string;
+  readonly position: string;
+  readonly receipt: string;
   readonly packageId: string;
+  readonly orderHash: string;
   readonly quoteHash: string;
+  readonly routeHash: string;
   readonly executionHash: string;
   readonly callsHash: string;
   readonly materializationCommitment: string;
@@ -127,8 +131,12 @@ export class SolanaNettingAllocationAuthorizationService {
       blockhashContextSlot: materialized.blockhashContextSlot,
       lastValidBlockHeight: materialized.lastValidBlockHeight,
       strategyAccount: envelope.strategyAccount.toBase58(),
+      position: envelope.position.toBase58(),
+      receipt: envelope.receipt.toBase58(),
       packageId: hex(envelope.packageId),
+      orderHash: hex(envelope.orderHash),
       quoteHash: hex(envelope.quoteHash),
+      routeHash: hex(envelope.routeHash),
       executionHash: hex(envelope.executionHash),
       callsHash: hex(envelope.callsHash),
       materializationCommitment: hex(materialized.materializationCommitment),

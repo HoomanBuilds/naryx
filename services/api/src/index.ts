@@ -664,6 +664,15 @@ export {
   type NettingAllocationSettlementStorePort,
 } from "./netting-allocation-settlement-coordinator.js";
 export {
+  HttpNettingAllocationAuthorizationClient,
+  NettingAllocationAuthorizationClientError,
+  type AuthorizedEvmNettingAllocation,
+  type AuthorizedSolanaNettingAllocation,
+  type EvmNettingAllocationChallenge,
+  type NettingAllocationAuthorizationPort,
+  type NettingAllocationAuthorizationRequest,
+} from './netting-allocation-authorization-client.js';
+export {
   API_HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH,
   HttpHyperliquidNettingResidualExecutionClient,
   HyperliquidNettingResidualExecutionClientError,
