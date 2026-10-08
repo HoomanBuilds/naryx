@@ -257,8 +257,8 @@ test("capacity evidence bounds reservations, and book quotes are derived and own
       evidence: "RESERVATION_BACKED_IMPLIED",
       legRatios: SERIES.economicLegRatios,
       legSources: [
-        { sourceId: "spot-1", sourceVersion: 1n, side: "ASK", priceTicks: 1_100n, quantity: 20n, reservationId: id(501) },
-        { sourceId: "perp-1", sourceVersion: 1n, side: "BID", priceTicks: 1_000n, quantity: 20n, reservationId: id(901) },
+        { sourceId: "solver-a:spot-1", sourceVersion: 1n, side: "ASK", priceTicks: 1_100n, quantity: 20n, reservationId: id(501) },
+        { sourceId: "solver-a:perp-1", sourceVersion: 1n, side: "BID", priceTicks: 1_000n, quantity: 20n, reservationId: id(901) },
       ],
     };
     // Made-up reservations and a missing expiry never become executable depth.
@@ -304,8 +304,8 @@ test("implied quotes post atomically in batches and a solver reads only its own 
       evidence: "RESERVATION_BACKED_IMPLIED",
       legRatios: SERIES.economicLegRatios,
       legSources: [
-        { sourceId: `spot-${spot}`, sourceVersion: 1n, side: "ASK", priceTicks: spotPrice, quantity: 20n, reservationId: id(spot) },
-        { sourceId: `perp-${perp}`, sourceVersion: 1n, side: "BID", priceTicks: 1_000n, quantity: 20n, reservationId: id(perp) },
+        { sourceId: `solver-a:spot-${spot}`, sourceVersion: 1n, side: "ASK", priceTicks: spotPrice, quantity: 20n, reservationId: id(spot) },
+        { sourceId: `solver-a:perp-${perp}`, sourceVersion: 1n, side: "BID", priceTicks: 1_000n, quantity: 20n, reservationId: id(perp) },
       ],
     });
     const entry = (spot: number, perp: number, spotPrice: bigint) => ({ quote: quote(spot, perp, spotPrice), expiresAtValue: NOW + 60n });
