@@ -40,6 +40,7 @@ function series(
     seriesManifestHash: id(manifest),
     quoteAssetId: 'usdc',
     quoteConventionId: 'package-price-ticks-v1',
+    quoteComposition: 'LINEAR',
     components,
   };
 }

@@ -178,6 +178,7 @@ function loadSupport(path: string): {
   seriesSupport: EconomicStrategySeriesSupportInput;
   executionClassSupport: SeriesExecutionClassSupportInput;
   backingAtomsPerPackageUnit: ReadonlyMap<string, { readonly commitment: bigint; readonly legs: readonly bigint[] }>;
+  packageSourceBackingAtomsPerUnit: ReadonlyMap<string, bigint>;
 } {
   if (statSync(path).size > MAX_SUPPORT_MANIFEST_BYTES) throw new PublicMarketConfigError("Support manifest is too large.");
   let parsed: unknown;
@@ -187,9 +188,11 @@ function loadSupport(path: string): {
     throw new PublicMarketConfigError("Support manifest is not valid protocol JSON.");
   }
   const manifest = object(parsed, "root");
-  const keys = Object.keys(manifest).filter((key) => key !== "backingAtomsPerPackageUnit").sort();
+  const keys = Object.keys(manifest)
+    .filter((key) => key !== "backingAtomsPerPackageUnit" && key !== "packageSourceBackingAtomsPerUnit")
+    .sort();
   if (keys.join(",") !== "clockUnit,executionClassSupport,seriesSupport,version" || manifest.version !== 1) {
-    throw new PublicMarketConfigError("Support manifest must be version 1 with clockUnit, seriesSupport, executionClassSupport, and optionally backingAtomsPerPackageUnit.");
+    throw new PublicMarketConfigError("Support manifest must be version 1 with clockUnit, seriesSupport, executionClassSupport, and optional backing unit maps.");
   }
   // Committed atoms per package unit of implied liquidity, by execution class; classes without one take none.
   const units = new Map<string, { commitment: bigint; legs: bigint[] }>();
@@ -200,6 +203,17 @@ function loadSupport(path: string): {
       throw new PublicMarketConfigError(`backingAtomsPerPackageUnit.${classId} needs a positive commitment and positive per-leg atoms.`);
     }
     units.set(classId, { commitment: entry.commitment as bigint, legs: entry.legs as bigint[] });
+  }
+  const packageSourceUnits = new Map<string, bigint>();
+  for (const [seriesId, atoms] of Object.entries(
+    manifest.packageSourceBackingAtomsPerUnit === undefined
+      ? {}
+      : object(manifest.packageSourceBackingAtomsPerUnit, "packageSourceBackingAtomsPerUnit"),
+  )) {
+    if (typeof atoms !== "bigint" || atoms <= 0n) {
+      throw new PublicMarketConfigError(`packageSourceBackingAtomsPerUnit.${seriesId} must be positive atoms.`);
+    }
+    packageSourceUnits.set(seriesId, atoms);
   }
   if (manifest.clockUnit !== "UNIX_SECONDS" && manifest.clockUnit !== "UNIX_MILLISECONDS") {
     throw new PublicMarketConfigError("Support manifest clockUnit must be UNIX_SECONDS or UNIX_MILLISECONDS; slot-timed books need a slot source.");
@@ -224,6 +238,7 @@ function loadSupport(path: string): {
       supportedFirmnessClassIds: stringList(classes.supportedFirmnessClassIds, "executionClassSupport.supportedFirmnessClassIds"),
     },
     backingAtomsPerPackageUnit: units,
+    packageSourceBackingAtomsPerUnit: packageSourceUnits,
   };
 }
 
@@ -651,6 +666,7 @@ export function loadPublicMarketRuntime(
         ...(admission === undefined ? {} : { admission }),
         ...(bonds === undefined ? {} : { bonds }),
         backingAtomsPerPackageUnit: support.backingAtomsPerPackageUnit,
+        packageSourceBackingAtomsPerUnit: support.packageSourceBackingAtomsPerUnit,
         nowValue,
         clockMs,
         rateLimit,

@@ -36,7 +36,7 @@ import {
   SqliteSolverApiStore,
   type AdmissionContext,
 } from "../src/index.js";
-import { CLASS, CLASS_SUPPORT, NOW, SERIES, SERIES_SUPPORT, id, registerAll } from "./exchange-fixtures.js";
+import { CALENDAR_SERIES, CLASS, CLASS_SUPPORT, NEAR_BASIS_SERIES, NOW, SERIES, SERIES_SUPPORT, id, registerAll } from "./exchange-fixtures.js";
 import { DOMAIN_MANIFEST, operatorKeys, signedSolverManifest } from "./registry-fixtures.js";
 import { hash as fill, manifest as evidenceManifestFor, outcome as outcomeFor, receipt as receiptFor, signedOrder, terms } from "./evidence-fixtures.js";
 import { routeFor, signedQuoteFor } from "./quote-fixtures.js";
@@ -140,7 +140,23 @@ async function withSolverApi(
     }),
   );
   const rateLimit = { windowMs: 60_000, maxRequests: 1_000 };
-  const solver = createSolverApiHandler({ store: solverState, registry, exchange, delivery, evidence, bonds: (id) => OBSERVED_BONDS.get(id), backingAtomsPerPackageUnit: new Map([[CLASS, { commitment: 1n, legs: [1n, 1n] }]]), ...(admission === undefined ? {} : { admission }), nowValue: () => NOW, clockMs: () => clock, rateLimit });
+  const solver = createSolverApiHandler({
+    store: solverState,
+    registry,
+    exchange,
+    delivery,
+    evidence,
+    bonds: (id) => OBSERVED_BONDS.get(id),
+    backingAtomsPerPackageUnit: new Map([[CLASS, { commitment: 1n, legs: [1n, 1n] }]]),
+    packageSourceBackingAtomsPerUnit: new Map([
+      [NEAR_BASIS_SERIES.seriesId, 1n],
+      [CALENDAR_SERIES.seriesId, 1n],
+    ]),
+    ...(admission === undefined ? {} : { admission }),
+    nowValue: () => NOW,
+    clockMs: () => clock,
+    rateLimit,
+  });
   const publicApi = createPublicApiHandler({ exchange, registry, solverState, delivery, evidence, pinnedSuiteIds, nowValue: () => NOW, clockMs: () => clock, rateLimit });
   const server = createServer((request, response) => {
     if (!solver(request, response) && !publicApi(request, response)) {
@@ -317,6 +333,83 @@ test("capacity evidence bounds reservations, and book quotes are derived and own
     const cancelled = await api.call("POST", "/v1/solver/quotes/cancel", { packageMarketId: CLASS, entryId });
     assert.equal(cancelled.status, 200);
     assert.equal(api.exchange.getBook(CLASS)?.entries.length, 0);
+  });
+});
+
+test("registered package series imply executable package liquidity", async () => {
+  await withSolverApi(async (api) => {
+    const scope = {
+      domain: domainRef(DOMAIN_MANIFEST.domainId, 1, domainManifestHash(DOMAIN_MANIFEST)),
+      asset: { assetId: "usdc", assetManifestHash: "33".repeat(32), decimals: 6 },
+    };
+    const record = {
+      version: 1,
+      environment: "testnet",
+      solverId: "solver-a",
+      ...scope,
+      availableAtoms: 100n,
+      maximumConcurrentRecoveryAtoms: 50n,
+      evidenceGrade: "ONCHAIN_AVAILABLE",
+      evidenceCommitment: "44".repeat(32),
+      observedAtValue: NOW_S - 10n,
+      expiresAtValue: FAR,
+    };
+    assert.equal((await api.call("PUT", "/v1/solver/capacity", { record })).status, 200);
+    for (const commitmentId of [601, 602]) {
+      const result = await api.call("POST", "/v1/solver/reservations", {
+        ...scope,
+        commitment: { commitmentId: id(commitmentId), atoms: 20n, recoveryAtoms: 0n, firm: true, atValue: NOW_S },
+      });
+      assert.equal(result.status, 200);
+    }
+    const sources = [
+      {
+        entryId: id(701),
+        sourceVersion: 1n,
+        side: "ASK",
+        priceTicks: 80n,
+        quantity: 20n,
+        derivationDepth: 0,
+        seriesId: NEAR_BASIS_SERIES.seriesId,
+        seriesVersion: NEAR_BASIS_SERIES.seriesVersion,
+        unitsPerTarget: { numerator: 1n, denominator: 1n },
+        reservationId: id(601),
+        ancestorEntryIds: [],
+      },
+      {
+        entryId: id(702),
+        sourceVersion: 1n,
+        side: "ASK",
+        priceTicks: 20n,
+        quantity: 20n,
+        derivationDepth: 0,
+        seriesId: CALENDAR_SERIES.seriesId,
+        seriesVersion: CALENDAR_SERIES.seriesVersion,
+        unitsPerTarget: { numerator: 1n, denominator: 1n },
+        reservationId: id(602),
+        ancestorEntryIds: [],
+      },
+    ];
+    const posted = await api.call("POST", "/v1/solver/quotes/package-implication", {
+      packageMarketId: CLASS,
+      targetSide: "ASK",
+      sources,
+      expiresAtValue: NOW + 60n,
+    });
+    assert.equal(posted.status, 200, JSON.stringify(toProtocolJson(posted.body)));
+    assert.deepEqual(
+      [posted.body.priceTicks, posted.body.quantity, posted.body.derivationDepth],
+      [100n, 20n, 1],
+    );
+    assert.equal(api.exchange.getBook(CLASS)?.entries[0]?.source, "IMPLIED");
+
+    const unknown = await api.call("POST", "/v1/solver/quotes/package-implication", {
+      packageMarketId: CLASS,
+      targetSide: "ASK",
+      sources: [{ ...sources[0], seriesId: "unknown-series" }, sources[1]],
+      expiresAtValue: NOW + 60n,
+    });
+    assert.equal((unknown.body.error as { code: string }).code, "SERIES_UNKNOWN");
   });
 });
 

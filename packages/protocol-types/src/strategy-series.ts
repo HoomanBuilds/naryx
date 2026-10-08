@@ -30,6 +30,8 @@ export const ECONOMIC_STRATEGY_SERIES_MAX_LEGS = 16;
 export const SERIES_EXECUTION_CLASS_MAX_DOMAINS = 16;
 export const SERIES_EXECUTION_CLASS_MAX_VENUE_CLASSES = 32;
 export const STRATEGY_SERIES_MAX_SUPPORTED_SEMANTICS = 64;
+export const PACKAGE_QUOTE_COMPOSITION = Object.freeze({ LINEAR: 1 } as const);
+export type PackageQuoteComposition = keyof typeof PACKAGE_QUOTE_COMPOSITION;
 
 export interface ExactSignedRatioInput {
   readonly numerator: bigint;
@@ -58,6 +60,7 @@ export interface EconomicStrategySeriesInput {
   readonly quoteAsset: string;
   readonly economicLegRatios: readonly ExactSignedRatioInput[];
   readonly instrumentRefs?: readonly string[];
+  readonly quoteComposition?: PackageQuoteComposition;
   readonly maturityOrEvaluationWindow: Duration;
   readonly quoteConvention: string;
   readonly riskClass: string;
@@ -74,6 +77,7 @@ export interface EconomicStrategySeries {
   readonly quoteAsset: ProtocolId;
   readonly economicLegRatios: readonly ExactSignedRatio[];
   readonly instrumentRefs?: readonly ProtocolId[];
+  readonly quoteComposition?: PackageQuoteComposition;
   readonly maturityOrEvaluationWindow: Duration;
   readonly quoteConvention: ProtocolId;
   readonly riskClass: ProtocolId;
@@ -330,9 +334,10 @@ export function economicStrategySeries(
   }
   const seriesVersion = nonzeroU32(input.seriesVersion, `${context}.seriesVersion`);
   let instrumentRefs: readonly ProtocolId[] | undefined;
+  let quoteComposition: PackageQuoteComposition | undefined;
   if (seriesVersion === 1) {
-    if (input.instrumentRefs !== undefined) {
-      throw new MalformedInputError(`${context}.instrumentRefs`, 'instrument references require series version 2 or later');
+    if (input.instrumentRefs !== undefined || input.quoteComposition !== undefined) {
+      throw new MalformedInputError(`${context}.instrumentRefs`, 'instrument and quote composition bindings require series version 2 or later');
     }
   } else {
     if (!Array.isArray(input.instrumentRefs) || input.instrumentRefs.length !== ratios.length) {
@@ -345,6 +350,10 @@ export function economicStrategySeries(
       seen.add(checked);
       return checked;
     }));
+    if (input.quoteComposition !== 'LINEAR') {
+      throw new MalformedInputError(`${context}.quoteComposition`, 'versioned package implication requires linear quote composition');
+    }
+    quoteComposition = input.quoteComposition;
   }
   const templateManifestHash = manifestHash(
     input.templateManifestHash,
@@ -366,6 +375,7 @@ export function economicStrategySeries(
     quoteAsset: protocolId(input.quoteAsset, `${context}.quoteAsset`),
     economicLegRatios: Object.freeze(ratios),
     ...(instrumentRefs === undefined ? {} : { instrumentRefs }),
+    ...(quoteComposition === undefined ? {} : { quoteComposition }),
     maturityOrEvaluationWindow: checkedDuration(
       input.maturityOrEvaluationWindow,
       `${context}.maturityOrEvaluationWindow`,
@@ -415,6 +425,7 @@ function checkedEconomicStrategySeries(
       quoteAsset: value.quoteAsset,
       economicLegRatios: value.economicLegRatios,
       ...(value.instrumentRefs === undefined ? {} : { instrumentRefs: value.instrumentRefs }),
+      ...(value.quoteComposition === undefined ? {} : { quoteComposition: value.quoteComposition }),
       maturityOrEvaluationWindow: value.maturityOrEvaluationWindow,
       quoteConvention: value.quoteConvention,
       riskClass: value.riskClass,
@@ -456,6 +467,7 @@ export function encodeEconomicStrategySeries(
       (target, value_) => encodeProtocolId(target, value_, 'economicStrategySeries.instrumentRefs.element'),
       'economicStrategySeries.instrumentRefs',
     );
+    writer.writeU8(PACKAGE_QUOTE_COMPOSITION[checked.quoteComposition!], 'economicStrategySeries.quoteComposition');
   }
   encodeDuration(writer, checked.maturityOrEvaluationWindow);
   encodeProtocolId(writer, checked.quoteConvention, 'economicStrategySeries.quoteConvention');

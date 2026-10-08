@@ -3,6 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import {
   deriveImpliedPackageQuote,
+  derivePackageImplicationProof,
+  packageSeriesExposureFromEconomicSeries,
   verifyQuoteBond,
   type PerformanceBondLedger,
   fromHex,
@@ -23,6 +25,7 @@ import type {
   AssetRef,
   DomainRef,
   ImpliedPackageQuoteInput,
+  PackageImplicationSourceInput,
   PackageAdmissionInput,
   PackageOrderInput,
   PackageQuoteShard,
@@ -59,7 +62,7 @@ export interface SolverApiOptions {
   readonly store: Pick<SqliteSolverApiStore, "outstandingCommitments" | "consumeNonce" | "admitShard" | "getShard" | "putCapacity" | "commitCapacity" | "releaseCapacity" | "shardFills">;
   readonly registry: Pick<SqliteRegistryStore, "latest" | "registerSolverManifest">;
   /** Optional: book quote routes answer 503 without an exchange store. */
-  readonly exchange?: Pick<SqlitePackageExchangeStore, "getBook" | "getMatchingPolicy" | "addImpliedLiquidityBatch" | "observeSourceVersion" | "cancelEntry">;
+  readonly exchange?: Pick<SqlitePackageExchangeStore, "getBook" | "getMatchingPolicy" | "getOpenExecutionClass" | "getSeriesRecord" | "addImpliedLiquidityBatch" | "addMultiPackageImpliedLiquidity" | "observeSourceVersion" | "cancelEntry">;
   /** Optional: the open order feed answers 503 without it. */
   readonly evidence?: Pick<SqliteEvidenceStore, "openOrders" | "settlementsForQuote" | "recordQuote" | "recordRouteDecision">;
   /** Optional: route simulation answers 503 without the admission context of the package's domain. */
@@ -75,6 +78,7 @@ export interface SolverApiOptions {
    * is bounded by what its backing actually holds; a class without an entry takes no implied liquidity.
    */
   readonly backingAtomsPerPackageUnit?: ReadonlyMap<string, { readonly commitment: bigint; readonly legs: readonly bigint[] }>;
+  readonly packageSourceBackingAtomsPerUnit?: ReadonlyMap<string, bigint>;
   /** Optional: private RFQ and sealed auction routes answer 503 without it. */
   readonly delivery?: Pick<SqlitePrivateDeliveryStore, "pendingFor" | "getEnvelope" | "acknowledge" | "storeResponse" | "eligibleAuctions" | "appendAuctionEvent" | "auctionDefinition">;
   /** Current time in the books' expiry unit. */
@@ -371,6 +375,108 @@ export function createSolverApiHandler(options: SolverApiOptions) {
       }
       const invalidated = requireExchange().observeSourceVersion(sourceId, sourceVersion);
       return { sourceId, sourceVersion, invalidatedEntryIds: invalidated.map(toHex) };
+    }
+    if (method === "POST" && path === "/v1/solver/quotes/package-implication") {
+      const body = decodeBody(raw);
+      const classId = typeof body.packageMarketId === "string" && ID.test(body.packageMarketId)
+        ? body.packageMarketId
+        : undefined;
+      if (classId === undefined) throw new SolverRequestError(400, "INVALID_REQUEST", "packageMarketId is malformed.");
+      const books = requireExchange();
+      const book = books.getBook(classId);
+      const policy = book === undefined ? undefined : books.getMatchingPolicy(book.matchingPolicyHash);
+      const executionClass = books.getOpenExecutionClass(classId);
+      if (book === undefined || policy === undefined || executionClass === undefined) {
+        throw new SolverRequestError(404, "BOOK_NOT_FOUND", "Package market is not open.");
+      }
+      const targetRecord = books.getSeriesRecord(executionClass.seriesId, executionClass.seriesVersion);
+      if (targetRecord === undefined
+        || !bytesEqual(fromHex(targetRecord.documentHashHex), executionClass.seriesManifestHash)) {
+        throw new SolverRequestError(409, "SERIES_BINDING_INVALID", "The open market has no matching registered strategy series.");
+      }
+      if (!Array.isArray(body.sources)) {
+        throw new SolverRequestError(400, "INVALID_REQUEST", "sources must be an array.");
+      }
+      const sources = body.sources.map((value, index): PackageImplicationSourceInput => {
+        const source = requireObject(value, `sources[${index}]`);
+        const seriesId = typeof source.seriesId === "string" && ID.test(source.seriesId) ? source.seriesId : undefined;
+        const seriesVersion = typeof source.seriesVersion === "number" && Number.isSafeInteger(source.seriesVersion)
+          ? source.seriesVersion
+          : undefined;
+        if (seriesId === undefined || seriesVersion === undefined) {
+          throw new SolverRequestError(400, "INVALID_REQUEST", `sources[${index}] has a malformed series reference.`);
+        }
+        const record = books.getSeriesRecord(seriesId, seriesVersion);
+        if (record === undefined) {
+          throw new SolverRequestError(409, "SERIES_UNKNOWN", `sources[${index}] references an unregistered strategy series.`);
+        }
+        return {
+          entryId: source.entryId as Uint8Array | string,
+          sourceVersion: source.sourceVersion as bigint,
+          side: source.side as PackageImplicationSourceInput["side"],
+          priceTicks: source.priceTicks as bigint,
+          quantity: source.quantity as bigint,
+          derivationDepth: source.derivationDepth as number,
+          series: packageSeriesExposureFromEconomicSeries(record.document, record.documentHashHex),
+          unitsPerTarget: requireObject(source.unitsPerTarget, `sources[${index}].unitsPerTarget`) as unknown as PackageImplicationSourceInput["unitsPerTarget"],
+          reservationId: source.reservationId as Uint8Array | string,
+          ancestorEntryIds: source.ancestorEntryIds as readonly (Uint8Array | string)[],
+        };
+      });
+      const expiresAtValue = body.expiresAtValue;
+      const now = nowValue();
+      if (typeof expiresAtValue !== "bigint" || expiresAtValue <= now) {
+        throw new SolverRequestError(400, "INVALID_REQUEST", "Executable implied liquidity needs a future expiresAtValue.");
+      }
+      const proof = derivePackageImplicationProof(policy, {
+        version: 1,
+        targetExecutionClassId: classId,
+        targetSide: body.targetSide as PackageImplicationSourceInput["side"],
+        targetSeries: packageSeriesExposureFromEconomicSeries(targetRecord.document, targetRecord.documentHashHex),
+        sources,
+      });
+      const outstanding = store.outstandingCommitments(solverId, now);
+      const inUse = new Set(
+        book.entries
+          .filter((entry) => entry.implied !== undefined && (entry.expiresAtValue === undefined || entry.expiresAtValue > now))
+          .flatMap((entry) => entry.implied?.sources.flatMap((source) =>
+            source.reservationId === undefined ? [] : [toHex(source.reservationId)]) ?? []),
+      );
+      for (const source of proof.sources) {
+        const reservationId = toHex(source.reservationId);
+        const held = outstanding.get(reservationId);
+        if (held === undefined) {
+          throw new SolverRequestError(409, "BACKING_NOT_OUTSTANDING", "A package source reservation is not outstanding for this solver.");
+        }
+        if (!held.firm) {
+          throw new SolverRequestError(409, "BACKING_NOT_FIRM", "Package implication requires firm source reservations.");
+        }
+        const atomsPerUnit = options.packageSourceBackingAtomsPerUnit?.get(source.series.seriesId);
+        if (atomsPerUnit === undefined || atomsPerUnit <= 0n) {
+          throw new SolverRequestError(409, "BACKING_UNIT_UNKNOWN", `Series ${source.series.seriesId} has no configured backing unit.`);
+        }
+        if (source.quantity * atomsPerUnit > held.atoms) {
+          throw new SolverRequestError(409, "BACKING_INSUFFICIENT", "A package source reservation is smaller than its quoted quantity.");
+        }
+        if (inUse.has(reservationId)) {
+          throw new SolverRequestError(409, "BACKING_IN_USE", "A package source reservation already backs live liquidity in this book.");
+        }
+        inUse.add(reservationId);
+      }
+      const entry = books.addMultiPackageImpliedLiquidity(classId, {
+        proof,
+        participantId: solverId,
+        commonControlGroupId: manifest.commonControlGroupId,
+        expiresAtValue,
+        nowValue: now,
+      });
+      return {
+        entryId: toHex(entry.entryId),
+        proofHash: toHex(proof.proofHash),
+        priceTicks: entry.priceTicks,
+        quantity: entry.quantity,
+        derivationDepth: entry.implied?.derivationDepth,
+      };
     }
     if (method === "POST" && (path === "/v1/solver/quotes" || path === "/v1/solver/quotes/batch")) {
       const body = decodeBody(raw);

@@ -54,7 +54,7 @@ test("series, classes, and policies are immutable once registered", () => {
     assert.throws(() => store.registerMatchingPolicy({ ...POLICY, quantityIncrement: 5n, minimumExecutionQuantity: 5n }), {
       code: "DOCUMENT_CONFLICT",
     });
-    assert.equal(store.getSeries(SERIES.seriesId, 1)?.quoteAsset, "usd");
+    assert.equal(store.getSeries(SERIES.seriesId, SERIES.seriesVersion)?.quoteAsset, "usd");
     assert.equal(store.getExecutionClass(CLASS, 1)?.executionClassId, CLASS);
   });
 });

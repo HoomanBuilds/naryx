@@ -202,16 +202,17 @@ describe('economic strategy series', () => {
       seriesInput({
         seriesVersion: 2,
         instrumentRefs: ['sol-spot-orca', 'sol-perp-phoenix'],
+        quoteComposition: 'LINEAR',
       }),
       seriesSupport,
     );
     assert.deepEqual(versioned.instrumentRefs, ['sol-spot-orca', 'sol-perp-phoenix']);
     assert.notEqual(
       toHex(economicStrategySeriesHash(seriesInput(), seriesSupport)),
-      toHex(economicStrategySeriesHash({ ...seriesInput(), seriesVersion: 2, instrumentRefs: ['sol-spot-orca', 'sol-perp-phoenix'] }, seriesSupport)),
+      toHex(economicStrategySeriesHash({ ...seriesInput(), seriesVersion: 2, instrumentRefs: ['sol-spot-orca', 'sol-perp-phoenix'], quoteComposition: 'LINEAR' }, seriesSupport)),
     );
     assert.throws(
-      () => economicStrategySeries(seriesInput({ instrumentRefs: ['sol-spot-orca', 'sol-perp-phoenix'] }), seriesSupport),
+      () => economicStrategySeries(seriesInput({ instrumentRefs: ['sol-spot-orca', 'sol-perp-phoenix'], quoteComposition: 'LINEAR' }), seriesSupport),
       /version 2/,
     );
     assert.throws(
@@ -219,7 +220,7 @@ describe('economic strategy series', () => {
       /match the economic leg count/,
     );
     assert.throws(
-      () => economicStrategySeries(seriesInput({ seriesVersion: 2, instrumentRefs: ['same', 'same'] }), seriesSupport),
+      () => economicStrategySeries(seriesInput({ seriesVersion: 2, instrumentRefs: ['same', 'same'], quoteComposition: 'LINEAR' }), seriesSupport),
       DuplicateElementError,
     );
   });

@@ -49,7 +49,7 @@ import {
   type PublicApiOptions,
 } from "../src/index.js";
 import { DOMAIN_MANIFEST, operatorKeys, signedSolverManifest } from "./registry-fixtures.js";
-import { CLASS, CLASS_SUPPORT, NOW, SERIES, SERIES_SUPPORT, id, impliedAsk, order, registerAll, settlement } from "./exchange-fixtures.js";
+import { CALENDAR_SERIES, CLASS, CLASS_SUPPORT, NEAR_BASIS_SERIES, NOW, SERIES, SERIES_SUPPORT, id, impliedAsk, order, registerAll, settlement } from "./exchange-fixtures.js";
 
 const NETTING_POLICY: NettingPolicyManifestInput = {
   schemaVersion: 1,
@@ -713,7 +713,11 @@ test("registries, strategy series, and package markets are listed from their sto
         assert.equal(solver.manifestNonce, 1);
         assert.equal((await get("/v1/solvers/solver-z")).status, 404);
         const series = (await get("/v1/strategy-series")).body as { series: readonly { seriesId: string }[] };
-        assert.deepEqual(series.series.map((entry) => entry.seriesId), [SERIES.seriesId]);
+        assert.deepEqual(series.series.map((entry) => entry.seriesId), [
+          SERIES.seriesId,
+          NEAR_BASIS_SERIES.seriesId,
+          CALENDAR_SERIES.seriesId,
+        ]);
         const classes = (await get(`/v1/strategy-series/${SERIES.seriesId}/execution-classes`)).body as { executionClasses: readonly { executionClassId: string }[] };
         assert.deepEqual(classes.executionClasses.map((entry) => entry.executionClassId), [CLASS]);
         const markets = (await get("/v1/markets")).body as { markets: readonly { packageMarketId: string; bestAskTicks?: bigint; label: string }[] };

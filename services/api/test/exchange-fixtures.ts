@@ -44,10 +44,10 @@ export const POLICY: PackageMatchingPolicyInput = {
   amendmentPriorityRule: "RETAIN_ON_SIZE_REDUCTION",
   quantityIncrement: 10n,
   minimumExecutionQuantity: 10n,
-  maximumImplicationDepth: 1,
+  maximumImplicationDepth: 2,
 };
 export const SERIES: EconomicStrategySeriesInput = {
-  seriesVersion: 1,
+  seriesVersion: 2,
   seriesId: "sol-cash-carry-30d-usdc-v1",
   templateId: "cash-and-carry-v1",
   templateVersion: 1,
@@ -58,10 +58,26 @@ export const SERIES: EconomicStrategySeriesInput = {
     { numerator: 1n, denominator: 1n },
     { numerator: -1n, denominator: 1n },
   ],
+  instrumentRefs: ["sol-spot", "sol-december-perp"],
+  quoteComposition: "LINEAR",
   maturityOrEvaluationWindow: duration("MILLISECONDS", 2_592_000_000n),
   quoteConvention: "annualized-net-yield-v1",
   riskClass: "delta-neutral-basis-v1",
   lifecycleConvention: "rolling-evaluation-window-v1",
+};
+
+export const NEAR_BASIS_SERIES: EconomicStrategySeriesInput = {
+  ...SERIES,
+  seriesId: "sol-near-basis-30d-usdc-v1",
+  templateManifestHash: "12".repeat(32),
+  instrumentRefs: ["sol-spot", "sol-near-perp"],
+};
+
+export const CALENDAR_SERIES: EconomicStrategySeriesInput = {
+  ...SERIES,
+  seriesId: "sol-near-december-calendar-usdc-v1",
+  templateManifestHash: "13".repeat(32),
+  instrumentRefs: ["sol-near-perp", "sol-december-perp"],
 };
 
 export const id = (n: number): string => n.toString(16).padStart(64, "0");
@@ -71,7 +87,7 @@ export function executionClass(overrides: Partial<SeriesExecutionClassInput> = {
     executionClassVersion: 1,
     executionClassId: CLASS,
     seriesId: SERIES.seriesId,
-    seriesVersion: 1,
+    seriesVersion: SERIES.seriesVersion,
     seriesManifestHash: economicStrategySeriesHash(SERIES, SERIES_SUPPORT),
     domains: [domainRef("svm:solana-devnet", 1, "22".repeat(32))],
     venueClasses: ["svm-perp-clob-v1", "svm-spot-amm-v1"],
@@ -155,6 +171,8 @@ export function withStore(run: (store: SqlitePackageExchangeStore, path: string)
 export function registerAll(store: SqlitePackageExchangeStore): void {
   store.registerMatchingPolicy(POLICY);
   store.registerSeries(SERIES);
+  store.registerSeries(NEAR_BASIS_SERIES);
+  store.registerSeries(CALENDAR_SERIES);
   store.registerExecutionClass(executionClass());
   store.openBook(CLASS, 1);
 }

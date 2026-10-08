@@ -56,6 +56,7 @@ export interface PackageSeriesExposureInput {
   readonly seriesManifestHash: Uint8Array | string;
   readonly quoteAssetId: string;
   readonly quoteConventionId: string;
+  readonly quoteComposition: 'LINEAR';
   readonly components: readonly PackageExposureComponentInput[];
 }
 
@@ -65,6 +66,7 @@ export interface PackageSeriesExposure {
   readonly seriesManifestHash: ManifestHash;
   readonly quoteAssetId: ProtocolId;
   readonly quoteConventionId: ProtocolId;
+  readonly quoteComposition: 'LINEAR';
   readonly components: readonly {
     readonly instrumentId: ProtocolId;
     readonly ratio: ExactSignedRatio;
@@ -190,12 +192,16 @@ function seriesExposure(input: PackageSeriesExposureInput, context: string): Pac
       throw new DuplicateElementError(`${context}.components`, 'instrument exposure repeats');
     }
   }
+  if (input.quoteComposition !== 'LINEAR') {
+    throw new MalformedInputError(`${context}.quoteComposition`, 'package implication requires linear quote composition');
+  }
   return Object.freeze({
     seriesId: protocolId(input.seriesId, `${context}.seriesId`),
     seriesVersion,
     seriesManifestHash: manifestHash(input.seriesManifestHash, `${context}.seriesManifestHash`),
     quoteAssetId: protocolId(input.quoteAssetId, `${context}.quoteAssetId`),
     quoteConventionId: protocolId(input.quoteConventionId, `${context}.quoteConventionId`),
+    quoteComposition: input.quoteComposition,
     components: Object.freeze(components),
   });
 }
@@ -215,6 +221,7 @@ export function packageSeriesExposureFromEconomicSeries(
     seriesManifestHash,
     quoteAssetId: series.quoteAsset,
     quoteConventionId: series.quoteConvention,
+    quoteComposition: series.quoteComposition!,
     components: series.instrumentRefs.map((instrumentId, index) => ({
       instrumentId,
       ratio: series.economicLegRatios[index] as ExactSignedRatio,
@@ -228,6 +235,7 @@ function encodeSeriesExposure(writer: CanonicalWriter, value: PackageSeriesExpos
   encodeManifestHash(writer, value.seriesManifestHash, `${context}.seriesManifestHash`);
   encodeProtocolId(writer, value.quoteAssetId, `${context}.quoteAssetId`);
   encodeProtocolId(writer, value.quoteConventionId, `${context}.quoteConventionId`);
+  writer.writeU8(1, `${context}.quoteComposition`);
   writer.writeArray(value.components, (target, component) => {
     encodeProtocolId(target, component.instrumentId, `${context}.components.instrumentId`);
     encodeExactSignedRatio(target, component.ratio);

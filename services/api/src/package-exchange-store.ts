@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import bs58 from "bs58";
 import {
   addImpliedLiquidity,
+  addMultiPackageImpliedLiquidity as admitMultiPackageImpliedLiquidity,
   applyPackageBookHalt,
   amendPackageBookEntry,
   bytesEqual,
@@ -73,6 +74,7 @@ import type {
   EconomicStrategySeriesInput,
   EconomicStrategySeriesSupportInput,
   ImpliedLiquidityInput,
+  MultiPackageImpliedLiquidityInput,
   PackageAllocation,
   PackageBookAmendmentInput,
   PackageBookHalt,
@@ -864,6 +866,16 @@ export class SqlitePackageExchangeStore {
     });
   }
 
+  getOpenExecutionClass(executionClassId: string): SeriesExecutionClass | undefined {
+    const row = this.db.prepare(`
+      SELECT d.document_hash, d.canonical_bytes, d.document_json
+      FROM package_books b
+      JOIN exchange_documents d ON d.document_hash = b.class_hash
+      WHERE b.execution_class_id = ? AND d.kind = 'EXECUTION_CLASS'
+    `).get(executionClassId) as DocumentRow | undefined;
+    return row === undefined ? undefined : this.loadExecutionClass(row);
+  }
+
   /** Every open book with its halt state, ordered by execution class. */
   listBooks(): readonly { readonly executionClassId: string; readonly halted: boolean }[] {
     const rows = this.db
@@ -1434,6 +1446,32 @@ export class SqlitePackageExchangeStore {
 
   addImpliedLiquidity(executionClassId: string, input: ImpliedLiquidityInput): PackageBookEntry {
     return this.addImpliedLiquidityBatch(executionClassId, [input])[0] as PackageBookEntry;
+  }
+
+  addMultiPackageImpliedLiquidity(
+    executionClassId: string,
+    input: MultiPackageImpliedLiquidityInput,
+  ): PackageBookEntry {
+    return this.transaction(() => {
+      const { policy, book } = this.policyAndBook(executionClassId);
+      const versions = this.db.prepare("SELECT current_version FROM implied_source_versions WHERE source_id = ?");
+      const consumed = this.db.prepare("SELECT 1 FROM package_book_consumed_sources WHERE source_key = ?");
+      for (const source of input.proof.sources) {
+        const sourceId = toHex(source.entryId);
+        const row = versions.get(sourceId) as { current_version: unknown } | undefined;
+        if (row !== undefined && BigInt(jsonText(row.current_version, "current_version")) > source.sourceVersion) {
+          throw new PackageExchangeStoreError("STALE_SOURCE", `Implied source ${sourceId} was superseded.`);
+        }
+        if (consumed.get(source.reservationId) !== undefined) {
+          throw new PackageExchangeStoreError("SOURCE_ALREADY_CONSUMED", "A source reservation was already consumed.");
+        }
+      }
+      const result = guarded("INVALID_INPUT", "Multi-package implied liquidity is invalid.", () =>
+        admitMultiPackageImpliedLiquidity(policy, book, input),
+      );
+      this.writeBook(result.state);
+      return result.entry;
+    });
   }
 
   /**
