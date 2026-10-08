@@ -209,11 +209,22 @@ export function riskDomainManifest(
     U128_BITS,
     `${context}.minimumMarginFloorQuoteAtoms`,
   );
+  const requiredRecoveryReserveQuoteAtoms = positive(
+    input.requiredRecoveryReserveQuoteAtoms,
+    U128_BITS,
+    `${context}.requiredRecoveryReserveQuoteAtoms`,
+  );
   if (netCapQuoteAtoms > grossCapQuoteAtoms) {
     throw new MalformedInputError(`${context}.netCapQuoteAtoms`, 'net cap exceeds gross cap');
   }
   if (minimumMarginFloorQuoteAtoms > grossCapQuoteAtoms) {
     throw new MalformedInputError(`${context}.minimumMarginFloorQuoteAtoms`, 'margin floor exceeds gross cap');
+  }
+  if (requiredRecoveryReserveQuoteAtoms > grossCapQuoteAtoms) {
+    throw new MalformedInputError(
+      `${context}.requiredRecoveryReserveQuoteAtoms`,
+      'recovery reserve exceeds gross cap',
+    );
   }
   const maximumLeverageBps = positive(input.maximumLeverageBps, U64_BITS, `${context}.maximumLeverageBps`);
   if (maximumLeverageBps > MAXIMUM_LEVERAGE_BPS) {
@@ -266,11 +277,7 @@ export function riskDomainManifest(
     maximumLeverageBps,
     maximumStalenessMs: positive(input.maximumStalenessMs, U64_BITS, `${context}.maximumStalenessMs`),
     maximumTimeToUnwindMs: positive(input.maximumTimeToUnwindMs, U64_BITS, `${context}.maximumTimeToUnwindMs`),
-    requiredRecoveryReserveQuoteAtoms: positive(
-      input.requiredRecoveryReserveQuoteAtoms,
-      U128_BITS,
-      `${context}.requiredRecoveryReserveQuoteAtoms`,
-    ),
+    requiredRecoveryReserveQuoteAtoms,
     haircutsBps: checkedHaircuts(input.haircutsBps, `${context}.haircutsBps`),
     dependencyLimits: canonicalSet(
       dependencyLimits,

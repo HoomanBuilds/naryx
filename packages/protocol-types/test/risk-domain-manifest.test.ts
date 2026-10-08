@@ -74,6 +74,7 @@ describe('risk domain manifest', () => {
     assert.throws(() => riskDomainManifest(input({ eligibleSeries: [] })), MalformedInputError);
     assert.throws(() => riskDomainManifest(input({ netCapQuoteAtoms: 10_000_000_001n })), /net cap exceeds gross cap/);
     assert.throws(() => riskDomainManifest(input({ maximumLeverageBps: 1_000_001n })), RangeViolationError);
+    assert.throws(() => riskDomainManifest(input({ requiredRecoveryReserveQuoteAtoms: 10_000_000_001n })), /recovery reserve exceeds/);
     assert.throws(() => riskDomainManifest(input({ haircutsBps: { ...input().haircutsBps, basis: 8_000n } })), /haircuts exceed/);
     assert.throws(() => riskDomainManifest(input({ dependencyLimits: [{ dependencyId: 'venue:phoenix', maximumGrossQuoteAtoms: 10_000_000_001n }] })), /dependency cap exceeds/);
   });
