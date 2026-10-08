@@ -591,6 +591,20 @@ export {
 } from './netting-settlement.js';
 
 export {
+  NETTING_ALLOCATION_SETTLEMENT_EVIDENCE_VERSION,
+  NETTING_SETTLEMENT_COMPLETION_RECEIPT_VERSION,
+  NETTING_SETTLEMENT_STATE_KIND,
+  nettingAllocationSettlementEvidence,
+  verifyNettingAllocationSettlementEvidence,
+  nettingSettlementCompletionReceipt,
+  verifyNettingSettlementCompletionReceipt,
+  type NettingSettlementStateKind,
+  type NettingAllocationSettlementEvidenceInput,
+  type NettingAllocationSettlementEvidence,
+  type NettingSettlementCompletionReceipt,
+} from './netting-asset-settlement.js';
+
+export {
   STRATEGY_STATE_VERSION,
   STRATEGY_MAX_LEGS,
   STRATEGY_OPERATION,
