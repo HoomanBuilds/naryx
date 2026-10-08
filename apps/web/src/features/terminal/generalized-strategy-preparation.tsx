@@ -3311,7 +3311,8 @@ export function GeneralizedStrategyPreparationPanel({
     && admission.lifecycleAction === lifecycleAction
     && admission.domainIds.length === 1
     && admission.domainIds[0] === expectedDomainId);
-  const matchingSolanaProfiles = (solanaProfiles ?? []).filter((profile) => profile.templateId === templateId);
+  const matchingSolanaProfiles = (solanaProfiles ?? []).filter((profile) => profile.templateId === templateId
+    && (packageMarketId === null || profile.executionClassId === packageMarketId));
   const selectedSolanaProfile = matchingSolanaProfiles.find((profile) => profile.profileId === selectedSolanaProfileId)
     ?? matchingSolanaProfiles[0]
     ?? null;
@@ -3326,15 +3327,18 @@ export function GeneralizedStrategyPreparationPanel({
     && position.baseAssetDecimals === selectedSolanaProfile.inventoryAsset.decimals);
   const selectedSolanaPosition = matchingSolanaPositions.find((position) =>
     position.packageId === selectedSolanaPackageId) ?? matchingSolanaPositions[0] ?? null;
-  const matchingEvmOptionProfiles = (evmOptionProfiles ?? []).filter((profile) => profile.chainId === evmChainId);
+  const matchingEvmOptionProfiles = (evmOptionProfiles ?? []).filter((profile) => profile.chainId === evmChainId
+    && (packageMarketId === null || profile.executionClassId === packageMarketId));
   const selectedEvmOptionProfile = matchingEvmOptionProfiles.find((profile) => profile.profileId === selectedEvmOptionProfileId)
     ?? matchingEvmOptionProfiles[0]
     ?? null;
-  const matchingEvmCalendarProfiles = (evmCalendarProfiles ?? []).filter((profile) => profile.chainId === evmChainId);
+  const matchingEvmCalendarProfiles = (evmCalendarProfiles ?? []).filter((profile) => profile.chainId === evmChainId
+    && (packageMarketId === null || profile.executionClassId === packageMarketId));
   const selectedEvmCalendarProfile = matchingEvmCalendarProfiles.find((profile) =>
     profile.profileId === selectedEvmCalendarProfileId) ?? matchingEvmCalendarProfiles[0] ?? null;
   const matchingEvmDirectionalProfiles = (evmDirectionalProfiles ?? []).filter((profile) =>
-    profile.templateId === templateId && profile.chainId === evmChainId);
+    profile.templateId === templateId && profile.chainId === evmChainId
+    && (packageMarketId === null || profile.executionClassId === packageMarketId));
   const selectedEvmDirectionalProfile = matchingEvmDirectionalProfiles.find((profile) =>
     profile.profileId === selectedEvmDirectionalProfileId) ?? matchingEvmDirectionalProfiles[0] ?? null;
   const selectedEvmProfile = templateId === "option-spread-v1"
@@ -3362,7 +3366,8 @@ export function GeneralizedStrategyPreparationPanel({
       && (lifecycleAction === "INCREASE" || lifecycleAction === "DECREASE"))
     || lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND";
   const fullEvmUnwind = lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND";
-  const matchingNativeProfiles = (nativeProfiles ?? []).filter((profile) => profile.templateId === templateId);
+  const matchingNativeProfiles = (nativeProfiles ?? []).filter((profile) => profile.templateId === templateId
+    && (packageMarketId === null || profile.executionClassId === packageMarketId));
   const selectedNativeProfile = matchingNativeProfiles.find((profile) => profile.profileId === selectedNativeProfileId)
     ?? matchingNativeProfiles[0]
     ?? null;

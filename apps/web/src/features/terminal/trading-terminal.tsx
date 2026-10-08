@@ -72,6 +72,12 @@ import styles from "./trading-terminal.module.css";
 /** How long a prepared Devnet review stays signable. */
 const REVIEW_TTL_MS = 45_000;
 const PACKAGE_MARKET_STORAGE_KEY = "naryx.packageMarket";
+const PACKAGE_DOMAIN_TO_TERMINAL: Readonly<Record<string, DomainId>> = Object.freeze({
+  "svm:devnet": "solana",
+  "eip155:84532": "base",
+  "eip155:421614": "arbitrum",
+  "hypercore:testnet": "hyperliquid",
+});
 const SLIPPAGE_OPTIONS: readonly SlippageBps[] = [5, 10, 25];
 const FALLBACK_CASH_TEMPLATE: StrategyProgramTemplate = Object.freeze({
   templateId: "cash-and-carry-v1",
@@ -1692,6 +1698,7 @@ export function TradingTerminal({
 }) {
   const {
     selectedDomain,
+    setSelectedDomain,
     privateProvider,
     runtimeHealth,
     privateApiBaseUrl,
@@ -1773,6 +1780,24 @@ export function TradingTerminal({
   const resolvedPackageMarketId = packageMarkets.some((market) => market.packageMarketId === activePackageMarketId)
     ? activePackageMarketId
     : packageMarkets[0]?.packageMarketId ?? activePackageMarketId;
+  const selectedPackageMarket = packageMarkets.find((market) => market.packageMarketId === resolvedPackageMarketId) ?? null;
+  const selectedPackageTemplateId = selectedPackageMarket?.templateId ?? null;
+  const selectedPackageDomainIds = selectedPackageMarket?.domainIds.join("\n") ?? "";
+  useEffect(() => {
+    if (resolvedPackageMarketId === null) return;
+    const template = strategyTemplates.find((candidate) => candidate.templateId === selectedPackageTemplateId);
+    if (template !== undefined) {
+      setSelectedStrategyTemplateId(template.templateId);
+      setSelectedLifecycleAction((current) => template.actions.some((action) => action.action === current)
+        ? current
+        : template.actions[0]?.action ?? "ENTRY");
+    }
+    const domains = (selectedPackageDomainIds === "" ? [] : selectedPackageDomainIds.split("\n")).flatMap((domainId) => {
+      const domain = PACKAGE_DOMAIN_TO_TERMINAL[domainId];
+      return domain === undefined ? [] : [domain];
+    });
+    if (domains.length > 0 && !domains.includes(selectedDomain)) setSelectedDomain(domains[0] as DomainId);
+  }, [resolvedPackageMarketId, selectedDomain, selectedPackageDomainIds, selectedPackageTemplateId, setSelectedDomain, strategyTemplates]);
   const { feed, status: publicFeedStatus } = usePublicMarketFeed(
     publicApiBaseUrl,
     resolvedPackageMarketId,
