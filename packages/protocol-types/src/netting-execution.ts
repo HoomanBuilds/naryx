@@ -64,6 +64,16 @@ export interface NettingExternalExecutionIntentParameters {
   readonly instrumentId: string;
   readonly validUntilUnit: ExpiryUnit;
   readonly validUntilValue: bigint;
+  readonly sourceFeeCaps: readonly NettingExternalExecutionSourceFeeCapInput[];
+}
+
+export interface NettingExternalExecutionSourceFeeCapInput {
+  readonly obligationId: Uint8Array | string;
+  readonly maximumFeeQuoteAtoms: bigint;
+}
+
+export interface NettingExternalExecutionSourceFeeCap {
+  readonly obligationId: CommitmentHash;
   readonly maximumFeeQuoteAtoms: bigint;
 }
 
@@ -88,7 +98,7 @@ export interface NettingExternalExecutionIntent {
   readonly maximumFeeQuoteAtoms: bigint;
   readonly validUntilUnit: ExpiryUnit;
   readonly validUntilValue: bigint;
-  readonly sourceObligationIds: readonly CommitmentHash[];
+  readonly sourceFeeCaps: readonly NettingExternalExecutionSourceFeeCap[];
 }
 
 export interface NettingExternalExecutionEvidenceInput {
@@ -151,12 +161,24 @@ function checkedIntent(input: IntentPayload, context: string): IntentPayload {
   object(input, context);
   enumDiscriminant(TRADE_SIDE, input.side, `${context}.side`);
   enumDiscriminant(EXPIRY_UNIT, input.validUntilUnit, `${context}.validUntilUnit`);
-  const sourceObligationIds = input.sourceObligationIds
-    .map((value, index) => commitmentHash(value, `${context}.sourceObligationIds[${index}]`))
-    .sort(compareBytes);
-  if (sourceObligationIds.length === 0) throw new MalformedInputError(`${context}.sourceObligationIds`, 'expected a nonempty array');
-  if (new Set(sourceObligationIds.map(toHex)).size !== sourceObligationIds.length) {
-    throw new DuplicateElementError(`${context}.sourceObligationIds`, 'obligation ids repeat');
+  const sourceFeeCaps = input.sourceFeeCaps
+    .map((value, index) => Object.freeze({
+      obligationId: commitmentHash(value.obligationId, `${context}.sourceFeeCaps[${index}].obligationId`),
+      maximumFeeQuoteAtoms: unsigned(value.maximumFeeQuoteAtoms, U256_BITS, `${context}.sourceFeeCaps[${index}].maximumFeeQuoteAtoms`),
+    }))
+    .sort((left, right) => compareBytes(left.obligationId, right.obligationId));
+  if (sourceFeeCaps.length === 0) throw new MalformedInputError(`${context}.sourceFeeCaps`, 'expected a nonempty array');
+  if (new Set(sourceFeeCaps.map((value) => toHex(value.obligationId))).size !== sourceFeeCaps.length) {
+    throw new DuplicateElementError(`${context}.sourceFeeCaps`, 'obligation ids repeat');
+  }
+  const maximumFeeQuoteAtoms = unsigned(input.maximumFeeQuoteAtoms, U256_BITS, `${context}.maximumFeeQuoteAtoms`);
+  const sourceMaximumFeeQuoteAtoms = checkedUnsigned(
+    sourceFeeCaps.reduce((total, value) => total + value.maximumFeeQuoteAtoms, 0n),
+    U256_BITS,
+    `${context}.sourceMaximumFeeQuoteAtoms`,
+  );
+  if (maximumFeeQuoteAtoms !== sourceMaximumFeeQuoteAtoms) {
+    throw new MalformedInputError(`${context}.maximumFeeQuoteAtoms`, 'fee cap differs from the source obligation caps');
   }
   return Object.freeze({
     version: version(input.version, NETTING_EXTERNAL_EXECUTION_INTENT_VERSION, `${context}.version`),
@@ -175,10 +197,10 @@ function checkedIntent(input: IntentPayload, context: string): IntentPayload {
     limitPriceTicks: positive(input.limitPriceTicks, U128_BITS, `${context}.limitPriceTicks`),
     quantityIncrementAtoms: positive(input.quantityIncrementAtoms, U128_BITS, `${context}.quantityIncrementAtoms`),
     priceTickQuoteAtoms: positive(input.priceTickQuoteAtoms, U128_BITS, `${context}.priceTickQuoteAtoms`),
-    maximumFeeQuoteAtoms: unsigned(input.maximumFeeQuoteAtoms, U256_BITS, `${context}.maximumFeeQuoteAtoms`),
+    maximumFeeQuoteAtoms,
     validUntilUnit: input.validUntilUnit,
     validUntilValue: positive(input.validUntilValue, U64_BITS, `${context}.validUntilValue`),
-    sourceObligationIds: Object.freeze(sourceObligationIds),
+    sourceFeeCaps: Object.freeze(sourceFeeCaps),
   });
 }
 
@@ -204,7 +226,10 @@ function encodeIntent(input: IntentPayload): Uint8Array {
     writer.writeU256(value.maximumFeeQuoteAtoms, 'maximumFeeQuoteAtoms');
     writer.writeEnum(EXPIRY_UNIT, value.validUntilUnit, 'validUntilUnit');
     writer.writeU64(value.validUntilValue, 'validUntilValue');
-    writer.writeArray(value.sourceObligationIds, (element, hash) => encodeCommitmentHash(element, hash, 'sourceObligationId'), 'sourceObligationIds');
+    writer.writeArray(value.sourceFeeCaps, (element, source) => {
+      encodeCommitmentHash(element, source.obligationId, 'obligationId');
+      element.writeU256(source.maximumFeeQuoteAtoms, 'maximumFeeQuoteAtoms');
+    }, 'sourceFeeCaps');
   });
 }
 
@@ -233,7 +258,25 @@ export function nettingExternalExecutionIntent(
   }
   const sourceObligationIds = result.allocations
     .filter((value) => value.instrumentId === instrumentId && value.externalQuantityAtoms !== 0n)
-    .map((value) => value.obligationId);
+    .map((value) => value.obligationId)
+    .sort(compareBytes);
+  const sourceFeeCaps = parameters.sourceFeeCaps
+    .map((value) => Object.freeze({
+      obligationId: commitmentHash(value.obligationId, 'nettingExternalExecutionIntent.sourceFeeCaps.obligationId'),
+      maximumFeeQuoteAtoms: unsigned(value.maximumFeeQuoteAtoms, U256_BITS, 'nettingExternalExecutionIntent.sourceFeeCaps.maximumFeeQuoteAtoms'),
+    }))
+    .sort((left, right) => compareBytes(left.obligationId, right.obligationId));
+  if (
+    sourceFeeCaps.length !== sourceObligationIds.length
+    || sourceFeeCaps.some((value, index) => compareBytes(value.obligationId, sourceObligationIds[index]!) !== 0)
+  ) {
+    throw new MalformedInputError('nettingExternalExecutionIntent.sourceFeeCaps', 'fee caps do not cover the exact external obligations');
+  }
+  const maximumFeeQuoteAtoms = checkedUnsigned(
+    sourceFeeCaps.reduce((total, value) => total + value.maximumFeeQuoteAtoms, 0n),
+    U256_BITS,
+    'nettingExternalExecutionIntent.maximumFeeQuoteAtoms',
+  );
   const payload = checkedIntent({
     version: NETTING_EXTERNAL_EXECUTION_INTENT_VERSION,
     nettingProofHash: result.proofHash,
@@ -251,10 +294,10 @@ export function nettingExternalExecutionIntent(
     limitPriceTicks: summary.externalLimitPriceTicks,
     quantityIncrementAtoms: instrument.quantityIncrementAtoms,
     priceTickQuoteAtoms: instrument.priceTickQuoteAtoms,
-    maximumFeeQuoteAtoms: parameters.maximumFeeQuoteAtoms,
+    maximumFeeQuoteAtoms,
     validUntilUnit: parameters.validUntilUnit,
     validUntilValue: parameters.validUntilValue,
-    sourceObligationIds,
+    sourceFeeCaps,
   }, 'nettingExternalExecutionIntent');
   return Object.freeze({ ...payload, intentHash: nettingExternalExecutionIntentHash(payload) });
 }
@@ -268,7 +311,7 @@ export function verifyNettingExternalExecutionIntent(
     instrumentId: intent.instrumentId,
     validUntilUnit: intent.validUntilUnit,
     validUntilValue: intent.validUntilValue,
-    maximumFeeQuoteAtoms: intent.maximumFeeQuoteAtoms,
+    sourceFeeCaps: intent.sourceFeeCaps,
   });
   if (compareBytes(expected.intentHash, commitmentHash(intent.intentHash, 'nettingExternalExecutionIntent.intentHash')) !== 0
     || compareBytes(nettingExternalExecutionIntentHash(intent), expected.intentHash) !== 0) {

@@ -73,15 +73,17 @@ test('external intent binds the exact residual, venue identity, expiry, and fee 
     instrumentId: 'sol-perp',
     validUntilUnit: 'SOLANA_SLOT',
     validUntilValue: 1_000n,
-    maximumFeeQuoteAtoms: 2n,
+    sourceFeeCaps: [{ obligationId: result.allocations[0]!.obligationId, maximumFeeQuoteAtoms: 2n }],
   });
   assert.equal(intent.side, 'BUY');
   assert.equal(intent.quantityAtoms, 10n);
   assert.equal(intent.limitPriceTicks, 12n);
-  assert.equal(intent.sourceObligationIds.length, 1);
+  assert.equal(intent.sourceFeeCaps.length, 1);
   verifyNettingExternalExecutionIntent(intent, result, policy);
   assert.throws(
-    () => verifyNettingExternalExecutionIntent({ ...intent, maximumFeeQuoteAtoms: 3n }, result, policy),
+    () => verifyNettingExternalExecutionIntent({ ...intent, sourceFeeCaps: [{
+      ...intent.sourceFeeCaps[0]!, maximumFeeQuoteAtoms: 3n,
+    }] }, result, policy),
     /does not follow/,
   );
 });
@@ -91,7 +93,7 @@ test('terminal evidence enforces fill quantity, price, fee, and pre-expiry submi
     instrumentId: 'sol-perp',
     validUntilUnit: 'SOLANA_SLOT',
     validUntilValue: 1_000n,
-    maximumFeeQuoteAtoms: 2n,
+    sourceFeeCaps: [{ obligationId: result.allocations[0]!.obligationId, maximumFeeQuoteAtoms: 2n }],
   });
   const evidence = nettingExternalExecutionEvidence({
     version: 1,

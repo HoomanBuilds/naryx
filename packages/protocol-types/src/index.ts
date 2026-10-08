@@ -574,10 +574,21 @@ export {
   verifyNettingExternalExecutionEvidence,
   type NettingExternalExecutionOutcome,
   type NettingExternalExecutionIntentParameters,
+  type NettingExternalExecutionSourceFeeCapInput,
+  type NettingExternalExecutionSourceFeeCap,
   type NettingExternalExecutionIntent,
   type NettingExternalExecutionEvidenceInput,
   type NettingExternalExecutionEvidence,
 } from './netting-execution.js';
+
+export {
+  NETTING_ALLOCATION_RECEIPT_VERSION,
+  NETTING_FINAL_ALLOCATION_RECEIPT_VERSION,
+  nettingFinalAllocationReceipt,
+  verifyNettingFinalAllocationReceipt,
+  type NettingFinalAllocation,
+  type NettingFinalAllocationReceipt,
+} from './netting-settlement.js';
 
 export {
   STRATEGY_STATE_VERSION,

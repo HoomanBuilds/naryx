@@ -71,6 +71,8 @@ export const HASH_DOMAIN = Object.freeze({
   NETTING_PROOF: 'CON/v1/netting-proof',
   NETTING_EXTERNAL_EXECUTION_INTENT: 'CON/v1/netting-external-execution-intent',
   NETTING_EXTERNAL_EXECUTION_EVIDENCE: 'CON/v1/netting-external-execution-evidence',
+  NETTING_ALLOCATION_RECEIPT: 'CON/v1/netting-allocation-receipt',
+  NETTING_FINAL_ALLOCATION_RECEIPT: 'CON/v1/netting-final-allocation-receipt',
   STRATEGY_STATE: 'CON/v1/strategy-state',
   STRATEGY_TRANSITION: 'CON/v1/strategy-transition',
   PRIVATE_RFQ_RESPONSE: 'CON/v1/private-rfq-response',
