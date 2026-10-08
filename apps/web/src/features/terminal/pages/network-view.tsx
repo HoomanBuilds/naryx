@@ -2,7 +2,7 @@
 
 import { ChainIcon } from "@/features/brand/chain-icons";
 import { SolverMetrics } from "../pro/solver-metrics";
-import type { RuntimeBoundaryHealth } from "../private-http-terminal-provider";
+import type { PrivateTerminalRuntimeHealth, RuntimeBoundaryHealth } from "../private-http-terminal-provider";
 import type { DomainId } from "../terminal-view-model";
 import { DOMAIN_META, DOMAIN_ORDER, domainHealth, domainLive, useTerminal, type HealthState } from "../shell/terminal-context";
 import t from "../trading-terminal.module.css";
@@ -36,9 +36,15 @@ function pillFor(status: Status) {
   return status === "Available" ? styles.pillOk : status === "Checking" ? styles.pill : status === "Preview" ? styles.pill : styles.pillWarn;
 }
 
+function domainGateUp(domain: DomainId, health: PrivateTerminalRuntimeHealth | null): boolean {
+  if (health?.controls.executionReadinessAvailable !== true) return false;
+  return health.executionReadiness === null || health.executionReadiness.domains.some((entry) =>
+    entry.domainId === DOMAIN_META[domain].domainId);
+}
+
 export function NetworkView() {
   const { selectedDomain, setSelectedDomain, runtimeHealth, healthState, refreshHealth, publicApiBaseUrl } = useTerminal();
-  const gateUp = runtimeHealth?.controls.executionReadinessAvailable === true;
+  const gateUp = domainGateUp(selectedDomain, runtimeHealth);
   const anyTestnetLive = DOMAIN_ORDER.some((domain) => domainLive(domain, runtimeHealth));
   const selectedMeta = DOMAIN_META[selectedDomain];
   const selectedHealth = domainHealth(selectedDomain, runtimeHealth);
@@ -61,8 +67,11 @@ export function NetworkView() {
     ? selectedHealth.available ? "AVAILABLE" : selectedHealth.reason ?? "UNAVAILABLE"
     : "UNKNOWN";
   const authorityFence = runtimeHealth
-    ? runtimeHealth.controls.executionReadinessAvailable ? "ENFORCED AT HANDOFF" : "NOT CONFIGURED"
+    ? gateUp ? "ENFORCED AT HANDOFF" : "NOT AUTHORIZED"
     : "UNKNOWN";
+  const readiness = runtimeHealth?.executionReadiness ?? null;
+  const selectedReadiness = readiness?.domains.find((entry) => entry.domainId === selectedMeta.domainId) ?? null;
+  const latestAuthorization = selectedReadiness?.latestAuthorization ?? null;
 
   return (
     <main className={styles.page}>
@@ -85,7 +94,7 @@ export function NetworkView() {
         {DOMAIN_ORDER.map((domain) => {
           const meta = DOMAIN_META[domain];
           const health = domainHealth(domain, runtimeHealth);
-          const status = statusOf(healthState, health, gateUp);
+          const status = statusOf(healthState, health, domainGateUp(domain, runtimeHealth));
           const selected = domain === selectedDomain;
           return (
             <button
@@ -151,11 +160,14 @@ export function NetworkView() {
           <dl className={`${styles.facts} ${styles.cardBody}`}>
             <dt>Network</dt><dd>{selectedMeta.network}</dd>
             <dt>Settlement class</dt><dd className={styles.mono} title={selectedMeta.settlementClass}>{selectedMeta.settlementClass}</dd>
-            <dt>Funded operation hash</dt><dd className={styles.mono}>NOT AVAILABLE</dd>
-            <dt>Readiness decision hash</dt><dd className={styles.mono}>NOT AVAILABLE</dd>
+            <dt>Execution policy hash</dt><dd className={styles.mono}>{readiness?.policyHash ?? "NOT PUBLISHED"}</dd>
+            <dt>Latest approval hash</dt><dd className={styles.mono}>{latestAuthorization?.decisionHash ?? "NO APPROVAL RECORDED"}</dd>
+            <dt>Authorized today</dt><dd className={styles.mono}>{selectedReadiness ? `${selectedReadiness.authorizedPrincipalAtomsToday} ${selectedReadiness.quoteAssetId} atoms` : "NOT AUTHORIZED"}</dd>
+            <dt>Per operation cap</dt><dd className={styles.mono}>{selectedReadiness ? `${selectedReadiness.maxPrincipalAtomsPerOperation} ${selectedReadiness.quoteAssetId} atoms` : "NOT AUTHORIZED"}</dd>
+            <dt>Recovery loss cap</dt><dd className={styles.mono}>{selectedReadiness ? `${selectedReadiness.maxRecoveryLossAtomsPerOperation} ${selectedReadiness.quoteAssetId} atoms` : "NOT AUTHORIZED"}</dd>
             <dt>Authority fence</dt><dd className={styles.mono}>{authorityFence}</dd>
             <dt>Dependencies</dt><dd className={styles.mono} title={dependencyStatus}>{dependencyStatus}</dd>
-            <dt>Incident state</dt><dd className={styles.mono}>UNKNOWN</dd>
+            <dt>Incident evidence</dt><dd className={styles.mono}>NOT PUBLISHED BY KEEPER</dd>
           </dl>
         </section>
       </div>

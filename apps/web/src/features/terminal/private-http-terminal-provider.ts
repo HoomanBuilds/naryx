@@ -50,6 +50,29 @@ export type RuntimeBoundaryHealth = Readonly<{
     | null;
 }>;
 
+export type ExecutionReadinessDomainStatus = Readonly<{
+  domainId: string;
+  quoteAssetId: string;
+  maxPrincipalAtomsPerOperation: string;
+  maxPrincipalAtomsPerDay: string | null;
+  maxPrincipalAtomsPerOwnerPerDay: string | null;
+  maxRecoveryLossAtomsPerOperation: string;
+  authorizedPrincipalAtomsToday: string;
+  latestAuthorization: Readonly<{
+    decisionHash: string;
+    policyHash: string;
+    decidedAtMs: number;
+  }> | null;
+}>;
+
+export type ExecutionReadinessStatus = Readonly<{
+  source: "TESTNET_CAP_POLICY";
+  policyHash: string;
+  observedAtMs: number;
+  utcDay: string;
+  domains: readonly ExecutionReadinessDomainStatus[];
+}>;
+
 export type PrivateTerminalRuntimeHealth = Readonly<{
   solanaDevnet: RuntimeBoundaryHealth;
   baseTestnetAtomic: RuntimeBoundaryHealth;
@@ -57,6 +80,7 @@ export type PrivateTerminalRuntimeHealth = Readonly<{
   hyperliquidTestnet: RuntimeBoundaryHealth;
   /** Each configured lane's market as the service reports it; LIVE serves previews and quotes. */
   markets: Readonly<Partial<Record<DomainId, "LIVE" | "UNAVAILABLE">>>;
+  executionReadiness: ExecutionReadinessStatus | null;
   controls: Readonly<{
     /** DISABLED: no local runtime is composed, the default for a real testnet deployment. */
     localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED" | "DISABLED";
@@ -1443,7 +1467,7 @@ function requireMarketStates(value: unknown): PrivateTerminalRuntimeHealth["mark
 
 function requireRuntimeHealth(
   value: unknown,
-): Omit<PrivateTerminalRuntimeHealth, "controls" | "markets"> {
+): Omit<PrivateTerminalRuntimeHealth, "controls" | "markets" | "executionReadiness"> {
   if (!isRecord(value)) throw new Error("Private terminal health is invalid.");
   requireExactKeys(
     value,
@@ -1455,6 +1479,112 @@ function requireRuntimeHealth(
     baseTestnetAtomic: requireRuntimeBoundaryHealth(value.baseTestnetAtomic, "Base Testnet health"),
     arbitrumTestnetAsync: requireRuntimeBoundaryHealth(value.arbitrumTestnetAsync, "Arbitrum Testnet health"),
     hyperliquidTestnet: requireRuntimeBoundaryHealth(value.hyperliquidTestnet, "Hyperliquid Testnet health"),
+  });
+}
+
+const READINESS_HASH_PATTERN = /^[0-9a-f]{64}$/;
+const READINESS_DOMAIN_IDS = new Set([
+  "svm:devnet",
+  BASE_SEPOLIA_DOMAIN_ID,
+  ARBITRUM_SEPOLIA_DOMAIN_ID,
+  HYPERLIQUID_DOMAIN_ID,
+]);
+
+function requireReadinessAtoms(value: unknown, name: string): string {
+  if (typeof value !== "string" || !EVM_DECIMAL_PATTERN.test(value)) {
+    throw new Error(`${name} is invalid.`);
+  }
+  return value;
+}
+
+function requireReadinessHash(value: unknown, name: string): string {
+  if (typeof value !== "string" || !READINESS_HASH_PATTERN.test(value)) {
+    throw new Error(`${name} is invalid.`);
+  }
+  return value;
+}
+
+function requireExecutionReadinessStatus(value: unknown): ExecutionReadinessStatus | null {
+  if (value === undefined) return null;
+  if (!isRecord(value)) throw new Error("Execution readiness status is invalid.");
+  requireExactKeys(value, ["source", "policyHash", "observedAtMs", "utcDay", "domains"], "Execution readiness status");
+  if (value.source !== "TESTNET_CAP_POLICY" || typeof value.utcDay !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(value.utcDay) || !Array.isArray(value.domains)) {
+    throw new Error("Execution readiness status is invalid.");
+  }
+  const seen = new Set<string>();
+  const domains = value.domains.map((entry, index): ExecutionReadinessDomainStatus => {
+    if (!isRecord(entry)) throw new Error(`Execution readiness domain ${index} is invalid.`);
+    requireExactKeys(entry, [
+      "domainId", "quoteAssetId", "maxPrincipalAtomsPerOperation", "maxPrincipalAtomsPerDay",
+      "maxPrincipalAtomsPerOwnerPerDay", "maxRecoveryLossAtomsPerOperation",
+      "authorizedPrincipalAtomsToday", "latestAuthorization",
+    ], `Execution readiness domain ${index}`);
+    if (typeof entry.domainId !== "string" || !READINESS_DOMAIN_IDS.has(entry.domainId) || seen.has(entry.domainId)) {
+      throw new Error(`Execution readiness domain ${index} identity is invalid.`);
+    }
+    seen.add(entry.domainId);
+    if (typeof entry.quoteAssetId !== "string" || entry.quoteAssetId.length === 0) {
+      throw new Error(`Execution readiness domain ${index} quote asset is invalid.`);
+    }
+    const optionalAtoms = (atoms: unknown, name: string) => atoms === null ? null : requireReadinessAtoms(atoms, name);
+    let latestAuthorization: ExecutionReadinessDomainStatus["latestAuthorization"] = null;
+    if (entry.latestAuthorization !== null) {
+      if (!isRecord(entry.latestAuthorization)) {
+        throw new Error(`Execution readiness domain ${index} authorization is invalid.`);
+      }
+      requireExactKeys(
+        entry.latestAuthorization,
+        ["decisionHash", "policyHash", "decidedAtMs"],
+        `Execution readiness domain ${index} authorization`,
+      );
+      latestAuthorization = Object.freeze({
+        decisionHash: requireReadinessHash(
+          entry.latestAuthorization.decisionHash,
+          `Execution readiness domain ${index} decision hash`,
+        ),
+        policyHash: requireReadinessHash(
+          entry.latestAuthorization.policyHash,
+          `Execution readiness domain ${index} authorization policy hash`,
+        ),
+        decidedAtMs: requireInteger(
+          entry.latestAuthorization.decidedAtMs,
+          `Execution readiness domain ${index} decision time`,
+        ),
+      });
+    }
+    return Object.freeze({
+      domainId: entry.domainId,
+      quoteAssetId: entry.quoteAssetId,
+      maxPrincipalAtomsPerOperation: requireReadinessAtoms(
+        entry.maxPrincipalAtomsPerOperation,
+        `Execution readiness domain ${index} operation cap`,
+      ),
+      maxPrincipalAtomsPerDay: optionalAtoms(
+        entry.maxPrincipalAtomsPerDay,
+        `Execution readiness domain ${index} daily cap`,
+      ),
+      maxPrincipalAtomsPerOwnerPerDay: optionalAtoms(
+        entry.maxPrincipalAtomsPerOwnerPerDay,
+        `Execution readiness domain ${index} owner cap`,
+      ),
+      maxRecoveryLossAtomsPerOperation: requireReadinessAtoms(
+        entry.maxRecoveryLossAtomsPerOperation,
+        `Execution readiness domain ${index} recovery cap`,
+      ),
+      authorizedPrincipalAtomsToday: requireReadinessAtoms(
+        entry.authorizedPrincipalAtomsToday,
+        `Execution readiness domain ${index} authorized principal`,
+      ),
+      latestAuthorization,
+    });
+  });
+  return Object.freeze({
+    source: "TESTNET_CAP_POLICY",
+    policyHash: requireReadinessHash(value.policyHash, "Execution readiness policy hash"),
+    observedAtMs: requireInteger(value.observedAtMs, "Execution readiness observation time"),
+    utcDay: value.utcDay,
+    domains: Object.freeze(domains),
   });
 }
 
@@ -3737,6 +3867,7 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     return Object.freeze({
       ...runtime,
       markets: requireMarketStates(payload.markets),
+      executionReadiness: requireExecutionReadinessStatus(payload.executionReadiness),
       controls: requireRuntimeControls(payload),
     });
   }

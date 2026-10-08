@@ -38,15 +38,16 @@ export const DOMAIN_META: Readonly<Record<DomainId, {
   label: string;
   network: string;
   runtime: string;
+  domainId: string;
   wallet: "solana" | "evm";
   settlementClass: "ATOMIC_POSTCONDITION" | "ASYNC_BONDED_SOLVER" | "BATCHED_IOC_WITH_RECOVERY";
   settlement: string;
   executionMode: string;
 }>> = {
-  solana: { label: "Solana", network: "Solana Devnet", runtime: "SVM", wallet: "solana", settlementClass: "ATOMIC_POSTCONDITION", settlement: "Atomic", executionMode: "Solana atomic" },
-  base: { label: "Base", network: "Base Sepolia", runtime: "EVM", wallet: "evm", settlementClass: "ATOMIC_POSTCONDITION", settlement: "Atomic", executionMode: "Base atomic" },
-  arbitrum: { label: "Arbitrum", network: "Arbitrum Sepolia", runtime: "EVM", wallet: "evm", settlementClass: "ASYNC_BONDED_SOLVER", settlement: "Bonded async", executionMode: "Arbitrum bonded async" },
-  hyperliquid: { label: "Hyperliquid", network: "Hyperliquid testnet", runtime: "HyperCore", wallet: "evm", settlementClass: "BATCHED_IOC_WITH_RECOVERY", settlement: "IOC with recovery", executionMode: "Hyperliquid coordinated testnet" },
+  solana: { label: "Solana", network: "Solana Devnet", runtime: "SVM", domainId: "svm:devnet", wallet: "solana", settlementClass: "ATOMIC_POSTCONDITION", settlement: "Atomic", executionMode: "Solana atomic" },
+  base: { label: "Base", network: "Base Sepolia", runtime: "EVM", domainId: "eip155:84532", wallet: "evm", settlementClass: "ATOMIC_POSTCONDITION", settlement: "Atomic", executionMode: "Base atomic" },
+  arbitrum: { label: "Arbitrum", network: "Arbitrum Sepolia", runtime: "EVM", domainId: "eip155:421614", wallet: "evm", settlementClass: "ASYNC_BONDED_SOLVER", settlement: "Bonded async", executionMode: "Arbitrum bonded async" },
+  hyperliquid: { label: "Hyperliquid", network: "Hyperliquid testnet", runtime: "HyperCore", domainId: "hypercore:testnet", wallet: "evm", settlementClass: "BATCHED_IOC_WITH_RECOVERY", settlement: "IOC with recovery", executionMode: "Hyperliquid coordinated testnet" },
 };
 
 /** Lanes whose open packages the product cannot exit yet, with the reason shown in place of an exit. */
@@ -65,7 +66,11 @@ export function domainHealth(domain: DomainId, health: PrivateTerminalRuntimeHea
  * readiness gate is composed; without the gate every execution handoff is refused.
  */
 export function domainLive(domain: DomainId, health: PrivateTerminalRuntimeHealth | null): boolean {
-  return health !== null && health.controls.executionReadinessAvailable && domainHealth(domain, health)?.available === true;
+  if (health === null || !health.controls.executionReadinessAvailable || domainHealth(domain, health)?.available !== true) {
+    return false;
+  }
+  return health.executionReadiness === null || health.executionReadiness.domains.some((entry) =>
+    entry.domainId === DOMAIN_META[domain].domainId);
 }
 
 /** A lane whose live market the service serves, for previews and quotes, whether or not it executes. */
