@@ -9,11 +9,13 @@ import {
   commitmentHash,
   domainRef,
   netObligations,
+  nettingAllocationExecutionAuthorization,
   nettingAllocationSettlementEvidence,
   nettingExternalExecutionEvidence,
   nettingExternalExecutionIntent,
   packageMatchingPolicy,
   packageMatchingPolicyHash,
+  packageSettlementCommitmentHash,
   packageReopeningSnapshotHash,
   seriesExecutionClassHash,
   toHex,
@@ -198,6 +200,39 @@ test("owner authorization and prepared netting evidence are immutable and replay
       [toHex(commitmentHash(taker.orderId)), taker],
     ]);
     const finalAllocationReceipt = created.batch.finalAllocationReceipt!;
+    const executionAuthorizations = finalAllocationReceipt.allocations.map((allocation, index) => {
+      const packageOrder = orderByPackage.get(toHex(allocation.packageOrderId))!;
+      return nettingAllocationExecutionAuthorization({
+        version: 1,
+        finalAllocationReceiptHash: finalAllocationReceipt.receiptHash,
+        allocationReceiptHash: allocation.allocationReceiptHash,
+        settlementCommitmentHash: packageSettlementCommitmentHash(settlement(packageOrder)),
+        executionPlanHash: id(520 + index),
+        solverId: "solver",
+        protocolFeeAtoms: 1n,
+        solverFeeAtoms: 2n,
+        nonce: BigInt(index + 1),
+        validUntilUnit: "SOLANA_SLOT",
+        validUntilValue: 1_900n,
+      }, finalAllocationReceipt, result, policy, [], [], settlement(packageOrder));
+    });
+    assert.equal(store.recordNettingAllocationExecutionAuthorization(executionAuthorizations[0]!).replayed, false);
+    assert.equal(store.recordNettingAllocationExecutionAuthorization(executionAuthorizations[0]!).replayed, true);
+    assert.deepEqual(
+      store.nettingAllocationExecutionAuthorization(executionAuthorizations[0]!.authorizationHash),
+      executionAuthorizations[0],
+    );
+    const conflictingAuthorization = nettingAllocationExecutionAuthorization({
+      ...executionAuthorizations[0]!,
+      executionPlanHash: id(540),
+    }, finalAllocationReceipt, result, policy, [], [], settlement(
+      orderByPackage.get(toHex(executionAuthorizations[0]!.packageOrderId))!,
+    ));
+    assert.throws(
+      () => store.recordNettingAllocationExecutionAuthorization(conflictingAuthorization),
+      { code: "NETTING_EXECUTION_AUTHORIZATION_CONFLICT" },
+    );
+    assert.equal(store.recordNettingAllocationExecutionAuthorization(executionAuthorizations[1]!).replayed, false);
     const settlementEvidence = finalAllocationReceipt.allocations.map((allocation, index) => {
       const packageOrder = orderByPackage.get(toHex(allocation.packageOrderId))!;
       return nettingAllocationSettlementEvidence({

@@ -47,6 +47,7 @@ import {
   nettingSettlementCompletionReceipt,
   nettingFinalAllocationReceipt,
   verifyNettingAllocationSettlementEvidence,
+  verifyNettingAllocationExecutionAuthorization,
   verifyNettingExternalExecutionEvidence,
   verifyNettingExternalExecutionIntent,
   verifyNettingFinalAllocationReceipt,
@@ -94,6 +95,7 @@ import type {
   NettingExternalExecutionIntent,
   NettingExternalExecutionEvidence,
   NettingAllocationSettlementEvidence,
+  NettingAllocationExecutionAuthorization,
   NettingFinalAllocationReceipt,
   NettingSettlementCompletionReceipt,
   SeriesExecutionClass,
@@ -450,6 +452,14 @@ CREATE TABLE IF NOT EXISTS netting_final_allocation_receipts (
   receipt_json TEXT NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS netting_allocation_execution_authorizations (
+  authorization_hash BLOB PRIMARY KEY,
+  proof_hash BLOB NOT NULL REFERENCES netting_batches(proof_hash),
+  final_allocation_receipt_hash BLOB NOT NULL REFERENCES netting_final_allocation_receipts(receipt_hash),
+  allocation_receipt_hash BLOB NOT NULL UNIQUE,
+  authorization_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS netting_allocation_settlement_evidence (
   evidence_hash BLOB PRIMARY KEY,
   proof_hash BLOB NOT NULL REFERENCES netting_batches(proof_hash),
@@ -576,6 +586,12 @@ CREATE TRIGGER IF NOT EXISTS reject_netting_final_allocation_receipt_change
 CREATE TRIGGER IF NOT EXISTS reject_netting_final_allocation_receipt_delete
   BEFORE DELETE ON netting_final_allocation_receipts
   BEGIN SELECT RAISE(ABORT, 'netting final allocation receipts are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_allocation_execution_authorization_change
+  BEFORE UPDATE ON netting_allocation_execution_authorizations
+  BEGIN SELECT RAISE(ABORT, 'netting allocation execution authorizations are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_allocation_execution_authorization_delete
+  BEFORE DELETE ON netting_allocation_execution_authorizations
+  BEGIN SELECT RAISE(ABORT, 'netting allocation execution authorizations are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_netting_allocation_settlement_evidence_change
   BEFORE UPDATE ON netting_allocation_settlement_evidence
   BEGIN SELECT RAISE(ABORT, 'netting allocation settlement evidence is append-only'); END;
@@ -2085,6 +2101,141 @@ export class SqlitePackageExchangeStore {
       `).run(evidence.evidenceHash, intent.intentHash, stringifyProtocolJson(evidence), this.clock());
       this.ensureNettingFinalAllocationReceipt(proofHash);
       return Object.freeze({ evidence, replayed: false });
+    });
+  }
+
+  nettingAllocationExecutionAuthorization(
+    authorizationHashInput: Uint8Array | string,
+  ): NettingAllocationExecutionAuthorization | undefined {
+    const authorizationHash = commitmentHash(authorizationHashInput);
+    const row = this.db.prepare(`
+      SELECT proof_hash, final_allocation_receipt_hash, allocation_receipt_hash, authorization_json
+      FROM netting_allocation_execution_authorizations
+      WHERE authorization_hash = ?
+    `).get(authorizationHash) as {
+      proof_hash: unknown;
+      final_allocation_receipt_hash: unknown;
+      allocation_receipt_hash: unknown;
+      authorization_json: unknown;
+    } | undefined;
+    if (row === undefined) return undefined;
+    const proofHash = hashBytes(row.proof_hash, "proof_hash");
+    const batch = this.nettingBatch(proofHash);
+    if (batch?.finalAllocationReceipt === undefined) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Execution authorization lost its final allocation receipt.");
+    }
+    const authorization = parseProtocolJson(
+      jsonText(row.authorization_json, "authorization_json"),
+    ) as NettingAllocationExecutionAuthorization;
+    const allocation = batch.finalAllocationReceipt.allocations.find((candidate) =>
+      bytesEqual(candidate.allocationReceiptHash, authorization.allocationReceiptHash));
+    const settlement = allocation === undefined ? undefined : this.settlementCommitment(allocation.packageOrderId);
+    if (allocation === undefined || settlement === undefined) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Execution authorization lost its settlement commitment.");
+    }
+    guarded("CORRUPT_ROW", "Stored execution authorization failed validation.", () =>
+      verifyNettingAllocationExecutionAuthorization(
+        authorization,
+        batch.finalAllocationReceipt!,
+        batch.result,
+        batch.policy,
+        batch.externalExecutions.map((record) => record.intent),
+        batch.externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
+        settlement,
+      ));
+    if (
+      !bytesEqual(authorization.authorizationHash, authorizationHash)
+      || !bytesEqual(authorization.nettingProofHash, proofHash)
+      || !bytesEqual(
+        authorization.finalAllocationReceiptHash,
+        hashBytes(row.final_allocation_receipt_hash, "final_allocation_receipt_hash"),
+      )
+      || !bytesEqual(
+        authorization.allocationReceiptHash,
+        hashBytes(row.allocation_receipt_hash, "allocation_receipt_hash"),
+      )
+    ) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored execution authorization identity is inconsistent.");
+    }
+    return authorization;
+  }
+
+  recordNettingAllocationExecutionAuthorization(
+    authorization: NettingAllocationExecutionAuthorization,
+  ): { readonly authorization: NettingAllocationExecutionAuthorization; readonly replayed: boolean } {
+    return this.transaction(() => {
+      const receiptRow = this.db.prepare(`
+        SELECT proof_hash
+        FROM netting_final_allocation_receipts
+        WHERE receipt_hash = ?
+      `).get(commitmentHash(authorization.finalAllocationReceiptHash)) as { proof_hash: unknown } | undefined;
+      if (receiptRow === undefined) {
+        throw new PackageExchangeStoreError("NETTING_FINAL_ALLOCATION_NOT_FOUND", "Final allocation receipt is not stored.");
+      }
+      const proofHash = hashBytes(receiptRow.proof_hash, "proof_hash");
+      const batch = this.nettingBatch(proofHash);
+      if (batch?.finalAllocationReceipt === undefined) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Final allocation receipt lost its netting batch.");
+      }
+      const allocation = batch.finalAllocationReceipt.allocations.find((candidate) =>
+        bytesEqual(candidate.allocationReceiptHash, authorization.allocationReceiptHash));
+      const settlement = allocation === undefined ? undefined : this.settlementCommitment(allocation.packageOrderId);
+      if (allocation === undefined || settlement === undefined) {
+        throw new PackageExchangeStoreError(
+          "NETTING_SETTLEMENT_COMMITMENT_NOT_FOUND",
+          "Execution authorization does not have a stored settlement commitment.",
+        );
+      }
+      guarded("INVALID_INPUT", "Allocation execution authorization is invalid.", () =>
+        verifyNettingAllocationExecutionAuthorization(
+          authorization,
+          batch.finalAllocationReceipt!,
+          batch.result,
+          batch.policy,
+          batch.externalExecutions.map((record) => record.intent),
+          batch.externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
+          settlement,
+        ));
+      const authorizationHash = commitmentHash(authorization.authorizationHash);
+      const allocationReceiptHash = commitmentHash(authorization.allocationReceiptHash);
+      const authorizationJson = stringifyProtocolJson(authorization);
+      const existing = this.db.prepare(`
+        SELECT authorization_hash, allocation_receipt_hash, authorization_json
+        FROM netting_allocation_execution_authorizations
+        WHERE authorization_hash = ? OR allocation_receipt_hash = ?
+      `).all(authorizationHash, allocationReceiptHash) as {
+        authorization_hash: unknown;
+        allocation_receipt_hash: unknown;
+        authorization_json: unknown;
+      }[];
+      if (existing.length > 0) {
+        if (
+          existing.length !== 1
+          || !bytesEqual(hashBytes(existing[0]!.authorization_hash, "authorization_hash"), authorizationHash)
+          || !bytesEqual(hashBytes(existing[0]!.allocation_receipt_hash, "allocation_receipt_hash"), allocationReceiptHash)
+          || jsonText(existing[0]!.authorization_json, "authorization_json") !== authorizationJson
+        ) {
+          throw new PackageExchangeStoreError(
+            "NETTING_EXECUTION_AUTHORIZATION_CONFLICT",
+            "Allocation already has a different execution authorization.",
+          );
+        }
+        return Object.freeze({ authorization, replayed: true });
+      }
+      this.db.prepare(`
+        INSERT INTO netting_allocation_execution_authorizations
+          (authorization_hash, proof_hash, final_allocation_receipt_hash, allocation_receipt_hash,
+           authorization_json, recorded_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        authorizationHash,
+        proofHash,
+        authorization.finalAllocationReceiptHash,
+        allocationReceiptHash,
+        authorizationJson,
+        this.clock(),
+      );
+      return Object.freeze({ authorization, replayed: false });
     });
   }
 
