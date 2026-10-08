@@ -31,6 +31,16 @@ export interface SolverProcessConfig {
       journalDbPath: string;
       pollIntervalMs: number;
     }>;
+  readonly privateRfqs:
+    | Readonly<{ kind: 'DISABLED' }>
+    | Readonly<{
+      kind: 'ENABLED';
+      solverId: string;
+      authKeyId: string;
+      encryptionKeyId: string;
+      encryptionKeyPath: string;
+      pollIntervalMs: number;
+    }>;
 }
 
 export function explicitBoolean(value: string | undefined, name: string): boolean {
@@ -137,6 +147,36 @@ export function loadSolverProcessConfig(env: NodeJS.ProcessEnv): SolverProcessCo
       pollIntervalMs: sealedAuctionPollIntervalMs,
     })
     : Object.freeze({ kind: 'DISABLED' as const });
+  const privateRfqsEnabled = explicitBoolean(
+    env.NARYX_PRIVATE_RFQ_PARTICIPANT_ENABLED,
+    'NARYX_PRIVATE_RFQ_PARTICIPANT_ENABLED',
+  );
+  const privateRfqPollIntervalMs = privateRfqsEnabled
+    ? positiveInteger(
+      env.NARYX_PRIVATE_RFQ_POLL_INTERVAL_MS,
+      'NARYX_PRIVATE_RFQ_POLL_INTERVAL_MS',
+      1_000,
+    )
+    : 1_000;
+  if (privateRfqsEnabled && privateRfqPollIntervalMs < 100) {
+    throw new Error('NARYX_PRIVATE_RFQ_POLL_INTERVAL_MS must be at least 100');
+  }
+  const privateRfqs = privateRfqsEnabled
+    ? Object.freeze({
+      kind: 'ENABLED' as const,
+      solverId: identifier(env.NARYX_PRIVATE_RFQ_SOLVER_ID, 'NARYX_PRIVATE_RFQ_SOLVER_ID'),
+      authKeyId: identifier(env.NARYX_PRIVATE_RFQ_AUTH_KEY_ID, 'NARYX_PRIVATE_RFQ_AUTH_KEY_ID'),
+      encryptionKeyId: identifier(
+        env.NARYX_PRIVATE_RFQ_ENCRYPTION_KEY_ID,
+        'NARYX_PRIVATE_RFQ_ENCRYPTION_KEY_ID',
+      ),
+      encryptionKeyPath: absolutePath(
+        env.NARYX_PRIVATE_RFQ_ENCRYPTION_KEY_PATH ?? '',
+        'NARYX_PRIVATE_RFQ_ENCRYPTION_KEY_PATH',
+      ),
+      pollIntervalMs: privateRfqPollIntervalMs,
+    })
+    : Object.freeze({ kind: 'DISABLED' as const });
   return Object.freeze({
     host: loopbackHost(env.NARYX_SOLVER_HOST ?? '127.0.0.1'),
     port: tcpPort(env.NARYX_SOLVER_PORT, 'NARYX_SOLVER_PORT', DEFAULT_SOLVER_PORT),
@@ -145,5 +185,6 @@ export function loadSolverProcessConfig(env: NodeJS.ProcessEnv): SolverProcessCo
     quoteDbPath: absolutePath(present(quoteDb) ? quoteDb : LOCAL_FIXTURE_QUOTE_DB, 'NARYX_SOLVER_QUOTE_DB'),
     localRuntime,
     sealedAuctions,
+    privateRfqs,
   });
 }

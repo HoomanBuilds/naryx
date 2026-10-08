@@ -55,6 +55,16 @@ export {
   type SealedAuctionSigner,
 } from './sealed-auction-participant.js';
 export {
+  HttpPrivateRfqRelay,
+  PrivateRfqParticipant,
+  PrivateRfqRelayError,
+  loadPrivateRfqEncryptionKey,
+  type PendingPrivateRfq,
+  type PrivateRfqQuotePort,
+  type PrivateRfqRelayPort,
+  type PrivateRfqSigner,
+} from './private-rfq-participant.js';
+export {
   GeneralizedStrategyQuoteContextRegistry,
   type GeneralizedStrategyQuoteLane,
 } from './strategy-quote-context-registry.js';

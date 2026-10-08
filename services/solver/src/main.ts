@@ -46,6 +46,9 @@ import {
   HttpSealedAuctionRelay,
   SealedAuctionParticipant,
   SqliteSealedAuctionJournal,
+  HttpPrivateRfqRelay,
+  PrivateRfqParticipant,
+  loadPrivateRfqEncryptionKey,
   EvmOptionSpreadPreparationContextResolver,
   EvmCalendarSpreadPreparationContextResolver,
   EvmTreasuryHedgePreparationContextResolver,
@@ -479,6 +482,29 @@ if (config.sealedAuctions.kind === 'ENABLED') {
     },
   });
 }
+let privateRfqParticipant: PrivateRfqParticipant | undefined;
+let stopPrivateRfqs: (() => void) | undefined;
+if (config.privateRfqs.kind === 'ENABLED') {
+  if (generalizedStrategyQuoteService === undefined) {
+    throw new Error('private RFQ participation requires at least one generalized strategy quote lane');
+  }
+  const privateRfqRelay = new HttpPrivateRfqRelay({
+    origin: apiOrigin,
+    solverId: config.privateRfqs.solverId,
+    keyId: config.privateRfqs.authKeyId,
+    signer: executionSigner,
+  });
+  privateRfqParticipant = new PrivateRfqParticipant({
+    solverId: config.privateRfqs.solverId,
+    encryptionKeyId: config.privateRfqs.encryptionKeyId,
+    privateKey: loadPrivateRfqEncryptionKey(
+      config.privateRfqs.encryptionKeyPath,
+      config.privateRfqs.encryptionKeyId,
+    ),
+    relay: privateRfqRelay,
+    quotes: generalizedStrategyQuoteService,
+  });
+}
 const evmPreparationLanes = Object.freeze([
   ...(evmOptionRuntime?.preparationLanes ?? []),
   ...(evmCalendarRuntime?.preparationLanes ?? []),
@@ -670,6 +696,7 @@ function shutdown(): void {
   if (shuttingDown) return;
   shuttingDown = true;
   stopSealedAuctions?.();
+  stopPrivateRfqs?.();
   if (clockRefresh !== undefined) clearInterval(clockRefresh);
   void Promise.allSettled([
     close(quoteServer), close(executorServer), close(arbitrumExecutorServer), baseSolver?.close(),
@@ -710,8 +737,15 @@ try {
       (error) => process.stderr.write(`Sealed auction participant error: ${error instanceof Error ? error.message : 'unknown error'}\n`),
     );
   }
+  if (privateRfqParticipant !== undefined && config.privateRfqs.kind === 'ENABLED') {
+    stopPrivateRfqs = privateRfqParticipant.start(
+      config.privateRfqs.pollIntervalMs,
+      (error) => process.stderr.write(`Private RFQ participant error: ${error instanceof Error ? error.message : 'unknown error'}\n`),
+    );
+  }
 } catch (error) {
   stopSealedAuctions?.();
+  stopPrivateRfqs?.();
   await Promise.allSettled([close(quoteServer), close(executorServer), close(arbitrumExecutorServer)]);
   executorRuntime?.close();
   arbitrumJournal?.close();
@@ -729,10 +763,11 @@ const generalizedHyperliquid = generalizedStrategyLanes.length > 0
   ? 'LIVE_TESTNET_QUOTES'
   : strategyPreparationHandler === undefined ? 'DISABLED' : 'PREPARATION_ONLY';
 const sealedAuctions = config.sealedAuctions.kind;
+const privateRfqs = config.privateRfqs.kind;
 process.stdout.write(`Internal solver listening on http://${host}:${listenPort} `
   + `runtime=${config.localRuntime.kind} hyperliquidTestnetQuotes=${hyperliquidQuotes} `
   + `arbitrumSepoliaQuotes=${arbitrumQuotes} hyperliquidStrategies=${generalizedHyperliquid} `
-  + `sealedAuctions=${sealedAuctions}\n`);
+  + `sealedAuctions=${sealedAuctions} privateRfqs=${privateRfqs}\n`);
 if (config.localRuntime.kind === 'LOCAL_FIXTURE') {
   process.stdout.write('LOCAL FIXTURE MODE: local quotes use fixed catalog prices and placeholder '
     + `hashes, signed with the configured solver key. Quote database: ${config.quoteDbPath}\n`);
