@@ -111,7 +111,7 @@ contract RiskDomainRegistryTest is Test {
         registry.proposePolicy(DOMAIN, rules, series, _limits());
     }
 
-    function testDomainUpgradeInvalidatesTheOldPolicy() public {
+    function testDomainUpgradeBlocksOldEntryButPreservesExit() public {
         _activate(1, MANIFEST_ONE);
         vm.prank(PROPOSER);
         config.proposeDomain(2, keccak256("domain-v2"));
@@ -119,6 +119,7 @@ contract RiskDomainRegistryTest is Test {
         vm.prank(EXECUTOR);
         config.activateDomain();
         vm.expectRevert(RiskDomainRegistry.PolicyMismatch.selector);
+        registry.validateEntry(DOMAIN, 1, MANIFEST_ONE, _series(), _risk(), _exposures());
         registry.validateExit(DOMAIN, 1, MANIFEST_ONE, _series(), address(token));
     }
 

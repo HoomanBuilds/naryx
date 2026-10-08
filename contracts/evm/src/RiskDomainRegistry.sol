@@ -303,7 +303,6 @@ contract RiskDomainRegistry {
         if (!record.activated || record.lifecycle == Lifecycle.DEPRECATED || record.lifecycle == Lifecycle.UNSET) {
             revert PolicyMismatch();
         }
-        _requireDomain(record.config);
         if (!_eligibleSeries[riskDomainId][manifestVersion][_seriesKey(series)]) revert SeriesUnsupported();
         if (
             accountingToken != record.config.accountingToken
