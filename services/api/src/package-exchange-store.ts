@@ -2169,6 +2169,30 @@ export class SqlitePackageExchangeStore {
     return authorization;
   }
 
+  nettingAllocationExecutionAuthorizations(
+    proofHashInput: Uint8Array | string,
+  ): readonly NettingAllocationExecutionAuthorization[] {
+    const proofHash = commitmentHash(proofHashInput);
+    if (this.nettingBatch(proofHash) === undefined) {
+      throw new PackageExchangeStoreError("NETTING_BATCH_NOT_FOUND", "Prepared netting batch is not stored.");
+    }
+    const rows = this.db.prepare(`
+      SELECT authorization_hash
+      FROM netting_allocation_execution_authorizations
+      WHERE proof_hash = ?
+      ORDER BY allocation_receipt_hash
+    `).all(proofHash) as { authorization_hash: unknown }[];
+    return Object.freeze(rows.map((row) => {
+      const authorization = this.nettingAllocationExecutionAuthorization(
+        hashBytes(row.authorization_hash, "authorization_hash"),
+      );
+      if (authorization === undefined) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored execution authorization disappeared.");
+      }
+      return authorization;
+    }));
+  }
+
   recordNettingAllocationExecutionAuthorization(
     authorization: NettingAllocationExecutionAuthorization,
   ): { readonly authorization: NettingAllocationExecutionAuthorization; readonly replayed: boolean } {

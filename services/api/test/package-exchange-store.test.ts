@@ -233,6 +233,11 @@ test("owner authorization and prepared netting evidence are immutable and replay
       { code: "NETTING_EXECUTION_AUTHORIZATION_CONFLICT" },
     );
     assert.equal(store.recordNettingAllocationExecutionAuthorization(executionAuthorizations[1]!).replayed, false);
+    assert.deepEqual(
+      new Set(store.nettingAllocationExecutionAuthorizations(created.batch.proofHashHex)
+        .map((authorization) => toHex(authorization.authorizationHash))),
+      new Set(executionAuthorizations.map((authorization) => toHex(authorization.authorizationHash))),
+    );
     const settlementEvidence = finalAllocationReceipt.allocations.map((allocation, index) => {
       const packageOrder = orderByPackage.get(toHex(allocation.packageOrderId))!;
       return nettingAllocationSettlementEvidence({

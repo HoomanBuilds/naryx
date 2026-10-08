@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   assetRef,
+  commitmentHash,
   domainRef,
   netObligations,
   nettingExternalExecutionEvidence,
@@ -10,11 +11,16 @@ import {
   toHex,
   versionedManifestRef,
   type NettingExternalExecutionEvidence,
+  type NettingAllocationExecutionAuthorization,
   type NettingPolicyManifestInput,
 } from '@naryx/protocol-types';
 import {
   NettingExecutionCoordinator,
   NettingExternalExecutionRouter,
+  NettingAllocationObservationRouter,
+  NettingAllocationSettlementCoordinator,
+  type NettingAllocationExecutionObservation,
+  type NettingAllocationSettlementStorePort,
   type NettingExternalExecutionStorePort,
   type PreparedNettingBatch,
 } from '../src/index.js';
@@ -157,4 +163,56 @@ test('routes residuals to exactly one domain executor and fails closed otherwise
     router.execute({ intent: unsupported, idempotencyKey: toHex(intent.intentHash) }),
     /no registered execution route/,
   );
+});
+
+test('records only authorized allocation observations and reports missing authorizations', async () => {
+  const firstAllocationHash = commitmentHash(id(70));
+  const secondAllocationHash = commitmentHash(id(71));
+  const authorization = {
+    authorizationHash: commitmentHash(id(72)),
+    allocationReceiptHash: firstAllocationHash,
+    domain: domainRef('svm:solana-devnet', 1, id(73)),
+  } as NettingAllocationExecutionAuthorization;
+  class AllocationStore implements NettingAllocationSettlementStorePort {
+    batch = {
+      finalAllocationReceipt: {
+        allocations: [{ allocationReceiptHash: firstAllocationHash }, { allocationReceiptHash: secondAllocationHash }],
+      },
+      settlementEvidence: [],
+    } as unknown as PreparedNettingBatch;
+
+    nettingBatch(): PreparedNettingBatch {
+      return this.batch;
+    }
+
+    nettingAllocationExecutionAuthorizations(): readonly NettingAllocationExecutionAuthorization[] {
+      return [authorization];
+    }
+
+    recordNettingAllocationExecutionObservation(
+      observation: NettingAllocationExecutionObservation,
+    ): { readonly replayed: boolean } {
+      assert.equal(toHex(commitmentHash(observation.authorizationHash)), toHex(authorization.authorizationHash));
+      this.batch = {
+        ...this.batch,
+        settlementEvidence: [{ allocationReceiptHash: firstAllocationHash }],
+      } as unknown as PreparedNettingBatch;
+      return { replayed: false };
+    }
+  }
+  const store = new AllocationStore();
+  const observer = new NettingAllocationObservationRouter([{
+    routeId: 'solana-devnet',
+    supports: (candidate) => candidate.domain.domainId === 'svm:solana-devnet',
+    observe: async ({ authorization: candidate }) => ({
+      authorizationHash: candidate.authorizationHash,
+      observedAtUnit: 'SOLANA_SLOT',
+      observedAtValue: 100n,
+      settlementReferenceHash: id(74),
+      authoritativeEvidenceHash: id(75),
+    }),
+  }]);
+  const settled = await new NettingAllocationSettlementCoordinator(store, observer).settle(id(76));
+  assert.deepEqual(settled.observedAuthorizationHashes, [toHex(authorization.authorizationHash)]);
+  assert.deepEqual(settled.pendingAllocationReceiptHashes, [toHex(secondAllocationHash)]);
 });

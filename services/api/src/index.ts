@@ -253,6 +253,7 @@ export {
   type PreparedNettingBatch,
   type PreparedNettingBatchRecordInput,
   type NettingExternalExecutionRecord,
+  type NettingAllocationExecutionObservation,
   type PackageTapeRecord,
   type RegisteredExchangeDocument,
 } from "./package-exchange-store.js";
@@ -636,6 +637,13 @@ export {
   type RoutedNettingExternalExecutionPort,
   type NettingExecutionCoordinatorResult,
 } from "./netting-execution-coordinator.js";
+export {
+  NettingAllocationObservationRouter,
+  NettingAllocationSettlementCoordinator,
+  type NettingAllocationObservationPort,
+  type NettingAllocationSettlementResult,
+  type NettingAllocationSettlementStorePort,
+} from "./netting-allocation-settlement-coordinator.js";
 export {
   API_HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH,
   HttpHyperliquidNettingResidualExecutionClient,
