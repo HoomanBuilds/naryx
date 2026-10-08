@@ -72,6 +72,23 @@ export function NetworkView() {
   const readiness = runtimeHealth?.executionReadiness ?? null;
   const selectedReadiness = readiness?.domains.find((entry) => entry.domainId === selectedMeta.domainId) ?? null;
   const latestAuthorization = selectedReadiness?.latestAuthorization ?? null;
+  const selectedIncidentScopes = runtimeHealth?.dependencyIncidents?.scopes.filter((entry) =>
+    entry.domainId === selectedMeta.domainId) ?? [];
+  const newestIncidentEvidence = selectedIncidentScopes.reduce((latest, entry) =>
+    latest === null || BigInt(entry.evidenceObservedAtMs) > BigInt(latest.evidenceObservedAtMs) ? entry : latest,
+  null as (typeof selectedIncidentScopes)[number] | null);
+  const incidentState = runtimeHealth === null
+    ? "UNKNOWN"
+    : !runtimeHealth.controls.dependencyIncidentStatusAvailable
+      ? "NOT PUBLISHED"
+      : selectedIncidentScopes.length === 0
+        ? "NO DOMAIN SCOPE"
+        : `${[...new Set(selectedIncidentScopes.map((entry) => entry.state))].join(", ")}${selectedIncidentScopes.some((entry) => !entry.evidenceFresh) ? " (STALE EVIDENCE)" : ""}`;
+  const incidentPermissions = selectedIncidentScopes.length === 0
+    ? "NOT AVAILABLE"
+    : selectedIncidentScopes.some((entry) => !entry.evidenceFresh)
+      ? "ENTRY BLOCKED, EXIT UNVERIFIED"
+    : `ENTRY ${selectedIncidentScopes.every((entry) => entry.entryAllowed) ? "ALLOWED" : "BLOCKED"}, EXIT ${selectedIncidentScopes.every((entry) => entry.exitAllowed) ? "ALLOWED" : "BLOCKED"}`;
 
   return (
     <main className={styles.page}>
@@ -167,7 +184,9 @@ export function NetworkView() {
             <dt>Recovery loss cap</dt><dd className={styles.mono}>{selectedReadiness ? `${selectedReadiness.maxRecoveryLossAtomsPerOperation} ${selectedReadiness.quoteAssetId} atoms` : "NOT AUTHORIZED"}</dd>
             <dt>Authority fence</dt><dd className={styles.mono}>{authorityFence}</dd>
             <dt>Dependencies</dt><dd className={styles.mono} title={dependencyStatus}>{dependencyStatus}</dd>
-            <dt>Incident evidence</dt><dd className={styles.mono}>NOT PUBLISHED BY KEEPER</dd>
+            <dt>Incident state</dt><dd className={styles.mono}>{incidentState}</dd>
+            <dt>Incident permissions</dt><dd className={styles.mono}>{incidentPermissions}</dd>
+            <dt>Incident evidence</dt><dd className={styles.mono}>{newestIncidentEvidence?.evidenceCommitment ?? "NOT AVAILABLE"}</dd>
           </dl>
         </section>
       </div>

@@ -73,6 +73,37 @@ export type ExecutionReadinessStatus = Readonly<{
   domains: readonly ExecutionReadinessDomainStatus[];
 }>;
 
+export type DependencyIncidentState =
+  | "ACTIVE"
+  | "ENTRY_PAUSED"
+  | "EXIT_ONLY"
+  | "ALL_PAUSED"
+  | "QUARANTINED"
+  | "INCIDENT_REVIEW";
+
+export type DependencyIncidentScopeStatus = Readonly<{
+  scopeId: string;
+  scopeHash: string;
+  domainId: string;
+  state: DependencyIncidentState;
+  entryAllowed: boolean;
+  exitAllowed: boolean;
+  revision: string;
+  evidenceCommitment: string;
+  evidenceObservedAtMs: string;
+  evidenceValidUntilMs: string;
+  evidenceFresh: boolean;
+  latestReceiptHash: string | null;
+}>;
+
+export type DependencyIncidentStatusSnapshot = Readonly<{
+  version: 1;
+  observedAtMs: number;
+  configuredScopeCount: number;
+  unavailableScopeCount: number;
+  scopes: readonly DependencyIncidentScopeStatus[];
+}>;
+
 export type PrivateTerminalRuntimeHealth = Readonly<{
   solanaDevnet: RuntimeBoundaryHealth;
   baseTestnetAtomic: RuntimeBoundaryHealth;
@@ -81,10 +112,12 @@ export type PrivateTerminalRuntimeHealth = Readonly<{
   /** Each configured lane's market as the service reports it; LIVE serves previews and quotes. */
   markets: Readonly<Partial<Record<DomainId, "LIVE" | "UNAVAILABLE">>>;
   executionReadiness: ExecutionReadinessStatus | null;
+  dependencyIncidents: DependencyIncidentStatusSnapshot | null;
   controls: Readonly<{
     /** DISABLED: no local runtime is composed, the default for a real testnet deployment. */
     localAtomicRuntimeMode: "PHASE4_FIXTURE" | "MANIFEST_VALIDATED" | "DISABLED";
     executionReadinessAvailable: boolean;
+    dependencyIncidentStatusAvailable: boolean;
     lifecycleReadAvailable: boolean;
     solverQuotingAvailable: boolean;
     executionIntentAvailable: boolean;
@@ -1467,7 +1500,7 @@ function requireMarketStates(value: unknown): PrivateTerminalRuntimeHealth["mark
 
 function requireRuntimeHealth(
   value: unknown,
-): Omit<PrivateTerminalRuntimeHealth, "controls" | "markets" | "executionReadiness"> {
+): Omit<PrivateTerminalRuntimeHealth, "controls" | "markets" | "executionReadiness" | "dependencyIncidents"> {
   if (!isRecord(value)) throw new Error("Private terminal health is invalid.");
   requireExactKeys(
     value,
@@ -1588,6 +1621,89 @@ function requireExecutionReadinessStatus(value: unknown): ExecutionReadinessStat
   });
 }
 
+const DEPENDENCY_INCIDENT_STATES = new Set<DependencyIncidentState>([
+  "ACTIVE",
+  "ENTRY_PAUSED",
+  "EXIT_ONLY",
+  "ALL_PAUSED",
+  "QUARANTINED",
+  "INCIDENT_REVIEW",
+]);
+const DOMAIN_ID_PATTERN = /^[a-z0-9]+:[A-Za-z0-9._-]{1,64}$/;
+
+function requireDependencyIncidentStatus(value: unknown): DependencyIncidentStatusSnapshot | null {
+  if (value === undefined) return null;
+  if (!isRecord(value)) throw new Error("Dependency incident status is invalid.");
+  requireExactKeys(
+    value,
+    ["version", "observedAtMs", "configuredScopeCount", "unavailableScopeCount", "scopes"],
+    "Dependency incident status",
+  );
+  if (value.version !== 1 || !Array.isArray(value.scopes)) {
+    throw new Error("Dependency incident status is invalid.");
+  }
+  const configuredScopeCount = requireInteger(value.configuredScopeCount, "Configured incident scope count");
+  const unavailableScopeCount = requireInteger(value.unavailableScopeCount, "Unavailable incident scope count");
+  if (configuredScopeCount !== value.scopes.length + unavailableScopeCount) {
+    throw new Error("Dependency incident scope counts are inconsistent.");
+  }
+  const seen = new Set<string>();
+  const scopes = value.scopes.map((entry, index): DependencyIncidentScopeStatus => {
+    if (!isRecord(entry)) throw new Error(`Dependency incident scope ${index} is invalid.`);
+    requireExactKeys(entry, [
+      "scopeId", "scopeHash", "domainId", "state", "entryAllowed", "exitAllowed", "revision",
+      "evidenceCommitment", "evidenceObservedAtMs", "evidenceValidUntilMs", "evidenceFresh",
+      "latestReceiptHash",
+    ], `Dependency incident scope ${index}`);
+    if (typeof entry.scopeId !== "string" || entry.scopeId.length === 0 || entry.scopeId.length > 256 ||
+        typeof entry.domainId !== "string" || !DOMAIN_ID_PATTERN.test(entry.domainId) ||
+        typeof entry.scopeHash !== "string" || !EVM_HASH_PATTERN.test(entry.scopeHash) || seen.has(entry.scopeHash) ||
+        typeof entry.state !== "string" || !DEPENDENCY_INCIDENT_STATES.has(entry.state as DependencyIncidentState) ||
+        typeof entry.entryAllowed !== "boolean" || typeof entry.exitAllowed !== "boolean" ||
+        typeof entry.evidenceFresh !== "boolean" ||
+        typeof entry.evidenceCommitment !== "string" || !EVM_HASH_PATTERN.test(entry.evidenceCommitment) ||
+        (entry.latestReceiptHash !== null && (typeof entry.latestReceiptHash !== "string" || !EVM_HASH_PATTERN.test(entry.latestReceiptHash)))) {
+      throw new Error(`Dependency incident scope ${index} is invalid.`);
+    }
+    seen.add(entry.scopeHash);
+    if (entry.entryAllowed !== (entry.state === "ACTIVE")) {
+      throw new Error(`Dependency incident scope ${index} entry permission is inconsistent.`);
+    }
+    const evidenceObservedAtMs = requireReadinessAtoms(
+      entry.evidenceObservedAtMs,
+      `Dependency incident scope ${index} evidence time`,
+    );
+    const evidenceValidUntilMs = requireReadinessAtoms(
+      entry.evidenceValidUntilMs,
+      `Dependency incident scope ${index} evidence expiry`,
+    );
+    if (BigInt(evidenceValidUntilMs) <= BigInt(evidenceObservedAtMs)) {
+      throw new Error(`Dependency incident scope ${index} evidence window is invalid.`);
+    }
+    return Object.freeze({
+      scopeId: entry.scopeId,
+      scopeHash: entry.scopeHash,
+      domainId: entry.domainId,
+      state: entry.state as DependencyIncidentState,
+      entryAllowed: entry.entryAllowed,
+      exitAllowed: entry.exitAllowed,
+      revision: requireReadinessAtoms(entry.revision, `Dependency incident scope ${index} revision`),
+      evidenceCommitment: entry.evidenceCommitment,
+      evidenceObservedAtMs,
+      evidenceValidUntilMs,
+      evidenceFresh: entry.evidenceFresh,
+      latestReceiptHash: entry.latestReceiptHash,
+    });
+  });
+  return Object.freeze({
+    version: 1,
+    observedAtMs: requireInteger(value.observedAtMs, "Dependency incident status time"),
+    configuredScopeCount,
+    unavailableScopeCount,
+    scopes: Object.freeze(scopes),
+  });
+}
+
 function requireHealthFlag(value: Record<string, unknown>, key: string): boolean {
   if (typeof value[key] !== "boolean") throw new Error(`Private terminal ${key} is invalid.`);
   return value[key];
@@ -1602,6 +1718,7 @@ function requireRuntimeControls(value: Record<string, unknown>): PrivateTerminal
   return Object.freeze({
     localAtomicRuntimeMode: value.localAtomicRuntimeMode,
     executionReadinessAvailable: requireHealthFlag(value, "executionReadinessAvailable"),
+    dependencyIncidentStatusAvailable: requireHealthFlag(value, "dependencyIncidentStatusAvailable"),
     lifecycleReadAvailable: requireHealthFlag(value, "lifecycleReadAvailable"),
     solverQuotingAvailable: requireHealthFlag(value, "solverQuotingAvailable"),
     executionIntentAvailable: requireHealthFlag(value, "executionIntentAvailable"),
@@ -3868,6 +3985,7 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
       ...runtime,
       markets: requireMarketStates(payload.markets),
       executionReadiness: requireExecutionReadinessStatus(payload.executionReadiness),
+      dependencyIncidents: requireDependencyIncidentStatus(payload.dependencyIncidents),
       controls: requireRuntimeControls(payload),
     });
   }
