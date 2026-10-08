@@ -43,6 +43,75 @@ function statePill(state: string) {
   return styles.pill;
 }
 
+type StrategyReceiptHistoryRow = Readonly<{
+  receiptHash: string;
+  orderHash: string;
+  quoteHash: string;
+  templateId: string;
+  lifecycleAction: string;
+  expectedStateHash: string | null;
+  terminalState: string;
+  finalityStatus: string;
+  domainIds: readonly string[];
+  portfolioEligible: boolean;
+  recordedAtMs: number;
+}>;
+
+function object(value: unknown, context: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${context} is malformed.`);
+  return value as Record<string, unknown>;
+}
+
+function strategyReceiptHistory(value: unknown, owner: string): readonly StrategyReceiptHistoryRow[] {
+  const root = object(value, "Strategy receipt history");
+  const expectedOwner = owner.startsWith("0x") ? owner.toLowerCase() : owner;
+  if (root.version !== 1 || root.ownerId !== expectedOwner || !Array.isArray(root.receipts)) {
+    throw new Error("Strategy receipt history is bound to another owner.");
+  }
+  return Object.freeze(root.receipts.map((entry, index) => {
+    const receipt = object(entry, `Strategy receipt ${index}`);
+    const hashes = [receipt.receiptHashHex, receipt.orderHashHex, receipt.quoteHashHex];
+    if (!hashes.every((hash) => typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash))
+      || typeof receipt.templateId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(receipt.templateId)
+      || typeof receipt.lifecycleAction !== "string" || !/^[A-Z_]{1,32}$/.test(receipt.lifecycleAction)
+      || (receipt.expectedStrategyStateHashHex !== null
+        && (typeof receipt.expectedStrategyStateHashHex !== "string" || !/^[0-9a-f]{64}$/.test(receipt.expectedStrategyStateHashHex)))
+      || typeof receipt.terminalState !== "string" || !/^[A-Z_]{1,40}$/.test(receipt.terminalState)
+      || typeof receipt.finalityStatus !== "string" || !/^[A-Z_]{1,24}$/.test(receipt.finalityStatus)
+      || !Array.isArray(receipt.domainIds)
+      || !receipt.domainIds.every((domainId) => typeof domainId === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(domainId))
+      || typeof receipt.portfolioEligible !== "boolean"
+      || typeof receipt.recordedAtMs !== "number" || !Number.isSafeInteger(receipt.recordedAtMs) || receipt.recordedAtMs < 0) {
+      throw new Error(`Strategy receipt ${index} is malformed.`);
+    }
+    return Object.freeze({
+      receiptHash: receipt.receiptHashHex as string,
+      orderHash: receipt.orderHashHex as string,
+      quoteHash: receipt.quoteHashHex as string,
+      templateId: receipt.templateId,
+      lifecycleAction: receipt.lifecycleAction,
+      expectedStateHash: receipt.expectedStrategyStateHashHex as string | null,
+      terminalState: receipt.terminalState,
+      finalityStatus: receipt.finalityStatus,
+      domainIds: Object.freeze(receipt.domainIds as string[]),
+      portfolioEligible: receipt.portfolioEligible,
+      recordedAtMs: receipt.recordedAtMs,
+    });
+  }));
+}
+
+async function ownerStrategyReceipts(baseUrl: string, owner: string, signal: AbortSignal) {
+  const response = await fetch(`${baseUrl.replace(/\/+$/, "")}/v1/owners/${encodeURIComponent(owner)}/strategy-receipts?limit=50`, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+    credentials: "omit",
+    referrerPolicy: "no-referrer",
+    signal,
+  });
+  if (!response.ok) throw new Error(`Strategy receipt history answered ${response.status}.`);
+  return strategyReceiptHistory(await response.json(), owner);
+}
+
 /** Lifecycle reads cover Solana Devnet and local conformance attempts. */
 function readable(attempt: RecordedAttempt) {
   return attempt.flow === "devnet" || attempt.flow === "conformance";
@@ -96,7 +165,7 @@ function fromService(entry: OwnerPackageEntry, owner: string): Row | null {
 }
 
 export function ActivityView() {
-  const { attempts: localAttempts, privateProvider, clearAttempts } = useTerminal();
+  const { attempts: localAttempts, privateProvider, publicApiBaseUrl, clearAttempts } = useTerminal();
   const [openId, setOpenId] = useState<string | null>(null);
   const solanaOwner = useSolanaWallet().selectedAccount?.address ?? null;
   const evmOwner = useEvmWallet().account;
@@ -118,6 +187,22 @@ export function ActivityView() {
     const owner = owners[index];
     return owner === undefined ? [] : (query.data ?? []).flatMap((entry) => fromService(entry, owner) ?? []);
   });
+  const strategyReceiptQueries = useQueries({
+    queries: owners.map((owner) => ({
+      queryKey: ["owner-strategy-receipts", publicApiBaseUrl, owner],
+      enabled: publicApiBaseUrl !== null,
+      refetchInterval: 30_000,
+      queryFn: ({ signal }: { signal: AbortSignal }) => {
+        if (publicApiBaseUrl === null) throw new Error("Public API not configured.");
+        return ownerStrategyReceipts(publicApiBaseUrl, owner, signal);
+      },
+    })),
+  });
+  const strategyReceipts = [...new Map(
+    strategyReceiptQueries.flatMap((query) => query.data ?? []).map((receipt) => [receipt.receiptHash, receipt]),
+  ).values()].sort((left, right) => right.recordedAtMs - left.recordedAtMs);
+  const strategyReceiptsLoading = strategyReceiptQueries.some((query) => query.isPending);
+  const strategyReceiptsUnavailable = strategyReceiptQueries.some((query) => query.isError);
   const serviceKey = JSON.stringify(serviceRows);
   const ownersKey = owners.join(",");
   const attempts: readonly Row[] = useMemo(() => {
@@ -167,6 +252,69 @@ export function ActivityView() {
       {privateProvider === null && attempts.length > 0 ? (
         <p className={styles.notice}>The private terminal service is not configured, so lifecycle state cannot be read. The list below is this browser&apos;s record only.</p>
       ) : null}
+
+      <section className={styles.card} aria-labelledby="strategy-receipts-title">
+        <div className={styles.cardHead}>
+          <h2 id="strategy-receipts-title">Canonical strategy receipts</h2>
+          <p>Final package economics and evidence, indexed from the connected wallet&apos;s durable strategy orders.</p>
+        </div>
+        <div className={styles.scroll}>
+          <table className={styles.table}>
+            <thead>
+              <tr>
+                <th scope="col">Recorded</th>
+                <th scope="col">Template</th>
+                <th scope="col">Action</th>
+                <th scope="col">Domains</th>
+                <th scope="col">Outcome</th>
+                <th scope="col">Receipt</th>
+                <th scope="col"><span className="sr-only">Portfolio action</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {strategyReceipts.length === 0 ? (
+                <tr>
+                  <td colSpan={7}>
+                    <div className={styles.empty}>
+                      <strong>{owners.length === 0
+                        ? "Connect a wallet"
+                        : strategyReceiptsLoading
+                          ? "Loading strategy receipts"
+                          : strategyReceiptsUnavailable
+                            ? "Strategy receipts unavailable"
+                            : "No strategy receipts yet"}</strong>
+                      <p>{owners.length === 0
+                        ? "Connect a Solana or EVM wallet to load its canonical strategy receipt history."
+                        : strategyReceiptsUnavailable
+                        ? "The public evidence service could not return the connected wallet's receipt history."
+                        : "A finalized package execution appears here and can be recorded or applied in Portfolio."}</p>
+                    </div>
+                  </td>
+                </tr>
+              ) : strategyReceipts.map((receipt) => {
+                const portfolioHref = !receipt.portfolioEligible
+                  ? null
+                  : receipt.lifecycleAction === "ENTRY"
+                    ? `/portfolio?receipt=${encodeURIComponent(receipt.receiptHash)}`
+                    : receipt.expectedStateHash === null
+                      ? null
+                      : `/portfolio?receipt=${encodeURIComponent(receipt.receiptHash)}&state=${encodeURIComponent(receipt.expectedStateHash)}`;
+                return (
+                  <tr key={receipt.receiptHash}>
+                    <td className={styles.mono}>{time(receipt.recordedAtMs)}</td>
+                    <td>{receipt.templateId}</td>
+                    <td>{stateText(receipt.lifecycleAction)}</td>
+                    <td className={styles.dim}>{receipt.domainIds.join(", ")}</td>
+                    <td><span className={statePill(receipt.terminalState)}>{stateText(receipt.terminalState)}</span></td>
+                    <td className={styles.mono} title={receipt.receiptHash}>{compact(receipt.receiptHash, 12, 8)}</td>
+                    <td>{portfolioHref ? <Link href={portfolioHref}>{receipt.lifecycleAction === "ENTRY" ? "Record" : "Apply"}</Link> : "-"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       <section className={styles.card} aria-labelledby="packages-title">
         <div className={styles.cardHead}>

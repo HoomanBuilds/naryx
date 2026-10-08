@@ -314,7 +314,7 @@ export interface PublicApiOptions {
   readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies" | "environmentName">;
   /** Durable admitted package intake; without it submission answers 503 while validation remains available. */
   readonly strategyPackages?: Pick<SqliteStrategyPackageStore, "registerOrder" | "registerQuote" | "recentAdmissions" | "receipt" | "receiptByQuote">
-    & Partial<Pick<SqliteStrategyPackageStore, "order" | "registerBoundQuote" | "lockPackageExecution">>;
+    & Partial<Pick<SqliteStrategyPackageStore, "order" | "registerBoundQuote" | "lockPackageExecution" | "ownerReceipts">>;
   /** Shared canonical strategy-order admission used by both the public API and the private terminal. */
   readonly strategyOrderIntake?: StrategyOrderIntakePort;
   /** Optional: requests a signed quote from the loopback reference solver for a stored order. */
@@ -910,6 +910,23 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           open: stored.state.open,
           retired: stored.retiredByCommandHashHex !== undefined,
         })),
+      };
+    }
+    if ((match = /^\/v1\/owners\/([^/]+)\/strategy-receipts$/.exec(path)) !== null) {
+      onlyParams(url, ["limit"]);
+      if (options.strategyPackages?.ownerReceipts === undefined) {
+        throw new RequestError(503, "STRATEGY_PACKAGES_UNAVAILABLE", "No strategy package evidence store is configured on this server.");
+      }
+      const requestedOwnerId = id(match[1], "Owner id");
+      const ownerId = requestedOwnerId.startsWith("0x") ? requestedOwnerId.toLowerCase() : requestedOwnerId;
+      const rawLimit = url.searchParams.get("limit") ?? "50";
+      if (!/^(?:[1-9]|[1-4][0-9]|50)$/.test(rawLimit)) {
+        throw new RequestError(400, "INVALID_REQUEST", "limit must be an integer between 1 and 50.");
+      }
+      return {
+        version: 1,
+        ownerId,
+        receipts: options.strategyPackages.ownerReceipts(ownerId, Number(rawLimit)),
       };
     }
     if ((match = /^\/v1\/(positions|risk)\/([^/]+)$/.exec(path)) !== null) {

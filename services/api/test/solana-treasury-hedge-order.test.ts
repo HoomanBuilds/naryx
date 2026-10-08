@@ -260,6 +260,19 @@ test("persists state-bound Solana resize transitions before the exact exit", asy
     const entryDocuments = captured.get("ENTRY");
     assert.ok(entryDocuments);
     const entryReceiptHash = seedReceipt(entryDocuments, 0x71);
+    assert.deepEqual(packageStore.ownerReceipts(OWNER, 1), [{
+      receiptHashHex: entryReceiptHash,
+      orderHashHex: entry.intake.orderHashHex,
+      quoteHashHex: "71".repeat(32),
+      templateId: profile().templateId,
+      lifecycleAction: "ENTRY",
+      expectedStrategyStateHashHex: null,
+      terminalState: "FINALIZED_COMPLETE",
+      finalityStatus: "FINALIZED",
+      domainIds: [profile().domain.domainId],
+      portfolioEligible: true,
+      recordedAtMs: 10,
+    }]);
     const entryPosition = packageStore.recordSolanaStrategyPosition({
       receiptHashHex: entryReceiptHash,
       packageIdHex: entry.intake.orderHashHex,
@@ -276,6 +289,22 @@ test("persists state-bound Solana resize transitions before the exact exit", asy
     const increaseDocuments = captured.get("INCREASE");
     assert.ok(increaseDocuments);
     const increaseReceiptHash = seedReceipt(increaseDocuments, 0x73);
+    assert.deepEqual(
+      packageStore.ownerReceipts(OWNER).find((receipt) => receipt.receiptHashHex === increaseReceiptHash),
+      {
+        receiptHashHex: increaseReceiptHash,
+        orderHashHex: toHex(strategyPackageOrderHash(strategyPackageOrder(increaseDocuments.order))),
+        quoteHashHex: "73".repeat(32),
+        templateId: profile().templateId,
+        lifecycleAction: "INCREASE",
+        expectedStrategyStateHashHex: "61".repeat(32),
+        terminalState: "FINALIZED_COMPLETE",
+        finalityStatus: "FINALIZED",
+        domainIds: [profile().domain.domainId],
+        portfolioEligible: true,
+        recordedAtMs: 10,
+      },
+    );
     const increased = packageStore.recordSolanaStrategyPosition({
       receiptHashHex: increaseReceiptHash,
       packageIdHex: entry.intake.orderHashHex,

@@ -750,6 +750,20 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
     recordedAtMs: 120_000,
   };
   let requestedLimit = 0;
+  let requestedOwner: readonly [string, number] | null = null;
+  const ownerReceipt = {
+    receiptHashHex: "44".repeat(32),
+    orderHashHex: "11".repeat(32),
+    quoteHashHex: "22".repeat(32),
+    templateId: "funding-spread-v1",
+    lifecycleAction: "ENTRY" as const,
+    expectedStrategyStateHashHex: null,
+    terminalState: "FINALIZED_COMPLETE" as const,
+    finalityStatus: "FINALIZED" as const,
+    domainIds: ["hypercore:testnet"],
+    portfolioEligible: true,
+    recordedAtMs: 120_001,
+  };
   await withMarket(async (get) => {
     const result = await get("/v1/strategy-packages/recent?limit=7");
     assert.equal(result.status, 200);
@@ -772,6 +786,15 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
       recordedAtMs: 120_001,
     });
     assert.equal((await get(`/v1/strategy-receipts/by-quote/${"33".repeat(32)}`)).status, 404);
+    const ownerReceipts = await get("/v1/owners/0x00000000000000000000000000000000000000AB/strategy-receipts?limit=7");
+    assert.equal(ownerReceipts.status, 200);
+    assert.deepEqual(requestedOwner, ["0x00000000000000000000000000000000000000ab", 7]);
+    assert.deepEqual(ownerReceipts.body, {
+      version: 1,
+      ownerId: "0x00000000000000000000000000000000000000ab",
+      receipts: [ownerReceipt],
+    });
+    assert.equal((await get("/v1/owners/owner-a/strategy-receipts?limit=0")).status, 400);
   }, {
     strategyPackages: {
       registerOrder: () => { throw new Error("not used"); },
@@ -786,6 +809,10 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
         receipt: { version: 1, receiptNonce: 7n } as never,
         recordedAtMs: 120_001,
       }) : undefined,
+      ownerReceipts: (ownerId, limit) => {
+        requestedOwner = [ownerId, limit ?? 50];
+        return [ownerReceipt];
+      },
     },
   });
 });

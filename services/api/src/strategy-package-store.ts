@@ -11,6 +11,7 @@ import {
   packageSettlementReadiness,
   packageSettlementReadinessHash,
   parseProtocolJson,
+  requiresSuccessfulReceipt,
   strategyPackageOrder,
   strategyPackageOrderHash,
   strategyPackageQuoteHash,
@@ -314,6 +315,20 @@ export interface StoredStrategyPackageExecution {
 export interface StoredStrategyPackageReceipt {
   readonly receiptHashHex: string;
   readonly receipt: StrategyPackageReceipt;
+  readonly recordedAtMs: number;
+}
+
+export interface OwnerStrategyPackageReceipt {
+  readonly receiptHashHex: string;
+  readonly orderHashHex: string;
+  readonly quoteHashHex: string;
+  readonly templateId: string;
+  readonly lifecycleAction: StrategyPackageOrder["lifecycleAction"];
+  readonly expectedStrategyStateHashHex: string | null;
+  readonly terminalState: StrategyPackageReceipt["terminalState"];
+  readonly finalityStatus: StrategyPackageReceipt["finalityStatus"];
+  readonly domainIds: readonly string[];
+  readonly portfolioEligible: boolean;
   readonly recordedAtMs: number;
 }
 
@@ -2038,6 +2053,62 @@ export class SqliteStrategyPackageStore {
     const receipt = strategyPackageReceipt(parseProtocolJson(row.receipt_json) as StrategyPackageReceiptInput);
     requireCondition(toHex(strategyPackageReceiptHash(receipt)) === receiptHashHex, "CORRUPT_ROW", "A stored receipt does not match its hash.");
     return receipt;
+  }
+
+  ownerReceipts(ownerId: string, limit = 50): readonly OwnerStrategyPackageReceipt[] {
+    requireCondition(/^[A-Za-z0-9._:-]{1,128}$/.test(ownerId), "INVALID_OWNER", "The strategy receipt owner is malformed.");
+    requireCondition(Number.isSafeInteger(limit) && limit >= 1 && limit <= 50,
+      "INVALID_LIMIT", "The strategy receipt limit must be between 1 and 50.");
+    const rows = this.db.prepare(`
+      SELECT r.receipt_hash, r.order_hash, r.quote_hash, r.receipt_json,
+             r.recorded_at_ms, o.owner_id, o.order_json
+      FROM strategy_package_receipts r
+      JOIN strategy_package_orders o ON o.order_hash = r.order_hash
+      WHERE o.owner_id = ?
+      ORDER BY r.recorded_at_ms DESC, r.receipt_hash DESC
+      LIMIT ?
+    `).all(ownerId, limit) as {
+      receipt_hash: Uint8Array;
+      order_hash: Uint8Array;
+      quote_hash: Uint8Array;
+      receipt_json: string;
+      recorded_at_ms: number;
+      owner_id: string;
+      order_json: string;
+    }[];
+    return Object.freeze(rows.map((row) => {
+      const receipt = strategyPackageReceipt(parseProtocolJson(row.receipt_json) as StrategyPackageReceiptInput);
+      const order = strategyPackageOrder(parseProtocolJson(row.order_json) as StrategyPackageOrderInput);
+      const receiptHashHex = toHex(row.receipt_hash);
+      const orderHashHex = toHex(row.order_hash);
+      const quoteHashHex = toHex(row.quote_hash);
+      requireCondition(
+        row.owner_id === ownerId
+          && order.owner === ownerId
+          && toHex(strategyPackageOrderHash(order)) === orderHashHex
+          && toHex(strategyPackageReceiptHash(receipt)) === receiptHashHex
+          && toHex(receipt.orderHash) === orderHashHex
+          && toHex(receipt.quoteHash) === quoteHashHex
+          && receipt.lifecycleAction === order.lifecycleAction.toLowerCase().replaceAll("_", "-"),
+        "CORRUPT_ROW",
+        "A stored owner strategy receipt does not match its order, quote, or owner.",
+      );
+      return Object.freeze({
+        receiptHashHex,
+        orderHashHex,
+        quoteHashHex,
+        templateId: order.templateId,
+        lifecycleAction: order.lifecycleAction,
+        expectedStrategyStateHashHex: order.expectedStrategyStateHash === undefined
+          ? null
+          : toHex(order.expectedStrategyStateHash),
+        terminalState: receipt.terminalState,
+        finalityStatus: receipt.finalityStatus,
+        domainIds: Object.freeze([...new Set(receipt.legOutcomes.map((outcome) => outcome.domain.domainId))].sort()),
+        portfolioEligible: receipt.finalityStatus === "FINALIZED" && requiresSuccessfulReceipt(receipt.terminalState),
+        recordedAtMs: row.recorded_at_ms,
+      });
+    }));
   }
 
   receiptByQuote(quoteHashHex: string): StoredStrategyPackageReceipt | undefined {
