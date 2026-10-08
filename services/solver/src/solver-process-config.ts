@@ -22,6 +22,15 @@ export interface SolverProcessConfig {
   readonly signerPath: string;
   readonly quoteDbPath: string;
   readonly localRuntime: SolverLocalRuntimeConfig;
+  readonly sealedAuctions:
+    | Readonly<{ kind: 'DISABLED' }>
+    | Readonly<{
+      kind: 'ENABLED';
+      solverId: string;
+      keyId: string;
+      journalDbPath: string;
+      pollIntervalMs: number;
+    }>;
 }
 
 export function explicitBoolean(value: string | undefined, name: string): boolean {
@@ -50,6 +59,21 @@ function absolutePath(value: string, name: string): string {
 
 function present(value: string | undefined): value is string {
   return value !== undefined && value.length > 0;
+}
+
+function identifier(value: string | undefined, name: string): string {
+  if (value === undefined || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)) {
+    throw new Error(`${name} must be a protocol identifier`);
+  }
+  return value;
+}
+
+function positiveInteger(value: string | undefined, name: string, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (!/^[1-9]\d{0,8}$/.test(value)) throw new Error(`${name} must be a positive integer`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new Error(`${name} must be a positive integer`);
+  return parsed;
 }
 
 /**
@@ -87,6 +111,32 @@ export function loadSolverProcessConfig(env: NodeJS.ProcessEnv): SolverProcessCo
       authorizationDbPath: absolutePath(authorizationDb, 'NARYX_SOLVER_SOLANA_AUTHORIZATION_DB'),
     });
   }
+  const sealedAuctionsEnabled = explicitBoolean(
+    env.NARYX_SEALED_AUCTION_PARTICIPANT_ENABLED,
+    'NARYX_SEALED_AUCTION_PARTICIPANT_ENABLED',
+  );
+  const sealedAuctionPollIntervalMs = sealedAuctionsEnabled
+    ? positiveInteger(
+      env.NARYX_SEALED_AUCTION_POLL_INTERVAL_MS,
+      'NARYX_SEALED_AUCTION_POLL_INTERVAL_MS',
+      1_000,
+    )
+    : 1_000;
+  if (sealedAuctionsEnabled && sealedAuctionPollIntervalMs < 100) {
+    throw new Error('NARYX_SEALED_AUCTION_POLL_INTERVAL_MS must be at least 100');
+  }
+  const sealedAuctions = sealedAuctionsEnabled
+    ? Object.freeze({
+      kind: 'ENABLED' as const,
+      solverId: identifier(env.NARYX_SEALED_AUCTION_SOLVER_ID, 'NARYX_SEALED_AUCTION_SOLVER_ID'),
+      keyId: identifier(env.NARYX_SEALED_AUCTION_KEY_ID, 'NARYX_SEALED_AUCTION_KEY_ID'),
+      journalDbPath: absolutePath(
+        env.NARYX_SEALED_AUCTION_JOURNAL_DB ?? '',
+        'NARYX_SEALED_AUCTION_JOURNAL_DB',
+      ),
+      pollIntervalMs: sealedAuctionPollIntervalMs,
+    })
+    : Object.freeze({ kind: 'DISABLED' as const });
   return Object.freeze({
     host: loopbackHost(env.NARYX_SOLVER_HOST ?? '127.0.0.1'),
     port: tcpPort(env.NARYX_SOLVER_PORT, 'NARYX_SOLVER_PORT', DEFAULT_SOLVER_PORT),
@@ -94,5 +144,6 @@ export function loadSolverProcessConfig(env: NodeJS.ProcessEnv): SolverProcessCo
     signerPath: absolutePath(signerPath, 'NARYX_SOLVER_ED25519_KEY_PATH'),
     quoteDbPath: absolutePath(present(quoteDb) ? quoteDb : LOCAL_FIXTURE_QUOTE_DB, 'NARYX_SOLVER_QUOTE_DB'),
     localRuntime,
+    sealedAuctions,
   });
 }

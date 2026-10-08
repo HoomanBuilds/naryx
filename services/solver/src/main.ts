@@ -43,6 +43,9 @@ import {
   GeneralizedStrategyQuoteContextRegistry,
   GeneralizedStrategyQuoteService,
   SqliteGeneralizedStrategyQuoteStore,
+  HttpSealedAuctionRelay,
+  SealedAuctionParticipant,
+  SqliteSealedAuctionJournal,
   EvmOptionSpreadPreparationContextResolver,
   EvmCalendarSpreadPreparationContextResolver,
   EvmTreasuryHedgePreparationContextResolver,
@@ -431,14 +434,51 @@ const allGeneralizedStrategyLanes = Object.freeze([
 const generalizedQuoteStore = allGeneralizedStrategyLanes.length === 0
   ? undefined
   : new SqliteGeneralizedStrategyQuoteStore(config.quoteDbPath);
-const generalizedStrategyQuoteHandler = allGeneralizedStrategyLanes.length === 0
+const generalizedStrategyQuoteService = allGeneralizedStrategyLanes.length === 0
   ? undefined
-  : createGeneralizedStrategyQuoteInternalHandler(new GeneralizedStrategyQuoteService({
+  : new GeneralizedStrategyQuoteService({
     packages: strategyPackageProvider,
     contexts: new GeneralizedStrategyQuoteContextRegistry(allGeneralizedStrategyLanes),
     signer: executionSigner,
     store: generalizedQuoteStore!,
-  }));
+  });
+const generalizedStrategyQuoteHandler = generalizedStrategyQuoteService === undefined
+  ? undefined
+  : createGeneralizedStrategyQuoteInternalHandler(generalizedStrategyQuoteService);
+let sealedAuctionJournal: SqliteSealedAuctionJournal | undefined;
+let sealedAuctionParticipant: SealedAuctionParticipant | undefined;
+let stopSealedAuctions: (() => void) | undefined;
+if (config.sealedAuctions.kind === 'ENABLED') {
+  if (generalizedStrategyQuoteService === undefined) {
+    throw new Error('sealed auction participation requires at least one generalized strategy quote lane');
+  }
+  sealedAuctionJournal = new SqliteSealedAuctionJournal(config.sealedAuctions.journalDbPath);
+  const sealedAuctionRelay = new HttpSealedAuctionRelay({
+    origin: apiOrigin,
+    solverId: config.sealedAuctions.solverId,
+    keyId: config.sealedAuctions.keyId,
+    signer: executionSigner,
+  });
+  sealedAuctionParticipant = new SealedAuctionParticipant({
+    solverId: config.sealedAuctions.solverId,
+    relay: sealedAuctionRelay,
+    journal: sealedAuctionJournal,
+    quotes: {
+      quote: async (request) => {
+        const response = await generalizedStrategyQuoteService.quote(request);
+        return Object.freeze({
+          quoteHash: response.quoteHash,
+          orderHash: response.orderHash,
+          environment: response.quote.environment,
+          solverId: response.quote.solverId,
+          validUntilUnit: response.quote.validUntilUnit,
+          validUntilValue: response.quote.validUntilValue,
+          netOutcomeAtoms: response.quote.netPackageOutcome.atoms,
+        });
+      },
+    },
+  });
+}
 const evmPreparationLanes = Object.freeze([
   ...(evmOptionRuntime?.preparationLanes ?? []),
   ...(evmCalendarRuntime?.preparationLanes ?? []),
@@ -629,6 +669,7 @@ let shuttingDown = false;
 function shutdown(): void {
   if (shuttingDown) return;
   shuttingDown = true;
+  stopSealedAuctions?.();
   if (clockRefresh !== undefined) clearInterval(clockRefresh);
   void Promise.allSettled([
     close(quoteServer), close(executorServer), close(arbitrumExecutorServer), baseSolver?.close(),
@@ -640,6 +681,7 @@ function shutdown(): void {
     generalizedQuoteStore?.close();
     evmStrategyPackageIds?.close();
     solanaStrategyPackageIds?.close();
+    sealedAuctionJournal?.close();
     authorizationStore?.close();
     const failed = results.find((result) => result.status === 'rejected');
     if (failed?.status === 'rejected') {
@@ -662,7 +704,14 @@ try {
   if (arbitrumExecutorServer !== undefined && arbitrumExecutorPort !== undefined) {
     await listen(arbitrumExecutorServer, arbitrumExecutorPort, host);
   }
+  if (sealedAuctionParticipant !== undefined && config.sealedAuctions.kind === 'ENABLED') {
+    stopSealedAuctions = sealedAuctionParticipant.start(
+      config.sealedAuctions.pollIntervalMs,
+      (error) => process.stderr.write(`Sealed auction participant error: ${error instanceof Error ? error.message : 'unknown error'}\n`),
+    );
+  }
 } catch (error) {
+  stopSealedAuctions?.();
   await Promise.allSettled([close(quoteServer), close(executorServer), close(arbitrumExecutorServer)]);
   executorRuntime?.close();
   arbitrumJournal?.close();
@@ -670,6 +719,7 @@ try {
   generalizedQuoteStore?.close();
   evmStrategyPackageIds?.close();
   solanaStrategyPackageIds?.close();
+  sealedAuctionJournal?.close();
   authorizationStore?.close();
   throw error;
 }
@@ -678,9 +728,11 @@ const arbitrumQuotes = arbitrumQuoteProviders === undefined ? 'DISABLED' : 'SEPO
 const generalizedHyperliquid = generalizedStrategyLanes.length > 0
   ? 'LIVE_TESTNET_QUOTES'
   : strategyPreparationHandler === undefined ? 'DISABLED' : 'PREPARATION_ONLY';
+const sealedAuctions = config.sealedAuctions.kind;
 process.stdout.write(`Internal solver listening on http://${host}:${listenPort} `
   + `runtime=${config.localRuntime.kind} hyperliquidTestnetQuotes=${hyperliquidQuotes} `
-  + `arbitrumSepoliaQuotes=${arbitrumQuotes} hyperliquidStrategies=${generalizedHyperliquid}\n`);
+  + `arbitrumSepoliaQuotes=${arbitrumQuotes} hyperliquidStrategies=${generalizedHyperliquid} `
+  + `sealedAuctions=${sealedAuctions}\n`);
 if (config.localRuntime.kind === 'LOCAL_FIXTURE') {
   process.stdout.write('LOCAL FIXTURE MODE: local quotes use fixed catalog prices and placeholder '
     + `hashes, signed with the configured solver key. Quote database: ${config.quoteDbPath}\n`);

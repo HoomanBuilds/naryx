@@ -43,6 +43,18 @@ export {
 export { createGeneralizedStrategyQuoteInternalHandler } from './strategy-quote-server.js';
 export { SqliteGeneralizedStrategyQuoteStore } from './strategy-quote-sqlite-store.js';
 export {
+  HttpSealedAuctionRelay,
+  SealedAuctionParticipant,
+  SealedAuctionRelayError,
+  SqliteSealedAuctionJournal,
+  type EligibleSealedAuction,
+  type EligibleSealedAuctionPage,
+  type SealedAuctionQuotePort,
+  type SealedAuctionQuoteTerms,
+  type SealedAuctionRelayPort,
+  type SealedAuctionSigner,
+} from './sealed-auction-participant.js';
+export {
   GeneralizedStrategyQuoteContextRegistry,
   type GeneralizedStrategyQuoteLane,
 } from './strategy-quote-context-registry.js';

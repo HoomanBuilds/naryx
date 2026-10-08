@@ -20,6 +20,7 @@ test('composes the fixed local fixture only on explicit opt-in and otherwise req
 
   const durable = loadSolverProcessConfig({ ...base, NARYX_SOLVER_QUOTE_DB: '/external/quotes.sqlite' });
   assert.equal(durable.localRuntime.kind, 'NONE');
+  assert.equal(durable.sealedAuctions.kind, 'DISABLED');
   assert.equal(durable.quoteDbPath, '/external/quotes.sqlite');
   // services/api defaults NARYX_SOLVER_INTERNAL_ORIGIN to this port.
   assert.equal(durable.port, 8_788);
@@ -27,6 +28,32 @@ test('composes the fixed local fixture only on explicit opt-in and otherwise req
   const fixture = loadSolverProcessConfig({ ...base, NARYX_LOCAL_FIXTURE_MODE: 'true' });
   assert.equal(fixture.localRuntime.kind, 'LOCAL_FIXTURE');
   assert.equal(fixture.quoteDbPath, '/tmp/naryx-local/solver-quotes.db');
+});
+
+test('sealed auction participation requires explicit durable identity and journal configuration', () => {
+  const enabled = {
+    ...base,
+    NARYX_SOLVER_QUOTE_DB: '/external/quotes.sqlite',
+    NARYX_SEALED_AUCTION_PARTICIPANT_ENABLED: 'true',
+    NARYX_SEALED_AUCTION_SOLVER_ID: 'solver-a',
+    NARYX_SEALED_AUCTION_KEY_ID: 'quote-1',
+    NARYX_SEALED_AUCTION_JOURNAL_DB: '/external/sealed-auctions.sqlite',
+  };
+  assert.throws(
+    () => loadSolverProcessConfig({ ...enabled, NARYX_SEALED_AUCTION_JOURNAL_DB: 'relative.sqlite' }),
+    /must be an absolute path/,
+  );
+  assert.throws(
+    () => loadSolverProcessConfig({ ...enabled, NARYX_SEALED_AUCTION_POLL_INTERVAL_MS: '99' }),
+    /at least 100/,
+  );
+  assert.deepEqual(loadSolverProcessConfig(enabled).sealedAuctions, {
+    kind: 'ENABLED',
+    solverId: 'solver-a',
+    keyId: 'quote-1',
+    journalDbPath: '/external/sealed-auctions.sqlite',
+    pollIntervalMs: 1_000,
+  });
 });
 
 test('requires an explicit authorization database for the manifest-validated local runtime', () => {
