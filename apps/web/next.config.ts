@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import path from "node:path";
 
 /**
  * Response headers for every route. The pages are static, so a nonce-based script policy is not
@@ -16,6 +17,8 @@ const SECURITY_HEADERS = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  transpilePackages: ["@naryx/protocol-types", "@naryx/sdk"],
+  turbopack: { root: path.resolve(import.meta.dirname, "../..") },
   headers() {
     return [{ source: "/:path*", headers: SECURITY_HEADERS }];
   },

@@ -9,10 +9,13 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "build:dependencies": "npm ci --prefix ../../packages/protocol-types --no-audit --no-fund && npm run build --prefix ../../packages/protocol-types && npm ci --prefix ../../packages/sdk --no-audit --no-fund && npm run build --prefix ../../packages/sdk",
+    "prebuild": "npm run build:dependencies"
   },
   "dependencies": {
     "@gsap/react": "2.1.2",
+    "@naryx/sdk": "file:../../packages/sdk",
     "@solana/transactions": "8.3.0",
     "@solana/wallet-standard-features": "1.5.0",
     "@tanstack/react-query": "5.104.0",

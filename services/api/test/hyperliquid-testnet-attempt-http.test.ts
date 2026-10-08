@@ -99,18 +99,30 @@ test("private terminal stages a reviewed Hyperliquid order for generalized quoti
   const sourceOrderHash = "11".repeat(32);
   const orderHash = "22".repeat(32);
   const graphHash = "33".repeat(32);
+  const domainManifestHash = new Uint8Array(32).fill(4);
+  const packageTemplateManifestHash = new Uint8Array(32).fill(5);
+  const domain = {
+    domainId: "hypercore:testnet",
+    domainManifestVersion: 1,
+    domainManifestHash,
+  };
   const staging: HyperliquidGeneralizedOrderPort = {
     stage: (requested) => {
       assert.equal(requested, sourceOrderHash);
       return {
         sourceOrderHash,
         order: {
+          environment: "TESTNET",
           templateId: "cash-and-carry-v1",
+          templateVersion: 1,
+          packageTemplateManifestHash,
           lifecycleAction: "ENTRY",
           seriesId: "btc-cash-carry-usdc",
           executionClassId: "hyperliquid-testnet-batched-ioc",
+          expiryUnit: "HYPERLIQUID_UNIX_MILLISECONDS",
+          expiryValue: 120_000n,
         },
-        graph: {},
+        graph: { legs: [{ domain }] },
         intake: {
           version: 1,
           status: "STORED_FOR_QUOTING",
@@ -149,6 +161,19 @@ test("private terminal stages a reviewed Hyperliquid order for generalized quoti
     lifecycleAction: "ENTRY",
     seriesId: "btc-cash-carry-usdc",
     executionClassId: "hyperliquid-testnet-batched-ioc",
+    rfqContext: {
+      environment: "TESTNET",
+      domain: {
+        domainId: "hypercore:testnet",
+        domainManifestVersion: 1,
+        domainManifestHash: "04".repeat(32),
+      },
+      templateId: "cash-and-carry-v1",
+      templateVersion: 1,
+      packageTemplateManifestHash: "05".repeat(32),
+      expiryUnit: "HYPERLIQUID_UNIX_MILLISECONDS",
+      expiryValue: "120000",
+    },
   });
   assert.equal((await fetch(`${origin}/internal/terminal/strategy-orders/stage`, {
     method: "POST",

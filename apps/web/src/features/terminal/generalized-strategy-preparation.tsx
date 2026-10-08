@@ -1,6 +1,20 @@
 "use client";
 
 import { Fragment, useEffect, useState } from "react";
+import bs58 from "bs58";
+import {
+  NARYX_RFQ_HPKE_SUITE_ID,
+  decodePrivateRfqQuoteResponse,
+  decryptPrivateRfqResponse,
+  domainRef,
+  encodePrivateRfqQuoteRequest,
+  encryptPrivateRfqRequest,
+  generateNaryxRfqHpkeKeyPair,
+  privateRfqEnvelopeHash,
+  toHex,
+  toProtocolJson,
+  type PrivateRfqEnvelope,
+} from "@naryx/sdk/private-rfq";
 import { formatAtomicAmount, formatMetricValue } from "./format";
 import {
   buildSolanaWalletTransaction,
@@ -139,11 +153,47 @@ type PackageQuoteReview = Readonly<{
 type AuctionSolverSummary = Readonly<{
   solverId: string;
   environment: string;
-  supportedDomainIds: readonly string[];
+  supportedDomains: readonly PrivateRfqDomainRef[];
   supportedTemplateIds: readonly string[];
   supportedQuoteModes: readonly string[];
+  rfqEncryptionKeys: readonly PrivateRfqEncryptionKey[];
   validityUnit: string;
   validUntilValue: string;
+}>;
+
+type PrivateRfqDomainRef = Readonly<{
+  domainId: string;
+  domainManifestVersion: number;
+  domainManifestHash: string;
+}>;
+
+type PrivateRfqEncryptionKey = Readonly<{
+  keyId: string;
+  encryptionSuiteId: string;
+  publicKey: Uint8Array;
+  validFromValue: string;
+  validUntilValue: string;
+}>;
+
+type PrivateRfqOrderContext = Readonly<{
+  environment: string;
+  domain: PrivateRfqDomainRef;
+  templateId: string;
+  templateVersion: number;
+  packageTemplateManifestHash: string;
+  expiryUnit: "SOLANA_SLOT" | "EVM_UNIX_SECONDS" | "HYPERLIQUID_UNIX_MILLISECONDS";
+  expiryValue: string;
+}>;
+
+type PrivateRfqSession = Readonly<{
+  envelopeHash: string;
+  envelope: PrivateRfqEnvelope;
+  responsePrivateKey: Uint8Array;
+  solverId: string;
+  acknowledged: boolean;
+  responseHash: string | null;
+  preview: PackageQuoteReview | null;
+  accepted: boolean;
 }>;
 
 type SealedAuctionWinner = Readonly<{
@@ -171,6 +221,13 @@ type StagedStrategyOrder = Readonly<{
   sourceOrderHash: string;
   orderHash: string;
   graphHash: string;
+  rfqContext: PrivateRfqOrderContext;
+}>;
+
+type CreatedStrategyOrder = Readonly<{
+  orderHash: string;
+  graphHash: string;
+  rfqContext: PrivateRfqOrderContext;
 }>;
 
 type PreparedPackageBookOrder = Readonly<{
@@ -345,6 +402,7 @@ type CreatedNativeStrategyOrder = Readonly<{
   profileId: string;
   orderHash: string;
   graphHash: string;
+  rfqContext: PrivateRfqOrderContext;
 }>;
 
 type EvmOptionProfile = Readonly<{
@@ -583,6 +641,29 @@ function protocolInteger(value: string): Json {
   return { $naryxType: "bigint", value };
 }
 
+function parsePrivateRfqOrderContext(value: unknown, context: string): PrivateRfqOrderContext {
+  const candidate = record(value, context);
+  const domain = record(candidate.domain, `${context} domain`);
+  const expiryUnit = text(candidate.expiryUnit, `${context} expiry unit`);
+  if (expiryUnit !== "SOLANA_SLOT" && expiryUnit !== "EVM_UNIX_SECONDS"
+    && expiryUnit !== "HYPERLIQUID_UNIX_MILLISECONDS") {
+    throw new Error(`${context} expiry unit is invalid.`);
+  }
+  return Object.freeze({
+    environment: text(candidate.environment, `${context} environment`),
+    domain: Object.freeze({
+      domainId: text(domain.domainId, `${context} domain id`),
+      domainManifestVersion: integer(domain.domainManifestVersion, `${context} domain version`),
+      domainManifestHash: hash(domain.domainManifestHash, `${context} domain hash`),
+    }),
+    templateId: text(candidate.templateId, `${context} template`),
+    templateVersion: integer(candidate.templateVersion, `${context} template version`),
+    packageTemplateManifestHash: hash(candidate.packageTemplateManifestHash, `${context} template hash`),
+    expiryUnit,
+    expiryValue: decimalInteger(candidate.expiryValue, `${context} expiry`),
+  });
+}
+
 function solanaAddress(value: unknown, context: string): string {
   const result = text(value, context);
   if (!SOLANA_ADDRESS.test(result)) throw new Error(`${context} is invalid.`);
@@ -685,7 +766,7 @@ function parseCreatedSolanaTreasuryHedgeOrder(
   payload: unknown,
   profileId: string,
   lifecycleAction: string,
-): Readonly<{ orderHash: string; graphHash: string }> {
+): CreatedStrategyOrder {
   const root = record(payload, "Solana treasury hedge order creation");
   if (root.version !== 1 || root.status !== "STORED_FOR_QUOTING" || root.profileId !== profileId
     || root.templateId !== "treasury-inventory-hedge-v1" || root.lifecycleAction !== lifecycleAction) {
@@ -695,6 +776,7 @@ function parseCreatedSolanaTreasuryHedgeOrder(
   return Object.freeze({
     orderHash: hash(root.orderHash, "Solana treasury hedge order hash"),
     graphHash: hash(root.graphHash, "Solana treasury hedge graph hash"),
+    rfqContext: parsePrivateRfqOrderContext(root.rfqContext, "Solana treasury hedge RFQ context"),
   });
 }
 
@@ -1034,25 +1116,99 @@ function parseQuoteReview(payload: unknown, requestedOrderHash: string): Package
   });
 }
 
+async function parsePrivateRfqStatus(
+  payload: unknown,
+  session: PrivateRfqSession,
+): Promise<Pick<PrivateRfqSession, "acknowledged" | "responseHash" | "preview">> {
+  const root = record(decode(payload as Json), "Private RFQ status");
+  if (hash(root.envelopeHash, "Private RFQ envelope hash") !== session.envelopeHash
+    || text(root.recipientSolverId, "Private RFQ recipient") !== session.solverId
+    || typeof root.acknowledged !== "boolean") {
+    throw new Error("Private RFQ status changed the submitted envelope.");
+  }
+  if (root.response === undefined) {
+    return Object.freeze({ acknowledged: root.acknowledged, responseHash: null, preview: null });
+  }
+  const stored = record(root.response, "Private RFQ encrypted response");
+  const metadata = record(stored.response, "Private RFQ response metadata");
+  const responseHash = hash(stored.responseHashHex, "Private RFQ response hash");
+  const quoteHash = hash(metadata.quoteHash, "Private RFQ quote hash");
+  const quoteOrderHash = hash(metadata.quoteOrderHash, "Private RFQ quote order hash");
+  if (quoteOrderHash !== toHex(session.envelope.orderHash)) {
+    throw new Error("Private RFQ response names another order.");
+  }
+  const plaintext = await decryptPrivateRfqResponse({
+    envelope: session.envelope,
+    solverId: session.solverId,
+    quoteHash,
+    quoteOrderHash,
+    ciphertext: hexBytes(stored.responseCiphertext, "Private RFQ response ciphertext"),
+    responsePrivateKey: session.responsePrivateKey,
+  });
+  const signed = record(toProtocolJson(decodePrivateRfqQuoteResponse(plaintext)), "Private RFQ signed quote");
+  if (signed.version !== 1 || signed.status !== "SIGNED"
+    || signed.idempotencyKey !== `private-rfq.${session.envelopeHash}`
+    || signed.quoteHash !== quoteHash) {
+    throw new Error("Private RFQ plaintext does not bind the encrypted response.");
+  }
+  const preview = parseQuoteReview({ ...signed, status: "SIGNED_AND_STORED" }, quoteOrderHash);
+  if (preview.solverId !== session.solverId || preview.quoteHash !== quoteHash) {
+    throw new Error("Private RFQ quote does not bind the selected solver.");
+  }
+  return Object.freeze({ acknowledged: root.acknowledged, responseHash, preview });
+}
+
+function parsePrivateRfqAcceptance(payload: unknown, session: PrivateRfqSession): PackageQuoteReview {
+  const root = record(decode(payload as Json), "Private RFQ acceptance");
+  if (hash(root.envelopeHash, "Private RFQ accepted envelope") !== session.envelopeHash
+    || hash(root.privateRfqResponseHash, "Private RFQ accepted response") !== session.responseHash
+    || text(root.responseSolverId, "Private RFQ accepted solver") !== session.solverId) {
+    throw new Error("Private RFQ acceptance changed the reviewed response.");
+  }
+  const quote = parseQuoteReview(payload, toHex(session.envelope.orderHash));
+  if (session.preview === null || quote.quoteHash !== session.preview.quoteHash
+    || quote.routeHash !== session.preview.routeHash || quote.solverId !== session.preview.solverId) {
+    throw new Error("Admitted private quote differs from the decrypted preview.");
+  }
+  return quote;
+}
+
 function parseAuctionSolvers(payload: unknown): readonly AuctionSolverSummary[] {
   const root = record(decode(payload as Json), "Solver registry");
   return list(root.solvers, "Solver registry entries").map((candidate, index): AuctionSolverSummary => {
     const solver = record(candidate, `Solver ${index}`);
     hash(solver.manifestHash, `Solver ${index} manifest hash`);
-    const supportedDomainIds = list(solver.supportedDomains, `Solver ${index} domains`).map((candidateDomain, domainIndex) => {
+    const supportedDomains = list(solver.supportedDomains, `Solver ${index} domains`).map((candidateDomain, domainIndex) => {
       const domain = record(candidateDomain, `Solver ${index} domain ${domainIndex}`);
-      return text(domain.domainId, `Solver ${index} domain ${domainIndex} id`);
+      return Object.freeze({
+        domainId: text(domain.domainId, `Solver ${index} domain ${domainIndex} id`),
+        domainManifestVersion: integer(domain.domainManifestVersion, `Solver ${index} domain ${domainIndex} version`),
+        domainManifestHash: hash(domain.domainManifestHash, `Solver ${index} domain ${domainIndex} hash`),
+      });
     });
     const supportedTemplateIds = list(solver.supportedTemplateIds, `Solver ${index} templates`).map((value, templateIndex) =>
       text(value, `Solver ${index} template ${templateIndex}`));
     const supportedQuoteModes = list(solver.supportedQuoteModes, `Solver ${index} quote modes`).map((value, modeIndex) =>
       text(value, `Solver ${index} quote mode ${modeIndex}`));
+    const rfqEncryptionKeys = list(solver.rfqEncryptionKeys, `Solver ${index} RFQ keys`).map((candidateKey, keyIndex) => {
+      const key = record(candidateKey, `Solver ${index} RFQ key ${keyIndex}`);
+      const publicKey = hexBytes(key.publicKey, `Solver ${index} RFQ key ${keyIndex} public key`);
+      if (publicKey.length !== 32) throw new Error(`Solver ${index} RFQ key ${keyIndex} is invalid.`);
+      return Object.freeze({
+        keyId: text(key.keyId, `Solver ${index} RFQ key ${keyIndex} id`),
+        encryptionSuiteId: text(key.encryptionSuiteId, `Solver ${index} RFQ key ${keyIndex} suite`),
+        publicKey,
+        validFromValue: decimalInteger(key.validFromValue, `Solver ${index} RFQ key ${keyIndex} start`),
+        validUntilValue: decimalInteger(key.validUntilValue, `Solver ${index} RFQ key ${keyIndex} end`),
+      });
+    });
     return Object.freeze({
       solverId: text(solver.solverId, `Solver ${index} id`),
       environment: text(solver.environment, `Solver ${index} environment`),
-      supportedDomainIds: Object.freeze(supportedDomainIds),
+      supportedDomains: Object.freeze(supportedDomains),
       supportedTemplateIds: Object.freeze(supportedTemplateIds),
       supportedQuoteModes: Object.freeze(supportedQuoteModes),
+      rfqEncryptionKeys: Object.freeze(rfqEncryptionKeys),
       validityUnit: text(solver.validityUnit, `Solver ${index} validity unit`),
       validUntilValue: decimalInteger(solver.validUntilValue, `Solver ${index} validity`),
     });
@@ -1165,6 +1321,7 @@ function parseStagedStrategyOrder(payload: unknown, requestedSourceOrderHash: st
     sourceOrderHash,
     orderHash: hash(root.orderHash, "Strategy order hash"),
     graphHash: hash(root.graphHash, "Strategy graph hash"),
+    rfqContext: parsePrivateRfqOrderContext(root.rfqContext, "Strategy order RFQ context"),
   });
 }
 
@@ -1469,6 +1626,7 @@ function parseCreatedNativeStrategyOrder(
     profileId: expected.profileId,
     orderHash: hash(root.orderHash, "Native strategy order hash"),
     graphHash: hash(root.graphHash, "Native strategy graph hash"),
+    rfqContext: parsePrivateRfqOrderContext(root.rfqContext, "Native strategy RFQ context"),
   });
 }
 
@@ -1543,7 +1701,7 @@ function parseCreatedEvmOptionOrder(
   payload: unknown,
   profileId: string,
   lifecycleAction: string,
-): Readonly<{ orderHash: string; graphHash: string }> {
+): CreatedStrategyOrder {
   const root = record(payload, "EVM option order creation");
   if (root.version !== 1 || root.status !== "STORED_FOR_QUOTING" || root.profileId !== profileId
     || root.templateId !== "option-spread-v1" || root.lifecycleAction !== lifecycleAction) {
@@ -1552,6 +1710,7 @@ function parseCreatedEvmOptionOrder(
   return Object.freeze({
     orderHash: hash(root.orderHash, "EVM option order hash"),
     graphHash: hash(root.graphHash, "EVM option graph hash"),
+    rfqContext: parsePrivateRfqOrderContext(root.rfqContext, "EVM option RFQ context"),
   });
 }
 
@@ -1626,7 +1785,7 @@ function parseCreatedEvmCalendarOrder(
   payload: unknown,
   profileId: string,
   lifecycleAction: string,
-): Readonly<{ orderHash: string; graphHash: string }> {
+): CreatedStrategyOrder {
   const root = record(payload, "EVM calendar spread order creation");
   if (root.version !== 1 || root.status !== "STORED_FOR_QUOTING" || root.profileId !== profileId
     || root.templateId !== "calendar-spread-v1" || root.lifecycleAction !== lifecycleAction) {
@@ -1635,6 +1794,7 @@ function parseCreatedEvmCalendarOrder(
   return Object.freeze({
     orderHash: hash(root.orderHash, "EVM calendar spread order hash"),
     graphHash: hash(root.graphHash, "EVM calendar spread graph hash"),
+    rfqContext: parsePrivateRfqOrderContext(root.rfqContext, "EVM calendar spread RFQ context"),
   });
 }
 
@@ -1683,7 +1843,7 @@ function parseCreatedEvmDirectionalOrder(
   payload: unknown,
   profile: EvmDirectionalProfile,
   lifecycleAction: string,
-): Readonly<{ orderHash: string; graphHash: string }> {
+): CreatedStrategyOrder {
   const root = record(payload, "EVM strategy order creation");
   if (root.version !== 1 || root.status !== "STORED_FOR_QUOTING" || root.profileId !== profile.profileId
     || root.templateId !== profile.templateId || root.lifecycleAction !== lifecycleAction) {
@@ -1692,6 +1852,7 @@ function parseCreatedEvmDirectionalOrder(
   return Object.freeze({
     orderHash: hash(root.orderHash, "EVM strategy order hash"),
     graphHash: hash(root.graphHash, "EVM strategy graph hash"),
+    rfqContext: parsePrivateRfqOrderContext(root.rfqContext, "EVM strategy RFQ context"),
   });
 }
 
@@ -1880,6 +2041,20 @@ function randomNonce(): string {
 }
 
 function unixTimeMs(): bigint {
+  return BigInt(Date.now());
+}
+
+function randomU64(): bigint {
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  const value = BigInt(`0x${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`);
+  return value === BigInt(0) ? BigInt(1) : value;
+}
+
+async function privateRfqCurrentValue(
+  unit: PrivateRfqOrderContext["expiryUnit"],
+): Promise<bigint> {
+  if (unit === "SOLANA_SLOT") return BigInt(await getSolanaDevnetSlot());
+  if (unit === "EVM_UNIX_SECONDS") return BigInt(Math.floor(Date.now() / 1_000));
   return BigInt(Date.now());
 }
 
@@ -2148,7 +2323,12 @@ export function GeneralizedStrategyPreparationPanel({
   const [quoteRequestKey, setQuoteRequestKey] = useState("");
   const [quoteReview, setQuoteReview] = useState<PackageQuoteReview | null>(null);
   const [quoteHash, setQuoteHash] = useState("");
-  const [quoteOrigin, setQuoteOrigin] = useState<"DIRECT" | "POST_MATCH" | null>(null);
+  const [quoteOrigin, setQuoteOrigin] = useState<"DIRECT" | "POST_MATCH" | "PRIVATE_RFQ" | null>(null);
+  const [privateRfqOrderContext, setPrivateRfqOrderContext] = useState<PrivateRfqOrderContext | null>(null);
+  const [selectedPrivateRfqSolverId, setSelectedPrivateRfqSolverId] = useState("");
+  const [privateRfqSession, setPrivateRfqSession] = useState<PrivateRfqSession | null>(null);
+  const [privateRfqBusy, setPrivateRfqBusy] = useState<"SUBMIT" | "ACCEPT" | null>(null);
+  const [privateRfqError, setPrivateRfqError] = useState<string | null>(null);
   const [auctionSolvers, setAuctionSolvers] = useState<readonly AuctionSolverSummary[]>([]);
   const [auctionSolverError, setAuctionSolverError] = useState<string | null>(null);
   const [selectedAuctionSolverIds, setSelectedAuctionSolverIds] = useState<readonly string[]>([]);
@@ -2241,9 +2421,18 @@ export function GeneralizedStrategyPreparationPanel({
     solver.environment === "testnet"
     && solver.validityUnit === sealedAuctionTimeUnit
     && BigInt(solver.validUntilValue) >= auctionValidityFloor
-    && solver.supportedDomainIds.includes(expectedDomainId)
+    && solver.supportedDomains.some((domain) => domain.domainId === expectedDomainId)
     && solver.supportedTemplateIds.includes(templateId)
     && solver.supportedQuoteModes.includes("EXECUTION_COMMITMENT"));
+  const eligiblePrivateRfqSolvers = privateRfqOrderContext === null ? [] : auctionSolvers.filter((solver) =>
+    solver.environment === privateRfqOrderContext.environment
+    && solver.validityUnit === privateRfqOrderContext.expiryUnit
+    && solver.supportedDomains.some((domain) => domain.domainId === privateRfqOrderContext.domain.domainId
+      && domain.domainManifestVersion === privateRfqOrderContext.domain.domainManifestVersion
+      && domain.domainManifestHash === privateRfqOrderContext.domain.domainManifestHash)
+    && solver.supportedTemplateIds.includes(privateRfqOrderContext.templateId)
+    && solver.supportedQuoteModes.includes("EXECUTION_COMMITMENT")
+    && solver.rfqEncryptionKeys.some((key) => key.encryptionSuiteId === NARYX_RFQ_HPKE_SUITE_ID));
   const activeAuctionHash = sealedAuction?.auctionHash ?? "";
   const activeAuctionOrderHash = sealedAuction?.orderHash ?? "";
   const activeAuctionSolverKey = sealedAuction?.eligibleSolverIds.join("\u0000") ?? "";
@@ -2261,12 +2450,16 @@ export function GeneralizedStrategyPreparationPanel({
     setPackageAmendQuantity("");
     setPackageAmendPriceTicks("");
     setQuoteOrigin(null);
+    setPrivateRfqOrderContext(null);
+    setPrivateRfqSession(null);
+    setPrivateRfqBusy(null);
+    setPrivateRfqError(null);
     setSealedAuction(null);
     setSealedAuctionAwardAttempt("");
     setSealedAuctionAwardedQuote("");
   }
 
-  function acceptQuote(parsed: PackageQuoteReview, origin: "DIRECT" | "POST_MATCH") {
+  function acceptQuote(parsed: PackageQuoteReview, origin: "DIRECT" | "POST_MATCH" | "PRIVATE_RFQ") {
     setQuoteReview(parsed);
     setQuoteHash(parsed.quoteHash);
     setQuoteOrigin(origin);
@@ -2297,7 +2490,7 @@ export function GeneralizedStrategyPreparationPanel({
   }
 
   useEffect(() => {
-    if (publicApiBaseUrl === null || sealedAuctionTimeUnit === null) return;
+    if (publicApiBaseUrl === null) return;
     const controller = new AbortController();
     void fetch(`${publicApiBaseUrl}/v1/solvers`, {
       headers: { Accept: "application/json" },
@@ -2311,27 +2504,82 @@ export function GeneralizedStrategyPreparationPanel({
     }).then((solvers) => {
       setAuctionSolvers(solvers);
       setAuctionSolverError(null);
-      const validityFloor = sealedAuctionTimeUnit === "HYPERLIQUID_UNIX_MILLISECONDS"
-        ? BigInt(Date.now() + 20_000)
-        : BigInt(Math.floor(Date.now() / 1_000) + 20);
-      const compatibleSolverIds = solvers.filter((solver) => solver.environment === "testnet"
-        && solver.validityUnit === sealedAuctionTimeUnit
-        && BigInt(solver.validUntilValue) >= validityFloor
-        && solver.supportedDomainIds.includes(expectedDomainId)
-        && solver.supportedTemplateIds.includes(templateId)
-        && solver.supportedQuoteModes.includes("EXECUTION_COMMITMENT"))
-        .map((solver) => solver.solverId);
-      setSelectedAuctionSolverIds((current) => {
-        const retained = current.filter((solverId) => compatibleSolverIds.includes(solverId));
-        return Object.freeze(retained.length > 0 ? retained : compatibleSolverIds);
-      });
+      if (sealedAuctionTimeUnit !== null) {
+        const validityFloor = sealedAuctionTimeUnit === "HYPERLIQUID_UNIX_MILLISECONDS"
+          ? BigInt(Date.now() + 20_000)
+          : BigInt(Math.floor(Date.now() / 1_000) + 20);
+        const compatibleSolverIds = solvers.filter((solver) => solver.environment === "testnet"
+          && solver.validityUnit === sealedAuctionTimeUnit
+          && BigInt(solver.validUntilValue) >= validityFloor
+          && solver.supportedDomains.some((domain) => domain.domainId === expectedDomainId)
+          && solver.supportedTemplateIds.includes(templateId)
+          && solver.supportedQuoteModes.includes("EXECUTION_COMMITMENT"))
+          .map((solver) => solver.solverId);
+        setSelectedAuctionSolverIds((current) => {
+          const retained = current.filter((solverId) => compatibleSolverIds.includes(solverId));
+          return Object.freeze(retained.length > 0 ? retained : compatibleSolverIds);
+        });
+      }
+      if (privateRfqOrderContext === null) {
+        setSelectedPrivateRfqSolverId("");
+      } else {
+        const compatible = solvers.filter((solver) => solver.environment === privateRfqOrderContext.environment
+          && solver.validityUnit === privateRfqOrderContext.expiryUnit
+          && solver.supportedDomains.some((domain) => domain.domainId === privateRfqOrderContext.domain.domainId
+            && domain.domainManifestVersion === privateRfqOrderContext.domain.domainManifestVersion
+            && domain.domainManifestHash === privateRfqOrderContext.domain.domainManifestHash)
+          && solver.supportedTemplateIds.includes(privateRfqOrderContext.templateId)
+          && solver.supportedQuoteModes.includes("EXECUTION_COMMITMENT")
+          && solver.rfqEncryptionKeys.some((key) => key.encryptionSuiteId === NARYX_RFQ_HPKE_SUITE_ID));
+        setSelectedPrivateRfqSolverId((current) => compatible.some((solver) => solver.solverId === current)
+          ? current : compatible[0]?.solverId ?? "");
+      }
     }).catch((cause: unknown) => {
       if (controller.signal.aborted) return;
       setAuctionSolvers([]);
       setAuctionSolverError(cause instanceof Error ? cause.message : "Solver registry is unavailable.");
     });
     return () => controller.abort();
-  }, [expectedDomainId, publicApiBaseUrl, sealedAuctionTimeUnit, templateId]);
+  }, [expectedDomainId, privateRfqOrderContext, publicApiBaseUrl, sealedAuctionTimeUnit, templateId]);
+
+  useEffect(() => {
+    if (publicApiBaseUrl === null || privateRfqSession === null
+      || privateRfqSession.preview !== null || privateRfqSession.accepted) return;
+    const active = privateRfqSession;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const response = await fetch(`${publicApiBaseUrl}/v1/rfqs/private/${active.envelopeHash}`, {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(await failureMessage(response));
+        const status = await parsePrivateRfqStatus(await response.json(), active);
+        if (controller.signal.aborted) return;
+        setPrivateRfqSession((current) => {
+          if (current?.envelopeHash !== active.envelopeHash) return current;
+          if (current.acknowledged === status.acknowledged && current.responseHash === status.responseHash
+            && current.preview === status.preview) return current;
+          return Object.freeze({ ...current, ...status });
+        });
+        setPrivateRfqError(null);
+        if (status.preview === null) timer = setTimeout(() => void poll(), 1_000);
+      } catch (cause) {
+        if (controller.signal.aborted) return;
+        setPrivateRfqError(cause instanceof Error ? cause.message : "Private RFQ monitoring failed closed.");
+        timer = setTimeout(() => void poll(), 1_000);
+      }
+    };
+    void poll();
+    return () => {
+      controller.abort();
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [privateRfqSession, publicApiBaseUrl]);
 
   useEffect(() => {
     if (publicApiBaseUrl === null || !HASH.test(activeAuctionHash) || !HASH.test(activeAuctionOrderHash)
@@ -2815,6 +3063,7 @@ export function GeneralizedStrategyPreparationPanel({
         lifecycleAction,
       );
       setOrderHash(created.orderHash);
+      setPrivateRfqOrderContext(created.rfqContext);
       setQuoteRequestKey("");
       setQuoteReview(null);
       setQuoteHash("");
@@ -2974,6 +3223,7 @@ export function GeneralizedStrategyPreparationPanel({
       if (!response.ok) throw new Error(await failureMessage(response));
       const created = parseCreatedEvmOptionOrder(await response.json(), selectedEvmOptionProfile.profileId, lifecycleAction);
       setOrderHash(created.orderHash);
+      setPrivateRfqOrderContext(created.rfqContext);
       setQuoteRequestKey("");
       setQuoteReview(null);
       setQuoteHash("");
@@ -3061,6 +3311,7 @@ export function GeneralizedStrategyPreparationPanel({
         lifecycleAction,
       );
       setOrderHash(created.orderHash);
+      setPrivateRfqOrderContext(created.rfqContext);
       setQuoteRequestKey("");
       setQuoteReview(null);
       setQuoteHash("");
@@ -3137,6 +3388,7 @@ export function GeneralizedStrategyPreparationPanel({
       if (!response.ok) throw new Error(await failureMessage(response));
       const created = parseCreatedEvmDirectionalOrder(await response.json(), selectedEvmDirectionalProfile, lifecycleAction);
       setOrderHash(created.orderHash);
+      setPrivateRfqOrderContext(created.rfqContext);
       setQuoteRequestKey("");
       setQuoteReview(null);
       setQuoteHash("");
@@ -3386,6 +3638,7 @@ export function GeneralizedStrategyPreparationPanel({
       setCreatedNativeOrder(created);
       setStaged(null);
       setOrderHash(created.orderHash);
+      setPrivateRfqOrderContext(created.rfqContext);
       setQuoteRequestKey("");
       setQuoteReview(null);
       setQuoteHash("");
@@ -3421,6 +3674,7 @@ export function GeneralizedStrategyPreparationPanel({
       const result = parseStagedStrategyOrder(await response.json(), sourceOrderHash);
       setStaged(result);
       setOrderHash(result.orderHash);
+      setPrivateRfqOrderContext(result.rfqContext);
       setQuoteRequestKey("");
       setQuoteReview(null);
       setQuoteHash("");
@@ -3682,10 +3936,147 @@ export function GeneralizedStrategyPreparationPanel({
     }
   }
 
+  async function requestPrivateRfq() {
+    if (publicApiBaseUrl === null || privateRfqOrderContext === null || !HASH.test(orderHash)) return;
+    setPrivateRfqBusy("SUBMIT");
+    setPrivateRfqError(null);
+    setError(null);
+    try {
+      const solver = eligiblePrivateRfqSolvers.find((candidate) => candidate.solverId === selectedPrivateRfqSolverId);
+      if (solver === undefined) throw new Error("Select a compatible private RFQ solver.");
+      const currentValue = await privateRfqCurrentValue(privateRfqOrderContext.expiryUnit);
+      const minimumHeadroom = privateRfqOrderContext.expiryUnit === "SOLANA_SLOT" ? BigInt(15)
+        : privateRfqOrderContext.expiryUnit === "EVM_UNIX_SECONDS" ? BigInt(5) : BigInt(5_000);
+      const preferredTtl = privateRfqOrderContext.expiryUnit === "SOLANA_SLOT" ? BigInt(150)
+        : privateRfqOrderContext.expiryUnit === "EVM_UNIX_SECONDS" ? BigInt(60) : BigInt(60_000);
+      const orderExpiry = BigInt(privateRfqOrderContext.expiryValue);
+      if (orderExpiry <= currentValue + minimumHeadroom) {
+        throw new Error("The strategy order expires too soon for a private quote. Create a fresh order.");
+      }
+      const key = solver.rfqEncryptionKeys.find((candidate) => candidate.encryptionSuiteId === NARYX_RFQ_HPKE_SUITE_ID
+        && BigInt(candidate.validFromValue) <= currentValue
+        && BigInt(candidate.validUntilValue) > currentValue + minimumHeadroom);
+      if (key === undefined || BigInt(solver.validUntilValue) <= currentValue + minimumHeadroom) {
+        throw new Error("The selected solver has no active private RFQ key with enough validity.");
+      }
+      const expiresAtValue = [
+        currentValue + preferredTtl,
+        orderExpiry,
+        BigInt(key.validUntilValue) - BigInt(1),
+        BigInt(solver.validUntilValue) - BigInt(1),
+      ].reduce((minimum, candidate) => candidate < minimum ? candidate : minimum);
+      if (expiresAtValue <= currentValue + minimumHeadroom) {
+        throw new Error("The private RFQ validity window is too short. Refresh the solver registry.");
+      }
+      const responseKey = await generateNaryxRfqHpkeKeyPair();
+      const senderKeys = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]) as CryptoKeyPair;
+      const senderPublicKey = new Uint8Array(await crypto.subtle.exportKey("raw", senderKeys.publicKey));
+      if (senderPublicKey.length !== 32) throw new Error("The browser produced an invalid RFQ sender key.");
+      const encrypted = await encryptPrivateRfqRequest({
+        header: {
+          envelopeVersion: 1,
+          environment: privateRfqOrderContext.environment,
+          domain: domainRef(
+            privateRfqOrderContext.domain.domainId,
+            privateRfqOrderContext.domain.domainManifestVersion,
+            privateRfqOrderContext.domain.domainManifestHash,
+          ),
+          templateId: privateRfqOrderContext.templateId,
+          templateVersion: privateRfqOrderContext.templateVersion,
+          packageTemplateManifestHash: privateRfqOrderContext.packageTemplateManifestHash,
+          orderHash,
+          senderKeyId: bs58.encode(senderPublicKey),
+          responseEncryptionKey: responseKey.publicKey,
+          recipientSolverId: solver.solverId,
+          recipientEncryptionKeyId: key.keyId,
+          encryptionSuiteId: key.encryptionSuiteId,
+          createdAtUnit: privateRfqOrderContext.expiryUnit,
+          createdAtValue: currentValue,
+          expiresAtUnit: privateRfqOrderContext.expiryUnit,
+          expiresAtValue,
+          envelopeNonce: randomU64(),
+        },
+        recipientPublicKey: key.publicKey,
+        plaintext: encodePrivateRfqQuoteRequest({ version: 1, orderHash }),
+      });
+      const envelopeHashBytes = privateRfqEnvelopeHash(encrypted.envelope);
+      const senderDigest = new Uint8Array(envelopeHashBytes.length);
+      senderDigest.set(envelopeHashBytes);
+      const senderSignature = new Uint8Array(await crypto.subtle.sign("Ed25519", senderKeys.privateKey, senderDigest));
+      const response = await fetch(`${publicApiBaseUrl}/v1/rfqs/private`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(toProtocolJson({
+          envelopes: [{ envelope: encrypted.envelope, ciphertext: encrypted.ciphertext, senderSignature }],
+        })),
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      const root = record(decode(await response.json() as Json), "Private RFQ submission");
+      const results = list(root.results, "Private RFQ submission results");
+      if (results.length !== 1) throw new Error("Private RFQ relay returned an invalid result count.");
+      const result = record(results[0], "Private RFQ submission result");
+      if (result.admitted !== true) {
+        throw new Error(`Private RFQ was rejected: ${text(record(result.admission, "Private RFQ rejection").reason, "Private RFQ rejection reason")}.`);
+      }
+      const envelopeHash = hash(result.envelopeHashHex, "Private RFQ stored envelope");
+      if (envelopeHash !== toHex(envelopeHashBytes)) throw new Error("Private RFQ relay changed the envelope identity.");
+      clearSealedAuction();
+      setQuoteReview(null);
+      setQuoteHash("");
+      setQuoteOrigin(null);
+      setPrivateRfqSession(Object.freeze({
+        envelopeHash,
+        envelope: encrypted.envelope,
+        responsePrivateKey: Uint8Array.from(responseKey.privateKey),
+        solverId: solver.solverId,
+        acknowledged: false,
+        responseHash: null,
+        preview: null,
+        accepted: false,
+      }));
+    } catch (cause) {
+      setPrivateRfqError(cause instanceof Error ? cause.message : "Private RFQ submission failed closed.");
+    } finally {
+      setPrivateRfqBusy(null);
+    }
+  }
+
+  async function acceptPrivateRfq() {
+    if (publicApiBaseUrl === null || privateRfqSession === null
+      || privateRfqSession.preview === null || privateRfqSession.responseHash === null) return;
+    const active = privateRfqSession;
+    setPrivateRfqBusy("ACCEPT");
+    setPrivateRfqError(null);
+    setError(null);
+    try {
+      const response = await fetch(`${publicApiBaseUrl}/v1/rfqs/private/${active.envelopeHash}/accept`, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      if (!response.ok) throw new Error(await failureMessage(response));
+      const parsed = parsePrivateRfqAcceptance(await response.json(), active);
+      acceptQuote(parsed, "PRIVATE_RFQ");
+      setPrivateRfqSession(Object.freeze({ ...active, accepted: true }));
+    } catch (cause) {
+      setPrivateRfqError(cause instanceof Error ? cause.message : "Private RFQ acceptance failed closed.");
+    } finally {
+      setPrivateRfqBusy(null);
+    }
+  }
+
   async function createSealedAuction() {
     if (publicApiBaseUrl === null || sealedAuctionTimeUnit === null || !HASH.test(orderHash)) return;
     setSealedAuctionBusy(true);
     setError(null);
+    setPrivateRfqSession(null);
+    setPrivateRfqError(null);
     try {
       const currentEligible = eligibleAuctionSolvers.filter((solver) => selectedAuctionSolverIds.includes(solver.solverId));
       if (currentEligible.length === 0) throw new Error("Select at least one eligible solver.");
@@ -3791,6 +4182,8 @@ export function GeneralizedStrategyPreparationPanel({
     setQuoteBusyMode(settlementBound ? "SETTLEMENT" : "DIRECT");
     setError(null);
     clearSealedAuction();
+    setPrivateRfqSession(null);
+    setPrivateRfqError(null);
     const idempotencyKey = quoteRequestKey || crypto.randomUUID();
     if (quoteRequestKey === "") setQuoteRequestKey(idempotencyKey);
     try {
@@ -5083,6 +5476,43 @@ export function GeneralizedStrategyPreparationPanel({
         >
           {quoteBusyMode === "DIRECT" ? "Requesting direct solver quote" : "Request direct solver quote"}
         </button>
+        {privateRfqOrderContext !== null ? (
+          <>
+            <label htmlFor="private-rfq-solver">Private RFQ solver</label>
+            <select
+              id="private-rfq-solver"
+              className={styles.auctionSolverSelect}
+              value={selectedPrivateRfqSolverId}
+              disabled={privateRfqBusy !== null || (privateRfqSession !== null && !privateRfqSession.accepted)}
+              onChange={(event) => {
+                setSelectedPrivateRfqSolverId(event.target.value);
+                setPrivateRfqError(null);
+              }}
+            >
+              <option value="">Select a compatible solver</option>
+              {eligiblePrivateRfqSolvers.map((solver) => (
+                <option key={solver.solverId} value={solver.solverId}>{solver.solverId}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className={styles.primaryAction}
+              disabled={publicApiBaseUrl === null || privateRfqBusy !== null || !HASH.test(orderHash)
+                || selectedPrivateRfqSolverId === ""
+                || (privateRfqSession !== null && !privateRfqSession.accepted)}
+              onClick={() => void requestPrivateRfq()}
+            >
+              {privateRfqBusy === "SUBMIT" ? "Encrypting private RFQ"
+                : privateRfqSession?.accepted ? "Request another private quote" : "Request private solver quote"}
+            </button>
+            <p className={styles.fieldContext}>
+              The browser encrypts the order request directly to one registered solver. Ephemeral response keys stay in this tab only.
+            </p>
+            {eligiblePrivateRfqSolvers.length === 0 ? (
+              <p className={styles.fieldContext}>No compatible solver currently advertises a pinned private RFQ key.</p>
+            ) : null}
+          </>
+        ) : null}
         {sealedAuctionTimeUnit !== null ? (
           <>
             <label htmlFor="sealed-auction-solvers">Sealed auction solvers</label>
@@ -5124,6 +5554,53 @@ export function GeneralizedStrategyPreparationPanel({
           </>
         ) : null}
       </div>
+      {privateRfqSession !== null ? (
+        <div className={styles.quoteReview}>
+          <div className={styles.reviewGrid}>
+            <span>Private envelope</span><strong title={privateRfqSession.envelopeHash}>{compact(privateRfqSession.envelopeHash)}</strong>
+            <span>Recipient</span><strong>{privateRfqSession.solverId}</strong>
+            <span>Relay receipt</span><strong>{privateRfqSession.acknowledged ? "ACKNOWLEDGED" : "WAITING"}</strong>
+            <span>Response</span><strong>{privateRfqSession.preview === null ? "ENCRYPTED QUOTE PENDING" : "DECRYPTED IN BROWSER"}</strong>
+            <span>Relay visibility</span><strong>CIPHERTEXT AND COMMITMENTS ONLY</strong>
+            {privateRfqSession.responseHash !== null ? (
+              <><span>Response commitment</span><strong title={privateRfqSession.responseHash}>{compact(privateRfqSession.responseHash)}</strong></>
+            ) : null}
+          </div>
+          {privateRfqSession.preview !== null ? (
+            <>
+              <div className={styles.reviewEconomics}>
+                <div><span>Net outcome</span><strong>{formatAtomicAmount(privateRfqSession.preview.netOutcomeAtoms, privateRfqSession.preview.quoteDecimals, privateRfqSession.preview.quoteAsset)}</strong></div>
+                <div><span>Gross notional</span><strong>{formatAtomicAmount(privateRfqSession.preview.grossNotionalAtoms, privateRfqSession.preview.quoteDecimals, privateRfqSession.preview.quoteAsset)}</strong></div>
+                <div><span>Margin delta</span><strong>{formatAtomicAmount(privateRfqSession.preview.marginDeltaAtoms, privateRfqSession.preview.quoteDecimals, privateRfqSession.preview.quoteAsset)}</strong></div>
+                <div><span>Venue costs</span><strong>{formatAtomicAmount(privateRfqSession.preview.passThroughCostAtoms, privateRfqSession.preview.quoteDecimals, privateRfqSession.preview.quoteAsset)}</strong></div>
+                <div><span>Service fees</span><strong>{formatAtomicAmount(privateRfqSession.preview.serviceFeeAtoms, privateRfqSession.preview.quoteDecimals, privateRfqSession.preview.quoteAsset)}</strong></div>
+                <div><span>Residual value</span><strong>{formatAtomicAmount(privateRfqSession.preview.residualValueAtoms, privateRfqSession.preview.quoteDecimals, privateRfqSession.preview.quoteAsset)}</strong></div>
+              </div>
+              <div className={styles.reviewGrid}>
+                <span>Quote</span><strong title={privateRfqSession.preview.quoteHash}>{compact(privateRfqSession.preview.quoteHash)}</strong>
+                <span>Route</span><strong title={privateRfqSession.preview.routeHash}>{compact(privateRfqSession.preview.routeHash)}</strong>
+                <span>Settlement</span><strong>{privateRfqSession.preview.settlementClass}</strong>
+                <span>Valid until</span><strong>{expiryText(privateRfqSession.preview.validUntilUnit, privateRfqSession.preview.validUntilValue)}</strong>
+              </div>
+              {!privateRfqSession.accepted ? (
+                <button
+                  type="button"
+                  className={styles.primaryAction}
+                  disabled={privateRfqBusy !== null}
+                  onClick={() => void acceptPrivateRfq()}
+                >
+                  {privateRfqBusy === "ACCEPT" ? "Admitting private quote" : "Accept reviewed private quote"}
+                </button>
+              ) : (
+                <p className={styles.fieldContext}>The reviewed quote is admitted and ready for execution preparation.</p>
+              )}
+            </>
+          ) : (
+            <p className={styles.fieldContext}>Waiting for the selected solver. No public RFQ fallback is enabled.</p>
+          )}
+          {privateRfqError !== null ? <p className={styles.fieldContext}>{privateRfqError}</p> : null}
+        </div>
+      ) : privateRfqError !== null ? <p className={styles.fieldContext}>{privateRfqError}</p> : null}
       {sealedAuction ? (
         <div className={styles.quoteReview}>
           <div className={styles.reviewGrid}>

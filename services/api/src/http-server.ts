@@ -7,7 +7,13 @@ import {
 import { forwardedByProxy } from "./internal-http.js";
 import { isAllowedTerminalOrigin, parseTerminalOrigins, type TerminalOrigins } from "./terminal-origin.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { toProtocolJson } from "@naryx/protocol-types";
+import {
+  bytesEqual,
+  toHex,
+  toProtocolJson,
+  type PackageGraph,
+  type StrategyPackageOrder,
+} from "@naryx/protocol-types";
 import { PublicKey } from "@solana/web3.js";
 import { EntryOrderValidationError } from "./canonical-entry-order.js";
 import { InternalOrderConflictError } from "./internal-order-store.js";
@@ -202,6 +208,28 @@ type NativeHyperliquidStrategyRuntime = Pick<
   baseAsset: NonNullable<HyperliquidTestnetRuntimeConfig["orderContext"]>["baseAsset"];
   quoteAsset: NonNullable<HyperliquidTestnetRuntimeConfig["orderContext"]>["quoteAsset"];
 }>;
+
+function privateRfqOrderContext(order: StrategyPackageOrder, graph: PackageGraph) {
+  const domain = graph.legs[0]?.domain;
+  if (domain === undefined || graph.legs.some((leg) => leg.domain.domainId !== domain.domainId
+    || leg.domain.domainManifestVersion !== domain.domainManifestVersion
+    || !bytesEqual(leg.domain.domainManifestHash, domain.domainManifestHash))) {
+    throw new Error("Private direct RFQ currently requires one exact execution domain.");
+  }
+  return Object.freeze({
+    environment: order.environment,
+    domain: Object.freeze({
+      domainId: domain.domainId,
+      domainManifestVersion: domain.domainManifestVersion,
+      domainManifestHash: toHex(domain.domainManifestHash),
+    }),
+    templateId: order.templateId,
+    templateVersion: order.templateVersion,
+    packageTemplateManifestHash: toHex(order.packageTemplateManifestHash),
+    expiryUnit: order.expiryUnit,
+    expiryValue: order.expiryValue.toString(),
+  });
+}
 
 export function isLoopbackHost(host: string): boolean {
   if (host === "localhost" || host === "::1") return true;
@@ -771,6 +799,7 @@ export function createPrivateTerminalRequestHandler(
           lifecycleAction: staged.order.lifecycleAction,
           seriesId: staged.order.seriesId,
           executionClassId: staged.order.executionClassId,
+          rfqContext: privateRfqOrderContext(staged.order, staged.graph),
         });
       } catch (error) {
         if (error instanceof HyperliquidGeneralizedOrderError) {
@@ -858,6 +887,7 @@ export function createPrivateTerminalRequestHandler(
           lifecycleAction: created.order.lifecycleAction,
           seriesId: created.order.seriesId,
           executionClassId: created.order.executionClassId,
+          rfqContext: privateRfqOrderContext(created.order, created.graph),
         });
       } catch (error) {
         if (error instanceof HyperliquidNativeStrategyOrderError) {
@@ -931,6 +961,7 @@ export function createPrivateTerminalRequestHandler(
           lifecycleAction: created.order.lifecycleAction,
           seriesId: created.order.seriesId,
           executionClassId: created.order.executionClassId,
+          rfqContext: privateRfqOrderContext(created.order, created.graph),
         });
       } catch (error) {
         if (error instanceof SolanaTreasuryHedgeOrderError) {
@@ -1030,6 +1061,7 @@ export function createPrivateTerminalRequestHandler(
           lifecycleAction: created.order.lifecycleAction,
           seriesId: created.order.seriesId,
           executionClassId: created.order.executionClassId,
+          rfqContext: privateRfqOrderContext(created.order, created.graph),
         });
       } catch (error) {
         if (error instanceof EvmOptionSpreadProvisioningClientError) {
@@ -1135,6 +1167,7 @@ export function createPrivateTerminalRequestHandler(
           lifecycleAction: created.order.lifecycleAction,
           seriesId: created.order.seriesId,
           executionClassId: created.order.executionClassId,
+          rfqContext: privateRfqOrderContext(created.order, created.graph),
         });
       } catch (error) {
         if (error instanceof EvmOptionSpreadProvisioningClientError) {
@@ -1236,6 +1269,7 @@ export function createPrivateTerminalRequestHandler(
           lifecycleAction: created.order.lifecycleAction,
           seriesId: created.order.seriesId,
           executionClassId: created.order.executionClassId,
+          rfqContext: privateRfqOrderContext(created.order, created.graph),
         });
       } catch (error) {
         if (error instanceof EvmOptionSpreadProvisioningClientError) {
@@ -1337,6 +1371,7 @@ export function createPrivateTerminalRequestHandler(
           lifecycleAction: created.order.lifecycleAction,
           seriesId: created.order.seriesId,
           executionClassId: created.order.executionClassId,
+          rfqContext: privateRfqOrderContext(created.order, created.graph),
         });
       } catch (error) {
         if (error instanceof EvmOptionSpreadProvisioningClientError) {
@@ -1438,6 +1473,7 @@ export function createPrivateTerminalRequestHandler(
           lifecycleAction: created.order.lifecycleAction,
           seriesId: created.order.seriesId,
           executionClassId: created.order.executionClassId,
+          rfqContext: privateRfqOrderContext(created.order, created.graph),
         });
       } catch (error) {
         if (error instanceof EvmOptionSpreadProvisioningClientError) {
