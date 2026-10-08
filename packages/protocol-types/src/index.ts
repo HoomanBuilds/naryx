@@ -978,6 +978,33 @@ export {
 } from './private-delivery.js';
 
 export {
+  NARYX_RFQ_HPKE_SUITE_ID,
+  NARYX_RFQ_HPKE_PUBLIC_KEY_BYTES,
+  NARYX_RFQ_HPKE_PRIVATE_KEY_BYTES,
+  NARYX_RFQ_HPKE_ENCAPSULATED_KEY_BYTES,
+  NARYX_RFQ_MAX_PLAINTEXT_BYTES,
+  NaryxPrivateRfqCryptoError,
+  generateNaryxRfqHpkeKeyPair,
+  encryptPrivateRfqRequest,
+  decryptPrivateRfqRequest,
+  encryptPrivateRfqResponse,
+  decryptPrivateRfqResponse,
+  type PrivateRfqEnvelopeHeaderInput,
+  type NaryxRfqHpkeKeyPair,
+} from './private-rfq-crypto.js';
+
+export {
+  PRIVATE_RFQ_QUOTE_REQUEST_VERSION,
+  privateRfqQuoteRequest,
+  encodePrivateRfqQuoteRequest,
+  decodePrivateRfqQuoteRequest,
+  encodePrivateRfqQuoteResponse,
+  decodePrivateRfqQuoteResponse,
+  type PrivateRfqQuoteRequestInput,
+  type PrivateRfqQuoteRequest,
+} from './private-rfq-payload.js';
+
+export {
   DISCLOSURE_SALT_BYTES,
   DISCLOSURE_MAX_FIELDS,
   VISIBILITY_SUBJECT,
