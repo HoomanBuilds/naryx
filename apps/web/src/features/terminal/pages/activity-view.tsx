@@ -54,6 +54,14 @@ type StrategyReceiptHistoryRow = Readonly<{
   finalityStatus: string;
   domainIds: readonly string[];
   portfolioEligible: boolean;
+  executionEvidence: Readonly<{
+    routeHash: string;
+    solverId: string;
+    settlementClass: string;
+    legCount: number;
+    onchainEnforcedLegCount: number;
+    evidenceGrades: readonly string[];
+  }>;
   executionEconomics: Readonly<{
     quoteAssetId: string;
     quoteAssetDecimals: number;
@@ -119,6 +127,29 @@ function receiptEconomics(value: unknown, context: string): StrategyReceiptHisto
   return parsed;
 }
 
+function receiptEvidence(value: unknown, context: string): StrategyReceiptHistoryRow["executionEvidence"] {
+  const evidence = object(value, context);
+  if (typeof evidence.routeHashHex !== "string" || !/^[0-9a-f]{64}$/.test(evidence.routeHashHex)
+    || typeof evidence.solverId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(evidence.solverId)
+    || typeof evidence.settlementClass !== "string" || !/^[A-Z_]{1,64}$/.test(evidence.settlementClass)
+    || typeof evidence.legCount !== "number" || !Number.isSafeInteger(evidence.legCount) || evidence.legCount < 1 || evidence.legCount > 64
+    || typeof evidence.onchainEnforcedLegCount !== "number" || !Number.isSafeInteger(evidence.onchainEnforcedLegCount)
+    || evidence.onchainEnforcedLegCount < 0 || evidence.onchainEnforcedLegCount > evidence.legCount
+    || !Array.isArray(evidence.evidenceGrades) || evidence.evidenceGrades.length < 1
+    || new Set(evidence.evidenceGrades).size !== evidence.evidenceGrades.length
+    || !evidence.evidenceGrades.every((grade) => grade === "CONTROLLER_ATTESTED" || grade === "VENUE_API_CORROBORATED" || grade === "CONSENSUS_VERIFIED")) {
+    throw new Error(`${context} is malformed.`);
+  }
+  return Object.freeze({
+    routeHash: evidence.routeHashHex,
+    solverId: evidence.solverId,
+    settlementClass: evidence.settlementClass,
+    legCount: evidence.legCount,
+    onchainEnforcedLegCount: evidence.onchainEnforcedLegCount,
+    evidenceGrades: Object.freeze(evidence.evidenceGrades as string[]),
+  });
+}
+
 function strategyReceiptHistory(value: unknown, owner: string): readonly StrategyReceiptHistoryRow[] {
   const root = object(decode(value), "Strategy receipt history");
   const expectedOwner = owner.startsWith("0x") ? owner.toLowerCase() : owner;
@@ -152,6 +183,7 @@ function strategyReceiptHistory(value: unknown, owner: string): readonly Strateg
       finalityStatus: receipt.finalityStatus,
       domainIds: Object.freeze(receipt.domainIds as string[]),
       portfolioEligible: receipt.portfolioEligible,
+      executionEvidence: receiptEvidence(receipt.executionEvidence, `Strategy receipt ${index} evidence`),
       executionEconomics: receiptEconomics(receipt.executionEconomics, `Strategy receipt ${index} economics`),
       recordedAtMs: receipt.recordedAtMs,
     });
@@ -332,6 +364,7 @@ export function ActivityView() {
                 <th scope="col">Template</th>
                 <th scope="col">Action</th>
                 <th scope="col">Domains</th>
+                <th scope="col">Execution</th>
                 <th scope="col" className={styles.num}>Leg notional</th>
                 <th scope="col" className={styles.num}>Explicit cost</th>
                 <th scope="col">Outcome</th>
@@ -342,7 +375,7 @@ export function ActivityView() {
             <tbody>
               {strategyReceipts.length === 0 ? (
                 <tr>
-                  <td colSpan={9}>
+                  <td colSpan={10}>
                     <div className={styles.empty}>
                       <strong>{owners.length === 0
                         ? "Connect a wallet"
@@ -373,6 +406,11 @@ export function ActivityView() {
                     <td>{receipt.templateId}</td>
                     <td>{stateText(receipt.lifecycleAction)}</td>
                     <td className={styles.dim}>{receipt.domainIds.join(", ")}</td>
+                    <td title={`${stateText(receipt.executionEvidence.settlementClass)}; route ${receipt.executionEvidence.routeHash}; evidence ${receipt.executionEvidence.evidenceGrades.map(stateText).join(", ")}`}>
+                      <strong>{receipt.executionEvidence.solverId}</strong>
+                      <small className={styles.cellDetail}>{receipt.executionEvidence.onchainEnforcedLegCount}/{receipt.executionEvidence.legCount} legs onchain-enforced</small>
+                      <small className={styles.cellDetail}>Route {compact(receipt.executionEvidence.routeHash, 8, 6)}</small>
+                    </td>
                     <td className={styles.num} title="Sum of every execution leg's observed gross notional. This is not package notional or PnL.">
                       {exactAmount(receipt.executionEconomics.grossLegNotionalAtoms, receipt.executionEconomics.quoteAssetDecimals, receipt.executionEconomics.quoteAssetId)}
                     </td>

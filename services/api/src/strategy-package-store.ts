@@ -39,6 +39,7 @@ import {
   type StrategyState,
   type TypedStrategyRoute,
   type DomainRef,
+  type FieldEvidenceGrade,
 } from "@naryx/protocol-types";
 import { PublicKey } from "@solana/web3.js";
 import { openDurableDatabase } from "./durable-sqlite.js";
@@ -329,6 +330,14 @@ export interface OwnerStrategyPackageReceipt {
   readonly finalityStatus: StrategyPackageReceipt["finalityStatus"];
   readonly domainIds: readonly string[];
   readonly portfolioEligible: boolean;
+  readonly executionEvidence: Readonly<{
+    readonly routeHashHex: string;
+    readonly solverId: string;
+    readonly settlementClass: StrategyPackageReceipt["settlementClass"];
+    readonly legCount: number;
+    readonly onchainEnforcedLegCount: number;
+    readonly evidenceGrades: readonly FieldEvidenceGrade[];
+  }>;
   readonly executionEconomics: Readonly<{
     readonly quoteAssetId: string;
     readonly quoteAssetDecimals: number;
@@ -2127,6 +2136,14 @@ export class SqliteStrategyPackageStore {
         finalityStatus: receipt.finalityStatus,
         domainIds: Object.freeze([...new Set(receipt.legOutcomes.map((outcome) => outcome.domain.domainId))].sort()),
         portfolioEligible: receipt.finalityStatus === "FINALIZED" && requiresSuccessfulReceipt(receipt.terminalState),
+        executionEvidence: Object.freeze({
+          routeHashHex: toHex(receipt.routeHash),
+          solverId: receipt.solverId,
+          settlementClass: receipt.settlementClass,
+          legCount: receipt.legOutcomes.length,
+          onchainEnforcedLegCount: receipt.legOutcomes.filter((outcome) => outcome.onchainEnforced).length,
+          evidenceGrades: Object.freeze([...new Set(receipt.legOutcomes.map((outcome) => outcome.evidenceGrade))].sort()),
+        }),
         executionEconomics: Object.freeze({
           quoteAssetId: receipt.quoteAsset.assetId,
           quoteAssetDecimals: receipt.quoteAsset.decimals,

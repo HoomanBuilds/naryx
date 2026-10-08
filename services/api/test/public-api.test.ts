@@ -762,6 +762,14 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
     finalityStatus: "FINALIZED" as const,
     domainIds: ["hypercore:testnet"],
     portfolioEligible: true,
+    executionEvidence: {
+      routeHashHex: "33".repeat(32),
+      solverId: "solver-a",
+      settlementClass: "BATCHED_IOC_WITH_RECOVERY" as const,
+      legCount: 2,
+      onchainEnforcedLegCount: 0,
+      evidenceGrades: ["VENUE_API_CORROBORATED" as const],
+    },
     executionEconomics: {
       quoteAssetId: "usdc",
       quoteAssetDecimals: 6,

@@ -271,6 +271,14 @@ test("persists state-bound Solana resize transitions before the exact exit", asy
       finalityStatus: "FINALIZED",
       domainIds: [profile().domain.domainId],
       portfolioEligible: true,
+      executionEvidence: {
+        routeHashHex: "72".repeat(32),
+        solverId: "solver-1",
+        settlementClass: "ATOMIC_POSTCONDITION",
+        legCount: 2,
+        onchainEnforcedLegCount: 2,
+        evidenceGrades: ["CONSENSUS_VERIFIED"],
+      },
       executionEconomics: {
         quoteAssetId: profile().quoteAsset.assetId,
         quoteAssetDecimals: profile().quoteAsset.decimals,
@@ -314,6 +322,14 @@ test("persists state-bound Solana resize transitions before the exact exit", asy
         finalityStatus: "FINALIZED",
         domainIds: [profile().domain.domainId],
         portfolioEligible: true,
+        executionEvidence: {
+          routeHashHex: "74".repeat(32),
+          solverId: "solver-1",
+          settlementClass: "ATOMIC_POSTCONDITION",
+          legCount: 2,
+          onchainEnforcedLegCount: 2,
+          evidenceGrades: ["CONSENSUS_VERIFIED"],
+        },
         executionEconomics: {
           quoteAssetId: profile().quoteAsset.assetId,
           quoteAssetDecimals: profile().quoteAsset.decimals,
