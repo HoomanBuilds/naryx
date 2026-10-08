@@ -13,9 +13,13 @@ import {
 } from '@naryx/protocol-types';
 import {
   decodeFunctionData,
+  encodeAbiParameters,
+  encodeEventTopics,
   hashTypedData,
   hexToBytes,
   keccak256,
+  parseAbi,
+  parseAbiParameters,
   stringToHex,
   type Address,
   type Hex,
@@ -27,6 +31,8 @@ import {
   encodeEvmMultiStrategyAccountExecution,
   encodeEvmMultiStrategyAccountRecovery,
 } from '../src/multi-strategy-account.js';
+import { observeEvmNettingAllocation } from '../src/multi-strategy-observation.js';
+import type { EvmReadPort } from '../src/readPort.js';
 import type { EvmStrategyExecutionPlan } from '../src/strategy-plan.js';
 
 const ACCOUNT = '0x1111111111111111111111111111111111111111' as Address;
@@ -267,6 +273,72 @@ test('rejects a netting authorization for another call plan', () => {
     authorization: nettingAuthorization(envelope),
     owner: SOLVER,
   }), /owner mismatch/);
+});
+
+test('observes only the exact finalized EVM netting execution', async () => {
+  const envelope = compileEvmMultiStrategyAccountEnvelope(input());
+  const netting = compileEvmNettingAllocationEnvelope({
+    envelope,
+    authorization: nettingAuthorization(envelope),
+    owner: OWNER,
+  });
+  const evidenceRoot = HASH_F;
+  const receiptHash = keccak256(encodeAbiParameters(
+    parseAbiParameters('bytes32 executionHash,bytes32 callsHash,bytes32 evidenceRoot'),
+    [envelope.executionHash, envelope.callsHash, evidenceRoot],
+  ));
+  const eventAbi = parseAbi([
+    'event NettingAllocationExecuted(bytes32 indexed receiptHash,bytes32 indexed authorizationHash)',
+  ]);
+  const receipt = {
+    packageId: envelope.execution.packageId,
+    orderHash: envelope.execution.orderHash,
+    graphHash: envelope.execution.graphHash,
+    quoteHash: envelope.execution.quoteHash,
+    routeHash: envelope.execution.routeHash,
+    operation: envelope.execution.operation,
+    previousStateHash: envelope.execution.previousStateHash,
+    nextStateHash: envelope.execution.nextStateHash,
+    callsHash: envelope.callsHash,
+    evidenceRoot,
+    fees: envelope.execution.fees,
+    nonce: envelope.execution.nonce,
+    solver: envelope.execution.solver,
+  };
+  const port = (storedAuthorization: Hex): EvmReadPort => ({
+    chainId: async () => 84_532n,
+    transactionReceipt: async () => ({
+      status: 'success',
+      blockNumber: 100n,
+      logs: [{
+        address: ACCOUNT,
+        topics: encodeEventTopics({
+          abi: eventAbi,
+          eventName: 'NettingAllocationExecuted',
+          args: { receiptHash, authorizationHash: netting.authorizationHash },
+        }) as unknown as readonly Hex[],
+        data: '0x',
+      }],
+    }),
+    readContract: async (read) => read.functionName === 'nettingAuthorizationOf' ? storedAuthorization : receipt,
+    chainHead: async () => ({ latestBlock: 110n, finalizedBlock: 105n }),
+  });
+  const observed = await observeEvmNettingAllocation(port(netting.authorizationHash), {
+    chainReference: 84_532n,
+    netting,
+    transactionHash: HASH_E,
+    finality: { requiredConfirmations: 2, requireFinalized: true },
+  });
+  assert.equal(observed.lifecycle, 'FINALIZED');
+  assert.equal(observed.receipt?.receiptHash, receiptHash);
+  const refused = await observeEvmNettingAllocation(port(HASH_B), {
+    chainReference: 84_532n,
+    netting,
+    transactionHash: HASH_E,
+    finality: { requiredConfirmations: 2, requireFinalized: true },
+  });
+  assert.equal(refused.lifecycle, 'EVIDENCE_MISMATCH');
+  assert.match(refused.reason ?? '', /stored authorization differs/);
 });
 
 test('rejects a package identity that differs from the compiled leg payloads', () => {

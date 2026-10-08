@@ -41,6 +41,7 @@ import {
 
 export * from './strategy-plan.js';
 export * from './multi-strategy-account.js';
+export * from './multi-strategy-observation.js';
 export * from './typed-materializers.js';
 export * from './strategy-provisioning.js';
 export * from './package-collateral-management.js';
