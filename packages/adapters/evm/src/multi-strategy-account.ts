@@ -384,6 +384,7 @@ export function encodeEvmMultiStrategyAccountExecution(input: Readonly<{
 export function compileEvmNettingAllocationEnvelope(input: Readonly<{
   envelope: EvmMultiStrategyAccountEnvelope;
   authorization: NettingAllocationExecutionAuthorization;
+  owner: Address;
 }>): EvmNettingAllocationEnvelope {
   const { envelope, authorization } = input;
   const authorizationHash = hash32(
@@ -393,6 +394,10 @@ export function compileEvmNettingAllocationEnvelope(input: Readonly<{
   requireCondition(
     getAddress(authorization.settlementAccount) === envelope.account,
     'netting settlement account mismatch',
+  );
+  requireCondition(
+    getAddress(authorization.ownerId) === getAddress(input.owner),
+    'netting owner mismatch',
   );
   requireCondition(
     authorization.domain.domainId === `eip155:${envelope.ownerTypedData.domain.chainId}`

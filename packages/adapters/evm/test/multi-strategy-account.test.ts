@@ -33,6 +33,7 @@ const ACCOUNT = '0x1111111111111111111111111111111111111111' as Address;
 const SOLVER = '0x2222222222222222222222222222222222222222' as Address;
 const ADAPTER = '0x3333333333333333333333333333333333333333' as Address;
 const TOKEN = '0x4444444444444444444444444444444444444444' as Address;
+const OWNER = '0x5555555555555555555555555555555555555555' as Address;
 const HASH_A = `0x${'11'.repeat(32)}` as Hex;
 const HASH_B = `0x${'22'.repeat(32)}` as Hex;
 const HASH_C = `0x${'33'.repeat(32)}` as Hex;
@@ -141,7 +142,7 @@ function nettingAuthorization(
     obligationId: commitment(HASH_F),
     packageOrderId: commitment(HASH_A),
     strategyOrderHash: commitment(envelope.execution.orderHash),
-    ownerId: protocolId('0x5555555555555555555555555555555555555555'),
+    ownerId: protocolId(OWNER),
     settlementAccount: protocolId(ACCOUNT),
     domain: domain(),
     instrumentId: protocolId('sol-spot'),
@@ -237,6 +238,7 @@ test('binds a final allocation authorization to exact EVM execution calldata', (
   const netting = compileEvmNettingAllocationEnvelope({
     envelope,
     authorization: nettingAuthorization(envelope),
+    owner: OWNER,
   });
   assert.equal(netting.authorizationHash, HASH_A);
   assert.equal(netting.ownerDigest, hashTypedData(netting.ownerTypedData));
@@ -258,7 +260,13 @@ test('rejects a netting authorization for another call plan', () => {
   assert.throws(() => compileEvmNettingAllocationEnvelope({
     envelope,
     authorization: { ...nettingAuthorization(envelope), executionPlanHash: commitment(HASH_F) },
+    owner: OWNER,
   }), /execution plan mismatch/);
+  assert.throws(() => compileEvmNettingAllocationEnvelope({
+    envelope,
+    authorization: nettingAuthorization(envelope),
+    owner: SOLVER,
+  }), /owner mismatch/);
 });
 
 test('rejects a package identity that differs from the compiled leg payloads', () => {
