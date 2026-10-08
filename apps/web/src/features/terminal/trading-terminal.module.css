@@ -1308,6 +1308,31 @@
   color: var(--text-primary);
 }
 
+.receiptPortfolioAction {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  align-self: flex-start;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-small);
+  padding: 4px 8px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.receiptPortfolioAction:hover {
+  border-color: var(--text-dim);
+  color: var(--text-primary);
+}
+
+.receiptPortfolioAction:focus-visible {
+  outline: 1px solid var(--yellow);
+  outline-offset: 1px;
+}
+
 .primaryAction:disabled,
 .secondaryAction:disabled {
   border-color: var(--line-soft);

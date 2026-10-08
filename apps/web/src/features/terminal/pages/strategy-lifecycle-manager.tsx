@@ -37,13 +37,17 @@ function hex(value: string | Uint8Array): string {
 export function StrategyEntryManager({
   baseUrl,
   refresh,
+  initialReceiptHash = "",
 }: {
   baseUrl: string;
   refresh(): Promise<void>;
+  initialReceiptHash?: string;
 }) {
   const solana = useSolanaWallet();
   const evm = useEvmWallet();
-  const [receiptHash, setReceiptHash] = useState("");
+  const [receiptHash, setReceiptHash] = useState(
+    /^[0-9a-f]{64}$/.test(initialReceiptHash) ? initialReceiptHash : "",
+  );
   const [prepared, setPrepared] = useState<PreparedOpen | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
@@ -139,16 +143,24 @@ export function StrategyLifecycleManager({
   baseUrl,
   strategies,
   refresh,
+  initialReceiptHash = "",
+  initialStateHash = "",
 }: {
   baseUrl: string;
   strategies: readonly ManagedStrategy[];
   refresh(): Promise<void>;
+  initialReceiptHash?: string;
+  initialStateHash?: string;
 }) {
   const solana = useSolanaWallet();
   const evm = useEvmWallet();
-  const [selectedId, setSelectedId] = useState(strategies[0]?.strategyId ?? "");
-  const [action, setAction] = useState<Action>("ASSIGN_INTERNAL");
-  const [transitionReceiptHash, setTransitionReceiptHash] = useState("");
+  const linkedStrategyId = /^[0-9a-f]{64}$/.test(initialStateHash)
+    ? strategies.find((strategy) => strategy.stateHash === initialStateHash)?.strategyId ?? ""
+    : "";
+  const linkedExecution = linkedStrategyId !== "" && /^[0-9a-f]{64}$/.test(initialReceiptHash);
+  const [selectedId, setSelectedId] = useState(linkedStrategyId || strategies[0]?.strategyId || "");
+  const [action, setAction] = useState<Action>(linkedExecution ? "APPLY_EXECUTION" : "ASSIGN_INTERNAL");
+  const [transitionReceiptHash, setTransitionReceiptHash] = useState(linkedExecution ? initialReceiptHash : "");
   const [subaccountId, setSubaccountId] = useState("primary");
   const [delegateId, setDelegateId] = useState("");
   const [authorities, setAuthorities] = useState<readonly Authority[]>(["REBALANCE", "DECREASE", "EXIT"]);

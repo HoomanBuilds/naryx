@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Fragment, useEffect, useState } from "react";
 import bs58 from "bs58";
 import {
@@ -5090,6 +5091,18 @@ export function GeneralizedStrategyPreparationPanel({
   const packageAmendmentChanged = restingPackageOrder !== null
     && (packageAmendQuantity !== restingPackageOrder.quantity
       || packageAmendPriceTicks !== restingPackageOrder.priceTicks);
+  const priorStrategyStateHash = solanaLane
+    ? selectedSolanaPosition?.stateHash ?? null
+    : evmLane
+      ? selectedEvmPosition?.stateHash ?? null
+      : selectedNativePosition?.stateHash ?? null;
+  const portfolioReceiptHref = strategyReceipt === null
+    ? null
+    : lifecycleAction === "ENTRY"
+      ? `/portfolio?receipt=${encodeURIComponent(strategyReceipt.receiptHash)}`
+      : priorStrategyStateHash === null
+        ? null
+        : `/portfolio?receipt=${encodeURIComponent(strategyReceipt.receiptHash)}&state=${encodeURIComponent(priorStrategyStateHash)}`;
   const comparableQuotes = [...quoteCandidates].sort((left, right) => {
     const leftQuote = left.review;
     const rightQuote = right.review;
@@ -6766,6 +6779,11 @@ export function GeneralizedStrategyPreparationPanel({
                       <span>Evidence</span><strong title={leg.evidenceHash}>{leg.evidenceGrade} / {compact(leg.evidenceHash)}</strong>
                     </div>
                   ))}
+                  {portfolioReceiptHref ? (
+                    <Link className={styles.receiptPortfolioAction} href={portfolioReceiptHref}>
+                      {lifecycleAction === "ENTRY" ? "Record strategy in Portfolio" : "Apply execution in Portfolio"}
+                    </Link>
+                  ) : null}
                 </div>
               ) : null}
             </>

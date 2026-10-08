@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 import { AssetIcon, ChainIcon } from "@/features/brand/chain-icons";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
@@ -87,6 +88,48 @@ function ageText(value: bigint): string {
   if (value < BigInt(3_600_000)) return `${value / BigInt(60_000)} min`;
   if (value < BigInt(86_400_000)) return `${value / BigInt(3_600_000)} h`;
   return `${value / BigInt(86_400_000)} d`;
+}
+
+function StrategyManagement({
+  baseUrl,
+  connected,
+  strategies,
+  refresh,
+}: {
+  baseUrl: string | null;
+  connected: boolean;
+  strategies: Parameters<typeof StrategyLifecycleManager>[0]["strategies"];
+  refresh(): Promise<void>;
+}) {
+  const searchParams = useSearchParams();
+  const receipt = searchParams.get("receipt") ?? "";
+  const state = searchParams.get("state") ?? "";
+  const validReceipt = /^[0-9a-f]{64}$/.test(receipt) ? receipt : "";
+  const validState = /^[0-9a-f]{64}$/.test(state) ? state : "";
+
+  if (baseUrl === null) return null;
+  return (
+    <>
+      {connected ? (
+        <StrategyEntryManager
+          key={`entry-${validReceipt}`}
+          baseUrl={baseUrl}
+          refresh={refresh}
+          initialReceiptHash={validState === "" ? validReceipt : ""}
+        />
+      ) : null}
+      {strategies.length > 0 ? (
+        <StrategyLifecycleManager
+          key={`lifecycle-${validReceipt}-${validState}`}
+          baseUrl={baseUrl}
+          strategies={strategies}
+          refresh={refresh}
+          initialReceiptHash={validState === "" ? "" : validReceipt}
+          initialStateHash={validState}
+        />
+      ) : null}
+    </>
+  );
 }
 
 export function PortfolioView() {
@@ -397,13 +440,14 @@ export function PortfolioView() {
         </div>
       </section>
 
-      {publicApiBaseUrl !== null && connectedCount > 0 ? (
-        <StrategyEntryManager baseUrl={publicApiBaseUrl} refresh={intelligence.refresh} />
-      ) : null}
-
-      {publicApiBaseUrl !== null && intelligence.rows.length > 0 ? (
-        <StrategyLifecycleManager baseUrl={publicApiBaseUrl} strategies={intelligence.rows} refresh={intelligence.refresh} />
-      ) : null}
+      <Suspense fallback={null}>
+        <StrategyManagement
+          baseUrl={publicApiBaseUrl}
+          connected={connectedCount > 0}
+          strategies={intelligence.rows}
+          refresh={intelligence.refresh}
+        />
+      </Suspense>
 
       <section className={styles.card} aria-labelledby="account-terms-title">
         <div className={styles.cardHead}>
