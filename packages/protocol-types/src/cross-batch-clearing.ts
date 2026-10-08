@@ -551,6 +551,15 @@ function intentBytes(input: IntentPayload): Uint8Array {
   });
 }
 
+export function crossBatchExternalExecutionIntentHash(
+  input: Omit<CrossBatchExternalExecutionIntent, 'intentHash'> | CrossBatchExternalExecutionIntent,
+): CommitmentHash {
+  return commitmentHash(
+    domainHash(HASH_DOMAIN.CROSS_BATCH_EXECUTION_INTENT, intentBytes(input)),
+    'crossBatchExternalExecutionIntent.intentHash',
+  );
+}
+
 export function crossBatchExternalExecutionIntent(plan: CrossBatchClearingPlan): CrossBatchExternalExecutionIntent {
   if (plan.externalSide === undefined || plan.externalLimitPriceTicks === undefined || plan.externalQuantityAtoms === 0n) {
     throw new MalformedInputError('crossBatchExternalExecutionIntent.plan', 'plan has no external residual');
@@ -583,11 +592,7 @@ export function crossBatchExternalExecutionIntent(plan: CrossBatchClearingPlan):
     validUntilValue: plan.validUntilValue,
     sourceIntentFeeCaps,
   });
-  const intentHash = commitmentHash(
-    domainHash(HASH_DOMAIN.CROSS_BATCH_EXECUTION_INTENT, intentBytes(payload)),
-    'crossBatchExternalExecutionIntent.intentHash',
-  );
-  return Object.freeze({ ...payload, intentHash });
+  return Object.freeze({ ...payload, intentHash: crossBatchExternalExecutionIntentHash(payload) });
 }
 
 export function verifyCrossBatchExternalExecutionIntent(
@@ -596,7 +601,7 @@ export function verifyCrossBatchExternalExecutionIntent(
 ): void {
   const expected = crossBatchExternalExecutionIntent(plan);
   if (compareBytes(expected.intentHash, commitmentHash(intent.intentHash)) !== 0
-    || compareBytes(expected.intentHash, commitmentHash(domainHash(HASH_DOMAIN.CROSS_BATCH_EXECUTION_INTENT, intentBytes(intent)))) !== 0) {
+    || compareBytes(expected.intentHash, crossBatchExternalExecutionIntentHash(intent)) !== 0) {
     throw new MalformedInputError('crossBatchExternalExecutionIntent', 'intent does not follow clearing plan');
   }
 }

@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   parseProtocolJson,
   stringifyProtocolJson,
+  type CrossBatchExternalExecutionIntent,
   type NettingExternalExecutionIntent,
 } from '@naryx/protocol-types';
 import {
@@ -11,6 +12,8 @@ import {
 
 export const HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH =
   '/internal/netting/hyperliquid-testnet/execute-residual';
+export const HYPERLIQUID_CROSS_BATCH_RESIDUAL_EXECUTION_PATH =
+  '/internal/netting/hyperliquid-testnet/execute-cross-batch-residual';
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const MAX_BODY_BYTES = 65_536;
@@ -58,7 +61,9 @@ export function createHyperliquidNettingResidualExecutionInternalHandler(
   }
   return async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://solver.internal');
-    if (url.pathname !== HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH || url.search !== '') {
+    const crossBatch = url.pathname === HYPERLIQUID_CROSS_BATCH_RESIDUAL_EXECUTION_PATH;
+    if ((url.pathname !== HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH && !crossBatch)
+      || url.search !== '') {
       return false;
     }
     if (!internal(request)) {
@@ -82,10 +87,15 @@ export function createHyperliquidNettingResidualExecutionInternalHandler(
         || Array.isArray(input.intent)) {
         throw new Error('request must contain only intent and idempotencyKey');
       }
-      const evidence = await runtime.execute({
-        intent: input.intent as NettingExternalExecutionIntent,
-        idempotencyKey: input.idempotencyKey,
-      });
+      const evidence = crossBatch
+        ? await runtime.execute({
+            intent: input.intent as CrossBatchExternalExecutionIntent,
+            idempotencyKey: input.idempotencyKey,
+          })
+        : await runtime.execute({
+            intent: input.intent as NettingExternalExecutionIntent,
+            idempotencyKey: input.idempotencyKey,
+          });
       return send(response, 200, { version: 1, evidence });
     } catch (error) {
       if (error instanceof HyperliquidNettingResidualRuntimeError) {

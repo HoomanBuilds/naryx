@@ -4,6 +4,7 @@ import test from 'node:test';
 import { parseProtocolJson, stringifyProtocolJson } from '@naryx/protocol-types';
 import {
   HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH,
+  HYPERLIQUID_CROSS_BATCH_RESIDUAL_EXECUTION_PATH,
   HyperliquidNettingResidualRuntimeError,
   createHyperliquidNettingResidualExecutionInternalHandler,
 } from '../src/index.js';
@@ -50,6 +51,14 @@ test('residual execution handler is loopback-only and preserves pending evidence
       headers: { 'Content-Type': 'application/json', Origin: 'https://terminal.example' },
       body: stringifyProtocolJson(request),
     })).status, 403);
+    assert.equal((await fetch(
+      `http://127.0.0.1:${address.port}${HYPERLIQUID_CROSS_BATCH_RESIDUAL_EXECUTION_PATH}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: stringifyProtocolJson(request),
+      },
+    )).status, 200);
     pending = true;
     assert.equal((await fetch(url, {
       method: 'POST',

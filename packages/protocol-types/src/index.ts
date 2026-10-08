@@ -624,6 +624,7 @@ export {
   crossBatchClearingPlan,
   verifyCrossBatchClearingPlan,
   crossBatchExternalExecutionIntent,
+  crossBatchExternalExecutionIntentHash,
   verifyCrossBatchExternalExecutionIntent,
   crossBatchExternalExecutionEvidence,
   verifyCrossBatchExternalExecutionEvidence,

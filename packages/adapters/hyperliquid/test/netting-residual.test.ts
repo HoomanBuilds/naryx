@@ -3,6 +3,9 @@ import test from 'node:test';
 import {
   assetRef,
   adapterRef,
+  crossBatchClearingPlan,
+  crossBatchClearingPolicy,
+  crossBatchExternalExecutionIntent,
   domainRef,
   netObligations,
   nettingExternalExecutionIntent,
@@ -70,6 +73,36 @@ const intent = nettingExternalExecutionIntent(result, policy, {
   validUntilValue: 2_000_000_000_000n,
   sourceFeeCaps: [{ obligationId: result.allocations[0]!.obligationId, maximumFeeQuoteAtoms: 2n }],
 });
+const sellResult = netObligations([{
+  ownerId: 'seller',
+  strategyOrderHash: id(30),
+  packageOrderId: id(31),
+  settlementReadinessHash: id(32),
+  legId: 'perp',
+  instrumentId: 'btc-perp',
+  signedQuantityAtoms: -200n,
+  limitPriceTicks: 1n,
+  sequence: 2n,
+}], policy);
+const sellIntent = nettingExternalExecutionIntent(sellResult, policy, {
+  instrumentId: 'btc-perp',
+  validUntilUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+  validUntilValue: 2_000_000_000_000n,
+  sourceFeeCaps: [{ obligationId: sellResult.allocations[0]!.obligationId, maximumFeeQuoteAtoms: 3n }],
+});
+const crossBatchIntent = crossBatchExternalExecutionIntent(crossBatchClearingPlan(
+  [intent, sellIntent],
+  crossBatchClearingPolicy({
+    version: 1,
+    policyId: 'hyperliquid-testnet-cross-batch-v1',
+    domain: policy.instruments[0]!.domain,
+    adapter,
+    expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    maximumSourceIntents: 8,
+    maximumSourceBatches: 8,
+    maximumExpirySpread: 10n,
+  }),
+));
 const binding = { adapter, venue, market, assetId: 3, sizeDecimals: 2, maximumPriceDecimals: 6 };
 
 test('compiles one exact Hyperliquid Testnet IOC from a residual intent', () => {
@@ -135,4 +168,31 @@ test('translates only matching terminal venue evidence', () => {
     }),
     /fee exceeds/,
   );
+});
+
+test('compiles and proves one pooled cross-batch residual with the same Testnet lane', () => {
+  const plan = compileHyperliquidNettingResidualPlan({
+    intent: crossBatchIntent,
+    instrument: policy.instruments[0]!,
+    binding,
+  });
+  assert.equal(plan.requestedSignedQuantityAtoms, -100n);
+  assert.equal(plan.order.b, false);
+  const evidence = hyperliquidNettingResidualEvidence({
+    intent: crossBatchIntent,
+    plan,
+    observation: {
+      clientOrderId: plan.clientOrderId,
+      terminalStatus: 'FILLED',
+      filledSignedQuantityAtoms: -100n,
+      grossQuoteAtoms: 250n,
+      feeQuoteAtoms: 1n,
+      submittedAtMs: 1_999_999_999_999n,
+      observedAtMs: 2_000_000_000_001n,
+      executionReferenceHash: id(33),
+      authoritativeEvidenceHash: id(34),
+    },
+  });
+  assert.equal(evidence.outcome, 'EXACT_FILLED');
+  assert.deepEqual(evidence.intentHash, crossBatchIntent.intentHash);
 });

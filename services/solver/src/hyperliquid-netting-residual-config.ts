@@ -10,6 +10,7 @@ import {
   toHex,
   versionedManifestRef,
   type NettingExternalExecutionIntent,
+  type CrossBatchExternalExecutionIntent,
   type NettingInstrumentPolicy,
   type NettingPolicyManifestInput,
 } from '@naryx/protocol-types';
@@ -254,7 +255,9 @@ implements HyperliquidNettingResidualRuntimeLaneResolver {
     this.#lanes = lanes;
   }
 
-  resolve(intent: NettingExternalExecutionIntent): HyperliquidNettingResidualRuntimeLane {
+  resolve(
+    intent: NettingExternalExecutionIntent | CrossBatchExternalExecutionIntent,
+  ): HyperliquidNettingResidualRuntimeLane {
     const lane = this.#lanes.get(intent.instrumentId);
     if (lane === undefined || toHex(lane.instrument.instrumentHash) !== toHex(intent.instrumentHash)) {
       throw new Error('residual intent is outside the configured netting policy');

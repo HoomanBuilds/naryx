@@ -7,6 +7,9 @@ import type { OrderSuccessResponse } from '@nktkas/hyperliquid/api/exchange';
 import {
   assetRef,
   adapterRef,
+  crossBatchClearingPlan,
+  crossBatchClearingPolicy,
+  crossBatchExternalExecutionIntent,
   domainRef,
   netObligations,
   nettingExternalExecutionIntent,
@@ -91,6 +94,36 @@ const intent = nettingExternalExecutionIntent(result, policy, {
     maximumFeeQuoteAtoms: 2n,
   }],
 });
+const sellResult = netObligations([{
+  ownerId: 'seller',
+  strategyOrderHash: id(30),
+  packageOrderId: id(31),
+  settlementReadinessHash: id(32),
+  legId: 'perp',
+  instrumentId: 'btc-perp',
+  signedQuantityAtoms: -200n,
+  limitPriceTicks: 1n,
+  sequence: 2n,
+}], policy);
+const sellIntent = nettingExternalExecutionIntent(sellResult, policy, {
+  instrumentId: 'btc-perp',
+  validUntilUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+  validUntilValue: 2_000_000_000_000n,
+  sourceFeeCaps: [{ obligationId: sellResult.allocations[0]!.obligationId, maximumFeeQuoteAtoms: 3n }],
+});
+const crossBatchIntent = crossBatchExternalExecutionIntent(crossBatchClearingPlan(
+  [intent, sellIntent],
+  crossBatchClearingPolicy({
+    version: 1,
+    policyId: 'hyperliquid-testnet-cross-batch-v1',
+    domain: policy.instruments[0]!.domain,
+    adapter,
+    expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    maximumSourceIntents: 8,
+    maximumSourceBatches: 8,
+    maximumExpirySpread: 10n,
+  }),
+));
 const marketBinding = {
   adapter,
   venue,
@@ -187,7 +220,7 @@ test('executes one durable residual and resumes evidence without rebroadcast', a
         observation: {
           clientOrderId: input.plan.clientOrderId,
           terminalStatus: 'FILLED' as const,
-          filledSignedQuantityAtoms: 100n,
+          filledSignedQuantityAtoms: input.plan.requestedSignedQuantityAtoms,
           grossQuoteAtoms: 250n,
           feeQuoteAtoms: 1n,
           submittedAtMs: BigInt(input.window.startTimeMs),
@@ -230,13 +263,29 @@ test('executes one durable residual and resumes evidence without rebroadcast', a
   assert.equal(first.filledSignedQuantityAtoms, 100n);
   assert.equal(transport.requests.length, 1);
 
+  nowMs += 1;
+  const pooled = await runtime.execute({
+    intent: crossBatchIntent,
+    idempotencyKey: toHex(crossBatchIntent.intentHash),
+  });
+  assert.equal(pooled.outcome, 'EXACT_FILLED');
+  assert.equal(pooled.filledSignedQuantityAtoms, -100n);
+  assert.equal(transport.requests.length, 2);
+  await assert.rejects(
+    runtime.execute({
+      intent: { ...crossBatchIntent, quantityAtoms: crossBatchIntent.quantityAtoms + 100n },
+      idempotencyKey: toHex(crossBatchIntent.intentHash),
+    }),
+    /idempotency differs from the intent/,
+  );
+
   nowMs = Number(intent.validUntilValue + 1n);
   const resumed = await runtime.execute(executionInput);
   assert.equal(resumed.outcome, 'EXACT_FILLED');
   assert.equal(resumed.filledSignedQuantityAtoms, first.filledSignedQuantityAtoms);
   assert.equal(resumed.submittedAtValue, first.submittedAtValue);
   assert.equal(resumed.observedAtValue, intent.validUntilValue + 1n);
-  assert.equal(transport.requests.length, 1);
+  assert.equal(transport.requests.length, 2);
 
   await assert.rejects(
     runtime.execute({ intent, idempotencyKey: id(99) }),
@@ -251,5 +300,5 @@ test('executes one durable residual and resumes evidence without rebroadcast', a
     }),
     /idempotency differs from the intent/,
   );
-  assert.equal(transport.requests.length, 1);
+  assert.equal(transport.requests.length, 2);
 });

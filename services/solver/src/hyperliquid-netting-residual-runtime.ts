@@ -3,10 +3,15 @@ import {
   hyperliquidNettingResidualEvidence,
   type HyperliquidNettingResidualMarketBinding,
   type HyperliquidNettingResidualPlan,
+  type HyperliquidNettingResidualIntent,
+  type HyperliquidNettingResidualEvidence,
 } from '@naryx/adapter-hyperliquid';
 import {
+  crossBatchExternalExecutionIntentHash,
   nettingExternalExecutionIntentHash,
   toHex,
+  type CrossBatchExternalExecutionEvidence,
+  type CrossBatchExternalExecutionIntent,
   type NettingExternalExecutionEvidence,
   type NettingExternalExecutionIntent,
   type NettingInstrumentPolicy,
@@ -54,7 +59,7 @@ export interface HyperliquidNettingResidualRuntimeLane {
 }
 
 export interface HyperliquidNettingResidualRuntimeLaneResolver {
-  resolve(intent: NettingExternalExecutionIntent): HyperliquidNettingResidualRuntimeLane;
+  resolve(intent: HyperliquidNettingResidualIntent): HyperliquidNettingResidualRuntimeLane;
 }
 
 export interface HyperliquidNettingResidualRuntimeEvidencePort {
@@ -85,7 +90,7 @@ function requireBoundedPositiveInteger(value: number, name: string, maximum: num
   return value;
 }
 
-function attemptId(intent: NettingExternalExecutionIntent): string {
+function attemptId(intent: HyperliquidNettingResidualIntent): string {
   return `net-residual-${toHex(intent.intentHash)}`;
 }
 
@@ -189,10 +194,21 @@ export class HyperliquidNettingResidualTestnetRuntime {
   async execute(input: Readonly<{
     intent: NettingExternalExecutionIntent;
     idempotencyKey: string;
-  }>): Promise<NettingExternalExecutionEvidence> {
+  }>): Promise<NettingExternalExecutionEvidence>;
+  async execute(input: Readonly<{
+    intent: CrossBatchExternalExecutionIntent;
+    idempotencyKey: string;
+  }>): Promise<CrossBatchExternalExecutionEvidence>;
+  async execute(input: Readonly<{
+    intent: HyperliquidNettingResidualIntent;
+    idempotencyKey: string;
+  }>): Promise<HyperliquidNettingResidualEvidence> {
     const expectedKey = toHex(input.intent.intentHash);
+    const actualHash = 'clearingPlanHash' in input.intent
+      ? crossBatchExternalExecutionIntentHash(input.intent)
+      : nettingExternalExecutionIntentHash(input.intent);
     if (input.idempotencyKey !== expectedKey
-      || toHex(nettingExternalExecutionIntentHash(input.intent)) !== expectedKey) {
+      || toHex(actualHash) !== expectedKey) {
       throw new HyperliquidNettingResidualRuntimeError(
         'IDEMPOTENCY_MISMATCH', 'residual execution idempotency differs from the intent',
       );
@@ -256,10 +272,16 @@ export class HyperliquidNettingResidualTestnetRuntime {
         'EVIDENCE_PENDING', `residual terminal evidence is incomplete: ${collected.reasons.join(',')}`,
       );
     }
-    return hyperliquidNettingResidualEvidence({
-      intent: input.intent,
-      plan,
-      observation: collected.observation,
-    });
+    return 'clearingPlanHash' in input.intent
+      ? hyperliquidNettingResidualEvidence({
+          intent: input.intent,
+          plan,
+          observation: collected.observation,
+        })
+      : hyperliquidNettingResidualEvidence({
+          intent: input.intent,
+          plan,
+          observation: collected.observation,
+        });
   }
 }

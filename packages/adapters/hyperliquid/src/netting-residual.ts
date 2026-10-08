@@ -1,12 +1,15 @@
 import { createHash } from 'node:crypto';
 import {
   bytesEqual,
+  crossBatchExternalExecutionEvidence,
   exactPrice,
   nettingExternalExecutionEvidence,
   nettingInstrumentHash,
   type AdapterRef,
   type AssetRef,
   type CommitmentHash,
+  type CrossBatchExternalExecutionEvidence,
+  type CrossBatchExternalExecutionIntent,
   type DomainRef,
   type NettingExternalExecutionIntent,
   type NettingExternalExecutionEvidence,
@@ -23,6 +26,14 @@ import {
   powerOfTen,
   type HypercoreFormattedPrice,
 } from './wire-format.js';
+
+export type HyperliquidNettingResidualIntent =
+  | NettingExternalExecutionIntent
+  | CrossBatchExternalExecutionIntent;
+
+export type HyperliquidNettingResidualEvidence =
+  | NettingExternalExecutionEvidence
+  | CrossBatchExternalExecutionEvidence;
 
 const CLIENT_ORDER_ID_DOMAIN = 'naryx/hypercore/netting-residual-client-order-id/v1';
 const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
@@ -114,7 +125,7 @@ function compareWirePrice(wire: HypercoreFormattedPrice, exact: ReturnType<typeo
 }
 
 export function compileHyperliquidNettingResidualPlan(input: Readonly<{
-  intent: NettingExternalExecutionIntent;
+  intent: HyperliquidNettingResidualIntent;
   instrument: NettingInstrumentPolicy;
   binding: HyperliquidNettingResidualMarketBinding;
 }>): HyperliquidNettingResidualPlan {
@@ -195,7 +206,17 @@ export function hyperliquidNettingResidualEvidence(input: Readonly<{
   intent: NettingExternalExecutionIntent;
   plan: HyperliquidNettingResidualPlan;
   observation: HyperliquidNettingResidualObservation;
-}>): NettingExternalExecutionEvidence {
+}>): NettingExternalExecutionEvidence;
+export function hyperliquidNettingResidualEvidence(input: Readonly<{
+  intent: CrossBatchExternalExecutionIntent;
+  plan: HyperliquidNettingResidualPlan;
+  observation: HyperliquidNettingResidualObservation;
+}>): CrossBatchExternalExecutionEvidence;
+export function hyperliquidNettingResidualEvidence(input: Readonly<{
+  intent: HyperliquidNettingResidualIntent;
+  plan: HyperliquidNettingResidualPlan;
+  observation: HyperliquidNettingResidualObservation;
+}>): HyperliquidNettingResidualEvidence {
   const { intent, plan, observation } = input;
   requireCondition(plan.version === 1
     && plan.guarantee === 'SINGLE_IOC_WITH_TERMINAL_EVIDENCE'
@@ -216,7 +237,7 @@ export function hyperliquidNettingResidualEvidence(input: Readonly<{
       : observation.terminalStatus === 'UNFILLED_IOC_CANCELLED'
         ? 'NO_FILL'
         : 'REJECTED';
-  return nettingExternalExecutionEvidence({
+  const evidence = {
     version: 1,
     intentHash: intent.intentHash,
     outcome,
@@ -229,5 +250,8 @@ export function hyperliquidNettingResidualEvidence(input: Readonly<{
     observedAtValue: observation.observedAtMs,
     executionReferenceHash: observation.executionReferenceHash,
     authoritativeEvidenceHash: observation.authoritativeEvidenceHash,
-  }, intent);
+  } as const;
+  return 'clearingPlanHash' in intent
+    ? crossBatchExternalExecutionEvidence(evidence, intent)
+    : nettingExternalExecutionEvidence(evidence, intent);
 }
