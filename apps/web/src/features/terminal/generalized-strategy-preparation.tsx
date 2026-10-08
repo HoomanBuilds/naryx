@@ -240,6 +240,7 @@ type CreatedStrategyOrder = Readonly<{
 
 type PreparedPackageBookOrder = Readonly<{
   strategyOrderHash: string;
+  executionClassId: string;
   packageOrderId: string;
   settlementCommitmentHash: string;
   participantId: string;
@@ -1415,7 +1416,9 @@ function parsePreparedPackageBookOrder(payload: unknown, requestedStrategyOrderH
   const settlementCommitmentHash = hash(root.settlementCommitmentHash, "Prepared settlement commitment hash");
   const order = record(root.order, "Prepared package order body");
   const commitment = record(root.settlementCommitment, "Prepared settlement commitment");
+  const executionClassId = text(commitment.executionClassId, "Prepared execution class");
   if (hash(order.orderId, "Prepared order id") !== packageOrderId
+    || text(order.executionClassId, "Prepared order execution class") !== executionClassId
     || hash(commitment.packageOrderId, "Committed package order id") !== packageOrderId
     || hash(commitment.strategyOrderHash, "Committed strategy order hash") !== strategyOrderHash) {
     throw new Error("Prepared package order commitments are inconsistent.");
@@ -1426,6 +1429,7 @@ function parsePreparedPackageBookOrder(payload: unknown, requestedStrategyOrderH
   }
   return Object.freeze({
     strategyOrderHash,
+    executionClassId,
     packageOrderId,
     settlementCommitmentHash,
     participantId,
@@ -2590,6 +2594,7 @@ function expiryText(unit: string, value: string): string {
 export function GeneralizedStrategyPreparationPanel({
   privateApiBaseUrl,
   publicApiBaseUrl,
+  packageMarketId = null,
   executionDomain,
   templateId,
   lifecycleAction,
@@ -2605,6 +2610,7 @@ export function GeneralizedStrategyPreparationPanel({
 }: {
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
+  packageMarketId?: string | null;
   executionDomain: DomainId;
   templateId: string;
   lifecycleAction: string;
@@ -2853,6 +2859,9 @@ export function GeneralizedStrategyPreparationPanel({
   }
 
   function recordPackageSettlementReadiness(readiness: PackageSettlementReadiness) {
+    if (packageMarketId !== null && readiness.executionClassId !== packageMarketId) {
+      throw new Error("Package settlement belongs to another selected market.");
+    }
     setSettlementReadiness(readiness);
     setPackageAmendQuantity(readiness.restingOrder?.quantity ?? "");
     setPackageAmendPriceTicks(readiness.restingOrder?.priceTicks ?? "");
@@ -4144,6 +4153,9 @@ export function GeneralizedStrategyPreparationPanel({
       });
       if (!preparationResponse.ok) throw new Error(await failureMessage(preparationResponse));
       const prepared = parsePreparedPackageBookOrder(await preparationResponse.json(), orderHash);
+      if (packageMarketId !== null && prepared.executionClassId !== packageMarketId) {
+        throw new Error("The strategy order belongs to another package market. Open its book or create an order for the selected market.");
+      }
       const challengeResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/orders/authorization`, {
         method: "POST",
         cache: "no-store",

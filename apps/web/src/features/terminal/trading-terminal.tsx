@@ -1089,6 +1089,7 @@ function Ticket({
   selectedLifecycleAction,
   privateApiBaseUrl,
   publicApiBaseUrl,
+  packageMarketId,
   connectedSolanaAccount,
   connectedEvmAccount,
   sendSolanaTransaction,
@@ -1140,6 +1141,7 @@ function Ticket({
   selectedLifecycleAction: string;
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
+  packageMarketId: string | null;
   connectedSolanaAccount: string | null;
   connectedEvmAccount: string | null;
   sendSolanaTransaction?: (transaction: Uint8Array) => Promise<string>;
@@ -1379,6 +1381,7 @@ function Ticket({
           key={`${selectedDomain}:${selectedStrategyTemplateId}:${selectedLifecycleAction}:${selectedDomain === "hyperliquid" ? hyperliquidFlow?.attempt?.orderHash ?? "manual" : "manual"}`}
           privateApiBaseUrl={privateApiBaseUrl}
           publicApiBaseUrl={publicApiBaseUrl}
+          packageMarketId={packageMarketId}
           executionDomain={selectedDomain}
           templateId={selectedStrategyTemplateId}
           lifecycleAction={selectedLifecycleAction}
@@ -3496,6 +3499,7 @@ export function TradingTerminal({
             selectedLifecycleAction={selectedLifecycleAction}
             privateApiBaseUrl={privateApiBaseUrl}
             publicApiBaseUrl={publicApiBaseUrl}
+            packageMarketId={resolvedPackageMarketId}
             connectedSolanaAccount={wallet.selectedAccount?.address ?? null}
             connectedEvmAccount={evmWallet.account}
             sendSolanaTransaction={wallet.selectedAccount !== null && wallet.canSignAndSendV0
