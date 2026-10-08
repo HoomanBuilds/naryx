@@ -581,3 +581,98 @@ a.ghost {
 .facts.cardBody {
   gap: 10px 16px;
 }
+
+.lifecycleForm {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.lifecycleGrid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+
+.field input,
+.field select {
+  width: 100%;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--field);
+  color: var(--text-primary);
+  padding: 0 10px;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
+}
+
+.field input:focus-visible,
+.field select:focus-visible {
+  border-color: var(--line-strong);
+  outline: 1px solid var(--yellow);
+  outline-offset: 1px;
+}
+
+.authorities {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.authorities legend {
+  color: var(--text-dim);
+  padding: 0 4px;
+  font-size: 11.5px;
+}
+
+.authorities label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+}
+
+.lifecycleActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 12px;
+}
+
+.lifecycleActions p {
+  color: var(--text-dim);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 11px;
+}
+
+@media (max-width: 720px) {
+  .lifecycleGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .authorities {
+    grid-column: auto;
+  }
+
+  .lifecycleActions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

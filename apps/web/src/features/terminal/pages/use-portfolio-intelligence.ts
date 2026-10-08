@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { NaryxClient, type StrategyState } from "@naryx/sdk";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -19,6 +20,9 @@ type SignedCollateral = Readonly<{
 
 export type PortfolioIntelligenceRow = Readonly<{
   strategyId: string;
+  environment: string;
+  state: StrategyState;
+  stateHash: string;
   positionSources: number;
   positionCount: number;
   positionAgeMs: bigint | null;
@@ -30,6 +34,7 @@ export type PortfolioIntelligenceState = Readonly<{
   loading: boolean;
   unavailable: boolean;
   configured: boolean;
+  refresh(): Promise<void>;
 }>;
 
 function decode(value: Json): unknown {
@@ -128,10 +133,15 @@ export function usePortfolioIntelligence(baseUrl: string | null, owners: readonl
     refetchInterval: 15_000,
     queryFn: async ({ signal }): Promise<readonly PortfolioIntelligenceRow[]> => {
       const base = baseUrl!.replace(/\/+$/, "");
+      const client = new NaryxClient({ baseUrl: base });
       const ownerViews = await Promise.all(activeOwners.map((owner) => read(base, `/v1/owners/${encodeURIComponent(owner)}/strategies`, signal)));
       const ids = new Set<string>();
+      let environment: string | null = null;
       for (const view of ownerViews) {
         if (view === null || !Array.isArray(view.strategies)) throw new Error("Owner strategies are malformed.");
+        const ownerEnvironment = string(view.environment, "Strategy environment");
+        if (environment !== null && environment !== ownerEnvironment) throw new Error("Owner strategy views disagree on environment.");
+        environment = ownerEnvironment;
         for (const raw of view.strategies) {
           const strategy = record(raw, "Owner strategy");
           if (strategy.open === true && strategy.retired === false) ids.add(string(strategy.strategyId, "Strategy id"));
@@ -139,12 +149,16 @@ export function usePortfolioIntelligence(baseUrl: string | null, owners: readonl
       }
       const rows = await Promise.all([...ids].sort().map(async (strategyId) => {
         const encoded = encodeURIComponent(strategyId);
-        const [positions, collateral] = await Promise.all([
+        const [strategy, positions, collateral] = await Promise.all([
+          client.getStrategy(strategyId),
           read(base, `/v1/positions/${encoded}`, signal, true),
           read(base, `/v1/collateral/${encoded}`, signal, true),
         ]);
         return Object.freeze({
           strategyId,
+          environment: environment as string,
+          state: strategy.state,
+          stateHash: strategy.stateHash,
           ...parsePositions(positions),
           collateral: parseCollateral(collateral),
         });
@@ -158,5 +172,6 @@ export function usePortfolioIntelligence(baseUrl: string | null, owners: readonl
     loading: query.isLoading,
     unavailable: query.isError,
     configured: baseUrl !== null,
+    refresh: async () => { await query.refetch(); },
   });
 }
