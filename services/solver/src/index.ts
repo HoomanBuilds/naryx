@@ -793,6 +793,13 @@ export {
 export { SolanaNettingResidualSqliteJournal } from './solana-netting-residual-sqlite-journal.js';
 export { createSolanaDevnetNettingResidualChain } from './solana-devnet-netting-residual-chain.js';
 export {
+  SOLANA_DEVNET_NETTING_RESIDUAL_CONFIG_VERSION,
+  SOLANA_DEVNET_NETTING_RESIDUAL_ENABLED_ENV,
+  SolanaDevnetNettingResidualLaneRegistry,
+  loadSolanaDevnetNettingResidualRuntime,
+  type SolanaDevnetNettingResidualLoadedRuntime,
+} from './solana-devnet-netting-residual-config.js';
+export {
   createViemBaseSepoliaResidualChain,
   observeBaseSepoliaResidualReceipt,
   type BaseSepoliaResidualReceipt,
