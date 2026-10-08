@@ -10,11 +10,14 @@ import type { DomainId } from "../terminal-view-model";
 import { DOMAIN_META, DOMAIN_ORDER, EXIT_UNAVAILABLE, domainLive, useTerminal } from "../shell/terminal-context";
 import { attemptsOf } from "../shell/attempt-index";
 import { useEvmBalances, useHyperliquidBalance, useSolanaBalance, type Amount, type ChainBalance } from "./use-balances";
+import { formatAtomicAmount, formatScaledInteger } from "../format";
+import { usePortfolioIntelligence } from "./use-portfolio-intelligence";
 import { usePositions } from "./use-positions";
 import { GAS_FAUCETS, TEST_USDC_GRANT, useTestUsdcFaucets } from "./use-test-usdc";
 import styles from "./pages.module.css";
 
 const POSITION_COLUMNS = ["Package", "Chain", "Size", "Entry notional", "State", ""];
+const INTELLIGENCE_COLUMNS = ["Strategy account", "Position evidence", "Available collateral", "Risk domains", "Freshness"];
 
 /** What each chain's account is and the limits the code enforces on it. Nothing here claims a deployment. */
 const ACCOUNT_TERMS: Readonly<Record<DomainId, readonly (readonly [string, string])[]>> = {
@@ -73,8 +76,20 @@ function sumUsdc(amounts: readonly Amount[]): string | null {
   return any ? total.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : null;
 }
 
+function shortId(value: string): string {
+  return value.length > 22 ? `${value.slice(0, 12)}...${value.slice(-6)}` : value;
+}
+
+function ageText(value: bigint): string {
+  if (value < BigInt(1_000)) return "Now";
+  if (value < BigInt(60_000)) return `${value / BigInt(1_000)} s`;
+  if (value < BigInt(3_600_000)) return `${value / BigInt(60_000)} min`;
+  if (value < BigInt(86_400_000)) return `${value / BigInt(3_600_000)} h`;
+  return `${value / BigInt(86_400_000)} d`;
+}
+
 export function PortfolioView() {
-  const { selectedDomain, setSelectedDomain, runtimeHealth, healthState, attempts } = useTerminal();
+  const { selectedDomain, setSelectedDomain, runtimeHealth, healthState, attempts, publicApiBaseUrl } = useTerminal();
   const router = useRouter();
   const { positions, loading: positionsLoading, unreadable } = usePositions();
   const solana = useSolanaWallet();
@@ -82,6 +97,7 @@ export function PortfolioView() {
   const modal = useWalletModal();
   const solanaAddress = solana.selectedAccount?.address ?? null;
   const evmAddress = evm.account;
+  const intelligence = usePortfolioIntelligence(publicApiBaseUrl, [solanaAddress, evmAddress]);
   const evmBalances = useEvmBalances(evmAddress);
   const balances: Readonly<Record<DomainId, ChainBalance>> = {
     solana: useSolanaBalance(solanaAddress),
@@ -308,6 +324,73 @@ export function PortfolioView() {
                   </td>
                 </tr>
               ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className={styles.card} aria-labelledby="portfolio-intelligence-title">
+        <div className={styles.cardHead}>
+          <h2 id="portfolio-intelligence-title">Clearing intelligence</h2>
+          <p>Signed position and collateral observations used for package comparison. An observation proves its configured publisher, not the venue itself.</p>
+        </div>
+        <div className={styles.scroll}>
+          <table className={styles.table}>
+            <thead>
+              <tr>
+                {INTELLIGENCE_COLUMNS.map((column, index) => (
+                  <th key={column} scope="col" className={index === 2 ? styles.num : undefined}>{column}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {intelligence.rows.length === 0 ? (
+                <tr>
+                  <td colSpan={INTELLIGENCE_COLUMNS.length}>
+                    <div className={styles.empty}>
+                      <strong>{intelligence.loading ? "Reading signed portfolio state" : intelligence.unavailable ? "Signed portfolio state unavailable" : !intelligence.configured ? "Public portfolio API not configured" : connectedCount === 0 ? "Connect a wallet" : "No signed strategy state yet"}</strong>
+                      <p>{intelligence.unavailable
+                        ? "The last request failed, so no position or collateral amount is inferred."
+                        : "Open strategy accounts appear here after configured observation authorities publish their current state."}</p>
+                    </div>
+                  </td>
+                </tr>
+              ) : intelligence.rows.map((row) => {
+                const ages = [row.positionAgeMs, ...row.collateral.map((source) => source.ageMs)].filter((age): age is bigint => age !== null);
+                const oldest = ages.reduce<bigint | null>((current, age) => current === null || age > current ? age : current, null);
+                const stale = oldest !== null && oldest > BigInt(300_000);
+                const riskDomains = [...new Set(row.collateral.map((source) => source.riskDomainId))].sort();
+                return (
+                  <tr key={row.strategyId}>
+                    <td className={styles.mono} title={row.strategyId}>{shortId(row.strategyId)}</td>
+                    <td>
+                      <strong>{row.positionCount}</strong> <span className={styles.dim}>positions</span>
+                      <small className={styles.cellDetail}>{row.positionSources} signed source{row.positionSources === 1 ? "" : "s"}</small>
+                    </td>
+                    <td className={styles.num}>
+                      {row.collateral.length === 0 ? <span className={styles.dim}>No observation</span> : (
+                        <span className={styles.cellStack}>
+                          {row.collateral.map((source) => (
+                            <span key={`${source.sourceId}:${source.assetId}:${source.riskDomainId}`} title={`${source.sourceId}; ${source.mode}; ${formatScaledInteger(source.haircutBps, 2, "%")} haircut`}>
+                              {formatAtomicAmount(source.availableAtoms, source.decimals, source.assetId.toUpperCase())}
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      {riskDomains.length === 0 ? <span className={styles.dim}>-</span> : (
+                        <span className={styles.cellStack}>{riskDomains.map((domain) => <span key={domain}>{domain}</span>)}</span>
+                      )}
+                    </td>
+                    <td>
+                      <span className={oldest === null ? styles.pill : stale ? styles.pillWarn : styles.pillOk}>
+                        {oldest === null ? "Missing" : stale ? `Stale ${ageText(oldest)}` : `Observed ${ageText(oldest)}`}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -180,6 +180,19 @@
   color: var(--text-dim);
 }
 
+.cellDetail {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.cellStack {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
 .rowButton {
   cursor: pointer;
 }
