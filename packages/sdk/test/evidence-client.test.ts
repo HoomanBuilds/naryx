@@ -9,6 +9,7 @@ import {
   assetAmount,
   assetRef,
   buildExposureGraph,
+  packageGraph,
   packageCloseCostIndex,
   stressPortfolio,
   packageGraphHash,
@@ -22,6 +23,12 @@ import {
   strategyCommandHash,
   strategyState,
   strategyStateHash,
+  strategyPackageOrder,
+  strategyPackageOrderHash,
+  strategyPackageQuote,
+  strategyPackageQuoteHash,
+  typedStrategyRouteHash,
+  requireStrategyTemplateDefinition,
   domainRef,
   evidenceManifestHash,
   fromProtocolJson,
@@ -47,13 +54,17 @@ import {
   type StrategyCommandInput,
   type StrategyState,
   type PackageOrderInput,
+  type PackageGraphInput,
   type PackageReceiptInput,
   type PrivateRfqEnvelopeInput,
   type QualificationRecordInput,
   type RoutePayloadInput,
   type SolverCapabilityManifestInput,
   type SolverQuoteInput,
+  type StrategyPackageOrderInput,
+  type StrategyPackageQuoteInput,
   type TerminalOutcomeInput,
+  type TypedStrategyRoute,
 } from '@naryx/protocol-types';
 import { NaryxClient, NaryxSolverClient, base58Decode, base58Encode, type FetchLike } from '../src/index.js';
 
@@ -730,6 +741,198 @@ describe('order intake and terminal evidence', () => {
     const simulated = await client({ 'POST /v1/packages/simulate': { body: body(local) } }).simulatePackageGraph(graph);
     assert.equal(simulated.failurePoints[0]?.recoverable, true);
     await assert.rejects(client({ 'POST /v1/packages/simulate': { body: body([]) } }).simulatePackageGraph(graph), /differ from the local simulation/);
+  });
+
+  test('strategy quote proofs re-hash and cross-check the selected order, graph, quote, route, and solver signature', async () => {
+    const sol = assetRef('sol', new Uint8Array(32).fill(31), 9);
+    const quoteAsset = assetRef('usdc', new Uint8Array(32).fill(32), 6);
+    const spotAdapter = adapterRef({ adapterId: 'spot-v1', adapterManifestVersion: 1, adapterManifestHash: new Uint8Array(32).fill(33) });
+    const perpAdapter = adapterRef({ adapterId: 'perp-v1', adapterManifestVersion: 1, adapterManifestHash: new Uint8Array(32).fill(34) });
+    const venue = versionedManifestRef('venue', 1, new Uint8Array(32).fill(35));
+    const market = versionedManifestRef('market', 1, new Uint8Array(32).fill(36));
+    const template = requireStrategyTemplateDefinition('cash-and-carry-v1');
+    const leg = (
+      legId: string,
+      legFamily: 'SPOT_SWAP' | 'PERP_OPEN',
+      legTypeId: string,
+      side: 'BUY' | 'SELL',
+      adapter: typeof spotAdapter,
+    ) => ({
+      legId,
+      legFamily,
+      legTypeId,
+      domain,
+      adapter,
+      venue,
+      market,
+      assets: [sol, quoteAsset],
+      side,
+      quantityAsset: sol,
+      quantityAtoms: 10n,
+      minimumQuantityAtoms: 10n,
+      maximumFeeQuoteAtoms: 0n,
+      preconditionHashes: [],
+      postconditionHashes: [],
+      timeInForce: 'FOK' as const,
+      legExpiryValue: 900n,
+    });
+    const graphInput: PackageGraphInput = {
+      graphVersion: 1,
+      environment: 'testnet',
+      templateId: template.templateId,
+      templateVersion: template.templateVersion,
+      packageTemplateManifestHash: new Uint8Array(32).fill(37),
+      seriesId: 'sol-basis',
+      seriesVersion: 1,
+      seriesManifestHash: new Uint8Array(32).fill(38),
+      executionClassId: 'sol-basis-atomic',
+      executionClassVersion: 1,
+      executionClassManifestHash: new Uint8Array(32).fill(39),
+      lifecycleAction: 'ENTRY',
+      owner: 'trader',
+      strategyAccountRefs: ['strategy'],
+      legs: [leg('spot', 'SPOT_SWAP', 'spot-purchase', 'BUY', spotAdapter), leg('perp', 'PERP_OPEN', 'perp-sale', 'SELL', perpAdapter)],
+      dependencyEdges: [],
+      executionGroups: [{ groupId: 'atomic', kind: 'ALL_OR_NONE', legIds: ['spot', 'perp'] }],
+      settlementClass: 'ATOMIC_POSTCONDITION',
+      policyHashes: {
+        netting: new Uint8Array(32).fill(40),
+        privacy: new Uint8Array(32).fill(41),
+        solver: new Uint8Array(32).fill(42),
+        delivery: new Uint8Array(32).fill(43),
+        resource: new Uint8Array(32).fill(44),
+        portfolioRiskLimits: new Uint8Array(32).fill(45),
+      },
+      recoverySlots: [],
+      maximumRecoveryCostQuoteAtoms: 0n,
+      expiryUnit: 'EVM_UNIX_SECONDS',
+      packageExpiryValue: 1_000n,
+      nonce: 1n,
+    };
+    const graph = packageGraph(graphInput);
+    const orderInput: StrategyPackageOrderInput = {
+      version: 1,
+      environment: graph.environment,
+      templateId: graph.templateId,
+      templateVersion: graph.templateVersion,
+      packageTemplateManifestHash: graph.packageTemplateManifestHash,
+      graphHash: packageGraphHash(graph),
+      seriesId: graph.seriesId,
+      seriesVersion: graph.seriesVersion,
+      seriesManifestHash: graph.seriesManifestHash,
+      executionClassId: graph.executionClassId,
+      executionClassVersion: graph.executionClassVersion,
+      executionClassManifestHash: graph.executionClassManifestHash,
+      quoteConventionId: template.quoteConventionId,
+      riskClassId: template.riskClassId,
+      owner: graph.owner,
+      settlementAccount: 'strategy',
+      lifecycleAction: graph.lifecycleAction,
+      settlementClass: graph.settlementClass,
+      packageOrderType: 'LIMIT',
+      packageTimeInForce: 'FOK',
+      economicQuantity: assetAmount(sol, 10n),
+      quoteAsset,
+      metricLimits: [],
+      maximumServiceFeesByAsset: [],
+      maximumVenueFeesByAsset: [],
+      maximumNetworkFeesByAsset: [],
+      maximumRecoveryCostByAsset: [],
+      maximumMarginIncrease: assetAmount(quoteAsset, 0n),
+      maximumResidualValue: assetAmount(quoteAsset, 0n),
+      expiryUnit: graph.expiryUnit,
+      expiryValue: 950n,
+      nonce: 1n,
+    };
+    const order = strategyPackageOrder(orderInput);
+    const route = {
+      version: 1,
+      environment: graph.environment,
+      orderHash: strategyPackageOrderHash(order),
+      graphHash: packageGraphHash(graph),
+      solverId: 'solver-a',
+      settlementClass: graph.settlementClass,
+      legs: [
+        { legId: 'perp', domain, adapter: perpAdapter, legFamily: 'PERP_OPEN', materializationClassId: 'perp-open-v1', executionPlanKind: 'SVM_ATOMIC_CPI', stage: 0, groupId: 'atomic' },
+        { legId: 'spot', domain, adapter: spotAdapter, legFamily: 'SPOT_SWAP', materializationClassId: 'spot-swap-v1', executionPlanKind: 'SVM_ATOMIC_CPI', stage: 0, groupId: 'atomic' },
+      ],
+      domainPlans: [{ domain, executionPlanKind: 'SVM_ATOMIC_CPI', legIds: ['perp', 'spot'], stageCount: 1 }],
+      routeExpiryUnit: graph.expiryUnit,
+      routeExpiryValue: 850n,
+    } as unknown as TypedStrategyRoute;
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    const verificationKey = new Uint8Array((publicKey.export({ format: 'der', type: 'spki' }) as Buffer).subarray(-32));
+    const zero = assetAmount(quoteAsset, 0n);
+    const unsigned: StrategyPackageQuoteInput = {
+      version: 1,
+      environment: graph.environment,
+      domains: [domain],
+      orderHash: strategyPackageOrderHash(order),
+      graphHash: packageGraphHash(graph),
+      routeHash: typedStrategyRouteHash(route),
+      templateId: graph.templateId,
+      templateVersion: graph.templateVersion,
+      packageTemplateManifestHash: graph.packageTemplateManifestHash,
+      seriesId: graph.seriesId,
+      seriesVersion: graph.seriesVersion,
+      seriesManifestHash: graph.seriesManifestHash,
+      executionClassId: graph.executionClassId,
+      executionClassVersion: graph.executionClassVersion,
+      executionClassManifestHash: graph.executionClassManifestHash,
+      quoteConventionId: template.quoteConventionId,
+      riskClassId: template.riskClassId,
+      solverId: route.solverId,
+      solverCapabilityManifestHash: new Uint8Array(32).fill(46),
+      quoteMode: 'EXECUTION_COMMITMENT',
+      settlementClass: graph.settlementClass,
+      quoteAsset,
+      metrics: template.metricIds.map((metricId) => ({ metricId, value: 0n, scale: 0, unitId: 'unit' })),
+      legEconomics: graph.legs.map((entry) => ({
+        legId: entry.legId,
+        quantity: assetAmount(sol, entry.quantityAtoms),
+        grossNotional: assetAmount(quoteAsset, 100n),
+        marginDelta: zero,
+        venueFee: zero,
+        builderFee: zero,
+        residualValue: zero,
+      })),
+      netPackageOutcome: zero,
+      totalGrossNotional: assetAmount(quoteAsset, 200n),
+      totalMarginDelta: zero,
+      totalResidualValue: zero,
+      serviceCharges: [],
+      passThroughCosts: [],
+      feePolicyVersion: 1,
+      feePolicyManifestHash: new Uint8Array(32).fill(47),
+      validUntilUnit: graph.expiryUnit,
+      validUntilValue: 900n,
+      quoteNonce: 1n,
+      solverSignatureScheme: 'ED25519',
+      solverVerificationKey: verificationKey,
+      signature: new Uint8Array(64),
+    };
+    const quote = strategyPackageQuote({ ...unsigned, signature: new Uint8Array(sign(null, strategyPackageQuoteHash(unsigned), privateKey)) });
+    const quoteHash = toHex(strategyPackageQuoteHash(quote));
+    const proof = {
+      version: 1,
+      orderHash: toHex(strategyPackageOrderHash(order)),
+      graphHash: toHex(packageGraphHash(graph)),
+      quoteHash,
+      routeHash: toHex(typedStrategyRouteHash(route)),
+      order,
+      graph,
+      quote,
+      route,
+      recordedAtMs: 12_345,
+    };
+    const path = `GET /v1/strategy-quotes/${quoteHash}/proof`;
+    const verifiedProof = await client({ [path]: { body: proof } }).getStrategyQuoteProof(quoteHash);
+    assert.equal(verifiedProof.signatureVerified, true);
+    assert.equal(verifiedProof.route.domainPlans[0]?.executionPlanKind, 'SVM_ATOMIC_CPI');
+    await assert.rejects(
+      client({ [path]: { body: { ...proof, route: { ...route, legs: [{ ...route.legs[0]!, stage: 1 }, route.legs[1]!] } } } }).getStrategyQuoteProof(quoteHash),
+      /strategy route does not hash to its served hash/,
+    );
   });
 
   test('watching an order returns its terminal status and gives up after its timeout', async () => {

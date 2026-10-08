@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useQueries } from "@tanstack/react-query";
+import { NaryxClient } from "@naryx/sdk";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { ChainIcon } from "@/features/brand/chain-icons";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
@@ -265,6 +266,7 @@ function fromService(entry: OwnerPackageEntry, owner: string): Row | null {
 export function ActivityView() {
   const { attempts: localAttempts, privateProvider, publicApiBaseUrl, clearAttempts } = useTerminal();
   const [openId, setOpenId] = useState<string | null>(null);
+  const [proofReceiptHash, setProofReceiptHash] = useState<string | null>(null);
   const solanaOwner = useSolanaWallet().selectedAccount?.address ?? null;
   const evmOwner = useEvmWallet().account;
   const owners = [solanaOwner, evmOwner].filter((owner): owner is string => owner !== null);
@@ -301,6 +303,23 @@ export function ActivityView() {
   ).values()].sort((left, right) => right.recordedAtMs - left.recordedAtMs);
   const strategyReceiptsLoading = strategyReceiptQueries.some((query) => query.isPending);
   const strategyReceiptsUnavailable = strategyReceiptQueries.some((query) => query.isError);
+  const proofReceipt = strategyReceipts.find((receipt) => receipt.receiptHash === proofReceiptHash) ?? null;
+  const strategyProof = useQuery({
+    queryKey: ["strategy-quote-proof", publicApiBaseUrl, proofReceipt?.quoteHash],
+    enabled: publicApiBaseUrl !== null && proofReceipt !== null,
+    retry: false,
+    queryFn: async () => {
+      if (publicApiBaseUrl === null || proofReceipt === null) throw new Error("No strategy receipt is selected.");
+      const proof = await new NaryxClient({ baseUrl: publicApiBaseUrl }).getStrategyQuoteProof(proofReceipt.quoteHash);
+      if (proof.orderHash !== proofReceipt.orderHash || proof.quoteHash !== proofReceipt.quoteHash
+        || proof.routeHash !== proofReceipt.executionEvidence.routeHash
+        || proof.quote.solverId !== proofReceipt.executionEvidence.solverId
+        || proof.route.settlementClass !== proofReceipt.executionEvidence.settlementClass) {
+        throw new Error("The selected receipt does not bind this quote and route proof.");
+      }
+      return proof;
+    },
+  });
   const serviceKey = JSON.stringify(serviceRows);
   const ownersKey = owners.join(",");
   const attempts: readonly Row[] = useMemo(() => {
@@ -340,7 +359,7 @@ export function ActivityView() {
         </div>
         {attempts.length > 0 ? (
           <div className={styles.headActions}>
-            <button type="button" className={styles.ghost} onClick={() => { setOpenId(null); clearAttempts(owners); }}>
+            <button type="button" className={styles.ghost} onClick={() => { setOpenId(null); setProofReceiptHash(null); clearAttempts(owners); }}>
               Clear list
             </button>
           </div>
@@ -369,7 +388,7 @@ export function ActivityView() {
                 <th scope="col" className={styles.num}>Explicit cost</th>
                 <th scope="col">Outcome</th>
                 <th scope="col">Receipt</th>
-                <th scope="col"><span className="sr-only">Portfolio action</span></th>
+                <th scope="col"><span className="sr-only">Receipt actions</span></th>
               </tr>
             </thead>
             <tbody>
@@ -422,13 +441,50 @@ export function ActivityView() {
                     </td>
                     <td><span className={statePill(receipt.terminalState)}>{stateText(receipt.terminalState)}</span></td>
                     <td className={styles.mono} title={receipt.receiptHash}>{compact(receipt.receiptHash, 12, 8)}</td>
-                    <td>{portfolioHref ? <Link href={portfolioHref}>{receipt.lifecycleAction === "ENTRY" ? "Record" : "Apply"}</Link> : "-"}</td>
+                    <td>
+                      <span className={styles.rowActions}>
+                        <button
+                          type="button"
+                          className={styles.ghost}
+                          onClick={() => setProofReceiptHash((current) => current === receipt.receiptHash ? null : receipt.receiptHash)}
+                        >
+                          {proofReceiptHash === receipt.receiptHash ? "Hide proof" : "Verify route"}
+                        </button>
+                        {portfolioHref ? <Link href={portfolioHref}>{receipt.lifecycleAction === "ENTRY" ? "Record" : "Apply"}</Link> : null}
+                      </span>
+                    </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
         </div>
+        {proofReceipt !== null ? (
+          <div className={styles.cardBody}>
+            {strategyProof.isPending ? <p className={styles.notice}>Recomputing the selected order, graph, quote, route, and signature locally.</p> : null}
+            {strategyProof.isError ? <p className={styles.noticeError}>{strategyProof.error.message}</p> : null}
+            {strategyProof.data ? (
+              <>
+                <p className={strategyProof.data.signatureVerified ? styles.noticeOk : styles.notice}>
+                  {strategyProof.data.signatureVerified
+                    ? "Order, graph, quote, route, cross-links, and the embedded quote-key signature verified locally."
+                    : "Order, graph, quote, route, and cross-links verified locally. This runtime could not verify Ed25519."}
+                </p>
+                <dl className={styles.facts}>
+                  <dt>Order</dt><dd className={styles.mono} title={strategyProof.data.orderHash}>{compact(strategyProof.data.orderHash, 12, 8)}</dd>
+                  <dt>Graph</dt><dd className={styles.mono} title={strategyProof.data.graphHash}>{compact(strategyProof.data.graphHash, 12, 8)}</dd>
+                  <dt>Quote</dt><dd className={styles.mono} title={strategyProof.data.quoteHash}>{compact(strategyProof.data.quoteHash, 12, 8)}</dd>
+                  <dt>Route</dt><dd className={styles.mono} title={strategyProof.data.routeHash}>{compact(strategyProof.data.routeHash, 12, 8)}</dd>
+                  <dt>Solver</dt><dd>{strategyProof.data.quote.solverId}</dd>
+                  <dt>Settlement</dt><dd>{stateText(strategyProof.data.route.settlementClass)}</dd>
+                  <dt>Route expiry</dt><dd className={styles.mono}>{strategyProof.data.route.routeExpiryValue.toString()} {stateText(strategyProof.data.route.routeExpiryUnit)}</dd>
+                  <dt>Domain plans</dt>
+                  <dd>{strategyProof.data.route.domainPlans.map((plan) => `${plan.domain.domainId}: ${stateText(plan.executionPlanKind)} (${plan.legIds.length} legs, ${plan.stageCount} stages)`).join("; ")}</dd>
+                </dl>
+              </>
+            ) : null}
+          </div>
+        ) : null}
       </section>
 
       <section className={styles.card} aria-labelledby="packages-title">

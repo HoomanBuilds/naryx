@@ -784,6 +784,17 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
     },
     recordedAtMs: 120_001,
   };
+  const quoteProof = {
+    orderHashHex: "11".repeat(32),
+    graphHashHex: "66".repeat(32),
+    quoteHashHex: "22".repeat(32),
+    routeHashHex: "33".repeat(32),
+    order: { version: 1, nonce: 1n },
+    graph: { graphVersion: 1, nonce: 2n },
+    quote: { version: 1, quoteNonce: 3n },
+    route: { version: 1, routeExpiryValue: 4n },
+    recordedAtMs: 120_000,
+  };
   await withMarket(async (get) => {
     const result = await get("/v1/strategy-packages/recent?limit=7");
     assert.equal(result.status, 200);
@@ -806,6 +817,21 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
       recordedAtMs: 120_001,
     });
     assert.equal((await get(`/v1/strategy-receipts/by-quote/${"33".repeat(32)}`)).status, 404);
+    const proof = await get(`/v1/strategy-quotes/${"22".repeat(32)}/proof`);
+    assert.equal(proof.status, 200);
+    assert.deepEqual(proof.body, {
+      version: 1,
+      orderHash: quoteProof.orderHashHex,
+      graphHash: quoteProof.graphHashHex,
+      quoteHash: quoteProof.quoteHashHex,
+      routeHash: quoteProof.routeHashHex,
+      order: quoteProof.order,
+      graph: quoteProof.graph,
+      quote: quoteProof.quote,
+      route: quoteProof.route,
+      recordedAtMs: quoteProof.recordedAtMs,
+    });
+    assert.equal((await get(`/v1/strategy-quotes/${"33".repeat(32)}/proof`)).status, 404);
     const ownerReceipts = await get("/v1/owners/0x00000000000000000000000000000000000000AB/strategy-receipts?limit=7");
     assert.equal(ownerReceipts.status, 200);
     assert.deepEqual(requestedOwner, ["0x00000000000000000000000000000000000000ab", 7]);
@@ -829,6 +855,7 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
         receipt: { version: 1, receiptNonce: 7n } as never,
         recordedAtMs: 120_001,
       }) : undefined,
+      admissionByQuote: (hash) => hash === "22".repeat(32) ? quoteProof as never : undefined,
       ownerReceipts: (ownerId, limit) => {
         requestedOwner = [ownerId, limit ?? 50];
         return [ownerReceipt];

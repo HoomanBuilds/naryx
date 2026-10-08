@@ -46,6 +46,7 @@ import {
   packageReopeningSettlementHandoffHash,
   packageCloseCostIndex,
   stressPortfolio,
+  packageGraph,
   packageGraphHash,
   simulatePackageGraphFailures,
   packageReceipt,
@@ -61,6 +62,11 @@ import {
   type BuilderManifestInput,
   strategyState,
   strategyStateHash,
+  strategyPackageOrder,
+  strategyPackageOrderHash,
+  strategyPackageQuote,
+  strategyPackageQuoteHash,
+  typedStrategyRouteHash,
   type StrategyCommandInput,
   type StrategyState,
   type StrategyTransitionReceipt,
@@ -124,7 +130,9 @@ import {
   type PackageReopeningResult,
   type PackageReopeningSettlementHandoff,
   type PackageGraphInput,
+  type PackageGraph,
   type AssetRef,
+  type DomainRef,
   type ExposureGraph,
   type NormalizedPosition,
   type NettingObligationInput,
@@ -155,6 +163,11 @@ import {
   type TerminalOutcomeRecord,
   type TerminalState,
   type StressResult,
+  type StrategyPackageOrder,
+  type StrategyPackageOrderInput,
+  type StrategyPackageQuote,
+  type StrategyPackageQuoteInput,
+  type TypedStrategyRoute,
 } from '@naryx/protocol-types';
 import { verifyTypedData, type Hex } from 'viem';
 
@@ -520,6 +533,20 @@ export interface VerifiedRisk {
   readonly byAccountingAsset: readonly VerifiedRiskGroup[];
 }
 
+export interface VerifiedStrategyQuoteProof {
+  readonly orderHash: string;
+  readonly graphHash: string;
+  readonly quoteHash: string;
+  readonly routeHash: string;
+  readonly order: StrategyPackageOrder;
+  readonly graph: PackageGraph;
+  readonly quote: StrategyPackageQuote;
+  readonly route: TypedStrategyRoute;
+  readonly recordedAtMs: number;
+  /** True when this runtime verified the embedded Ed25519 quote key over the quote hash. */
+  readonly signatureVerified: boolean;
+}
+
 export interface VerifiedRouteDecision {
   readonly decisionHash: string;
   readonly solverId: string;
@@ -609,6 +636,158 @@ function count(value: unknown, context: string): number {
 function hashHex(value: unknown, context: string): string {
   if (typeof value !== 'string' || !HASH_HEX.test(value)) throw new NaryxEvidenceError(`${context} is not a 32-byte hash`);
   return value;
+}
+
+function sameDomainRef(left: DomainRef, right: DomainRef): boolean {
+  return left.domainId === right.domainId
+    && left.domainManifestVersion === right.domainManifestVersion
+    && bytesEqual(left.domainManifestHash, right.domainManifestHash);
+}
+
+function sameAdapterRef(
+  left: Readonly<{ adapterId: string; adapterManifestVersion: number; adapterManifestHash: Uint8Array }>,
+  right: Readonly<{ adapterId: string; adapterManifestVersion: number; adapterManifestHash: Uint8Array }>,
+): boolean {
+  return left.adapterId === right.adapterId
+    && left.adapterManifestVersion === right.adapterManifestVersion
+    && bytesEqual(left.adapterManifestHash, right.adapterManifestHash);
+}
+
+function requireStrategyProof(condition: boolean, message: string): asserts condition {
+  if (!condition) throw new NaryxEvidenceError(message);
+}
+
+/** Rebuilds every commitment and verifies the static links in a served strategy quote proof. */
+export async function verifyStrategyQuoteProof(expectedQuoteHash: string, value: unknown): Promise<VerifiedStrategyQuoteProof> {
+  const requested = hashHex(expectedQuoteHash, 'quote hash');
+  const body = record(value, 'strategy quote proof');
+  requireStrategyProof(body.version === 1, 'strategy quote proof has an unsupported version');
+  let order: StrategyPackageOrder;
+  let graph: PackageGraph;
+  let quote: StrategyPackageQuote;
+  let route: TypedStrategyRoute;
+  let orderHash: string;
+  let graphHash: string;
+  let quoteHash: string;
+  let routeHash: string;
+  try {
+    order = strategyPackageOrder(body.order as StrategyPackageOrderInput);
+    graph = packageGraph(body.graph as PackageGraphInput);
+    quote = strategyPackageQuote(body.quote as StrategyPackageQuoteInput);
+    route = body.route as TypedStrategyRoute;
+    orderHash = toHex(strategyPackageOrderHash(order));
+    graphHash = toHex(packageGraphHash(graph));
+    quoteHash = toHex(strategyPackageQuoteHash(quote));
+    routeHash = toHex(typedStrategyRouteHash(route));
+  } catch (error) {
+    throw new NaryxEvidenceError(`strategy quote proof is malformed: ${(error as Error).message}`);
+  }
+  requireStrategyProof(hashHex(body.orderHash, 'served order hash') === orderHash, 'strategy order does not hash to its served hash');
+  requireStrategyProof(hashHex(body.graphHash, 'served graph hash') === graphHash, 'strategy graph does not hash to its served hash');
+  requireStrategyProof(hashHex(body.quoteHash, 'served quote hash') === quoteHash && quoteHash === requested, 'strategy quote does not hash to the requested hash');
+  requireStrategyProof(hashHex(body.routeHash, 'served route hash') === routeHash, 'strategy route does not hash to its served hash');
+  requireStrategyProof(toHex(order.graphHash) === graphHash, 'strategy order does not bind the served graph');
+  requireStrategyProof(toHex(quote.orderHash) === orderHash && toHex(route.orderHash) === orderHash, 'strategy quote or route does not bind the served order');
+  requireStrategyProof(toHex(quote.graphHash) === graphHash && toHex(route.graphHash) === graphHash, 'strategy quote or route does not bind the served graph');
+  requireStrategyProof(toHex(quote.routeHash) === routeHash, 'strategy quote does not bind the served route');
+  requireStrategyProof(order.environment === graph.environment && quote.environment === graph.environment && route.environment === graph.environment,
+    'strategy proof environments differ');
+  requireStrategyProof(order.templateId === graph.templateId && quote.templateId === graph.templateId
+    && order.templateVersion === graph.templateVersion && quote.templateVersion === graph.templateVersion,
+  'strategy proof templates differ');
+  requireStrategyProof(bytesEqual(order.packageTemplateManifestHash, graph.packageTemplateManifestHash)
+    && bytesEqual(quote.packageTemplateManifestHash, graph.packageTemplateManifestHash),
+  'strategy proof template manifests differ');
+  requireStrategyProof(order.seriesId === graph.seriesId && quote.seriesId === graph.seriesId
+    && order.seriesVersion === graph.seriesVersion && quote.seriesVersion === graph.seriesVersion
+    && bytesEqual(order.seriesManifestHash, graph.seriesManifestHash) && bytesEqual(quote.seriesManifestHash, graph.seriesManifestHash),
+  'strategy proof series identities differ');
+  requireStrategyProof(order.executionClassId === graph.executionClassId && quote.executionClassId === graph.executionClassId
+    && order.executionClassVersion === graph.executionClassVersion && quote.executionClassVersion === graph.executionClassVersion
+    && bytesEqual(order.executionClassManifestHash, graph.executionClassManifestHash)
+    && bytesEqual(quote.executionClassManifestHash, graph.executionClassManifestHash),
+  'strategy proof execution classes differ');
+  requireStrategyProof(order.owner === graph.owner && order.lifecycleAction === graph.lifecycleAction,
+    'strategy proof owner or lifecycle action differs');
+  requireStrategyProof(order.settlementClass === graph.settlementClass && quote.settlementClass === graph.settlementClass
+    && route.settlementClass === graph.settlementClass, 'strategy proof settlement classes differ');
+  requireStrategyProof(order.quoteConventionId === quote.quoteConventionId && order.riskClassId === quote.riskClassId,
+    'strategy proof quote convention or risk class differs');
+  requireStrategyProof(order.expiryUnit === graph.expiryUnit && order.expiryValue <= graph.packageExpiryValue
+    && quote.validUntilUnit === order.expiryUnit && quote.validUntilValue <= order.expiryValue
+    && route.routeExpiryUnit === order.expiryUnit && route.routeExpiryValue > 0n && route.routeExpiryValue <= quote.validUntilValue,
+  'strategy proof validity windows are inconsistent');
+  requireStrategyProof(route.solverId === quote.solverId, 'strategy route names another solver');
+
+  const graphDomains = graph.legs.reduce<DomainRef[]>((domains, leg) => {
+    if (!domains.some((domain) => sameDomainRef(domain, leg.domain))) domains.push(leg.domain);
+    return domains;
+  }, []).sort((left, right) => left.domainId.localeCompare(right.domainId));
+  requireStrategyProof(graphDomains.length === quote.domains.length
+    && graphDomains.every((domain, index) => sameDomainRef(domain, quote.domains[index]!)),
+  'strategy quote domains do not match the graph');
+
+  const graphLegs = [...graph.legs].sort((left, right) => left.legId.localeCompare(right.legId));
+  const quoteLegs = [...quote.legEconomics].sort((left, right) => left.legId.localeCompare(right.legId));
+  const routeLegs = [...route.legs].sort((left, right) => left.legId.localeCompare(right.legId));
+  requireStrategyProof(graphLegs.length === quoteLegs.length && graphLegs.length === routeLegs.length,
+    'strategy proof leg counts differ');
+  for (let index = 0; index < graphLegs.length; index += 1) {
+    const graphLeg = graphLegs[index]!;
+    const quoteLeg = quoteLegs[index]!;
+    const routeLeg = routeLegs[index]!;
+    const group = graph.executionGroups.find((candidate) => candidate.legIds.includes(graphLeg.legId));
+    const stage = graph.stages.findIndex((candidate) => candidate.includes(graphLeg.legId));
+    requireStrategyProof(quoteLeg.legId === graphLeg.legId && routeLeg.legId === graphLeg.legId,
+      `strategy proof leg ${graphLeg.legId} is missing or reordered`);
+    requireStrategyProof(quoteLeg.quantity.atoms === graphLeg.quantityAtoms
+      && quoteLeg.quantity.asset.assetId === graphLeg.quantityAsset.assetId
+      && quoteLeg.quantity.asset.decimals === graphLeg.quantityAsset.decimals
+      && bytesEqual(quoteLeg.quantity.asset.assetManifestHash, graphLeg.quantityAsset.assetManifestHash),
+    `strategy quote quantity differs for ${graphLeg.legId}`);
+    requireStrategyProof(routeLeg.legFamily === graphLeg.legFamily
+      && sameDomainRef(routeLeg.domain, graphLeg.domain)
+      && sameAdapterRef(routeLeg.adapter, graphLeg.adapter)
+      && routeLeg.stage === stage
+      && routeLeg.groupId === group?.groupId,
+    `strategy route differs from the graph for ${graphLeg.legId}`);
+  }
+  requireStrategyProof(quote.legEconomics.reduce((sum, leg) => sum + leg.grossNotional.atoms, 0n) === quote.totalGrossNotional.atoms,
+    'strategy quote gross notional total is inconsistent');
+  requireStrategyProof(quote.legEconomics.reduce((sum, leg) => sum + leg.marginDelta.atoms, 0n) === quote.totalMarginDelta.atoms,
+    'strategy quote margin total is inconsistent');
+  requireStrategyProof(quote.legEconomics.reduce((sum, leg) => sum + leg.residualValue.atoms, 0n) === quote.totalResidualValue.atoms,
+    'strategy quote residual total is inconsistent');
+
+  const plans = [...route.domainPlans].sort((left, right) => left.domain.domainId.localeCompare(right.domain.domainId));
+  requireStrategyProof(plans.length === graphDomains.length, 'strategy route domain plan count differs from the graph');
+  for (let index = 0; index < graphDomains.length; index += 1) {
+    const domain = graphDomains[index]!;
+    const plan = plans[index]!;
+    const domainLegs = routeLegs.filter((leg) => sameDomainRef(leg.domain, domain));
+    const legIds = domainLegs.map((leg) => leg.legId).sort();
+    const kinds = [...new Set(domainLegs.map((leg) => leg.executionPlanKind))];
+    requireStrategyProof(sameDomainRef(plan.domain, domain) && kinds.length === 1 && plan.executionPlanKind === kinds[0]
+      && plan.legIds.length === legIds.length && [...plan.legIds].sort().every((legId, legIndex) => legId === legIds[legIndex])
+      && plan.stageCount === new Set(domainLegs.map((leg) => leg.stage)).size,
+    `strategy route domain plan differs for ${domain.domainId}`);
+  }
+  requireStrategyProof(quote.solverSignatureScheme === 'ED25519', 'strategy quote uses an unsupported signature scheme');
+  const verdict = await webCryptoEd25519(quote.solverVerificationKey, strategyPackageQuoteHash(quote), quote.signature);
+  if (verdict === false) throw new NaryxEvidenceError('strategy quote signature does not verify');
+  const signatureVerified = verdict === true;
+  return Object.freeze({
+    orderHash,
+    graphHash,
+    quoteHash,
+    routeHash,
+    order,
+    graph,
+    quote,
+    route,
+    recordedAtMs: count(body.recordedAtMs, 'recordedAtMs'),
+    signatureVerified,
+  });
 }
 
 function checkId(value: string, name: string): string {
@@ -1531,6 +1710,15 @@ export class NaryxClient {
     const body = record(await this.#request('GET', `/v1/receipts/${requested}`), 'receipt');
     if (body.orderHash !== requested) throw new NaryxEvidenceError('receipt response is for another order');
     return verifyTerminalEvidence(requested, body, options.acceptedQuoteFeeTerms);
+  }
+
+  /** Reads the selected generalized quote and route and verifies their four commitments locally. */
+  async getStrategyQuoteProof(quoteHash: string): Promise<VerifiedStrategyQuoteProof> {
+    const requested = hashHex(quoteHash, 'quote hash');
+    return verifyStrategyQuoteProof(
+      requested,
+      await this.#request('GET', `/v1/strategy-quotes/${requested}/proof`),
+    );
   }
 
   /** Reads the terminal outcome of an order without its receipt, verified as `verifyOutcomeEvidence` does. */

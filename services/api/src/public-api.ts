@@ -314,7 +314,7 @@ export interface PublicApiOptions {
   readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies" | "environmentName">;
   /** Durable admitted package intake; without it submission answers 503 while validation remains available. */
   readonly strategyPackages?: Pick<SqliteStrategyPackageStore, "registerOrder" | "registerQuote" | "recentAdmissions" | "receipt" | "receiptByQuote">
-    & Partial<Pick<SqliteStrategyPackageStore, "order" | "registerBoundQuote" | "lockPackageExecution" | "ownerReceipts">>;
+    & Partial<Pick<SqliteStrategyPackageStore, "order" | "admissionByQuote" | "registerBoundQuote" | "lockPackageExecution" | "ownerReceipts">>;
   /** Shared canonical strategy-order admission used by both the public API and the private terminal. */
   readonly strategyOrderIntake?: StrategyOrderIntakePort;
   /** Optional: requests a signed quote from the loopback reference solver for a stored order. */
@@ -1142,6 +1142,28 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         throw new RequestError(400, "INVALID_REQUEST", "limit must be an integer between 1 and 50.");
       }
       return { version: 1, admissions: requireStrategyPackages().recentAdmissions(Number(rawLimit)) };
+    }
+    if ((match = /^\/v1\/strategy-quotes\/([0-9a-f]{64})\/proof$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const store = requireStrategyPackages();
+      if (store.admissionByQuote === undefined) {
+        throw new RequestError(503, "STRATEGY_PROOF_UNAVAILABLE", "Strategy quote proof lookup is unavailable on this server.");
+      }
+      const requestedQuoteHash = match[1] as string;
+      const admission = store.admissionByQuote(requestedQuoteHash);
+      if (admission === undefined) throw new RequestError(404, "STRATEGY_QUOTE_NOT_FOUND", "No such admitted strategy quote.");
+      return {
+        version: 1,
+        orderHash: admission.orderHashHex,
+        graphHash: admission.graphHashHex,
+        quoteHash: admission.quoteHashHex,
+        routeHash: admission.routeHashHex,
+        order: admission.order,
+        graph: admission.graph,
+        quote: admission.quote,
+        route: admission.route,
+        recordedAtMs: admission.recordedAtMs,
+      };
     }
     if ((match = /^\/v1\/strategy-receipts\/by-quote\/([0-9a-f]{64})$/.exec(path)) !== null) {
       onlyParams(url, []);
