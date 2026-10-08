@@ -10,7 +10,10 @@ import {
   versionedManifestRef,
   type NettingPolicyManifestInput,
 } from '@naryx/protocol-types';
-import { compileHyperliquidNettingResidualPlan } from '../src/index.js';
+import {
+  compileHyperliquidNettingResidualPlan,
+  hyperliquidNettingResidualEvidence,
+} from '../src/index.js';
 
 const id = (n: number): string => n.toString(16).padStart(64, '0');
 const base = assetRef('btc', id(1), 2);
@@ -93,5 +96,43 @@ test('rejects a market binding outside the signed instrument', () => {
       binding: { ...binding, market: versionedManifestRef('eth-perp', 1, id(8)) },
     }),
     /market binding differs/,
+  );
+});
+
+test('translates only matching terminal venue evidence', () => {
+  const plan = compileHyperliquidNettingResidualPlan({
+    intent,
+    instrument: policy.instruments[0]!,
+    binding,
+  });
+  const observation = {
+    clientOrderId: plan.clientOrderId,
+    terminalStatus: 'FILLED' as const,
+    filledSignedQuantityAtoms: 100n,
+    grossQuoteAtoms: 250n,
+    feeQuoteAtoms: 1n,
+    submittedAtMs: 1_999_999_999_999n,
+    observedAtMs: 2_000_000_000_001n,
+    executionReferenceHash: id(20),
+    authoritativeEvidenceHash: id(21),
+  };
+  const evidence = hyperliquidNettingResidualEvidence({ intent, plan, observation });
+  assert.equal(evidence.outcome, 'EXACT_FILLED');
+  assert.equal(evidence.filledSignedQuantityAtoms, 100n);
+  assert.throws(
+    () => hyperliquidNettingResidualEvidence({
+      intent,
+      plan,
+      observation: { ...observation, terminalStatus: 'UNKNOWN' },
+    }),
+    /not terminal evidence/,
+  );
+  assert.throws(
+    () => hyperliquidNettingResidualEvidence({
+      intent,
+      plan,
+      observation: { ...observation, feeQuoteAtoms: 3n },
+    }),
+    /fee exceeds/,
   );
 });

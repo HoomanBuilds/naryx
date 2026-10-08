@@ -2,12 +2,14 @@ import { createHash } from 'node:crypto';
 import {
   bytesEqual,
   exactPrice,
+  nettingExternalExecutionEvidence,
   nettingInstrumentHash,
   type AdapterRef,
   type AssetRef,
   type CommitmentHash,
   type DomainRef,
   type NettingExternalExecutionIntent,
+  type NettingExternalExecutionEvidence,
   type NettingInstrumentPolicy,
   type VersionedManifestRef,
 } from '@naryx/protocol-types';
@@ -48,6 +50,19 @@ export interface HyperliquidNettingResidualPlan {
   readonly clientOrderId: `0x${string}`;
   readonly order: HypercoreOrderWire;
   readonly action: HypercoreBatchedOrderAction;
+}
+
+export interface HyperliquidNettingResidualObservation {
+  readonly clientOrderId: `0x${string}`;
+  readonly terminalStatus: 'FILLED' | 'PARTIALLY_FILLED_IOC_CANCELLED'
+    | 'UNFILLED_IOC_CANCELLED' | 'REJECTED' | 'UNKNOWN';
+  readonly filledSignedQuantityAtoms: bigint;
+  readonly grossQuoteAtoms: bigint;
+  readonly feeQuoteAtoms: bigint;
+  readonly submittedAtMs: bigint;
+  readonly observedAtMs: bigint;
+  readonly executionReferenceHash: Uint8Array | string;
+  readonly authoritativeEvidenceHash: Uint8Array | string;
 }
 
 function requireCondition(condition: boolean, message: string): asserts condition {
@@ -174,4 +189,45 @@ export function compileHyperliquidNettingResidualPlan(input: Readonly<{
     order,
     action: Object.freeze({ type: 'order', orders: Object.freeze([order]), grouping: 'na' }),
   });
+}
+
+export function hyperliquidNettingResidualEvidence(input: Readonly<{
+  intent: NettingExternalExecutionIntent;
+  plan: HyperliquidNettingResidualPlan;
+  observation: HyperliquidNettingResidualObservation;
+}>): NettingExternalExecutionEvidence {
+  const { intent, plan, observation } = input;
+  requireCondition(plan.version === 1
+    && plan.guarantee === 'SINGLE_IOC_WITH_TERMINAL_EVIDENCE'
+    && plan.domain.domainId === 'hypercore:testnet'
+    && bytesEqual(plan.intentHash, intent.intentHash)
+    && plan.requestedSignedQuantityAtoms === (intent.side === 'BUY' ? intent.quantityAtoms : -intent.quantityAtoms)
+    && plan.maximumFeeQuoteAtoms === intent.maximumFeeQuoteAtoms
+    && plan.requestExpiryMs === intent.validUntilValue,
+  'residual execution plan differs from the intent');
+  requireCondition(observation.clientOrderId.toLowerCase() === plan.clientOrderId,
+    'residual observation cites another client order');
+  requireCondition(observation.terminalStatus !== 'UNKNOWN',
+    'an unknown HyperCore order is not terminal evidence');
+  const outcome = observation.terminalStatus === 'FILLED'
+    ? 'EXACT_FILLED'
+    : observation.terminalStatus === 'PARTIALLY_FILLED_IOC_CANCELLED'
+      ? 'PARTIAL_FILL'
+      : observation.terminalStatus === 'UNFILLED_IOC_CANCELLED'
+        ? 'NO_FILL'
+        : 'REJECTED';
+  return nettingExternalExecutionEvidence({
+    version: 1,
+    intentHash: intent.intentHash,
+    outcome,
+    filledSignedQuantityAtoms: observation.filledSignedQuantityAtoms,
+    grossQuoteAtoms: observation.grossQuoteAtoms,
+    feeQuoteAtoms: observation.feeQuoteAtoms,
+    submittedAtUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    submittedAtValue: observation.submittedAtMs,
+    observedAtUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    observedAtValue: observation.observedAtMs,
+    executionReferenceHash: observation.executionReferenceHash,
+    authoritativeEvidenceHash: observation.authoritativeEvidenceHash,
+  }, intent);
 }
