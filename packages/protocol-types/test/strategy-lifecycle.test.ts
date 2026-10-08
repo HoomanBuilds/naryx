@@ -291,6 +291,29 @@ describe('roll, migration, rebalance, and resize', () => {
       /new liability identity/,
     );
   });
+
+  test('settled quantity changes may refine but never widen the accounting lot', () => {
+    const refined = strategyState({
+      ...base,
+      stateVersion: base.stateVersion + 1n,
+      legs: base.legs.map((leg) => ({
+        ...leg,
+        signedQuantityAtoms: leg.signedQuantityAtoms > 0n ? 125n : -125n,
+        lotAtoms: 5n,
+      })),
+    });
+    accepted(applyPackageStateTransition(base, ctx(base, 'owner'), 'INCREASE', refined));
+    const widened = strategyState({
+      ...base,
+      stateVersion: base.stateVersion + 1n,
+      legs: base.legs.map((leg) => ({
+        ...leg,
+        signedQuantityAtoms: leg.signedQuantityAtoms > 0n ? 120n : -120n,
+        lotAtoms: 20n,
+      })),
+    });
+    assert.throws(() => applyPackageStateTransition(base, ctx(base, 'owner'), 'INCREASE', widened), /changed leg terms/);
+  });
 });
 
 describe('exit and external divergence', () => {

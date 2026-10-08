@@ -683,6 +683,16 @@ function sameLegIdentity(left: StrategyLeg, right: StrategyLeg): boolean {
     && left.ratioDenominator === right.ratioDenominator;
 }
 
+function sameLegTerms(left: StrategyLeg, right: StrategyLeg): boolean {
+  return left.legId === right.legId && left.underlyingId === right.underlyingId && left.instrumentId === right.instrumentId
+    && left.venueId === right.venueId && left.ratioNumerator === right.ratioNumerator
+    && left.ratioDenominator === right.ratioDenominator;
+}
+
+function sameLegIdentityWithLotRefinement(left: StrategyLeg, right: StrategyLeg): boolean {
+  return sameLegTerms(left, right) && left.lotAtoms % right.lotAtoms === 0n;
+}
+
 function sameLiabilityIdentity(left: StrategyLiability, right: StrategyLiability): boolean {
   return left.liabilityId === right.liabilityId && left.kind === right.kind && left.assetId === right.assetId && left.transferable === right.transferable;
 }
@@ -734,7 +744,8 @@ export function applyPackageStateTransition(
   const candidate = strategyState(nextInput, 'applyPackageStateTransition.nextState');
   for (const leg of candidate.legs) {
     const prior = state.legs.find((value) => value.legId === leg.legId);
-    if (prior !== undefined && !sameLegIdentity(prior, leg)) {
+    const lotMayRefine = operation === 'REBALANCE' || operation === 'INCREASE' || operation === 'DECREASE';
+    if (prior !== undefined && !(lotMayRefine ? sameLegIdentityWithLotRefinement(prior, leg) : sameLegIdentity(prior, leg))) {
       throw new MalformedInputError('applyPackageStateTransition.nextState.legs', 'changed leg terms require a new leg identity');
     }
   }
@@ -777,7 +788,7 @@ export function applyPackageStateTransition(
     throw new MalformedInputError('applyPackageStateTransition.nextState.delegations', 'package execution cannot change delegations');
   }
   if (operation === 'REBALANCE' || operation === 'INCREASE' || operation === 'DECREASE') {
-    if (!sameIdentitySet(state.legs, candidate.legs, sameLegIdentity) || !sameIdentitySet(state.liabilities, candidate.liabilities, sameLiabilityIdentity)) {
+    if (!sameIdentitySet(state.legs, candidate.legs, sameLegIdentityWithLotRefinement) || !sameIdentitySet(state.liabilities, candidate.liabilities, sameLiabilityIdentity)) {
       throw new MalformedInputError('applyPackageStateTransition.nextState', 'this operation may change quantities but not position or liability identities');
     }
   }
