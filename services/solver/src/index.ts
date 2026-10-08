@@ -775,6 +775,7 @@ export {
   type EvmNettingResidualRuntimeLane,
   type EvmNettingResidualRuntimeLaneResolver,
 } from './evm-netting-residual-runtime.js';
+export { EvmNettingResidualSqliteJournal } from './evm-netting-residual-sqlite-journal.js';
 export {
   HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH,
   createHyperliquidNettingResidualExecutionInternalHandler,
