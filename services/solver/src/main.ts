@@ -95,6 +95,8 @@ import {
   loadBaseSepoliaNettingResidualRuntime,
   createSolanaDevnetNettingResidualExecutionInternalHandler,
   loadSolanaDevnetNettingResidualRuntime,
+  createPortfolioOptimizationInternalHandler,
+  PortfolioOptimizationService,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 import { withBaseSepoliaQuoteProviders } from './base-sepolia-quote-runtime.js';
@@ -673,7 +675,11 @@ const solanaResidualRuntime = await loadSolanaDevnetNettingResidualRuntime(proce
 const solanaResidualExecutionHandler = solanaResidualRuntime === undefined
   ? undefined
   : createSolanaDevnetNettingResidualExecutionInternalHandler(solanaResidualRuntime.runtime);
+const portfolioOptimizationHandler = createPortfolioOptimizationInternalHandler(
+  new PortfolioOptimizationService(),
+);
 const strategyRouteHandlers = [
+  portfolioOptimizationHandler,
   generalizedStrategyQuoteHandler,
   strategyPreparationHandler,
   evmOptionProvisioningHandler,

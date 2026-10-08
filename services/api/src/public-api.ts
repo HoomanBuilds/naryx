@@ -111,6 +111,11 @@ import {
   type GeneralizedStrategyQuotePort,
 } from "./generalized-strategy-quote-client.js";
 import {
+  PortfolioOptimizationClientError,
+  type PortfolioOptimizationPort,
+  type PortfolioOptimizationRequest,
+} from './portfolio-optimization-client.js';
+import {
   createStrategyOrderIntake,
   StrategyOrderIntakeError,
   type StrategyOrderIntakePort,
@@ -190,6 +195,7 @@ const LIMIT = /^[1-9]\d{0,2}$/;
 const MILLIS = /^(0|[1-9]\d{0,15})$/;
 const VERSION = /^[1-9]\d{0,9}$/;
 const MAX_BODY_BYTES = 65_536;
+const MAX_PORTFOLIO_OPTIMIZATION_BODY_BYTES = 1_048_576;
 const MAX_CANDLE_TRADES = 50_000;
 const MAX_CANDLES_PER_REQUEST = 1_000;
 
@@ -300,6 +306,8 @@ export interface PublicApiOptions {
   readonly strategyOrderIntake?: StrategyOrderIntakePort;
   /** Optional: requests a signed quote from the loopback reference solver for a stored order. */
   readonly strategyQuotes?: GeneralizedStrategyQuotePort;
+  /** Optional: computes an advisory portfolio selection and independently verifies the solver response. */
+  readonly portfolioOptimization?: PortfolioOptimizationPort;
   /** Optional: executes already authorized Testnet residual intents through the loopback solver. */
   readonly nettingExecution?: Pick<NettingExecutionCoordinator, "execute">;
   /** Builder manifests and attributions; without it the builder routes answer 503. */
@@ -363,17 +371,17 @@ function object(value: unknown, name: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-async function readProtocolBody(request: IncomingMessage): Promise<unknown> {
+async function readProtocolBody(request: IncomingMessage, maxBytes = MAX_BODY_BYTES): Promise<unknown> {
   const contentType = request.headers["content-type"]?.split(";", 1)[0]?.trim();
   if (contentType !== "application/json") throw new RequestError(415, "INVALID_CONTENT_TYPE", "Content-Type must be application/json.");
   const declared = Number(request.headers["content-length"] ?? "0");
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw new RequestError(413, "BODY_TOO_LARGE", "Request body is too large.");
+  if (Number.isFinite(declared) && declared > maxBytes) throw new RequestError(413, "BODY_TOO_LARGE", "Request body is too large.");
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.byteLength;
-    if (size > MAX_BODY_BYTES) throw new RequestError(413, "BODY_TOO_LARGE", "Request body is too large.");
+    if (size > maxBytes) throw new RequestError(413, "BODY_TOO_LARGE", "Request body is too large.");
     chunks.push(buffer);
   }
   let parsed: unknown;
@@ -485,6 +493,13 @@ export function createPublicApiHandler(options: PublicApiOptions) {
   function requireStrategyQuotes(): GeneralizedStrategyQuotePort {
     if (options.strategyQuotes === undefined) throw new RequestError(503, "STRATEGY_QUOTES_UNAVAILABLE", "No generalized strategy quote service is configured on this server.");
     return options.strategyQuotes;
+  }
+
+  function requirePortfolioOptimization(): PortfolioOptimizationPort {
+    if (options.portfolioOptimization === undefined) {
+      throw new RequestError(503, "PORTFOLIO_OPTIMIZATION_UNAVAILABLE", "Portfolio optimization is disabled on this server.");
+    }
+    return options.portfolioOptimization;
   }
 
   function requireNettingExecution(): Pick<NettingExecutionCoordinator, "execute"> {
@@ -1452,6 +1467,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/orders/validate",
       "/v1/routes/replay-decision",
       "/v1/routes/compare",
+      "/v1/portfolio/optimize",
       "/v1/clearing/simulate",
       "/v1/netting/simulate",
       "/v1/netting/batches",
@@ -1487,7 +1503,26 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       && nettingExecutionMatch === null) {
       throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
     }
-    const body = object(await readProtocolBody(request), "Request body");
+    const body = object(await readProtocolBody(
+      request,
+      path === '/v1/portfolio/optimize' ? MAX_PORTFOLIO_OPTIMIZATION_BODY_BYTES : MAX_BODY_BYTES,
+    ), "Request body");
+    if (path === '/v1/portfolio/optimize') {
+      const keys = Object.keys(body).sort();
+      if (keys.length !== 3 || keys[0] !== 'candidates' || keys[1] !== 'decisionAtMs' || keys[2] !== 'policy') {
+        throw new RequestError(400, 'INVALID_REQUEST', 'Request must contain only candidates, decisionAtMs, and policy.');
+      }
+      try {
+        return await requirePortfolioOptimization().optimize(body as unknown as PortfolioOptimizationRequest);
+      } catch (error) {
+        if (error instanceof PortfolioOptimizationClientError) {
+          const status = error.code === 'INVALID_REQUEST' ? 400
+            : error.code === 'NO_ELIGIBLE_CANDIDATE' ? 409 : 502;
+          throw new RequestError(status, error.code, error.message);
+        }
+        throw error;
+      }
+    }
     if (nettingExecutionMatch !== null) {
       if (Object.keys(body).length !== 0) {
         throw new RequestError(400, "INVALID_REQUEST", "A netting execution request has no caller-selected fields.");

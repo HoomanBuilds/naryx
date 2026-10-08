@@ -36,6 +36,10 @@ export {
   type SelectedPortfolioOptimization,
 } from './portfolio-optimization-service.js';
 export {
+  PORTFOLIO_OPTIMIZATION_PATH,
+  createPortfolioOptimizationInternalHandler,
+} from './portfolio-optimization-server.js';
+export {
   HttpNettingAllocationAdminClient,
   NettingAllocationAdminClientError,
   type NettingAllocationPreparation,

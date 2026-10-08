@@ -29,6 +29,7 @@ import { createCoordinationInternalHandler, SqliteCoordinationStore } from "./co
 import { createStrategyPackageInternalHandler, SqliteStrategyPackageStore } from "./strategy-package-store.js";
 import { createPackageReopeningAdminHandler } from "./package-reopening-admin.js";
 import { HttpGeneralizedStrategyQuoteClient } from "./generalized-strategy-quote-client.js";
+import { HttpPortfolioOptimizationClient } from './portfolio-optimization-client.js';
 import {
   HttpHyperliquidCrossBatchResidualExecutionClient,
   HttpHyperliquidNettingResidualExecutionClient,
@@ -496,6 +497,15 @@ export function loadPublicMarketRuntime(
         environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
       )
       : undefined;
+    const portfolioOptimizationSetting = environment.NARYX_PORTFOLIO_OPTIMIZATION_ENABLED ?? 'false';
+    if (portfolioOptimizationSetting !== 'true' && portfolioOptimizationSetting !== 'false') {
+      throw new PublicMarketConfigError('NARYX_PORTFOLIO_OPTIMIZATION_ENABLED must be true or false.');
+    }
+    const portfolioOptimization = portfolioOptimizationSetting === 'true'
+      ? new HttpPortfolioOptimizationClient(
+        environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? 'http://127.0.0.1:8788',
+      )
+      : undefined;
     const hyperliquidNettingExecutionSetting = environment.NARYX_HYPERLIQUID_TESTNET_NETTING_EXECUTION_ENABLED
       ?? "false";
     if (hyperliquidNettingExecutionSetting !== "true" && hyperliquidNettingExecutionSetting !== "false") {
@@ -660,6 +670,7 @@ export function loadPublicMarketRuntime(
       ...(strategyPackages === undefined ? {} : { strategyPackageSources: strategyPackages }),
       ...(strategyPackages === undefined ? {} : { strategyPackageExecutions: strategyPackages }),
       ...(strategyQuotes === undefined ? {} : { strategyQuotes }),
+      ...(portfolioOptimization === undefined ? {} : { portfolioOptimization }),
       ...(nettingExecution === undefined ? {} : { nettingExecution }),
       ...(builders === undefined ? {} : { builders }),
       ...(keeper === undefined ? {} : { health: keeper }),

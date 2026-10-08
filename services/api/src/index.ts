@@ -296,6 +296,14 @@ export {
   type PublicRegistryStore,
   type PublicSolverState,
 } from "./public-api.js";
+export {
+  HttpPortfolioOptimizationClient,
+  PortfolioOptimizationClientError,
+  type PortfolioDecisionVerifier,
+  type PortfolioOptimizationPort,
+  type PortfolioOptimizationRequest,
+  type PortfolioOptimizationResult,
+} from './portfolio-optimization-client.js';
 export { createSolverApiHandler, createSolverStream, SOLVER_STREAM_PATH, type AdmissionContext, type SolverApiOptions, type SolverStreamOptions } from "./solver-api.js";
 export { shardIdOf, SolverApiStoreError, SqliteSolverApiStore } from "./solver-api-store.js";
 export { PrivateDeliveryStoreError, SqlitePrivateDeliveryStore, type StoredEnvelope } from "./private-delivery-store.js";
