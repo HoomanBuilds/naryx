@@ -39,6 +39,8 @@ export {
   type RegisteredDocumentView,
   type SubmittedOrder,
   type VerifiedAllocation,
+  type PackageReopeningOrderSubmission,
+  type VerifiedPackageReopening,
   type VerifiedTerminalEvidence,
 } from './client.js';
 export { NaryxSolverClient, type NaryxSolverClientOptions, type OpenOrderPage } from './solver-client.js';

@@ -27,6 +27,7 @@ import { SqliteBuilderStore } from "./builder-store.js";
 import { createKeeperExecutorHandler, keeperClock, SqliteKeeperExecutor } from "./keeper-executor.js";
 import { createCoordinationInternalHandler, SqliteCoordinationStore } from "./coordination-store.js";
 import { createStrategyPackageInternalHandler, SqliteStrategyPackageStore } from "./strategy-package-store.js";
+import { createPackageReopeningAdminHandler } from "./package-reopening-admin.js";
 import { HttpGeneralizedStrategyQuoteClient } from "./generalized-strategy-quote-client.js";
 import { applyPublicMarketBootstrap, loadPublicMarketBootstrap } from "./public-market-bootstrap.js";
 import {
@@ -450,15 +451,16 @@ export function loadPublicMarketRuntime(
         environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
       )
       : undefined;
-    const internalHandlers = [
-      ...(keeper === undefined ? [] : [createKeeperExecutorHandler({ executor: keeper, nowIn: keeperClock(clockMs) })]),
-      ...(coordination === undefined ? [] : [createCoordinationInternalHandler(coordination)]),
-      ...(strategyPackages === undefined ? [] : [createStrategyPackageInternalHandler(strategyPackages)]),
-    ];
     const pinnedSuiteIds = (environment.NARYX_RFQ_PINNED_SUITES ?? "").split(",").map((value) => value.trim()).filter((value) => value !== "");
     const nowValue = support.clockUnit === "UNIX_SECONDS"
       ? () => BigInt(Math.floor(clockMs() / 1_000))
       : () => BigInt(Math.floor(clockMs()));
+    const internalHandlers = [
+      createPackageReopeningAdminHandler({ exchange: store, nowValue }),
+      ...(keeper === undefined ? [] : [createKeeperExecutorHandler({ executor: keeper, nowIn: keeperClock(clockMs) })]),
+      ...(coordination === undefined ? [] : [createCoordinationInternalHandler(coordination)]),
+      ...(strategyPackages === undefined ? [] : [createStrategyPackageInternalHandler(strategyPackages)]),
+    ];
     const rateLimit = { windowMs: 60_000, maxRequests: requestsPerMinute };
     const catalogueSigner = loadCatalogueSigner(environment);
     const catalogue = catalogueSigner === undefined

@@ -20,8 +20,12 @@ import {
   packageSettlementCommitmentHash,
   packageBookCancellationBytes,
   packageBookCancellationHash,
+  packageReopeningResultHash,
+  packageReopeningSettlementHandoffHash,
+  packageReopeningSnapshotHash,
   toHex,
   verifyPackageAllocation,
+  verifyPackageReopeningSettlementHandoff,
   type PackageAllocation,
   type PackageMatchingPolicy,
 } from "@naryx/protocol-types";
@@ -124,6 +128,39 @@ test("allocation evidence verifies independently against the served policy", asy
     const tape = (await get(`/v1/markets/${CLASS}/package-tape`)).body as { trades: readonly { allocationHash: string }[] };
     assert.ok(tape.trades.some((trade) => trade.allocationHash === toHex(packageAllocationHash(allocation))));
     assert.equal((await get(`/v1/allocations/${id(77)}`)).status, 404);
+  });
+});
+
+test("reopening evidence is published with independently verifiable settlement handoffs", async () => {
+  await withMarket(async (get, store) => {
+    registerAll(store);
+    store.setHalted(CLASS, true);
+    const ask = order(1, { side: "ASK", limitPriceTicks: 95n });
+    const bid = order(2, { side: "BID", limitPriceTicks: 105n });
+    store.queueReopeningOrder(CLASS, ask, NOW, settlement(ask));
+    store.queueReopeningOrder(CLASS, bid, NOW, settlement(bid));
+    const opening = store.getBook(CLASS)!;
+    const cleared = store.clearReopeningAuction(
+      CLASS,
+      id(800),
+      packageReopeningSnapshotHash(packageMatchingPolicy(store.getMatchingPolicy(opening.matchingPolicyHash)!), opening),
+      id(900),
+      100n,
+      NOW,
+    );
+    const resultHash = toHex(packageReopeningResultHash(cleared.result));
+    const response = await get(`/v1/package-book/reopenings/${resultHash}`);
+    assert.equal(response.status, 200, response.text);
+    const body = response.body as {
+      resultHash: string;
+      settlementHandoffHash: string;
+      result: typeof cleared.result;
+      settlementHandoff: NonNullable<typeof cleared.settlementHandoff>;
+    };
+    assert.equal(body.resultHash, resultHash);
+    assert.equal(body.settlementHandoffHash, toHex(packageReopeningSettlementHandoffHash(body.settlementHandoff)));
+    assert.doesNotThrow(() => verifyPackageReopeningSettlementHandoff(body.result, body.settlementHandoff));
+    assert.equal((await get(`/v1/package-book/reopenings/${id(999)}`)).status, 404);
   });
 });
 
@@ -384,13 +421,51 @@ test("signed public package orders create durable settlement handoffs and replay
     });
     assert.equal(((await get("/v1/package-book/cancellations", post({ cancellation, authorization: cancellationAuthorization }))).body as { replayed: boolean }).replayed, true);
     assert.equal(store.getBook(CLASS)?.entries.length, 0);
+
+    const reopeningDraft = { ...passiveOrder, orderId: "00".repeat(32), limitPriceTicks: 105n };
+    const reopeningOrder = { ...reopeningDraft, orderId: toHex(packageTakerOrderHash(reopeningDraft)) };
+    const reopeningCommitment = packageSettlementCommitment({
+      ...settlementCommitment,
+      packageOrderId: reopeningOrder.orderId,
+      strategyOrderHash: id(7_004),
+    });
+    strategies.set(id(7_004), {
+      orderHashHex: id(7_004),
+      graphHashHex: id(7_002),
+      order: { ...strategyOrder, packageTimeInForce: "GTD" },
+      graph: {},
+      recordedAtMs: 3,
+    });
+    const reopeningAuthorization = {
+      scheme: "ED25519",
+      signature: bs58.encode(sign(null, Buffer.from(packageSettlementCommitmentBytes(reopeningCommitment)), keys.privateKey)),
+    };
+    store.setHalted(CLASS, true);
+    const queued = await get("/v1/package-book/reopening/orders", post({
+      order: reopeningOrder,
+      settlementCommitment: reopeningCommitment,
+      authorization: reopeningAuthorization,
+    }));
+    assert.equal(queued.status, 200, queued.text);
+    assert.deepEqual(
+      [
+        (queued.body as { accepted: boolean }).accepted,
+        (queued.body as { queuedForReopening: boolean }).queuedForReopening,
+        (queued.body as { orderId: string }).orderId,
+      ],
+      [true, true, reopeningOrder.orderId],
+    );
+    assert.equal(store.getBook(CLASS)?.entries.length, 1);
     assert.equal((await get("/v1/package-book/settlement-quotes/request", post({
       packageOrderId: passiveOrder.orderId,
       idempotencyKey: "settlement-quote-0002",
     }))).status, 409);
     assert.equal(requestedQuotes.length, 1);
   }, {
-    strategyPackages: { order: (orderHashHex: string) => strategies.get(orderHashHex) } as never,
+    strategyPackages: {
+      order: (orderHashHex: string) => strategies.get(orderHashHex),
+      lockPackageExecution: () => undefined,
+    } as never,
     strategyQuotes: {
       quote: async (orderHash: string, idempotencyKey: string) => {
         requestedQuotes.push({ orderHash, idempotencyKey });
@@ -478,7 +553,10 @@ test("EVM owners authorize and cancel native package-book orders with chainless 
     assert.equal((cancelled.body as { cancelled: boolean }).cancelled, true);
     assert.equal(store.getBook(CLASS)?.entries.length, 0);
   }, {
-    strategyPackages: { order: (orderHashHex: string) => strategies.get(orderHashHex) } as never,
+    strategyPackages: {
+      order: (orderHashHex: string) => strategies.get(orderHashHex),
+      lockPackageExecution: () => undefined,
+    } as never,
   });
 });
 

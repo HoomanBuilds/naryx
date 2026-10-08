@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { describe, test } from 'node:test';
 import {
+  clearPackageReopeningAuction,
   emptyPackageBook,
   matchPackageOrder,
   packageAllocationHash,
@@ -15,7 +16,12 @@ import {
   packageSettlementReadiness,
   packageSettlementReadinessHash,
   packageMatchingPolicy,
+  packageReopeningResultHash,
+  packageReopeningSettlementHandoff,
+  packageReopeningSettlementHandoffHash,
   packageTakerOrderHash,
+  queuePackageReopeningOrder,
+  setPackageBookHalted,
   toHex,
   toProtocolJson,
   type PackageAllocation,
@@ -377,10 +383,97 @@ describe('public API client', () => {
     assert.equal(cancelled.cancellationHash, cancellationHash);
     assert.deepEqual(cancellationBytes, packageBookCancellationBytes(cancellation));
 
+    const reopeningDraft = {
+      ...draft,
+      timeInForce: 'GTC' as const,
+      settlementLeaseUntilValue: 2_000n,
+    };
+    const reopeningProvisional = { ...reopeningDraft, orderId: '00'.repeat(32) };
+    const reopeningOrderId = toHex(packageTakerOrderHash(reopeningProvisional));
+    const reopeningOrder = { ...reopeningDraft, orderId: reopeningOrderId };
+    const reopeningCommitment = packageSettlementCommitment({
+      version: 1,
+      ...settlementDraft,
+      executionClassId: CLASS,
+      packageOrderId: reopeningOrderId,
+      participantId,
+      quantity: reopeningOrder.quantity,
+    });
+    const admission = queuePackageReopeningOrder(
+      policy,
+      setPackageBookHalted(emptyPackageBook(policy), true),
+      reopeningOrder,
+      1_000n,
+    );
+    let reopeningSignedBytes: Uint8Array | undefined;
+    const queued = await client({
+      'POST /v1/package-book/reopening/orders': {
+        body: {
+          accepted: true,
+          queuedForReopening: true,
+          packageMarketId: CLASS,
+          orderId: reopeningOrderId,
+          replayed: false,
+          entry: admission.entry,
+          settlementCommitmentHash: toHex(packageSettlementCommitmentHash(reopeningCommitment)),
+        },
+      },
+    }).submitPackageReopeningOrder(reopeningDraft, settlementDraft, async (bytes) => {
+      reopeningSignedBytes = bytes;
+      return new Uint8Array(sign(null, bytes, keys.privateKey));
+    });
+    assert.equal(queued.queuedForReopening, true);
+    assert.deepEqual(reopeningSignedBytes, packageSettlementCommitmentBytes(reopeningCommitment));
+
     await assert.rejects(
       client({ 'POST /v1/package-book/orders': { body: { accepted: true, packageMarketId: CLASS, orderId, replayed: false, allocation: matched.allocation, allocationHash: 'ff'.repeat(32), settlementCommitmentHash, matchingPolicy: policy } } })
         .submitPackageBookOrder(draft, settlementDraft, async (bytes) => new Uint8Array(sign(null, bytes, keys.privateKey))),
       /allocation hash is inconsistent/,
+    );
+  });
+
+  test('verifies package reopening result and settlement evidence', async () => {
+    let opening = setPackageBookHalted(emptyPackageBook(policy), true);
+    opening = queuePackageReopeningOrder(policy, opening, order(1, { limitPriceTicks: 95n }), 1_000n).state;
+    opening = queuePackageReopeningOrder(
+      policy,
+      opening,
+      order(2, { side: 'BID', limitPriceTicks: 105n }),
+      1_000n,
+    ).state;
+    const cleared = clearPackageReopeningAuction(policy, opening, id(800), id(900), 100n, 1_000n);
+    const resultHash = toHex(packageReopeningResultHash(cleared.result));
+    const settlementHandoff = packageReopeningSettlementHandoff({
+      version: 1,
+      reopeningResultHash: resultHash,
+      executionClassId: CLASS,
+      fills: cleared.result.fills.map((fill, index) => ({
+        fillSequence: fill.fillSequence,
+        bidEntryId: fill.bidEntryId,
+        askEntryId: fill.askEntryId,
+        bidSettlementCommitmentHash: id(100 + index),
+        askSettlementCommitmentHash: id(200 + index),
+        priceTicks: cleared.result.clearingPriceTicks!,
+        quantity: fill.quantity,
+      })),
+    });
+    const settlementHandoffHash = toHex(packageReopeningSettlementHandoffHash(settlementHandoff));
+    const path = `/v1/package-book/reopenings/${resultHash}`;
+    const verified = await client({
+      [path]: {
+        body: {
+          result: cleared.result,
+          resultHash,
+          settlementHandoff,
+          settlementHandoffHash,
+        },
+      },
+    }).getPackageReopening(resultHash);
+    assert.equal(verified.resultHash, resultHash);
+    assert.equal(verified.settlementHandoffHash, settlementHandoffHash);
+    await assert.rejects(
+      client({ [path]: { body: { result: cleared.result, resultHash } } }).getPackageReopening(resultHash),
+      /handoff presence is inconsistent/,
     );
   });
 

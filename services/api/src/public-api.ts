@@ -32,6 +32,8 @@ import {
   packageSettlementCommitmentHash,
   packageSettlementHandoffHash,
   packageSettlementReadinessHash,
+  packageReopeningResultHash,
+  packageReopeningSettlementHandoffHash,
   packageQuoteExecutionBindingHash,
   solverCapabilityManifestHash,
   strategyPackageOrder,
@@ -48,6 +50,7 @@ import {
   validatePackageOrderProfile,
   validatePackageQuoteExecutionBinding,
   verifyPackageSettlementHandoff,
+  verifyPackageReopeningSettlementHandoff,
 } from "@naryx/protocol-types";
 import type {
   QualificationObjectType,
@@ -178,6 +181,8 @@ export type PublicExchangeStore = Pick<
   | "settlementCommitment"
   | "settlementHandoff"
   | "settlementProgress"
+  | "reopeningResult"
+  | "reopeningSettlementHandoff"
   | "allocationTape"
   | "allocationsBetween"
   | "listBooks"
@@ -187,6 +192,7 @@ export type PublicExchangeStore = Pick<
   | "getExecutionClassRecord"
   | "latestTrade"
   | "submitOrder"
+  | "queueReopeningOrder"
   | "cancelEntry"
 >;
 
@@ -1230,6 +1236,30 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       }
       return progress;
     }
+    if ((match = /^\/v1\/package-book\/reopenings\/([0-9a-f]{64})$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const resultHash = match[1] as string;
+      const result = exchange.reopeningResult(resultHash);
+      if (result === undefined) {
+        throw new RequestError(404, "REOPENING_NOT_FOUND", "No reopening result exists for this hash.");
+      }
+      if (toHex(packageReopeningResultHash(result)) !== resultHash) {
+        throw new RequestError(500, "INTERNAL_ERROR", "Reopening result identity is inconsistent.");
+      }
+      const settlementHandoff = exchange.reopeningSettlementHandoff(resultHash);
+      if ((result.fills.length > 0) !== (settlementHandoff !== undefined)) {
+        throw new RequestError(500, "INTERNAL_ERROR", "Reopening settlement handoff presence is inconsistent.");
+      }
+      if (settlementHandoff !== undefined) verifyPackageReopeningSettlementHandoff(result, settlementHandoff);
+      return {
+        result,
+        resultHash,
+        ...(settlementHandoff === undefined ? {} : {
+          settlementHandoff,
+          settlementHandoffHash: toHex(packageReopeningSettlementHandoffHash(settlementHandoff)),
+        }),
+      };
+    }
     if ((match = /^\/v1\/allocations\/([^/]+)$/.exec(path)) !== null) {
       onlyParams(url, []);
       const orderId = match[1];
@@ -1273,6 +1303,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/package-book/orders/prepare",
       "/v1/package-book/orders",
       "/v1/package-book/orders/authorization",
+      "/v1/package-book/reopening/orders",
+      "/v1/package-book/reopening/orders/authorization",
       "/v1/package-book/cancellations",
       "/v1/package-book/cancellations/authorization",
       "/v1/de-risk/validate",
@@ -1412,7 +1444,9 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         replayed: result.replayed,
       };
     }
-    if (path === "/v1/package-book/orders" || path === "/v1/package-book/orders/authorization") {
+    const reopeningOrderPath = path === "/v1/package-book/reopening/orders"
+      || path === "/v1/package-book/reopening/orders/authorization";
+    if (reopeningOrderPath || path === "/v1/package-book/orders" || path === "/v1/package-book/orders/authorization") {
       const order = object(body.order, "order") as unknown as PackageTakerOrderInput;
       const orderHash = packageTakerOrderHash(order);
       if (!bytesEqual(commitmentHash(order.orderId, "order.orderId"), orderHash)) {
@@ -1508,6 +1542,18 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         throw new RequestError(503, "EXECUTION_BINDING_STORE_UNAVAILABLE", "Durable package execution locking is unavailable.");
       }
       strategyStore.lockPackageExecution(toHex(commitment.strategyOrderHash), orderHash);
+      if (reopeningOrderPath) {
+        const result = exchange.queueReopeningOrder(executionClassId, order, nowValue(), commitment);
+        return {
+          accepted: true,
+          queuedForReopening: true,
+          packageMarketId: executionClassId,
+          orderId: toHex(orderHash),
+          replayed: result.replayed,
+          entry: result.entry,
+          settlementCommitmentHash: result.settlementCommitmentHashHex,
+        };
+      }
       const result = exchange.submitOrder(executionClassId, order, nowValue(), commitment);
       if (!result.accepted) return { accepted: false, packageMarketId: executionClassId, orderId: toHex(orderHash), rejection: result.rejection };
       const matchingPolicy = exchange.getMatchingPolicy(result.allocation.matchingPolicyHash);
@@ -1905,8 +1951,12 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         if (response.headersSent) return response.destroy();
         if (error instanceof RequestError) return fail(response, error.status, error.code, error.message);
         if (error instanceof ProtocolError) return fail(response, 400, "INVALID_REQUEST", `${error.context}: ${error.detail}`);
-        if (error instanceof PackageExchangeStoreError && error.code === "BOOK_NOT_FOUND") return fail(response, 404, "BOOK_NOT_FOUND", "Package market is not open.");
-        if (error instanceof PackageExchangeStoreError && error.code === "INVALID_INPUT") return fail(response, 400, "INVALID_REQUEST", error.message);
+        if (error instanceof PackageExchangeStoreError) {
+          const status = error.code === "BOOK_NOT_FOUND" ? 404
+            : error.code === "INVALID_INPUT" ? 400
+              : error.code === "CORRUPT_ROW" ? 500 : 409;
+          return fail(response, status, error.code === "INVALID_INPUT" ? "INVALID_REQUEST" : error.code, error.message);
+        }
         if (error instanceof RegistryStoreError && error.code === "INVALID_INPUT") return fail(response, 400, "INVALID_REQUEST", error.message);
         if (error instanceof PrivateDeliveryStoreError) return fail(response, error.code === "NOT_FOUND" ? 404 : error.code === "INBOX_FULL" ? 429 : 409, error.code, error.message);
         if (error instanceof EvidenceStoreError) {

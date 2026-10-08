@@ -247,6 +247,10 @@ export {
   type RegisteredExchangeDocument,
 } from "./package-exchange-store.js";
 export {
+  createPackageReopeningAdminHandler,
+  type PackageReopeningAdminOptions,
+} from "./package-reopening-admin.js";
+export {
   createPublicApiHandler,
   type PublicApiOptions,
   type PublicExchangeStore,

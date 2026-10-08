@@ -36,6 +36,10 @@ import {
   packageSettlementHandoffHash,
   packageSettlementReadiness,
   packageSettlementReadinessHash,
+  packageReopeningResult,
+  packageReopeningResultHash,
+  packageReopeningSettlementHandoff,
+  packageReopeningSettlementHandoffHash,
   packageCloseCostIndex,
   packageGraphHash,
   simulatePackageGraphFailures,
@@ -87,6 +91,7 @@ import {
   verifyOutcomeReceiptLink,
   verifyPackageAllocation,
   verifyPackageSettlementHandoff,
+  verifyPackageReopeningSettlementHandoff,
   verifyReceiptFees,
   type AcceptedQuoteFeeTerms,
   type CandleInterval,
@@ -106,6 +111,8 @@ import {
   type PackageSettlementCommitment,
   type PackageSettlementHandoff,
   type PackageSettlementReadiness,
+  type PackageReopeningResult,
+  type PackageReopeningSettlementHandoff,
   type PackageGraphInput,
   type NormalizedPosition,
   type PositionSnapshotRecord,
@@ -270,6 +277,21 @@ export type PackageBookOrderSubmission =
       readonly order: PackageTakerOrderInput;
       readonly rejection: string;
     };
+
+export interface PackageReopeningOrderSubmission {
+  readonly accepted: true;
+  readonly queuedForReopening: true;
+  readonly order: PackageTakerOrderInput;
+  readonly replayed: boolean;
+  readonly settlementCommitmentHash: string;
+}
+
+export interface VerifiedPackageReopening {
+  readonly result: PackageReopeningResult;
+  readonly resultHash: string;
+  readonly settlementHandoff?: PackageReopeningSettlementHandoff;
+  readonly settlementHandoffHash?: string;
+}
 
 export interface PackageBookCancellationResult {
   readonly cancelled: true;
@@ -1039,6 +1061,102 @@ export class NaryxClient {
       throw new NaryxEvidenceError('package settlement obligations do not reproduce readiness');
     }
     return Object.freeze({ readiness, readinessHash, obligations: Object.freeze(obligations) });
+  }
+
+  async getPackageReopening(resultHash: string): Promise<VerifiedPackageReopening> {
+    const expectedHash = hashHex(resultHash, 'reopening result hash');
+    const body = record(
+      await this.#request('GET', `/v1/package-book/reopenings/${expectedHash}`),
+      'package reopening result',
+    );
+    const result = packageReopeningResult(body.result as PackageReopeningResult);
+    if (body.resultHash !== expectedHash || toHex(packageReopeningResultHash(result)) !== expectedHash) {
+      throw new NaryxEvidenceError('package reopening result hash is inconsistent');
+    }
+    let settlementHandoff: PackageReopeningSettlementHandoff | undefined;
+    let settlementHandoffHash: string | undefined;
+    if (body.settlementHandoff !== undefined || body.settlementHandoffHash !== undefined) {
+      settlementHandoff = packageReopeningSettlementHandoff(
+        body.settlementHandoff as PackageReopeningSettlementHandoff,
+      );
+      settlementHandoffHash = toHex(packageReopeningSettlementHandoffHash(settlementHandoff));
+      if (body.settlementHandoffHash !== settlementHandoffHash) {
+        throw new NaryxEvidenceError('package reopening settlement handoff hash is inconsistent');
+      }
+      try {
+        verifyPackageReopeningSettlementHandoff(result, settlementHandoff);
+      } catch (error) {
+        throw new NaryxEvidenceError(`package reopening settlement handoff failed verification: ${(error as Error).message}`);
+      }
+    }
+    if ((result.fills.length > 0) !== (settlementHandoff !== undefined)) {
+      throw new NaryxEvidenceError('package reopening settlement handoff presence is inconsistent');
+    }
+    return Object.freeze({
+      result,
+      resultHash: expectedHash,
+      ...(settlementHandoff === undefined || settlementHandoffHash === undefined
+        ? {}
+        : { settlementHandoff, settlementHandoffHash }),
+    });
+  }
+
+  /** Queues one signed, settlement-backed order while its package market is halted. */
+  async submitPackageReopeningOrder(
+    draft: PackageBookOrderDraft,
+    settlementDraft: PackageBookSettlementDraft,
+    sign: OrderSigner,
+  ): Promise<PackageReopeningOrderSubmission> {
+    if (typeof sign !== 'function') throw new TypeError('an order signer is required');
+    const provisional: PackageTakerOrderInput = { ...draft, orderId: '00'.repeat(32) };
+    const orderId = toHex(packageTakerOrderHash(provisional));
+    const order: PackageTakerOrderInput = Object.freeze({ ...draft, orderId });
+    const settlementCommitment = packageSettlementCommitment({
+      version: 1,
+      ...settlementDraft,
+      executionClassId: order.executionClassId,
+      packageOrderId: orderId,
+      participantId: order.participantId,
+      quantity: order.quantity,
+    });
+    const participantKey = base58Decode(order.participantId);
+    if (participantKey?.length !== 32 || order.commonControlGroupId !== order.participantId) {
+      throw new TypeError('public package book participants use their Ed25519 key as participant and control-group id');
+    }
+    const signature = await sign(packageSettlementCommitmentBytes(settlementCommitment));
+    if (!(signature instanceof Uint8Array) || signature.length !== 64) {
+      throw new TypeError('the signer must return a 64-byte signature');
+    }
+    const body = record(
+      await this.#request('POST', '/v1/package-book/reopening/orders', {
+        order,
+        settlementCommitment,
+        authorization: { scheme: 'ED25519', signature: base58Encode(signature) },
+      }),
+      'package reopening order submission',
+    );
+    const entry = record(body.entry, 'package reopening entry');
+    const expectedCommitmentHash = toHex(packageSettlementCommitmentHash(settlementCommitment));
+    if (
+      body.accepted !== true
+      || body.queuedForReopening !== true
+      || body.packageMarketId !== order.executionClassId
+      || body.orderId !== orderId
+      || typeof body.replayed !== 'boolean'
+      || body.settlementCommitmentHash !== expectedCommitmentHash
+      || !(entry.entryId instanceof Uint8Array)
+      || toHex(entry.entryId) !== orderId
+      || entry.quantity !== order.quantity
+    ) {
+      throw new NaryxEvidenceError('package reopening order response is inconsistent');
+    }
+    return Object.freeze({
+      accepted: true,
+      queuedForReopening: true,
+      order,
+      replayed: body.replayed,
+      settlementCommitmentHash: expectedCommitmentHash,
+    });
   }
 
   /** Signs and submits one order to the native package book. Matching is not venue settlement. */
