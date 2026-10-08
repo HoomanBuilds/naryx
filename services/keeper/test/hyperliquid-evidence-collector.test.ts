@@ -11,11 +11,15 @@ import type {
   UserFillsByTimeResponse,
   UserRoleResponse,
 } from '@nktkas/hyperliquid/api/info';
-import type { HyperliquidStrategyExecutionPlan } from '@naryx/adapter-hyperliquid';
-import { assetRef, domainRef, hash32, manifestHash } from '@naryx/protocol-types';
+import type {
+  HyperliquidNettingResidualPlan,
+  HyperliquidStrategyExecutionPlan,
+} from '@naryx/adapter-hyperliquid';
+import { assetRef, commitmentHash, domainRef, hash32, manifestHash } from '@naryx/protocol-types';
 import {
   HYPERLIQUID_TESTNET_INFO_URL,
   HyperliquidAuthoritativeEvidenceCollector,
+  HyperliquidNettingResidualAuthoritativeEvidenceCollector,
   HyperliquidSdkTestnetReadClient,
   HyperliquidStrategyAuthoritativeEvidenceCollector,
   type HyperliquidEvidenceMarketBinding,
@@ -23,6 +27,7 @@ import {
   type HyperliquidInfoEnvelope,
   type HyperliquidInfoRequestIdentity,
   type HyperliquidPackageAttempt,
+  type HyperliquidNettingResidualEvidenceRequest,
   type HyperliquidRecoveryAttempt,
   type HyperliquidTestnetReadClient,
 } from '../src/index.js';
@@ -221,6 +226,65 @@ const evidenceWindow: HyperliquidEvidenceWindow = {
   maxEvidenceAgeMs: 9_000, maxSnapshotSkewMs: 100,
 };
 
+function netResidualPlan(): HyperliquidNettingResidualPlan {
+  const order = {
+    a: 10_007,
+    b: true,
+    p: '60000',
+    s: '0.000001',
+    r: false,
+    t: { limit: { tif: 'Ioc' as const } },
+    c: spotCloid,
+  };
+  return {
+    version: 1,
+    guarantee: 'SINGLE_IOC_WITH_TERMINAL_EVIDENCE',
+    intentHash: commitmentHash('61'.repeat(32)),
+    domain: domainRef('hypercore:testnet', 1, '62'.repeat(32)),
+    instrumentHash: commitmentHash('63'.repeat(32)),
+    quantityAsset: baseAsset,
+    quoteAsset,
+    requestedSignedQuantityAtoms: 100n,
+    maximumFeeQuoteAtoms: 100_000n,
+    requestExpiryMs: 20_000n,
+    clientOrderId: spotCloid,
+    order,
+    action: { type: 'order', grouping: 'na', orders: [order] },
+  };
+}
+
+function netResidualActionHash(plan: HyperliquidNettingResidualPlan): `0x${string}` {
+  const order = plan.order;
+  return `0x${createHash('sha256').update(JSON.stringify([
+    'NARYX_CANONICAL_HYPERCORE_ACTION_SHA256_V1',
+    'order',
+    [[order.a, order.b, order.p, order.s, order.r, order.t.limit.tif, order.c]],
+    'na',
+  ])).digest('hex')}`;
+}
+
+function netResidualRequest(): HyperliquidNettingResidualEvidenceRequest {
+  const plan = netResidualPlan();
+  return {
+    attemptId: 'net-residual-attempt-1',
+    account,
+    actionHash: netResidualActionHash(plan),
+    requestCommitment: `0x${'64'.repeat(32)}`,
+    durableRevision: 'sqlite-net-residual-v1:2',
+    clientOrderId: spotCloid,
+    intentHash: plan.intentHash,
+    instrumentHash: plan.instrumentHash,
+    plan,
+    binding: {
+      assetId: 10_007,
+      marketKind: 'SPOT',
+      baseFeeToken: 'UBTC',
+      quoteFeeToken: 'USDC',
+    },
+    window: evidenceWindow,
+  };
+}
+
 async function checkpoint(client: FixtureClient) {
   const result = await new HyperliquidAuthoritativeEvidenceCollector(client)
     .captureCheckpoint(packageAttempt(), binding, checkpointWindow);
@@ -251,6 +315,35 @@ test('collects exact package evidence from independent cloid and account reads',
   assert.equal(result.input.fees[0]!.amountAtoms, 2n);
   assert.deepEqual(result.observedFills[0]!.price, { coefficient: 6_000_025n, scale: 2 });
   assert.ok(result.rawResponseCommitments.every((value) => /^0x[0-9a-f]{64}$/.test(value.sha256)));
+});
+
+test('collects one terminal net residual with quote-normalized fee evidence', async () => {
+  const client = new FixtureClient();
+  client.stamp = 9_950;
+  client.statuses.set(spotCloid, orderStatus(spotCloid, 1, '@7', 'B'));
+  client.fills = [fill(spotCloid, 1, 10, '@7', 'B', '0.000001', 'UBTC')];
+
+  const result = await new HyperliquidNettingResidualAuthoritativeEvidenceCollector(client)
+    .collect(netResidualRequest());
+  assert.equal(result.status, 'COMPLETE');
+  assert.equal(result.observation.terminalStatus, 'FILLED');
+  assert.equal(result.observation.filledSignedQuantityAtoms, 100n);
+  assert.equal(result.observation.grossQuoteAtoms, 6_000_025n);
+  assert.equal(result.observation.feeQuoteAtoms, 60_001n);
+  assert.match(String(result.observation.executionReferenceHash), /^0x[0-9a-f]{64}$/);
+  assert.match(String(result.observation.authoritativeEvidenceHash), /^0x[0-9a-f]{64}$/);
+});
+
+test('fails residual evidence closed when the venue reports an unexpected fee token', async () => {
+  const client = new FixtureClient();
+  client.stamp = 9_950;
+  client.statuses.set(spotCloid, orderStatus(spotCloid, 1, '@7', 'B'));
+  client.fills = [fill(spotCloid, 1, 10, '@7', 'B', '0.000001', 'USDC')];
+
+  const result = await new HyperliquidNettingResidualAuthoritativeEvidenceCollector(client)
+    .collect(netResidualRequest());
+  assert.equal(result.status, 'INCOMPLETE');
+  assert.ok(result.reasons.includes('UNCERTAIN_FEE_EVIDENCE'));
 });
 
 test('collects a one-leg partial IOC without inventing a full fill', async () => {
