@@ -44,6 +44,7 @@ import {
   nettingPolicyManifest,
   nettingPolicyManifestHash,
   nettingResultHash,
+  nettingAllocationSettlementEvidence,
   nettingSettlementCompletionReceipt,
   nettingFinalAllocationReceipt,
   verifyNettingAllocationSettlementEvidence,
@@ -244,6 +245,14 @@ export interface PreparedNettingBatchRecordInput {
 export interface NettingExternalExecutionRecord {
   readonly intent: NettingExternalExecutionIntent;
   readonly evidence?: NettingExternalExecutionEvidence;
+}
+
+export interface NettingAllocationExecutionObservation {
+  readonly authorizationHash: Uint8Array | string;
+  readonly observedAtUnit: NettingAllocationSettlementEvidence["observedAtUnit"];
+  readonly observedAtValue: bigint;
+  readonly settlementReferenceHash: Uint8Array | string;
+  readonly authoritativeEvidenceHash: Uint8Array | string;
 }
 
 function nettingExternalExecutionStatus(
@@ -2237,6 +2246,42 @@ export class SqlitePackageExchangeStore {
       );
       return Object.freeze({ authorization, replayed: false });
     });
+  }
+
+  recordNettingAllocationExecutionObservation(
+    observation: NettingAllocationExecutionObservation,
+  ): { readonly evidence: NettingAllocationSettlementEvidence; readonly replayed: boolean } {
+    const authorization = this.nettingAllocationExecutionAuthorization(observation.authorizationHash);
+    if (authorization === undefined) {
+      throw new PackageExchangeStoreError(
+        "NETTING_EXECUTION_AUTHORIZATION_NOT_FOUND",
+        "Execution observation does not have a stored authorization.",
+      );
+    }
+    const batch = this.nettingBatch(authorization.nettingProofHash);
+    if (batch?.finalAllocationReceipt === undefined) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Execution authorization lost its netting batch.");
+    }
+    const evidence = guarded("INVALID_INPUT", "Allocation execution observation is invalid.", () =>
+      nettingAllocationSettlementEvidence({
+        version: 1,
+        finalAllocationReceiptHash: authorization.finalAllocationReceiptHash,
+        allocationReceiptHash: authorization.allocationReceiptHash,
+        settlementAccount: authorization.settlementAccount,
+        settledQuantityAtoms: authorization.settledQuantityAtoms,
+        settledQuoteDeltaAtoms: authorization.settledQuoteDeltaAtoms,
+        observedAtUnit: observation.observedAtUnit,
+        observedAtValue: observation.observedAtValue,
+        settlementReferenceHash: observation.settlementReferenceHash,
+        authoritativeEvidenceHash: observation.authoritativeEvidenceHash,
+      },
+      batch.finalAllocationReceipt!,
+      batch.result,
+      batch.policy,
+      batch.externalExecutions.map((record) => record.intent),
+      batch.externalExecutions.flatMap((record) => record.evidence === undefined ? [] : [record.evidence]),
+      ));
+    return this.recordVerifiedNettingAllocationSettlementEvidence(evidence);
   }
 
   recordVerifiedNettingAllocationSettlementEvidence(

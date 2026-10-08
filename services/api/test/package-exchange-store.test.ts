@@ -256,10 +256,17 @@ test("owner authorization and prepared netting evidence are immutable and replay
       () => store.recordVerifiedNettingAllocationSettlementEvidence(wrongAccountEvidence),
       { code: "NETTING_SETTLEMENT_ACCOUNT_MISMATCH" },
     );
-    assert.equal(store.recordVerifiedNettingAllocationSettlementEvidence(settlementEvidence[0]!).replayed, false);
+    const observations = settlementEvidence.map((evidence, index) => ({
+      authorizationHash: executionAuthorizations[index]!.authorizationHash,
+      observedAtUnit: evidence.observedAtUnit,
+      observedAtValue: evidence.observedAtValue,
+      settlementReferenceHash: evidence.settlementReferenceHash,
+      authoritativeEvidenceHash: evidence.authoritativeEvidenceHash,
+    }));
+    assert.equal(store.recordNettingAllocationExecutionObservation(observations[0]!).replayed, false);
     assert.equal(store.nettingBatch(created.batch.proofHashHex)?.settlementStatus, "AWAITING_SETTLEMENT");
-    assert.equal(store.recordVerifiedNettingAllocationSettlementEvidence(settlementEvidence[0]!).replayed, true);
-    assert.equal(store.recordVerifiedNettingAllocationSettlementEvidence(settlementEvidence[1]!).replayed, false);
+    assert.equal(store.recordNettingAllocationExecutionObservation(observations[0]!).replayed, true);
+    assert.equal(store.recordNettingAllocationExecutionObservation(observations[1]!).replayed, false);
     const settledBatch = store.nettingBatch(created.batch.proofHashHex);
     assert.equal(settledBatch?.settlementStatus, "SETTLED");
     assert.equal(settledBatch?.settlementEvidence.length, 2);
