@@ -1758,10 +1758,13 @@ export function TradingTerminal({
     }
     if (packageMarkets.length === 0) return;
     setActivePackageMarketId((current) => {
+      const requested = new URLSearchParams(window.location.search).get("market");
       const stored = window.localStorage.getItem(PACKAGE_MARKET_STORAGE_KEY);
-      const candidates = [current, stored, packageMarketId, packageMarkets[0]?.packageMarketId];
-      return candidates.find((candidate) => candidate !== null && candidate !== undefined
+      const candidates = [requested, current, stored, packageMarketId, packageMarkets[0]?.packageMarketId];
+      const selected = candidates.find((candidate) => candidate !== null && candidate !== undefined
         && packageMarkets.some((market) => market.packageMarketId === candidate)) ?? null;
+      if (selected !== null) window.localStorage.setItem(PACKAGE_MARKET_STORAGE_KEY, selected);
+      return selected;
     });
   }, [packageMarketId, packageMarkets, publicApiBaseUrl]);
   const resolvedPackageMarketId = packageMarkets.some((market) => market.packageMarketId === activePackageMarketId)

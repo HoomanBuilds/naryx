@@ -63,6 +63,9 @@ export interface PublicPackageMarket {
   readonly settlementClass: string | null;
   readonly domainIds: readonly string[];
   readonly halted: boolean;
+  readonly bestBidTicks: bigint | null;
+  readonly bestAskTicks: bigint | null;
+  readonly spreadTicks: bigint | null;
 }
 
 export interface PublicMarketCatalogueStatus {
@@ -107,6 +110,9 @@ function catalogueMarkets(body: Record<string, unknown>): readonly PublicPackage
       settlementClass: requiredText(entry.settlementClass, `catalogue.entries[${index}].settlementClass`),
       domainIds: textList(entry.domainIds, `catalogue.entries[${index}].domainIds`),
       halted: entry.halted,
+      bestBidTicks: null,
+      bestAskTicks: null,
+      spreadTicks: null,
     });
   });
   if (new Set(markets.map((market) => market.packageMarketId)).size !== markets.length) {
@@ -123,6 +129,8 @@ function openMarkets(body: Record<string, unknown>): readonly PublicPackageMarke
     }
     const entry = candidate as Record<string, unknown>;
     if (typeof entry.halted !== "boolean") throw new PublicApiError(`markets[${index}].halted is malformed`);
+    const optionalExact = (key: "bestBidTicks" | "bestAskTicks" | "spreadTicks") =>
+      entry[key] === undefined ? null : exact(entry[key], `markets[${index}].${key}`);
     return Object.freeze({
       packageMarketId: requiredText(entry.packageMarketId, `markets[${index}].packageMarketId`),
       seriesId: null,
@@ -132,6 +140,9 @@ function openMarkets(body: Record<string, unknown>): readonly PublicPackageMarke
       settlementClass: null,
       domainIds: Object.freeze([]),
       halted: entry.halted,
+      bestBidTicks: optionalExact("bestBidTicks"),
+      bestAskTicks: optionalExact("bestAskTicks"),
+      spreadTicks: optionalExact("spreadTicks"),
     });
   });
   if (new Set(markets.map((market) => market.packageMarketId)).size !== markets.length) {
@@ -155,12 +166,23 @@ export function usePublicPackageMarkets(baseUrl: string | null): {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       try {
-        let next: readonly PublicPackageMarket[];
+        const summaries = openMarkets(await read(base, "/v1/markets", controller.signal));
+        let next: readonly PublicPackageMarket[] = summaries;
         try {
-          next = catalogueMarkets(await read(base, "/v1/catalogue", controller.signal));
+          const summaryById = new Map(summaries.map((market) => [market.packageMarketId, market]));
+          next = Object.freeze(catalogueMarkets(await read(base, "/v1/catalogue", controller.signal)).map((market) => {
+            const summary = summaryById.get(market.packageMarketId);
+            if (summary === undefined) throw new PublicApiError(`catalogue market ${market.packageMarketId} has no open book`);
+            return Object.freeze({
+              ...market,
+              halted: summary.halted,
+              bestBidTicks: summary.bestBidTicks,
+              bestAskTicks: summary.bestAskTicks,
+              spreadTicks: summary.spreadTicks,
+            });
+          }));
         } catch (error) {
           if (!(error instanceof PublicApiError) || error.status !== 503) throw error;
-          next = openMarkets(await read(base, "/v1/markets", controller.signal));
         }
         setMarkets(next);
         setStatus({ state: "live", detail: `${next.length} package market${next.length === 1 ? "" : "s"} available.` });

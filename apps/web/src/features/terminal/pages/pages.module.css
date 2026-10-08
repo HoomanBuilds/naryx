@@ -51,6 +51,36 @@
   gap: 8px;
 }
 
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.marketSearch input {
+  width: min(280px, 42vw);
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--field);
+  color: var(--text-primary);
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.marketSearch input::placeholder {
+  color: var(--text-dim);
+}
+
+.marketSearch input:focus-visible {
+  border-color: var(--line-strong);
+  outline: 1px solid var(--yellow);
+  outline-offset: 1px;
+}
+
 .card {
   min-width: 0;
   overflow: hidden;
