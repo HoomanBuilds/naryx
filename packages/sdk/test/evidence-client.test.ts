@@ -20,6 +20,7 @@ import {
   applyStrategyCommand,
   builderAttributionHash,
   builderManifestHash,
+  collateralSnapshotHash,
   strategyCommandHash,
   strategyState,
   strategyStateHash,
@@ -29,6 +30,7 @@ import {
   strategyPackageQuoteHash,
   strategyPackageReceipt,
   strategyPackageReceiptHash,
+  strategyTemplateDefinitions,
   typedStrategyRouteHash,
   requireStrategyTemplateDefinition,
   domainRef,
@@ -622,6 +624,57 @@ describe('order intake and terminal evidence', () => {
     await assert.rejects(read([served({ decision: { ...decision, orderHash: 'cd'.repeat(32) } })]), /another order/);
   });
 
+  test('collateral snapshots are re-hashed and signatures verify only under trusted authorities', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const trustedKey = new Uint8Array((publicKey.export({ format: 'der', type: 'spki' }) as Buffer).subarray(-32));
+    const unsigned = {
+      version: 2,
+      environment: 'testnet',
+      snapshotId: 'collateral-1',
+      sourceId: 'margin-source-1',
+      strategyAccount: 'strategy-1',
+      owner: 'trader',
+      authority: 'collateral-key-1',
+      observedAtMs: 1_000n,
+      asset: usdc,
+      riskDomainId: 'sol-carry',
+      mode: 'ISOLATED' as const,
+      ownAvailableQuoteAtoms: 1_000_000n,
+      borrowAvailableQuoteAtoms: 500_000n,
+      requestedBorrowQuoteAtoms: 100_000n,
+      borrowCostQuoteAtoms: 1_000n,
+      haircutBps: 500n,
+      withdrawalDelayMs: 1_000n,
+      inventoryEligible: true,
+      withdrawalAllowed: true,
+      sourceEvidenceHash: '41'.repeat(32),
+      signature: new Uint8Array([1]),
+    };
+    const signed = { ...unsigned, signature: new Uint8Array(sign(null, collateralSnapshotHash(unsigned), privateKey)) };
+    const snapshotHash = toHex(collateralSnapshotHash(signed));
+    const body = (record = signed, recordHash = snapshotHash) => ({
+      strategyAccount: 'strategy-1',
+      label: 'OBSERVED',
+      sources: [{ recordHash, ageMs: 500n, record }],
+    });
+    const route = 'GET /v1/collateral/strategy-1';
+    const verified = await client({ [route]: { body: body() } }).getCollateral('strategy-1', {
+      trustedAuthorities: new Map([['collateral-key-1', trustedKey]]),
+    });
+    assert.equal(verified.sources[0]?.signatureVerified, true);
+    assert.equal((await client({ [route]: { body: body() } }).getCollateral('strategy-1')).sources[0]?.signatureVerified, false);
+    await assert.rejects(
+      client({ [route]: { body: body() } }).getCollateral('strategy-1', {
+        trustedAuthorities: new Map([['collateral-key-1', new Uint8Array(32).fill(9)]]),
+      }),
+      /does not verify/,
+    );
+    await assert.rejects(
+      client({ [route]: { body: body({ ...signed, ownAvailableQuoteAtoms: 2_000_000n }) } }).getCollateral('strategy-1'),
+      /does not match its record hash/,
+    );
+  });
+
   test('positions are re-hashed and signature-checked against trusted keys, and risk is recomputed locally', async () => {
     const { publicKey, privateKey } = generateKeyPairSync('ed25519');
     const trustedKey = new Uint8Array((publicKey.export({ format: 'der', type: 'spki' }) as Buffer).subarray(-32));
@@ -745,6 +798,121 @@ describe('order intake and terminal evidence', () => {
     const simulated = await client({ 'POST /v1/packages/simulate': { body: body(local) } }).simulatePackageGraph(graph);
     assert.equal(simulated.failurePoints[0]?.recoverable, true);
     await assert.rejects(client({ 'POST /v1/packages/simulate': { body: body([]) } }).simulatePackageGraph(graph), /differ from the local simulation/);
+  });
+
+  test('strategy discovery and owner summaries preserve their evidence limits and arithmetic', async () => {
+    const program = {
+      programVersion: 1,
+      templates: strategyTemplateDefinitions().map((template) => ({
+        templateId: template.templateId,
+        templateVersion: template.templateVersion,
+        displayName: template.displayName,
+        quoteConventionId: template.quoteConventionId,
+        riskClassId: template.riskClassId,
+        lifecycleConventionId: template.lifecycleConventionId,
+        metricIds: template.metricIds,
+        actions: template.actionSpecs.map((action) => ({
+          action: action.action,
+          minimumLegs: action.minimumLegs,
+          maximumLegs: action.maximumLegs,
+          settlementClasses: action.allowedSettlementClasses,
+          legRoles: action.legRules.map((leg) => ({
+            legTypeId: leg.legTypeId,
+            allowedFamilies: leg.allowedFamilies,
+            allowedSides: leg.allowedSides,
+            minimumCount: leg.minimumCount,
+            maximumCount: leg.maximumCount,
+          })),
+        })),
+      })),
+    };
+    assert.equal((await client({ 'GET /v1/strategy-program': { body: program } }).getStrategyProgram()).templates.length, program.templates.length);
+    await assert.rejects(
+      client({
+        'GET /v1/strategy-program': {
+          body: { ...program, templates: [{ ...program.templates[0]!, displayName: 'substituted' }, ...program.templates.slice(1)] },
+        },
+      }).getStrategyProgram(),
+      /differs from this SDK/,
+    );
+
+    const admission = {
+      orderHashHex: '11'.repeat(32),
+      quoteHashHex: '12'.repeat(32),
+      routeHashHex: '13'.repeat(32),
+      templateId: 'cash-and-carry-v1',
+      templateVersion: 1,
+      lifecycleAction: 'ENTRY',
+      settlementClass: 'ATOMIC_POSTCONDITION',
+      solverId: 'solver-a',
+      domainIds: ['svm:testnet'],
+      validUntilUnit: 'SOLANA_SLOT',
+      validUntilValue: 500n,
+      recordedAtMs: 1_000,
+    };
+    const recent = await client({
+      'GET /v1/strategy-packages/recent?limit=2': { body: { version: 1, admissions: [admission] } },
+    }).getRecentStrategyPackages(2);
+    assert.equal(recent[0]?.quoteHash, admission.quoteHashHex);
+    assert.equal(recent[0]?.validUntilValue, 500n);
+
+    const ownerStrategies = await client({
+      'GET /v1/owners/trader/strategies': {
+        body: { environment: 'testnet', ownerId: 'trader', strategies: [{ strategyId: 'strategy-a', stateVersion: 2n, stateHash: '21'.repeat(32), open: true, retired: false }] },
+      },
+    }).getOwnerStrategies('trader');
+    assert.equal(ownerStrategies.strategies[0]?.stateVersion, 2n);
+
+    const ownerReceipt = {
+      receiptHashHex: '31'.repeat(32),
+      orderHashHex: '32'.repeat(32),
+      quoteHashHex: '33'.repeat(32),
+      templateId: 'cash-and-carry-v1',
+      lifecycleAction: 'ENTRY',
+      expectedStrategyStateHashHex: null,
+      terminalState: 'FINALIZED_COMPLETE',
+      finalityStatus: 'FINALIZED',
+      domainIds: ['svm:testnet'],
+      portfolioEligible: true,
+      executionEvidence: {
+        routeHashHex: '34'.repeat(32),
+        solverId: 'solver-a',
+        settlementClass: 'ATOMIC_POSTCONDITION',
+        legCount: 2,
+        onchainEnforcedLegCount: 2,
+        evidenceGrades: ['CONSENSUS_VERIFIED'],
+      },
+      executionEconomics: {
+        quoteAssetId: 'usdc',
+        quoteAssetDecimals: 6,
+        grossLegNotionalAtoms: 200n,
+        serviceFeeAtoms: 2n,
+        solverFeeAtoms: 3n,
+        venueFeeAtoms: 5n,
+        networkCostAtoms: 7n,
+        recoveryCostAtoms: 11n,
+        explicitCostAtoms: 28n,
+        terminalResidualValueAtoms: 0n,
+      },
+      recordedAtMs: 1_100,
+    };
+    const receiptRoute = 'GET /v1/owners/trader/strategy-receipts?limit=50';
+    const summaries = await client({
+      [receiptRoute]: { body: { version: 1, ownerId: 'trader', receipts: [ownerReceipt] } },
+    }).getOwnerStrategyReceipts('trader');
+    assert.equal(summaries[0]?.executionEconomics.explicitCostAtoms, 28n);
+    await assert.rejects(
+      client({
+        [receiptRoute]: {
+          body: {
+            version: 1,
+            ownerId: 'trader',
+            receipts: [{ ...ownerReceipt, executionEconomics: { ...ownerReceipt.executionEconomics, explicitCostAtoms: 29n } }],
+          },
+        },
+      }).getOwnerStrategyReceipts('trader'),
+      /does not equal its components/,
+    );
   });
 
   test('strategy quote proofs re-hash and cross-check the selected order, graph, quote, route, and solver signature', async () => {
@@ -1033,6 +1201,26 @@ describe('order intake and terminal evidence', () => {
     assert.equal(verifiedReceipt.signatureVerified, true);
     assert.equal(verifiedReceipt.executionIntelligence?.intelligence.quality.slippageBps, 5n);
     assert.equal(verifiedReceipt.executionIntelligence?.intelligence.delivery.mevProtectionLabel, 'REDUCED_PUBLIC_EXPOSURE');
+    const rawReceiptPath = `GET /v1/strategy-receipts/${receiptHash}`;
+    const rawReceipt = await client({
+      [rawReceiptPath]: { body: { version: 1, receiptHash, receipt } },
+    }).getStrategyReceipt(receiptHash);
+    assert.equal(rawReceipt.receiptHash, receiptHash);
+    const byQuotePath = `GET /v1/strategy-receipts/by-quote/${quoteHash}`;
+    const byQuote = await client({
+      [byQuotePath]: { body: { version: 1, quoteHash, receiptHashHex: receiptHash, receipt, recordedAtMs: 12_400 } },
+    }).getStrategyReceiptByQuote(quoteHash);
+    assert.equal(byQuote.receiptHash, receiptHash);
+    assert.equal(byQuote.recordedAtMs, 12_400);
+    const otherQuoteHash = 'ab'.repeat(32);
+    await assert.rejects(
+      client({
+        [`GET /v1/strategy-receipts/by-quote/${otherQuoteHash}`]: {
+          body: { version: 1, quoteHash: otherQuoteHash, receiptHashHex: receiptHash, receipt, recordedAtMs: 12_400 },
+        },
+      }).getStrategyReceiptByQuote(otherQuoteHash),
+      /does not bind the requested quote/,
+    );
     await assert.rejects(
       client({ [receiptPath]: { body: { ...receiptProof, receipt: { ...receipt, solverId: 'solver-b' } } } }).getStrategyReceiptProof(receiptHash),
       /strategy receipt does not hash to the requested hash/,

@@ -15,10 +15,15 @@ import {
   buildExposureGraph,
   bytesEqual,
   CANDLE_INTERVAL_MS,
+  collateralSnapshot,
+  collateralSnapshotHash,
   commitmentHash,
   evidenceManifest,
   evidenceManifestHash,
+  EXPIRY_UNIT,
   executionIntelligence,
+  FIELD_EVIDENCE_GRADE,
+  FINALITY_STATUS,
   fromHex,
   fromProtocolJson,
   packageAllocation,
@@ -69,6 +74,7 @@ import {
   strategyPackageQuoteHash,
   strategyPackageReceipt,
   strategyPackageReceiptHash,
+  strategyTemplateDefinitions,
   typedStrategyRouteHash,
   type StrategyCommandInput,
   type StrategyState,
@@ -98,6 +104,8 @@ import {
   requiresSuccessfulReceipt,
   verifyQualificationHistory,
   sealedAuctionHash,
+  SETTLEMENT_CLASS,
+  GRAPH_LIFECYCLE_ACTION,
   TERMINAL_STATE,
   terminalOutcomeHash,
   terminalOutcomeRecord,
@@ -113,6 +121,8 @@ import {
   type AcceptedQuoteFeeTerms,
   type CandleInterval,
   type CandleSeries,
+  type CollateralSnapshot,
+  type CollateralSnapshotInput,
   type EvidenceManifest,
   type EvidenceManifestInput,
   type ExecutionIntelligence,
@@ -174,6 +184,7 @@ import {
   type StrategyPackageQuoteInput,
   type StrategyPackageReceipt,
   type StrategyPackageReceiptInput,
+  type StrategyTemplateDefinition,
   type TypedStrategyRoute,
 } from '@naryx/protocol-types';
 import { verifyTypedData, type Hex } from 'viem';
@@ -520,6 +531,124 @@ export interface VerifiedPositionSource {
   readonly signatureVerified: boolean;
 }
 
+export interface StrategyProgramLegRole {
+  readonly legTypeId: string;
+  readonly allowedFamilies: StrategyTemplateDefinition['actionSpecs'][number]['legRules'][number]['allowedFamilies'];
+  readonly allowedSides: StrategyTemplateDefinition['actionSpecs'][number]['legRules'][number]['allowedSides'];
+  readonly minimumCount: number;
+  readonly maximumCount: number;
+}
+
+export interface StrategyProgramAction {
+  readonly action: StrategyTemplateDefinition['actionSpecs'][number]['action'];
+  readonly minimumLegs: number;
+  readonly maximumLegs: number;
+  readonly settlementClasses: StrategyTemplateDefinition['actionSpecs'][number]['allowedSettlementClasses'];
+  readonly legRoles: readonly StrategyProgramLegRole[];
+}
+
+export interface StrategyProgramTemplate {
+  readonly templateId: string;
+  readonly templateVersion: number;
+  readonly displayName: string;
+  readonly quoteConventionId: string;
+  readonly riskClassId: string;
+  readonly lifecycleConventionId: string;
+  readonly metricIds: readonly string[];
+  readonly actions: readonly StrategyProgramAction[];
+}
+
+export interface StrategyProgramView {
+  readonly programVersion: 1;
+  readonly templates: readonly StrategyProgramTemplate[];
+}
+
+export interface StrategyPackageAdmissionSummary {
+  readonly orderHash: string;
+  readonly quoteHash: string;
+  readonly routeHash: string;
+  readonly templateId: string;
+  readonly templateVersion: number;
+  readonly lifecycleAction: StrategyPackageOrder['lifecycleAction'];
+  readonly settlementClass: StrategyPackageOrder['settlementClass'];
+  readonly solverId: string;
+  readonly domainIds: readonly string[];
+  readonly validUntilUnit: StrategyPackageQuote['validUntilUnit'];
+  readonly validUntilValue: bigint;
+  readonly recordedAtMs: number;
+}
+
+export interface OwnerStrategySummary {
+  readonly strategyId: string;
+  readonly stateVersion: bigint;
+  readonly stateHash: string;
+  readonly open: boolean;
+  readonly retired: boolean;
+}
+
+export interface OwnerStrategiesView {
+  readonly environment: string;
+  readonly ownerId: string;
+  readonly strategies: readonly OwnerStrategySummary[];
+}
+
+export interface OwnerStrategyReceiptSummary {
+  readonly receiptHash: string;
+  readonly orderHash: string;
+  readonly quoteHash: string;
+  readonly templateId: string;
+  readonly lifecycleAction: StrategyPackageOrder['lifecycleAction'];
+  readonly expectedStrategyStateHash?: string;
+  readonly terminalState: StrategyPackageReceipt['terminalState'];
+  readonly finalityStatus: StrategyPackageReceipt['finalityStatus'];
+  readonly domainIds: readonly string[];
+  readonly portfolioEligible: boolean;
+  readonly executionEvidence: Readonly<{
+    readonly routeHash: string;
+    readonly solverId: string;
+    readonly settlementClass: StrategyPackageReceipt['settlementClass'];
+    readonly legCount: number;
+    readonly onchainEnforcedLegCount: number;
+    readonly evidenceGrades: readonly StrategyPackageReceipt['legOutcomes'][number]['evidenceGrade'][];
+  }>;
+  readonly executionEconomics: Readonly<{
+    readonly quoteAssetId: string;
+    readonly quoteAssetDecimals: number;
+    readonly grossLegNotionalAtoms: bigint;
+    readonly serviceFeeAtoms: bigint;
+    readonly solverFeeAtoms: bigint;
+    readonly venueFeeAtoms: bigint;
+    readonly networkCostAtoms: bigint;
+    readonly recoveryCostAtoms: bigint;
+    readonly explicitCostAtoms: bigint;
+    readonly terminalResidualValueAtoms: bigint;
+  }>;
+  readonly recordedAtMs: number;
+}
+
+export interface VerifiedStrategyReceipt {
+  readonly receiptHash: string;
+  readonly receipt: StrategyPackageReceipt;
+}
+
+export interface VerifiedStoredStrategyReceipt extends VerifiedStrategyReceipt {
+  readonly quoteHash: string;
+  readonly recordedAtMs: number;
+}
+
+export interface VerifiedCollateralSource {
+  readonly recordHash: string;
+  readonly ageMs: bigint;
+  readonly record: CollateralSnapshot;
+  readonly signatureVerified: boolean;
+}
+
+export interface VerifiedCollateral {
+  readonly strategyAccount: string;
+  readonly label: 'OBSERVED';
+  readonly sources: readonly VerifiedCollateralSource[];
+}
+
 export interface VerifiedPositions {
   readonly strategyAccount: string;
   readonly label: 'OBSERVED';
@@ -655,6 +784,146 @@ function count(value: unknown, context: string): number {
 function hashHex(value: unknown, context: string): string {
   if (typeof value !== 'string' || !HASH_HEX.test(value)) throw new NaryxEvidenceError(`${context} is not a 32-byte hash`);
   return value;
+}
+
+function servedId(value: unknown, context: string): string {
+  if (typeof value !== 'string' || !ID.test(value)) throw new NaryxEvidenceError(`${context} is not an identifier`);
+  return value;
+}
+
+function enumKey<Table extends Readonly<Record<string, number>>>(table: Table, value: unknown, context: string): keyof Table & string {
+  if (typeof value !== 'string' || !Object.hasOwn(table, value)) throw new NaryxEvidenceError(`${context} is not a supported value`);
+  return value as keyof Table & string;
+}
+
+function sameProtocolValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(toProtocolJson(left)) === JSON.stringify(toProtocolJson(right));
+}
+
+function canonicalStrategyProgram(): StrategyProgramView {
+  return Object.freeze({
+    programVersion: 1 as const,
+    templates: Object.freeze(strategyTemplateDefinitions().map((template) => Object.freeze({
+      templateId: template.templateId,
+      templateVersion: template.templateVersion,
+      displayName: template.displayName,
+      quoteConventionId: template.quoteConventionId,
+      riskClassId: template.riskClassId,
+      lifecycleConventionId: template.lifecycleConventionId,
+      metricIds: template.metricIds,
+      actions: Object.freeze(template.actionSpecs.map((action) => Object.freeze({
+        action: action.action,
+        minimumLegs: action.minimumLegs,
+        maximumLegs: action.maximumLegs,
+        settlementClasses: action.allowedSettlementClasses,
+        legRoles: Object.freeze(action.legRules.map((leg) => Object.freeze({
+          legTypeId: leg.legTypeId,
+          allowedFamilies: leg.allowedFamilies,
+          allowedSides: leg.allowedSides,
+          minimumCount: leg.minimumCount,
+          maximumCount: leg.maximumCount,
+        }))),
+      }))),
+    }))),
+  });
+}
+
+function verifiedStandaloneStrategyReceipt(expectedReceiptHash: string, value: unknown, context: string): VerifiedStrategyReceipt {
+  const requested = hashHex(expectedReceiptHash, 'receipt hash');
+  const body = record(value, context);
+  if (body.version !== 1) throw new NaryxEvidenceError(`${context} has an unsupported version`);
+  let receipt: StrategyPackageReceipt;
+  let receiptHash: string;
+  try {
+    receipt = strategyPackageReceipt(body.receipt as StrategyPackageReceiptInput);
+    receiptHash = toHex(strategyPackageReceiptHash(receipt));
+  } catch (error) {
+    throw new NaryxEvidenceError(`${context} is malformed: ${(error as Error).message}`);
+  }
+  if (hashHex(body.receiptHash, `${context}.receiptHash`) !== receiptHash || receiptHash !== requested) {
+    throw new NaryxEvidenceError(`${context} does not hash to the requested receipt`);
+  }
+  return Object.freeze({ receiptHash, receipt });
+}
+
+function ownerStrategyReceiptSummary(value: unknown, index: number): OwnerStrategyReceiptSummary {
+  const context = `receipts[${index}]`;
+  const served = record(value, context);
+  const lifecycleAction = enumKey(GRAPH_LIFECYCLE_ACTION, served.lifecycleAction, `${context}.lifecycleAction`) as StrategyPackageOrder['lifecycleAction'];
+  const terminalState = enumKey(TERMINAL_STATE, served.terminalState, `${context}.terminalState`) as StrategyPackageReceipt['terminalState'];
+  const finalityStatus = enumKey(FINALITY_STATUS, served.finalityStatus, `${context}.finalityStatus`) as StrategyPackageReceipt['finalityStatus'];
+  const domainIds = list(served.domainIds, `${context}.domainIds`).map((domainId, domainIndex) => servedId(domainId, `${context}.domainIds[${domainIndex}]`));
+  if (new Set(domainIds).size !== domainIds.length || domainIds.join('\0') !== [...domainIds].sort().join('\0')) {
+    throw new NaryxEvidenceError(`${context}.domainIds must be unique and sorted`);
+  }
+  const evidence = record(served.executionEvidence, `${context}.executionEvidence`);
+  const legCount = count(evidence.legCount, `${context}.executionEvidence.legCount`);
+  const onchainEnforcedLegCount = count(evidence.onchainEnforcedLegCount, `${context}.executionEvidence.onchainEnforcedLegCount`);
+  if (onchainEnforcedLegCount > legCount) throw new NaryxEvidenceError(`${context} enforces more legs than it reports`);
+  const evidenceGrades = list(evidence.evidenceGrades, `${context}.executionEvidence.evidenceGrades`).map((grade, gradeIndex) => (
+    enumKey(FIELD_EVIDENCE_GRADE, grade, `${context}.executionEvidence.evidenceGrades[${gradeIndex}]`)
+  )) as StrategyPackageReceipt['legOutcomes'][number]['evidenceGrade'][];
+  if (new Set(evidenceGrades).size !== evidenceGrades.length || evidenceGrades.join('\0') !== [...evidenceGrades].sort().join('\0')) {
+    throw new NaryxEvidenceError(`${context}.executionEvidence.evidenceGrades must be unique and sorted`);
+  }
+  const economics = record(served.executionEconomics, `${context}.executionEconomics`);
+  const nonnegative = (field: string): bigint => {
+    const value = big(economics[field], `${context}.executionEconomics.${field}`);
+    if (value < 0n) throw new NaryxEvidenceError(`${context}.executionEconomics.${field} is negative`);
+    return value;
+  };
+  const grossLegNotionalAtoms = nonnegative('grossLegNotionalAtoms');
+  const serviceFeeAtoms = nonnegative('serviceFeeAtoms');
+  const solverFeeAtoms = nonnegative('solverFeeAtoms');
+  const venueFeeAtoms = nonnegative('venueFeeAtoms');
+  const networkCostAtoms = nonnegative('networkCostAtoms');
+  const recoveryCostAtoms = nonnegative('recoveryCostAtoms');
+  const explicitCostAtoms = nonnegative('explicitCostAtoms');
+  const terminalResidualValueAtoms = nonnegative('terminalResidualValueAtoms');
+  if (explicitCostAtoms !== serviceFeeAtoms + solverFeeAtoms + venueFeeAtoms + networkCostAtoms + recoveryCostAtoms) {
+    throw new NaryxEvidenceError(`${context}.executionEconomics.explicitCostAtoms does not equal its components`);
+  }
+  if (typeof served.portfolioEligible !== 'boolean'
+    || served.portfolioEligible !== (finalityStatus === 'FINALIZED' && requiresSuccessfulReceipt(terminalState))) {
+    throw new NaryxEvidenceError(`${context}.portfolioEligible is inconsistent with finality`);
+  }
+  const expectedState = served.expectedStrategyStateHashHex;
+  if (expectedState !== null && expectedState !== undefined) hashHex(expectedState, `${context}.expectedStrategyStateHashHex`);
+  const quoteAssetDecimals = count(economics.quoteAssetDecimals, `${context}.executionEconomics.quoteAssetDecimals`);
+  if (quoteAssetDecimals > 255) throw new NaryxEvidenceError(`${context}.executionEconomics.quoteAssetDecimals is out of range`);
+  return Object.freeze({
+    receiptHash: hashHex(served.receiptHashHex, `${context}.receiptHashHex`),
+    orderHash: hashHex(served.orderHashHex, `${context}.orderHashHex`),
+    quoteHash: hashHex(served.quoteHashHex, `${context}.quoteHashHex`),
+    templateId: servedId(served.templateId, `${context}.templateId`),
+    lifecycleAction,
+    ...(expectedState === null || expectedState === undefined ? {} : { expectedStrategyStateHash: expectedState as string }),
+    terminalState,
+    finalityStatus,
+    domainIds: Object.freeze(domainIds),
+    portfolioEligible: served.portfolioEligible,
+    executionEvidence: Object.freeze({
+      routeHash: hashHex(evidence.routeHashHex, `${context}.executionEvidence.routeHashHex`),
+      solverId: servedId(evidence.solverId, `${context}.executionEvidence.solverId`),
+      settlementClass: enumKey(SETTLEMENT_CLASS, evidence.settlementClass, `${context}.executionEvidence.settlementClass`) as StrategyPackageReceipt['settlementClass'],
+      legCount,
+      onchainEnforcedLegCount,
+      evidenceGrades: Object.freeze(evidenceGrades),
+    }),
+    executionEconomics: Object.freeze({
+      quoteAssetId: servedId(economics.quoteAssetId, `${context}.executionEconomics.quoteAssetId`),
+      quoteAssetDecimals,
+      grossLegNotionalAtoms,
+      serviceFeeAtoms,
+      solverFeeAtoms,
+      venueFeeAtoms,
+      networkCostAtoms,
+      recoveryCostAtoms,
+      explicitCostAtoms,
+      terminalResidualValueAtoms,
+    }),
+    recordedAtMs: count(served.recordedAtMs, `${context}.recordedAtMs`),
+  });
 }
 
 function sameDomainRef(left: DomainRef, right: DomainRef): boolean {
@@ -1151,6 +1420,45 @@ export class NaryxClient {
     if (!Number.isSafeInteger(templateVersion) || templateVersion < 1) throw new TypeError('invalid template version');
     const [document] = documents([await this.#request('GET', `/v1/package-templates/${checkId(templateId, 'template id')}/${templateVersion}`)], 'template');
     return document as RegisteredDocumentView;
+  }
+
+  /** The exact strategy template program compiled into this SDK and served by the API. */
+  async getStrategyProgram(): Promise<StrategyProgramView> {
+    const served = record(await this.#request('GET', '/v1/strategy-program'), 'strategy program');
+    const expected = canonicalStrategyProgram();
+    if (!sameProtocolValue(served, expected)) throw new NaryxEvidenceError('the served strategy program differs from this SDK');
+    return expected;
+  }
+
+  /** Recent admitted package summaries. These are discovery rows, not complete execution proofs. */
+  async getRecentStrategyPackages(limit = 20): Promise<readonly StrategyPackageAdmissionSummary[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new TypeError('limit must be an integer between 1 and 50');
+    const body = record(await this.#request('GET', `/v1/strategy-packages/recent?limit=${limit}`), 'recent strategy packages');
+    if (body.version !== 1) throw new NaryxEvidenceError('recent strategy packages have an unsupported version');
+    return Object.freeze(list(body.admissions, 'admissions').map((entry, index) => {
+      const context = `admissions[${index}]`;
+      const admission = record(entry, context);
+      const templateVersion = count(admission.templateVersion, `${context}.templateVersion`);
+      if (templateVersion < 1) throw new NaryxEvidenceError(`${context}.templateVersion must be positive`);
+      const domainIds = list(admission.domainIds, `${context}.domainIds`).map((domainId, domainIndex) => servedId(domainId, `${context}.domainIds[${domainIndex}]`));
+      if (new Set(domainIds).size !== domainIds.length) throw new NaryxEvidenceError(`${context}.domainIds contains duplicates`);
+      const validUntilValue = big(admission.validUntilValue, `${context}.validUntilValue`);
+      if (validUntilValue < 0n) throw new NaryxEvidenceError(`${context}.validUntilValue is negative`);
+      return Object.freeze({
+        orderHash: hashHex(admission.orderHashHex, `${context}.orderHashHex`),
+        quoteHash: hashHex(admission.quoteHashHex, `${context}.quoteHashHex`),
+        routeHash: hashHex(admission.routeHashHex, `${context}.routeHashHex`),
+        templateId: servedId(admission.templateId, `${context}.templateId`),
+        templateVersion,
+        lifecycleAction: enumKey(GRAPH_LIFECYCLE_ACTION, admission.lifecycleAction, `${context}.lifecycleAction`) as StrategyPackageOrder['lifecycleAction'],
+        settlementClass: enumKey(SETTLEMENT_CLASS, admission.settlementClass, `${context}.settlementClass`) as StrategyPackageOrder['settlementClass'],
+        solverId: servedId(admission.solverId, `${context}.solverId`),
+        domainIds: Object.freeze(domainIds),
+        validUntilUnit: enumKey(EXPIRY_UNIT, admission.validUntilUnit, `${context}.validUntilUnit`) as StrategyPackageQuote['validUntilUnit'],
+        validUntilValue,
+        recordedAtMs: count(admission.recordedAtMs, `${context}.recordedAtMs`),
+      });
+    }));
   }
 
   async listSolvers(): Promise<readonly Record<string, unknown>[]> {
@@ -1881,6 +2189,37 @@ export class NaryxClient {
     );
   }
 
+  /** Reads a terminal strategy receipt and verifies its canonical receipt hash. */
+  async getStrategyReceipt(receiptHash: string): Promise<VerifiedStrategyReceipt> {
+    const requested = hashHex(receiptHash, 'receipt hash');
+    return verifiedStandaloneStrategyReceipt(
+      requested,
+      await this.#request('GET', `/v1/strategy-receipts/${requested}`),
+      'strategy receipt',
+    );
+  }
+
+  /** Looks up a terminal receipt by quote and verifies both the quote binding and receipt hash. */
+  async getStrategyReceiptByQuote(quoteHash: string): Promise<VerifiedStoredStrategyReceipt> {
+    const requested = hashHex(quoteHash, 'quote hash');
+    const body = record(
+      await this.#request('GET', `/v1/strategy-receipts/by-quote/${requested}`),
+      'strategy receipt by quote',
+    );
+    if (body.quoteHash !== requested) throw new NaryxEvidenceError('strategy receipt lookup is for another quote');
+    const verified = verifiedStandaloneStrategyReceipt(
+      hashHex(body.receiptHashHex, 'strategy receipt by quote.receiptHashHex'),
+      { version: body.version, receiptHash: body.receiptHashHex, receipt: body.receipt },
+      'strategy receipt by quote',
+    );
+    if (toHex(verified.receipt.quoteHash) !== requested) throw new NaryxEvidenceError('strategy receipt does not bind the requested quote');
+    return Object.freeze({
+      ...verified,
+      quoteHash: requested,
+      recordedAtMs: count(body.recordedAtMs, 'strategy receipt by quote.recordedAtMs'),
+    });
+  }
+
   /** Reads the terminal outcome of an order without its receipt, verified as `verifyOutcomeEvidence` does. */
   async getOutcome(orderHash: string): Promise<VerifiedOutcome> {
     const requested = hashHex(orderHash, 'order hash');
@@ -2228,6 +2567,55 @@ export class NaryxClient {
     }));
   }
 
+  /** Current strategy identities owned by an account. Full state is read with `getStrategy`. */
+  async getOwnerStrategies(ownerId: string): Promise<OwnerStrategiesView> {
+    const owner = checkId(ownerId, 'owner id');
+    const body = record(await this.#request('GET', `/v1/owners/${owner}/strategies`), 'owner strategies');
+    if (body.ownerId !== owner) throw new NaryxEvidenceError('owner strategies are for another owner');
+    const seen = new Set<string>();
+    const strategies = list(body.strategies, 'strategies').map((entry, index) => {
+      const context = `strategies[${index}]`;
+      const strategy = record(entry, context);
+      const strategyId = servedId(strategy.strategyId, `${context}.strategyId`);
+      if (seen.has(strategyId)) throw new NaryxEvidenceError('owner strategies contain a duplicate strategy');
+      seen.add(strategyId);
+      const stateVersion = big(strategy.stateVersion, `${context}.stateVersion`);
+      if (stateVersion < 1n) throw new NaryxEvidenceError(`${context}.stateVersion must be positive`);
+      if (typeof strategy.open !== 'boolean' || typeof strategy.retired !== 'boolean') throw new NaryxEvidenceError(`${context} has malformed state flags`);
+      return Object.freeze({
+        strategyId,
+        stateVersion,
+        stateHash: hashHex(strategy.stateHash, `${context}.stateHash`),
+        open: strategy.open,
+        retired: strategy.retired,
+      });
+    });
+    return Object.freeze({
+      environment: servedId(body.environment, 'owner strategies.environment'),
+      ownerId: owner,
+      strategies: Object.freeze(strategies),
+    });
+  }
+
+  /** Recent terminal package receipts owned by an account, with internally consistent economics. */
+  async getOwnerStrategyReceipts(ownerId: string, limit = 50): Promise<readonly OwnerStrategyReceiptSummary[]> {
+    const requestedOwner = checkId(ownerId, 'owner id');
+    const owner = requestedOwner.startsWith('0x') ? requestedOwner.toLowerCase() : requestedOwner;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new TypeError('limit must be an integer between 1 and 50');
+    const body = record(
+      await this.#request('GET', `/v1/owners/${requestedOwner}/strategy-receipts?limit=${limit}`),
+      'owner strategy receipts',
+    );
+    if (body.version !== 1 || body.ownerId !== owner) throw new NaryxEvidenceError('owner strategy receipts are for another owner or version');
+    const receipts = list(body.receipts, 'receipts').map(ownerStrategyReceiptSummary);
+    const seen = new Set<string>();
+    for (const receipt of receipts) {
+      if (seen.has(receipt.receiptHash)) throw new NaryxEvidenceError('owner strategy receipts contain a duplicate receipt');
+      seen.add(receipt.receiptHash);
+    }
+    return Object.freeze(receipts);
+  }
+
   /** A strategy's current state, re-validated and re-hashed here; the served hash must match. */
   async getStrategy(strategyId: string): Promise<{ readonly state: StrategyState; readonly stateHash: string; readonly originReceiptHash?: string; readonly retiredByCommandHash?: string }> {
     const id = checkId(strategyId, 'strategy id');
@@ -2439,6 +2827,48 @@ export class NaryxClient {
     if (signatureVerified) this.#catalogueSequences.set(key, catalogue.sequence);
     const current = marketCatalogueCurrent(catalogue, options.nowMs ?? BigInt(Date.now()));
     return Object.freeze({ catalogue, catalogueHash: hash, signatureVerified, current, search: (query: MarketCatalogueQuery) => searchMarketCatalogue(catalogue, query) });
+  }
+
+  /**
+   * The latest signed collateral snapshot from each source for a strategy account. Every snapshot
+   * is re-validated and re-hashed. A trusted authority's signature must verify locally.
+   */
+  async getCollateral(
+    strategyAccount: string,
+    options: { readonly trustedAuthorities?: ReadonlyMap<string, Uint8Array> } = {},
+  ): Promise<VerifiedCollateral> {
+    const account = checkId(strategyAccount, 'strategy account');
+    const body = record(await this.#request('GET', `/v1/collateral/${account}`), 'collateral');
+    if (body.strategyAccount !== account || body.label !== 'OBSERVED') throw new NaryxEvidenceError('collateral is for another account or not labeled OBSERVED');
+    const seen = new Set<string>();
+    const sources: VerifiedCollateralSource[] = [];
+    for (const [index, entry] of list(body.sources, 'sources').entries()) {
+      const context = `sources[${index}]`;
+      const served = record(entry, context);
+      let snapshot: CollateralSnapshot;
+      let snapshotHash: string;
+      try {
+        snapshot = collateralSnapshot(served.record as CollateralSnapshotInput);
+        snapshotHash = toHex(collateralSnapshotHash(snapshot));
+      } catch (error) {
+        throw new NaryxEvidenceError(`${context} is malformed: ${(error as Error).message}`);
+      }
+      if (snapshot.strategyAccount !== account) throw new NaryxEvidenceError(`${context} belongs to another account`);
+      if (served.recordHash !== snapshotHash) throw new NaryxEvidenceError(`${context} does not match its record hash`);
+      if (seen.has(snapshot.sourceId)) throw new NaryxEvidenceError('collateral carries the same source twice');
+      seen.add(snapshot.sourceId);
+      const ageMs = big(served.ageMs, `${context}.ageMs`);
+      if (ageMs < 0n) throw new NaryxEvidenceError(`${context}.ageMs is negative`);
+      let signatureVerified = false;
+      const trusted = options.trustedAuthorities?.get(snapshot.authority);
+      if (trusted !== undefined) {
+        const verdict = await webCryptoEd25519(trusted, fromHex(snapshotHash), snapshot.signature);
+        if (verdict === false) throw new NaryxEvidenceError(`${context} signature does not verify under the trusted authority`);
+        signatureVerified = verdict === true;
+      }
+      sources.push(Object.freeze({ recordHash: snapshotHash, ageMs, record: snapshot, signatureVerified }));
+    }
+    return Object.freeze({ strategyAccount: account, label: 'OBSERVED' as const, sources: Object.freeze(sources) });
   }
 
   /**
