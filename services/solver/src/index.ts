@@ -34,6 +34,10 @@ export {
   type RegisteredNettingAllocationAttempt,
 } from './netting-allocation-admin-client.js';
 export {
+  prepareNettingAllocationExecution,
+  type PreparedNettingAllocationExecution,
+} from './netting-allocation-execution-preparer.js';
+export {
   GeneralizedStrategyQuoteError,
   GeneralizedStrategyQuoteService,
   InMemoryGeneralizedStrategyQuoteStore,
