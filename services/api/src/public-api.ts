@@ -11,6 +11,7 @@ import {
   MARKET_DATA_METHODOLOGY_VERSION,
   QUALIFICATION_OBJECT_TYPE,
   matchPackageOrder,
+  netObligations,
   packageBookLevels,
   packageAllocationHash,
   packageOrderHash,
@@ -66,6 +67,8 @@ import type {
   DomainResourceLimit,
   DomainRef,
   PackageGraphInput,
+  NettingObligation,
+  NettingQuantityIncrement,
   PackageTemplateManifestInput,
   PackageOrderInput,
   PackageBookAmendmentInput,
@@ -1421,6 +1424,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/routes/replay-decision",
       "/v1/routes/compare",
       "/v1/clearing/simulate",
+      "/v1/netting/simulate",
       "/v1/package-book/orders/prepare",
       "/v1/package-book/orders",
       "/v1/package-book/orders/authorization",
@@ -1947,6 +1951,20 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       // Runs against the current book in memory only; nothing is persisted or reserved.
       const result = matchPackageOrder(policy, state, body.order as PackageTakerOrderInput, nowValue());
       return result.accepted ? { accepted: true, simulated: true, allocation: result.allocation } : { accepted: false, simulated: true, rejection: result.rejection };
+    }
+    if (path === "/v1/netting/simulate") {
+      const obligations = body.obligations;
+      const quantityIncrements = body.quantityIncrements;
+      if (!Array.isArray(obligations) || !Array.isArray(quantityIncrements)) {
+        throw new RequestError(400, "INVALID_REQUEST", "obligations and quantityIncrements must be arrays.");
+      }
+      return {
+        simulated: true,
+        result: netObligations(
+          obligations as readonly NettingObligation[],
+          quantityIncrements as readonly NettingQuantityIncrement[],
+        ),
+      };
     }
     if (path === "/v1/rfqs/private") {
       const relay = requireDelivery();

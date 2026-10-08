@@ -26,6 +26,7 @@ import {
   packageReopeningSettlementHandoffHash,
   packageReopeningSnapshotHash,
   toHex,
+  verifyNettingResult,
   verifyPackageAllocation,
   verifyPackageReopeningSettlementHandoff,
   type PackageAllocation,
@@ -826,6 +827,17 @@ test("compute routes validate, simulate without persisting, and reject malformed
     assert.deepEqual([simulated.accepted, simulated.simulated, simulated.allocation.fills.length], [true, true, 1]);
     assert.equal(store.getBook(CLASS)?.entries.length, 1);
     assert.equal(store.getAllocation(id(9)), undefined);
+    const netting = (await get("/v1/netting/simulate", post({
+      obligations: [
+        { obligationId: id(91), userId: "alice", packageId: "package-a", underlyingId: "sol", signedQuantityAtoms: 30n, sequence: 1n },
+        { obligationId: id(92), userId: "bob", packageId: "package-b", underlyingId: "sol", signedQuantityAtoms: -20n, sequence: 2n },
+      ],
+      quantityIncrements: [{ underlyingId: "sol", quantityIncrementAtoms: 10n }],
+    }))).body as { simulated: boolean; result: Parameters<typeof verifyNettingResult>[0] };
+    assert.equal(netting.simulated, true);
+    verifyNettingResult(netting.result);
+    assert.equal(netting.result.underlyings[0]?.externalNetAtoms, 10n);
+    assert.equal((await get("/v1/netting/simulate", post({ obligations: [], quantityIncrements: [] }))).status, 400);
     const invalid = (await get("/v1/orders/validate", post({ order: { version: 99 } }))).body as { valid: boolean; error: { code: string } };
     assert.equal(invalid.valid, false);
     assert.equal(typeof invalid.error.code, "string");

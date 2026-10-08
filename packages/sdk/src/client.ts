@@ -24,6 +24,7 @@ import {
   packageAllocationHash,
   packageMatchingPolicy,
   packageMatchingPolicyHash,
+  netObligations,
   packageOrderBytes,
   packageOrderHash,
   packageTakerOrderHash,
@@ -95,6 +96,7 @@ import {
   verifyPackageAllocation,
   verifyPackageSettlementHandoff,
   verifyPackageReopeningSettlementHandoff,
+  verifyNettingResult,
   verifyReceiptFees,
   type AcceptedQuoteFeeTerms,
   type CandleInterval,
@@ -120,6 +122,9 @@ import {
   type PackageReopeningSettlementHandoff,
   type PackageGraphInput,
   type NormalizedPosition,
+  type NettingObligation,
+  type NettingQuantityIncrement,
+  type NettingResult,
   type PositionSnapshotRecord,
   type PositionSnapshotRecordInput,
   type PrivateRfqEnvelopeInput,
@@ -2351,6 +2356,31 @@ export class NaryxClient {
     const body = record(await this.#request('POST', '/v1/clearing/simulate', { packageMarketId: checkId(packageMarketId, 'package market id'), order }), 'simulation');
     if (body.simulated !== true) throw new NaryxEvidenceError('clearing response is not marked as a simulation');
     return body;
+  }
+
+  /** Simulates deterministic cross-user netting and rejects any server result that differs locally. */
+  async simulateNetting(
+    obligations: readonly NettingObligation[],
+    quantityIncrements: readonly NettingQuantityIncrement[],
+  ): Promise<NettingResult> {
+    const local = netObligations(obligations, quantityIncrements);
+    const body = record(
+      await this.#request('POST', '/v1/netting/simulate', { obligations, quantityIncrements }),
+      'netting simulation',
+    );
+    if (body.simulated !== true || typeof body.result !== 'object' || body.result === null) {
+      throw new NaryxEvidenceError('netting response is not marked as a simulation');
+    }
+    const result = body.result as NettingResult;
+    try {
+      verifyNettingResult(result);
+    } catch (error) {
+      throw new NaryxEvidenceError(`netting result failed verification: ${(error as Error).message}`);
+    }
+    if (!bytesEqual(result.proofHash, local.proofHash)) {
+      throw new NaryxEvidenceError('server netting result disagrees with local deterministic allocation');
+    }
+    return result;
   }
 
   async validateDeRisk(input: { readonly positions: readonly unknown[]; readonly policy: unknown; readonly stateCertain: boolean; readonly openRiskIncreasingOrderIds?: readonly string[] }): Promise<readonly unknown[]> {

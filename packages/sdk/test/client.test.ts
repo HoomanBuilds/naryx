@@ -5,6 +5,7 @@ import {
   clearPackageReopeningAuction,
   emptyPackageBook,
   matchPackageOrder,
+  netObligations,
   packageAllocationHash,
   packageBookAmendmentBytes,
   packageBookAmendmentHash,
@@ -290,6 +291,22 @@ describe('public API client', () => {
     await assert.rejects(
       client({ 'POST /v1/clearing/simulate': { body: { accepted: true } } }).simulateClearing(CLASS, order(1)),
       /not marked as a simulation/,
+    );
+    const obligations = [
+      { obligationId: id(91), userId: 'alice', packageId: 'package-a', underlyingId: 'sol', signedQuantityAtoms: 30n, sequence: 1n },
+      { obligationId: id(92), userId: 'bob', packageId: 'package-b', underlyingId: 'sol', signedQuantityAtoms: -20n, sequence: 2n },
+    ];
+    const quantityIncrements = [{ underlyingId: 'sol', quantityIncrementAtoms: 10n }];
+    const netting = netObligations(obligations, quantityIncrements);
+    assert.equal(
+      (await client({ 'POST /v1/netting/simulate': { body: { simulated: true, result: netting } } })
+        .simulateNetting(obligations, quantityIncrements)).underlyings[0]?.externalNetAtoms,
+      10n,
+    );
+    await assert.rejects(
+      client({ 'POST /v1/netting/simulate': { body: { simulated: true, result: { ...netting, allocations: netting.allocations.slice(1) } } } })
+        .simulateNetting(obligations, quantityIncrements),
+      /verification/,
     );
   });
 
