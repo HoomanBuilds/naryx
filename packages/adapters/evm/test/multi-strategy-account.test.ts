@@ -34,6 +34,7 @@ import {
 import {
   evmNettingAllocationObservationBinding,
   observeEvmNettingAllocation,
+  verifyEvmNettingAllocationObservationBinding,
 } from '../src/multi-strategy-observation.js';
 import type { EvmReadPort } from '../src/readPort.js';
 import type { EvmStrategyExecutionPlan } from '../src/strategy-plan.js';
@@ -327,6 +328,7 @@ test('observes only the exact finalized EVM netting execution', async () => {
     chainHead: async () => ({ latestBlock: 110n, finalizedBlock: 105n }),
   });
   const binding = evmNettingAllocationObservationBinding(netting);
+  verifyEvmNettingAllocationObservationBinding(binding, nettingAuthorization(envelope));
   const observed = await observeEvmNettingAllocation(port(netting.authorizationHash), {
     binding,
     transactionHash: HASH_E,

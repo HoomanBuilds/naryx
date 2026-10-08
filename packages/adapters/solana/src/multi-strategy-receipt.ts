@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { DomainRef } from '@naryx/protocol-types';
+import type { DomainRef, NettingAllocationExecutionAuthorization } from '@naryx/protocol-types';
 import { PublicKey } from '@solana/web3.js';
 import type {
   SolanaNettingAllocationEnvelope,
@@ -299,6 +299,68 @@ export function solanaNettingAllocationObservationBinding(
       solverFeeAtoms: envelope.fees.solverFeeAtoms,
     }),
   });
+}
+
+export function verifySolanaNettingAllocationObservationBinding(
+  binding: SolanaNettingAllocationObservationBinding,
+  authorization: NettingAllocationExecutionAuthorization,
+): void {
+  if (!sameBytes(binding.authorizationHash, authorization.authorizationHash)) {
+    fail('binding names another authorization');
+  }
+  if (binding.domain.domainId !== authorization.domain.domainId
+    || binding.domain.domainManifestVersion !== authorization.domain.domainManifestVersion
+    || !sameBytes(binding.domain.domainManifestHash, authorization.domain.domainManifestHash)) {
+    fail('binding names another domain');
+  }
+  if (binding.owner !== authorization.ownerId
+    || binding.strategyAccount !== authorization.settlementAccount
+    || binding.solver !== authorization.solverId
+    || !sameBytes(binding.orderHash, authorization.strategyOrderHash)
+    || !sameBytes(binding.callsHash, authorization.executionPlanHash)
+    || binding.nonce !== authorization.nonce
+    || binding.fees.protocolFeeAtoms !== authorization.protocolFeeAtoms
+    || binding.fees.solverFeeAtoms !== authorization.solverFeeAtoms
+    || authorization.validUntilUnit !== 'SOLANA_SLOT'
+    || binding.deadlineSlot > authorization.validUntilValue) {
+    fail('binding differs from the allocation authorization');
+  }
+  let program: PublicKey;
+  let owner: PublicKey;
+  let solver: PublicKey;
+  let strategyAccount: PublicKey;
+  let receiptAccount: PublicKey;
+  try {
+    program = new PublicKey(binding.programId);
+    owner = new PublicKey(binding.owner);
+    solver = new PublicKey(binding.solver);
+    strategyAccount = new PublicKey(binding.strategyAccount);
+    receiptAccount = new PublicKey(binding.receiptAccount);
+  } catch {
+    return fail('binding contains an invalid public key');
+  }
+  const expectedStrategyAccount = PublicKey.findProgramAddressSync(
+    [Buffer.from('multi-strategy-account'), owner.toBuffer()],
+    program,
+  )[0];
+  const nonce = Buffer.allocUnsafe(8);
+  nonce.writeBigUInt64BE(binding.nonce);
+  const expectedReceipt = PublicKey.findProgramAddressSync(
+    [Buffer.from('strategy-receipt'), strategyAccount.toBuffer(), nonce],
+    program,
+  )[0];
+  if (!strategyAccount.equals(expectedStrategyAccount) || !receiptAccount.equals(expectedReceipt)) {
+    fail('binding account derivation is invalid');
+  }
+  if (!binding.instructionAccounts.includes(owner.toBase58())
+    || !binding.instructionAccounts.includes(solver.toBase58())
+    || !binding.instructionAccounts.includes(strategyAccount.toBase58())
+    || !binding.instructionAccounts.includes(receiptAccount.toBase58())
+    || binding.instructionData.length < 40
+    || !Buffer.from(binding.instructionData.subarray(0, 8)).equals(Buffer.from('7029a21484063beb', 'hex'))
+    || !sameBytes(binding.instructionData.subarray(-32), authorization.authorizationHash)) {
+    fail('binding instruction is not the authorized netting call');
+  }
 }
 
 export function observeSolanaNettingAllocation(input: Readonly<{

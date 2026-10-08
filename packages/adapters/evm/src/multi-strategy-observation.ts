@@ -5,9 +5,14 @@ import {
   keccak256,
   parseAbi,
   parseAbiParameters,
+  stringToHex,
   type Address,
   type Hex,
 } from 'viem';
+import {
+  toHex,
+  type NettingAllocationExecutionAuthorization,
+} from '@naryx/protocol-types';
 import type {
   EvmMultiStrategyExecution,
   EvmNettingAllocationEnvelope,
@@ -32,6 +37,9 @@ const OBSERVATION_ABI = parseAbi([
   'function receipt(bytes32 receiptHash) view returns ((bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,bytes32 callsHash,bytes32 evidenceRoot,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,uint256 nonce,address solver) value)',
 ]);
 const RECEIPT_HASH_PARAMETERS = parseAbiParameters('bytes32 executionHash,bytes32 callsHash,bytes32 evidenceRoot');
+const EXECUTION_PARAMETERS = parseAbiParameters(
+  '(bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline)',
+);
 
 export type EvmNettingAllocationLifecycle =
   | 'NOT_FOUND'
@@ -170,6 +178,37 @@ export function evmNettingAllocationObservationBinding(
     callsHash: netting.envelope.callsHash,
     execution: netting.envelope.execution,
   });
+}
+
+export function verifyEvmNettingAllocationObservationBinding(
+  binding: EvmNettingAllocationObservationBinding,
+  authorization: NettingAllocationExecutionAuthorization,
+): void {
+  const execution = binding.execution;
+  const authorizationHash = hash32(`0x${toHex(authorization.authorizationHash)}`, 'authorization hash');
+  const orderHash = hash32(`0x${toHex(authorization.strategyOrderHash)}`, 'strategy order hash');
+  const callsHash = hash32(`0x${toHex(authorization.executionPlanHash)}`, 'execution plan hash');
+  const manifestHash = hash32(`0x${toHex(authorization.domain.domainManifestHash)}`, 'domain manifest hash');
+  if (!equalHash(binding.authorizationHash, authorizationHash)
+    || authorization.domain.domainId !== `eip155:${binding.chainReference}`
+    || execution.domainManifestVersion !== authorization.domain.domainManifestVersion
+    || !equalHash(execution.domainManifestHash, manifestHash)
+    || !equalHash(execution.domainIdHash, keccak256(stringToHex(authorization.domain.domainId)))
+    || !equalAddress(binding.account, requiredEvmAddress(authorization.settlementAccount, 'settlement account'))
+    || !equalHash(execution.orderHash, orderHash)
+    || !equalHash(binding.callsHash, callsHash)
+    || !equalAddress(execution.solver, requiredEvmAddress(authorization.solverId, 'solver'))
+    || execution.fees.protocolFeeAtoms !== authorization.protocolFeeAtoms
+    || execution.fees.solverFeeAtoms !== authorization.solverFeeAtoms
+    || execution.nonce !== authorization.nonce
+    || authorization.validUntilUnit !== 'EVM_UNIX_SECONDS'
+    || execution.deadline > authorization.validUntilValue) {
+    throw new Error('EVM netting observation binding differs from its allocation authorization');
+  }
+  const expectedExecutionHash = keccak256(encodeAbiParameters(EXECUTION_PARAMETERS, [execution]));
+  if (!equalHash(binding.executionHash, expectedExecutionHash)) {
+    throw new Error('EVM netting observation binding execution hash is invalid');
+  }
 }
 
 export async function observeEvmNettingAllocation(

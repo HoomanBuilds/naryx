@@ -17,6 +17,7 @@ import {
   observeSolanaNettingAllocation,
   solanaNettingAllocationObservationBinding,
   solanaMultiStrategyReceiptHash,
+  verifySolanaNettingAllocationObservationBinding,
   type SolanaStrategyAdapterPolicy,
   type SolanaStrategyInstructionPlan,
 } from '../src/index.js';
@@ -319,6 +320,7 @@ test('observes only the exact finalized Solana netting execution', () => {
     data: receiptData(netting, slot),
   };
   const binding = solanaNettingAllocationObservationBinding(netting);
+  verifySolanaNettingAllocationObservationBinding(binding, nettingAuthorization(envelope));
   const observation = observeSolanaNettingAllocation({
     binding,
     slot,
