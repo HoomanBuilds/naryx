@@ -80,6 +80,10 @@ import {
   createSolanaStrategyExecutionAuthorizationInternalHandler,
   SolanaStrategyExecutionObservationService,
   createSolanaStrategyExecutionObservationInternalHandler,
+  HYPERLIQUID_NETTING_RESIDUAL_ENABLED_ENV,
+  createHyperliquidNettingResidualExecutionInternalHandler,
+  loadHyperliquidNettingResidualTestnetRuntime,
+  type HyperliquidNettingResidualLoadedRuntime,
 } from './index.js';
 import { loadSolanaLocalEnvironmentRuntime } from './solana-local-environment-runtime.js';
 import { withBaseSepoliaQuoteProviders } from './base-sepolia-quote-runtime.js';
@@ -583,6 +587,31 @@ const evmOptionObservationHandler = evmObservationLanes.length === 0 || strategy
       preparations: strategyPreparationService,
       lanes: evmObservationLanes,
     }));
+const residualExecutionEnabled = explicitBoolean(
+  process.env[HYPERLIQUID_NETTING_RESIDUAL_ENABLED_ENV],
+  HYPERLIQUID_NETTING_RESIDUAL_ENABLED_ENV,
+);
+let residualRuntime: HyperliquidNettingResidualLoadedRuntime | undefined;
+if (residualExecutionEnabled) {
+  const keyPath = process.env.NARYX_HYPERLIQUID_TESTNET_AGENT_KEY_PATH;
+  const expectedAgent = process.env.NARYX_HYPERLIQUID_TESTNET_AGENT_ADDRESS;
+  if (keyPath === undefined || keyPath.length === 0) {
+    throw new Error('NARYX_HYPERLIQUID_TESTNET_AGENT_KEY_PATH is required');
+  }
+  if (expectedAgent === undefined || expectedAgent.length === 0) {
+    throw new Error('NARYX_HYPERLIQUID_TESTNET_AGENT_ADDRESS is required');
+  }
+  residualRuntime = await loadHyperliquidNettingResidualTestnetRuntime(
+    process.env,
+    { signer: loadHyperliquidTestnetAgentSigner(keyPath, expectedAgent) },
+  );
+  if (residualRuntime === undefined) {
+    throw new Error('Hyperliquid Testnet netting residual runtime is unavailable');
+  }
+}
+const residualExecutionHandler = residualRuntime === undefined
+  ? undefined
+  : createHyperliquidNettingResidualExecutionInternalHandler(residualRuntime.runtime);
 const strategyRouteHandlers = [
   generalizedStrategyQuoteHandler,
   strategyPreparationHandler,
@@ -593,6 +622,7 @@ const strategyRouteHandlers = [
   evmReverseBasisCollateralHandler,
   evmStrategyAuthorizationHandler,
   evmOptionObservationHandler,
+  residualExecutionHandler,
 ]
   .filter((handler) => handler !== undefined);
 const strategyRouteHandler = strategyRouteHandlers.length === 0
@@ -709,6 +739,7 @@ function shutdown(): void {
     evmStrategyPackageIds?.close();
     solanaStrategyPackageIds?.close();
     sealedAuctionJournal?.close();
+    residualRuntime?.close();
     authorizationStore?.close();
     const failed = results.find((result) => result.status === 'rejected');
     if (failed?.status === 'rejected') {

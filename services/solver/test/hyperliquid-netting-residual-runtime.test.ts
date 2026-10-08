@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
@@ -11,6 +11,7 @@ import {
   netObligations,
   nettingExternalExecutionIntent,
   nettingPolicyManifest,
+  stringifyProtocolJson,
   toHex,
   versionedManifestRef,
   type NettingPolicyManifestInput,
@@ -19,6 +20,7 @@ import {
   HYPERLIQUID_SERVER_SIGNER_SCOPE,
   HYPERLIQUID_TESTNET_EXCHANGE_URL,
   HyperliquidNettingResidualSqliteDurableJournal,
+  HyperliquidNettingResidualLaneRegistry,
   HyperliquidNettingResidualTestnetRuntime,
   HyperliquidNettingResidualTestnetSubmissionService,
   HyperliquidSdkTestnetOrderSubmitter,
@@ -97,6 +99,32 @@ const marketBinding = {
   sizeDecimals: 2,
   maximumPriceDecimals: 6,
 };
+
+test('loads an exact reviewed Hyperliquid residual policy and binding', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-hyperliquid-net-config-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'runtime.json');
+  writeFileSync(path, stringifyProtocolJson({
+    version: 1,
+    environment: 'TESTNET',
+    policy: policyInput,
+    bindings: [{
+      instrumentId: 'btc-perp',
+      marketBinding,
+      evidenceBinding: {
+        assetId: 3,
+        marketKind: 'PERPETUAL',
+        baseFeeToken: 'BTC',
+        quoteFeeToken: 'USDC',
+      },
+    }],
+  }));
+
+  const lane = new HyperliquidNettingResidualLaneRegistry(path).resolve(intent);
+  assert.equal(lane.instrument.instrumentId, 'btc-perp');
+  assert.equal(lane.marketBinding.assetId, 3);
+  assert.equal(lane.evidenceBinding.marketKind, 'PERPETUAL');
+});
 
 function signer(): HyperliquidServerSigner {
   return {
