@@ -28,6 +28,12 @@ export {
   type StrategyQuoteSigner,
 } from './strategy-quote-builder.js';
 export {
+  HttpNettingAllocationAdminClient,
+  NettingAllocationAdminClientError,
+  type NettingAllocationObservationBinding,
+  type RegisteredNettingAllocationAttempt,
+} from './netting-allocation-admin-client.js';
+export {
   GeneralizedStrategyQuoteError,
   GeneralizedStrategyQuoteService,
   InMemoryGeneralizedStrategyQuoteStore,
