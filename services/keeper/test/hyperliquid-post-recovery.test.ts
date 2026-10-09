@@ -27,6 +27,7 @@ import {
   HYPERCORE_RECOVERY_RECONCILIATION_SOURCE,
   HyperliquidRecoveryCompiler,
   HyperliquidRecoverySqliteStore,
+  HyperliquidRecoveryTestnetController,
   HyperliquidRecoveryTestnetRuntime,
   HYPERLIQUID_RECOVERY_TESTNET_EXCHANGE_URL,
   acknowledgeHyperliquidRecoverySubmission,
@@ -372,6 +373,36 @@ function recoveryEvidence(
 function recoveryAttempt(source: HyperliquidPackageAttempt, compiled: HyperliquidRecoveryExecutionPlan) {
   return createHyperliquidRecoveryAttempt(source, compiled, identity, nowMs);
 }
+
+test('keeper compiles the recovery plan before handing it to submission', async () => {
+  const source = sourceAttempt(100n, 0n);
+  const submitted: HyperliquidRecoveryExecutionPlan[] = [];
+  const controller = new HyperliquidRecoveryTestnetController({
+    compiler: new HyperliquidRecoveryCompiler(identity),
+    trustedTime: { decide: async (scope) => trustedTimeDecision(scope) },
+    runtime: {
+      execute: async (input) => {
+        submitted.push(input.plan);
+        return {
+          status: 'RECONCILIATION_REQUIRED',
+          handoff: { recoveryAttemptId: input.recoveryAttemptId },
+          errorCommitment: null,
+        } as never;
+      },
+    },
+  });
+  const result = await controller.compileAndExecute({
+    recoveryAttemptId: 'controller-recovery-attempt-1',
+    sourceAttempt: source,
+    recoverySequence: 0,
+    projectedRecoveryCosts: [{ asset: quoteAsset, atoms: 10n }],
+    projectedAggregateLoss: { asset: quoteAsset, atoms: 100n },
+  });
+  assert.equal(submitted.length, 1);
+  assert.strictEqual(submitted[0], result.plan);
+  assert.equal(result.plan.mode, 'COMPLETE_MISSING_LEG');
+  assert.equal(result.submission.status, 'RECONCILIATION_REQUIRED');
+});
 
 test('reconciles exact completion from authoritative actual evidence', () => {
   const source = sourceAttempt(100n, 0n);

@@ -379,12 +379,15 @@ test('recovery execution is loopback-only, explicit, and protocol-JSON encoded',
       reconcile: async () => { throw new Error('must not be called'); },
     },
     recovery: {
-      execute: async (input) => {
+      compileAndExecute: async (input) => {
         seenAttempt = input.recoveryAttemptId;
         return {
-          status: 'RECONCILIATION_REQUIRED',
-          handoff: { nonce: 1_001n },
-          errorCommitment: null,
+          plan: { mode: 'COMPLETE_MISSING_LEG' },
+          submission: {
+            status: 'RECONCILIATION_REQUIRED',
+            handoff: { nonce: 1_001n },
+            errorCommitment: null,
+          },
         } as never;
       },
     },
@@ -397,17 +400,20 @@ test('recovery execution is loopback-only, explicit, and protocol-JSON encoded',
       body: stringifyProtocolJson({
         recoveryAttemptId: 'recovery-attempt-1',
         sourceAttempt: { status: 'RECOVERY_REQUIRED' },
-        plan: { mode: 'COMPLETE_MISSING_LEG' },
+        recoverySequence: 0,
+        projectedRecoveryCosts: [{ asset: { assetId: 'usdc' }, atoms: 10n }],
+        projectedAggregateLoss: { asset: { assetId: 'usdc' }, atoms: 100n },
       }),
     });
     assert.equal(response.status, 200);
     assert.equal(seenAttempt, 'recovery-attempt-1');
     const body = await response.json() as {
-      status: string;
-      handoff: { nonce: unknown };
+      plan: { mode: string };
+      submission: { status: string; handoff: { nonce: unknown } };
     };
-    assert.equal(body.status, 'RECONCILIATION_REQUIRED');
-    assert.deepEqual(body.handoff.nonce, { $naryxType: 'bigint', value: '1001' });
+    assert.equal(body.plan.mode, 'COMPLETE_MISSING_LEG');
+    assert.equal(body.submission.status, 'RECONCILIATION_REQUIRED');
+    assert.deepEqual(body.submission.handoff.nonce, { $naryxType: 'bigint', value: '1001' });
   } finally {
     await close(server);
   }

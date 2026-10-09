@@ -26,7 +26,8 @@ import {
 import { httpKeeperPorts, KeeperActionJournal, keeperClock, loadKeeperAutomationConfig, runKeeperAutomationPass } from './keeper-automation-pass.js';
 import { loadHyperliquidRecoverySigner, loadHyperliquidRecoveryTestnetConfig } from './hyperliquid-recovery-testnet-config.js';
 import { HyperliquidRecoverySqliteStore } from './hyperliquid-recovery-store.js';
-import { HyperliquidRecoveryTestnetRuntime, initializeHyperliquidRecoveryJournal } from './hyperliquid-recovery-testnet-runtime.js';
+import { HyperliquidRecoveryCompiler } from './hyperliquid-recovery-compiler.js';
+import { HyperliquidRecoveryTestnetController, HyperliquidRecoveryTestnetRuntime, initializeHyperliquidRecoveryJournal } from './hyperliquid-recovery-testnet-runtime.js';
 import { createHyperliquidRecoveryTrustedTimeSources, HyperliquidRecoveryTrustedClock, HyperliquidSdkRecoveryClockReader, HyperliquidSdkRecoveryTestnetSubmitter } from './hyperliquid-recovery-testnet-ports.js';
 
 // Keeper automation dispatches only owner-authorized, kernel-approved actions to a loopback
@@ -64,7 +65,7 @@ const strategy = new HyperliquidStrategyAuthoritativeEvidenceCollector(client);
 const nettingResidual = new HyperliquidNettingResidualAuthoritativeEvidenceCollector(client);
 const recoveryConfig = loadHyperliquidRecoveryTestnetConfig();
 let recoveryStore: HyperliquidRecoverySqliteStore | undefined;
-let recovery: HyperliquidRecoveryTestnetRuntime | undefined;
+let recovery: HyperliquidRecoveryTestnetController | undefined;
 if (recoveryConfig !== undefined) {
   recoveryStore = new HyperliquidRecoverySqliteStore({
     databasePath: recoveryConfig.databasePath,
@@ -84,13 +85,18 @@ if (recoveryConfig !== undefined) {
       recoveryConfig.trustedTimePolicy,
       createHyperliquidRecoveryTrustedTimeSources(new HyperliquidSdkRecoveryClockReader()),
     );
-    recovery = new HyperliquidRecoveryTestnetRuntime({
+    const recoveryRuntime = new HyperliquidRecoveryTestnetRuntime({
       store: recoveryStore,
       trustedTime,
       submitter: new HyperliquidSdkRecoveryTestnetSubmitter(signer),
       agentWallet: recoveryConfig.agentWallet,
       signerLeaseId: recoveryConfig.signerLeaseId,
       vaultAddress: recoveryConfig.vaultAddress,
+    });
+    recovery = new HyperliquidRecoveryTestnetController({
+      compiler: new HyperliquidRecoveryCompiler(recoveryConfig.verifierIdentity),
+      trustedTime,
+      runtime: recoveryRuntime,
     });
   } catch (error) {
     recoveryStore.close();

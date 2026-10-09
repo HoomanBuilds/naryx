@@ -6,7 +6,11 @@ import type {
   HyperliquidTrustedTimeDecision,
 } from '@naryx/adapter-hyperliquid';
 import type { HyperliquidPackageAttempt } from './index.js';
-import type { HyperliquidRecoveryExecutionPlan } from './hyperliquid-recovery-compiler.js';
+import {
+  HyperliquidRecoveryCompiler,
+  type HyperliquidRecoveryBoundInput,
+  type HyperliquidRecoveryExecutionPlan,
+} from './hyperliquid-recovery-compiler.js';
 import {
   acknowledgeHyperliquidRecoverySubmission,
   confirmHyperliquidRecoveryDurableRecord,
@@ -29,6 +33,7 @@ import type { HyperliquidRecoveryVerifierIdentity } from './hyperliquid-recovery
 export const HYPERLIQUID_RECOVERY_TESTNET_EXCHANGE_URL =
   TESTNET_API_URL;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
+const IDENTIFIER = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 
 export interface HyperliquidRecoveryTrustedTimePort {
   decide(scope: string): Promise<HyperliquidTrustedTimeDecision>;
@@ -51,6 +56,19 @@ export type HyperliquidRecoveryRuntimeResult = Readonly<{
     | 'SUBMISSION_AMBIGUOUS' | 'RECONCILIATION_REQUIRED';
   handoff: HyperliquidRecoveryReconciliationHandoff;
   errorCommitment: `0x${string}` | null;
+}>;
+
+export interface HyperliquidRecoveryCompileAndExecuteInput {
+  readonly recoveryAttemptId: string;
+  readonly sourceAttempt: HyperliquidPackageAttempt;
+  readonly recoverySequence: number;
+  readonly projectedRecoveryCosts: readonly HyperliquidRecoveryBoundInput[];
+  readonly projectedAggregateLoss: HyperliquidRecoveryBoundInput;
+}
+
+export type HyperliquidRecoveryCompileAndExecuteResult = Readonly<{
+  readonly plan: HyperliquidRecoveryExecutionPlan;
+  readonly submission: HyperliquidRecoveryRuntimeResult;
 }>;
 
 function requireCondition(condition: boolean, message: string): asserts condition {
@@ -265,5 +283,48 @@ export class HyperliquidRecoveryTestnetRuntime {
         errorCommitment: errorCommitment(error),
       });
     }
+  }
+}
+
+export class HyperliquidRecoveryTestnetController {
+  readonly #compiler: HyperliquidRecoveryCompiler;
+  readonly #trustedTime: HyperliquidRecoveryTrustedTimePort;
+  readonly #runtime: Pick<HyperliquidRecoveryTestnetRuntime, 'execute'>;
+
+  constructor(input: Readonly<{
+    compiler: HyperliquidRecoveryCompiler;
+    trustedTime: HyperliquidRecoveryTrustedTimePort;
+    runtime: Pick<HyperliquidRecoveryTestnetRuntime, 'execute'>;
+  }>) {
+    requireCondition(input.compiler instanceof HyperliquidRecoveryCompiler,
+      'recovery compiler is required');
+    requireCondition(typeof input.trustedTime?.decide === 'function',
+      'trusted time is required');
+    requireCondition(typeof input.runtime?.execute === 'function',
+      'recovery runtime is required');
+    this.#compiler = input.compiler;
+    this.#trustedTime = input.trustedTime;
+    this.#runtime = input.runtime;
+  }
+
+  async compileAndExecute(
+    input: HyperliquidRecoveryCompileAndExecuteInput,
+  ): Promise<HyperliquidRecoveryCompileAndExecuteResult> {
+    requireCondition(typeof input.recoveryAttemptId === 'string'
+      && IDENTIFIER.test(input.recoveryAttemptId), 'recovery attempt identity is invalid');
+    const decision = await this.#trustedTime.decide(`${input.recoveryAttemptId}:compile`);
+    const plan = this.#compiler.compile({
+      attempt: input.sourceAttempt,
+      nowMs: BigInt(decision.selectedTimeMs),
+      recoverySequence: input.recoverySequence,
+      projectedRecoveryCosts: input.projectedRecoveryCosts,
+      projectedAggregateLoss: input.projectedAggregateLoss,
+    });
+    const submission = await this.#runtime.execute({
+      recoveryAttemptId: input.recoveryAttemptId,
+      sourceAttempt: input.sourceAttempt,
+      plan,
+    });
+    return Object.freeze({ plan, submission });
   }
 }

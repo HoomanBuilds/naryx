@@ -20,8 +20,11 @@ import type {
 } from './hyperliquid-netting-residual-evidence.js';
 import type { DependencyIncidentStatusReader } from './dependency-incident-status.js';
 import type { HyperliquidPackageAttempt } from './index.js';
-import type { HyperliquidRecoveryExecutionPlan } from './hyperliquid-recovery-compiler.js';
-import type { HyperliquidRecoveryTestnetRuntime } from './hyperliquid-recovery-testnet-runtime.js';
+import type { HyperliquidRecoveryBoundInput } from './hyperliquid-recovery-compiler.js';
+import type {
+  HyperliquidRecoveryCompileAndExecuteInput,
+  HyperliquidRecoveryTestnetController,
+} from './hyperliquid-recovery-testnet-runtime.js';
 
 export const KEEPER_TESTNET_PREPARE_PATH = '/internal/keeper/hyperliquid-testnet/prepare';
 export const KEEPER_TESTNET_RECONCILE_PATH = '/internal/keeper/hyperliquid-testnet/reconcile';
@@ -44,7 +47,7 @@ export interface HyperliquidTestnetEvidenceHttpPorts {
   readonly runtime: Pick<HyperliquidTestnetEvidenceRuntime, 'prepare' | 'reconcile'>;
   readonly strategy?: Pick<HyperliquidStrategyAuthoritativeEvidenceCollector, 'collect'>;
   readonly nettingResidual?: Pick<HyperliquidNettingResidualAuthoritativeEvidenceCollector, 'collect'>;
-  readonly recovery?: Pick<HyperliquidRecoveryTestnetRuntime, 'execute'>;
+  readonly recovery?: Pick<HyperliquidRecoveryTestnetController, 'compileAndExecute'>;
   readonly dependencyIncidents?: Pick<DependencyIncidentStatusReader, 'current'>;
 }
 
@@ -203,22 +206,26 @@ function parseNettingResidualReconcileRequest(
   return value as unknown as HyperliquidNettingResidualEvidenceRequest;
 }
 
-function parseRecoveryExecuteRequest(value: unknown): Readonly<{
-  recoveryAttemptId: string;
-  sourceAttempt: HyperliquidPackageAttempt;
-  plan: HyperliquidRecoveryExecutionPlan;
-}> {
+function parseRecoveryExecuteRequest(value: unknown): HyperliquidRecoveryCompileAndExecuteInput {
   if (!isRecord(value)
-    || !hasExactKeys(value, ['plan', 'recoveryAttemptId', 'sourceAttempt'])
+    || !hasExactKeys(value, [
+      'projectedAggregateLoss', 'projectedRecoveryCosts', 'recoveryAttemptId',
+      'recoverySequence', 'sourceAttempt',
+    ])
     || typeof value.recoveryAttemptId !== 'string'
+    || typeof value.recoverySequence !== 'number'
     || !isRecord(value.sourceAttempt)
-    || !isRecord(value.plan)) {
+    || !Array.isArray(value.projectedRecoveryCosts)
+    || value.projectedRecoveryCosts.some((item) => !isRecord(item))
+    || !isRecord(value.projectedAggregateLoss)) {
     throw new KeeperRequestError('INVALID_REQUEST', 'Recovery execute request fields are invalid.');
   }
   return value as unknown as Readonly<{
     recoveryAttemptId: string;
     sourceAttempt: HyperliquidPackageAttempt;
-    plan: HyperliquidRecoveryExecutionPlan;
+    recoverySequence: number;
+    projectedRecoveryCosts: readonly HyperliquidRecoveryBoundInput[];
+    projectedAggregateLoss: HyperliquidRecoveryBoundInput;
   }>;
 }
 
@@ -406,7 +413,7 @@ export function createHyperliquidTestnetEvidenceRequestHandler(
         return;
       }
       try {
-        const result = await ports.recovery.execute(parseRecoveryExecuteRequest(raw));
+        const result = await ports.recovery.compileAndExecute(parseRecoveryExecuteRequest(raw));
         sendJson(response, 200, toProtocolJson(result, 'keeper.recovery.execute.result'));
       } catch {
         reject(response, 400, 'INVALID_REQUEST', 'Recovery execution request failed closed.');
