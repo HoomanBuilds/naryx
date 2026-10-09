@@ -112,12 +112,26 @@
       ]
     },
     "spotAdapterRef": {
-      "$input": "init",
-      "pointer": "/fragments/solverConfig/spot/adapter"
+      "adapterId": "naryx.solana.spot-firm-reservation",
+      "adapterManifestVersion": {
+        "$input": "init",
+        "pointer": "/fragments/solverConfig/spot/adapter/adapterManifestVersion"
+      },
+      "adapterManifestHash": {
+        "$input": "init",
+        "pointer": "/fragments/solverConfig/spot/adapter/adapterManifestHash"
+      }
     },
     "perpetualAdapterRef": {
-      "$input": "init",
-      "pointer": "/fragments/solverConfig/perpetual/adapter"
+      "adapterId": "naryx.solana.perp-exact",
+      "adapterManifestVersion": {
+        "$input": "init",
+        "pointer": "/fragments/solverConfig/perpetual/adapter/adapterManifestVersion"
+      },
+      "adapterManifestHash": {
+        "$input": "init",
+        "pointer": "/fragments/solverConfig/perpetual/adapter/adapterManifestHash"
+      }
     },
     "baseAssetRef": {
       "$input": "init",
@@ -793,6 +807,9 @@
               "pointer": "/fragments/solverConfig/spot"
             },
             {
+              "adapter": {
+                "$def": "spotAdapterRef"
+              },
               "actionSequence": 0
             }
           ]
@@ -804,6 +821,9 @@
               "pointer": "/fragments/solverConfig/perpetual"
             },
             {
+              "adapter": {
+                "$def": "perpetualAdapterRef"
+              },
               "actionSequence": 1
             }
           ]
