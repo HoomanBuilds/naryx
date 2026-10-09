@@ -30,6 +30,7 @@ import {
 
 export * from './strategy-planner.js';
 export * from './netting-residual.js';
+export * from './trusted-time.js';
 export {
   formatHypercorePrice,
   formatHypercoreSize,

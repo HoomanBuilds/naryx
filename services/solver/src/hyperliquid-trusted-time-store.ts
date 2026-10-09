@@ -1,9 +1,13 @@
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
+  allocateHyperliquidTrustedNonce,
   hyperliquidTrustedTimeDecisionJson,
+  requireHyperliquidTrustedTimeDecision as validateHyperliquidTrustedTimeDecision,
   type HyperliquidTrustedTimeDecision,
-} from './hyperliquid-trusted-time.js';
+} from '@naryx/adapter-hyperliquid';
+
+export { allocateHyperliquidTrustedNonce } from '@naryx/adapter-hyperliquid';
 
 const HASH = /^0x[0-9a-f]{64}$/;
 const SCOPE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/;
@@ -62,7 +66,9 @@ export function persistHyperliquidTrustedTimeDecision(
   requireCondition(SCOPE.test(scope), 'trusted time decision scope is invalid');
   requireCondition(decision.scope === scope, 'trusted time decision scope differs');
   requireCondition(HASH.test(decision.decisionHash), 'trusted time decision hash is invalid');
-  const decisionJson = hyperliquidTrustedTimeDecisionJson(decision);
+  const decisionJson = hyperliquidTrustedTimeDecisionJson(
+    validateHyperliquidTrustedTimeDecision(decision, scope),
+  );
   const expectedHash = `0x${createHash('sha256').update(decisionJson).digest('hex')}`;
   requireCondition(expectedHash === decision.decisionHash, 'trusted time decision commitment differs');
   const row = database.prepare<[string], DecisionRow>(`
@@ -114,18 +120,4 @@ export function requireHyperliquidTrustedTimeDecision(
     row.maximum_future_nonce_lead_ms_decimal,
     'stored maximum future nonce lead',
   );
-}
-
-export function allocateHyperliquidTrustedNonce(
-  trustedTimeMs: bigint,
-  previousNonce: bigint,
-  maximumFutureNonceLeadMs: bigint,
-): bigint {
-  requireCondition(trustedTimeMs > 0n && previousNonce >= 0n && maximumFutureNonceLeadMs > 0n,
-    'trusted nonce inputs are invalid');
-  requireCondition(previousNonce <= trustedTimeMs + maximumFutureNonceLeadMs,
-    'durable nonce is beyond trusted time policy; fresh agent replacement is required');
-  const nonce = trustedTimeMs > previousNonce ? trustedTimeMs : previousNonce + 1n;
-  requireCondition(nonce <= BigInt(Number.MAX_SAFE_INTEGER), 'allocated nonce must fit a safe integer');
-  return nonce;
 }

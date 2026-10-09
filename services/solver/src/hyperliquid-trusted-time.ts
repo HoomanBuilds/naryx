@@ -1,5 +1,11 @@
-import { createHash } from 'node:crypto';
 import { time as readSntpTime, type TimeOptions } from '@hapi/sntp';
+import {
+  hyperliquidTrustedTimeDecisionHash,
+  requireHyperliquidTrustedTimeDecision as validateHyperliquidTrustedTimeDecision,
+  type HyperliquidTrustedTimeDecision,
+  type HyperliquidTrustedTimePolicy,
+  type HyperliquidTrustedTimeSample,
+} from '@naryx/adapter-hyperliquid';
 import {
   HYPERLIQUID_TESTNET_MARKET_INFO_URL,
   type HyperliquidTestnetMarketReadPort,
@@ -9,38 +15,13 @@ const HOST = /^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/;
 const MARKET = /^[A-Za-z0-9@._:/-]{1,64}$/;
 const SCOPE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/;
 
-export interface HyperliquidTrustedTimePolicy {
-  readonly ntpHosts: readonly [string, string];
-  readonly ntpTimeoutMs: number;
-  readonly maximumNtpRoundTripMs: number;
-  readonly maximumSourceSpreadMs: number;
-  readonly maximumLocalClockSkewMs: number;
-  readonly maximumFutureNonceLeadMs: number;
-  readonly hyperliquidClockMarket: string;
-}
-
-export interface HyperliquidTrustedTimeSample {
-  readonly sourceKind: 'NTP' | 'HYPERLIQUID_L2_BOOK';
-  readonly sourceId: string;
-  readonly remoteTimeMs: number;
-  readonly roundTripMs: number;
-}
-
-export interface HyperliquidTrustedTimeDecision {
-  readonly version: 1;
-  readonly scope: string;
-  readonly observedAtMs: number;
-  readonly selectedTimeMs: number;
-  readonly sourceSpreadMs: number;
-  readonly localClockSkewMs: number;
-  readonly policy: HyperliquidTrustedTimePolicy;
-  readonly samples: readonly [
-    HyperliquidTrustedTimeSample,
-    HyperliquidTrustedTimeSample,
-    HyperliquidTrustedTimeSample,
-  ];
-  readonly decisionHash: `0x${string}`;
-}
+export {
+  hyperliquidTrustedTimeDecisionHash,
+  hyperliquidTrustedTimeDecisionJson,
+  type HyperliquidTrustedTimeDecision,
+  type HyperliquidTrustedTimePolicy,
+  type HyperliquidTrustedTimeSample,
+} from '@naryx/adapter-hyperliquid';
 
 export interface HyperliquidTrustedTimePort {
   decide(scope: string): Promise<HyperliquidTrustedTimeDecision>;
@@ -132,40 +113,6 @@ function normalizedPolicy(value: HyperliquidTrustedTimePolicy): HyperliquidTrust
   });
 }
 
-function canonicalDecision(value: Omit<HyperliquidTrustedTimeDecision, 'decisionHash'>): string {
-  return JSON.stringify([
-    value.version,
-    value.scope,
-    value.observedAtMs,
-    value.selectedTimeMs,
-    value.sourceSpreadMs,
-    value.localClockSkewMs,
-    [
-      value.policy.ntpHosts[0], value.policy.ntpHosts[1], value.policy.ntpTimeoutMs,
-      value.policy.maximumNtpRoundTripMs, value.policy.maximumSourceSpreadMs,
-      value.policy.maximumLocalClockSkewMs, value.policy.maximumFutureNonceLeadMs,
-      value.policy.hyperliquidClockMarket,
-    ],
-    value.samples.map((sample) => [
-      sample.sourceKind, sample.sourceId, sample.remoteTimeMs, sample.roundTripMs,
-    ]),
-  ]);
-}
-
-export function hyperliquidTrustedTimeDecisionHash(
-  value: Omit<HyperliquidTrustedTimeDecision, 'decisionHash'>,
-): `0x${string}` {
-  return `0x${createHash('sha256').update(canonicalDecision(value)).digest('hex')}`;
-}
-
-export function hyperliquidTrustedTimeDecisionJson(value: HyperliquidTrustedTimeDecision): string {
-  const encoded = canonicalDecision(value);
-  requireCondition(value.decisionHash
-    === `0x${createHash('sha256').update(encoded).digest('hex')}`,
-  'trusted time decision hash does not match its contents');
-  return encoded;
-}
-
 function ntpSample(host: string, value: TimeOptions, maximumRoundTripMs: number): HyperliquidTrustedTimeSample {
   requireCondition(value.isValid && value.mode === 'server'
     && (value.stratum === 'primary' || value.stratum === 'secondary')
@@ -232,7 +179,10 @@ export class HyperliquidTrustedClock implements HyperliquidTrustedTimePort {
       policy: this.#policy,
       samples,
     });
-    return Object.freeze({ ...unsigned, decisionHash: hyperliquidTrustedTimeDecisionHash(unsigned) });
+    return validateHyperliquidTrustedTimeDecision(Object.freeze({
+      ...unsigned,
+      decisionHash: hyperliquidTrustedTimeDecisionHash(unsigned),
+    }));
   }
 }
 
