@@ -23,6 +23,7 @@ import {
   NettingExecutionCoordinator,
   NettingExternalExecutionRouter,
   CrossBatchClearingCoordinator,
+  CrossBatchExternalExecutionRouter,
   NettingAllocationObservationRouter,
   NettingAllocationSettlementCoordinator,
   type NettingAllocationExecutionObservation,
@@ -235,6 +236,34 @@ test('executes a cross-batch residual once under pooled intent idempotency', asy
   const replay = await coordinator.execute(plan.planHash);
   assert.equal(replay.executedIntentHash, undefined);
   assert.deepEqual(calls, [toHex(pooledIntent.intentHash)]);
+
+  const router = new CrossBatchExternalExecutionRouter([{
+    routeId: 'hypercore:testnet',
+    supports: (candidate) => candidate.domain.domainId === 'hypercore:testnet',
+    execute: async (input) => crossBatchExternalExecutionEvidence({
+      version: 1,
+      intentHash: input.intent.intentHash,
+      outcome: 'EXACT_FILLED',
+      filledSignedQuantityAtoms: -10n,
+      grossQuoteAtoms: 8n,
+      feeQuoteAtoms: 1n,
+      submittedAtUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+      submittedAtValue: 1_999n,
+      observedAtUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+      observedAtValue: 2_001n,
+      executionReferenceHash: id(96),
+      authoritativeEvidenceHash: id(97),
+    }, input.intent),
+  }]);
+  const routed = await router.execute({
+    intent: pooledIntent,
+    idempotencyKey: toHex(pooledIntent.intentHash),
+  });
+  assert.deepEqual(routed.intentHash, pooledIntent.intentHash);
+  await assert.rejects(router.execute({
+    intent: { ...pooledIntent, domain: domainRef('svm:devnet', 1, id(98)) },
+    idempotencyKey: toHex(pooledIntent.intentHash),
+  }), /no registered execution route/);
 });
 
 test('routes residuals to exactly one domain executor and fails closed otherwise', async () => {

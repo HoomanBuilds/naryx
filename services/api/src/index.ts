@@ -714,9 +714,11 @@ export {
 } from "./netting-execution-coordinator.js";
 export {
   CrossBatchClearingCoordinator,
+  CrossBatchExternalExecutionRouter,
   type CrossBatchClearingCoordinatorResult,
   type CrossBatchClearingStorePort,
   type CrossBatchExternalExecutionPort,
+  type RoutedCrossBatchExternalExecutionPort,
 } from "./cross-batch-clearing-coordinator.js";
 export {
   createCrossBatchClearingAdminHandler,
@@ -749,13 +751,17 @@ export {
   type HyperliquidNettingResidualExecutionClientErrorCode,
 } from "./hyperliquid-netting-residual-execution-client.js";
 export {
+  API_BASE_SEPOLIA_CROSS_BATCH_RESIDUAL_EXECUTION_PATH,
   API_BASE_SEPOLIA_NETTING_RESIDUAL_EXECUTION_PATH,
   BaseSepoliaNettingResidualExecutionClientError,
+  HttpBaseSepoliaCrossBatchResidualExecutionClient,
   HttpBaseSepoliaNettingResidualExecutionClient,
   type BaseSepoliaNettingResidualExecutionClientErrorCode,
 } from "./base-sepolia-netting-residual-execution-client.js";
 export {
+  API_SOLANA_DEVNET_CROSS_BATCH_RESIDUAL_EXECUTION_PATH,
   API_SOLANA_DEVNET_NETTING_RESIDUAL_EXECUTION_PATH,
+  HttpSolanaDevnetCrossBatchResidualExecutionClient,
   HttpSolanaDevnetNettingResidualExecutionClient,
   SolanaDevnetNettingResidualExecutionClientError,
   type SolanaDevnetNettingResidualExecutionClientErrorCode,

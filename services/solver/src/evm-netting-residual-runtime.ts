@@ -1,15 +1,21 @@
 import {
   compileEvmTestPerpNettingResidualPlan,
   evmTestPerpNettingResidualEvidence,
+  type EvmNettingResidualEvidence,
+  type EvmNettingResidualIntent,
   type EvmTestPerpNettingResidualBinding,
   type EvmTestPerpNettingResidualObservation,
   type EvmTestPerpNettingResidualPlan,
 } from '@naryx/adapter-evm';
 import {
   bytesEqual,
+  crossBatchExternalExecutionIntentHash,
   nettingExternalExecutionIntentHash,
   toHex,
+  verifyCrossBatchExternalExecutionEvidence,
   verifyNettingExternalExecutionEvidence,
+  type CrossBatchExternalExecutionEvidence,
+  type CrossBatchExternalExecutionIntent,
   type NettingExternalExecutionEvidence,
   type NettingExternalExecutionIntent,
   type NettingInstrumentPolicy,
@@ -27,7 +33,7 @@ export interface EvmNettingResidualAttempt {
   readonly transactionNonce?: bigint;
   readonly signedAtSeconds?: bigint;
   readonly submittedAtSeconds?: bigint;
-  readonly evidence?: NettingExternalExecutionEvidence;
+  readonly evidence?: EvmNettingResidualEvidence;
 }
 
 export interface EvmNettingResidualJournalPort {
@@ -50,7 +56,7 @@ export interface EvmNettingResidualJournalPort {
   }>): Promise<EvmNettingResidualAttempt>;
   recordTerminal(input: Readonly<{
     intentHash: string;
-    evidence: NettingExternalExecutionEvidence;
+    evidence: EvmNettingResidualEvidence;
   }>): Promise<EvmNettingResidualAttempt>;
 }
 
@@ -81,7 +87,7 @@ export interface EvmNettingResidualRuntimeLane {
 }
 
 export interface EvmNettingResidualRuntimeLaneResolver {
-  resolve(intent: NettingExternalExecutionIntent): EvmNettingResidualRuntimeLane;
+  resolve(intent: EvmNettingResidualIntent): EvmNettingResidualRuntimeLane;
 }
 
 export type EvmNettingResidualRuntimeErrorCode =
@@ -120,6 +126,17 @@ function samePlan(left: EvmTestPerpNettingResidualPlan, right: EvmTestPerpNettin
     && left.requestExpirySeconds === right.requestExpirySeconds;
 }
 
+function verifyEvidence(
+  evidence: EvmNettingResidualEvidence,
+  intent: EvmNettingResidualIntent,
+): void {
+  if ('clearingPlanHash' in intent) {
+    verifyCrossBatchExternalExecutionEvidence(evidence as CrossBatchExternalExecutionEvidence, intent);
+  } else {
+    verifyNettingExternalExecutionEvidence(evidence as NettingExternalExecutionEvidence, intent);
+  }
+}
+
 export class EvmTestPerpNettingResidualRuntime {
   readonly #resolver: EvmNettingResidualRuntimeLaneResolver;
   readonly #journal: EvmNettingResidualJournalPort;
@@ -147,7 +164,15 @@ export class EvmTestPerpNettingResidualRuntime {
   async execute(input: Readonly<{
     intent: NettingExternalExecutionIntent;
     idempotencyKey: string;
-  }>): Promise<NettingExternalExecutionEvidence> {
+  }>): Promise<NettingExternalExecutionEvidence>;
+  async execute(input: Readonly<{
+    intent: CrossBatchExternalExecutionIntent;
+    idempotencyKey: string;
+  }>): Promise<CrossBatchExternalExecutionEvidence>;
+  async execute(input: Readonly<{
+    intent: EvmNettingResidualIntent;
+    idempotencyKey: string;
+  }>): Promise<EvmNettingResidualEvidence> {
     const preceding = this.#queue;
     let release = (): void => undefined;
     this.#queue = new Promise<void>((resolve) => { release = resolve; });
@@ -160,12 +185,15 @@ export class EvmTestPerpNettingResidualRuntime {
   }
 
   async #execute(input: Readonly<{
-    intent: NettingExternalExecutionIntent;
+    intent: EvmNettingResidualIntent;
     idempotencyKey: string;
-  }>): Promise<NettingExternalExecutionEvidence> {
+  }>): Promise<EvmNettingResidualEvidence> {
     const expectedKey = toHex(input.intent.intentHash);
+    const actualHash = 'clearingPlanHash' in input.intent
+      ? crossBatchExternalExecutionIntentHash(input.intent)
+      : nettingExternalExecutionIntentHash(input.intent);
     requireCondition(input.idempotencyKey === expectedKey
-      && toHex(nettingExternalExecutionIntentHash(input.intent)) === expectedKey,
+      && toHex(actualHash) === expectedKey,
     'IDEMPOTENCY_MISMATCH', 'Base residual idempotency differs from the canonical intent');
     requireCondition(input.intent.domain.domainId === 'eip155:84532'
       && input.intent.validUntilUnit === 'EVM_UNIX_SECONDS',
@@ -193,7 +221,7 @@ export class EvmTestPerpNettingResidualRuntime {
     if (attempt.status === 'TERMINAL') {
       requireCondition(attempt.evidence !== undefined, 'JOURNAL_STATE_INVALID',
         'terminal Base residual lacks evidence');
-      verifyNettingExternalExecutionEvidence(attempt.evidence, input.intent);
+      verifyEvidence(attempt.evidence, input.intent);
       return attempt.evidence;
     }
     if (attempt.status === 'PREPARED') {
@@ -225,8 +253,10 @@ export class EvmTestPerpNettingResidualRuntime {
     });
     requireCondition(observation !== null, 'EVIDENCE_PENDING',
       'Base residual transaction is not final yet');
-    const evidence = evmTestPerpNettingResidualEvidence({ intent: input.intent, plan, observation });
-    verifyNettingExternalExecutionEvidence(evidence, input.intent);
+    const evidence = 'clearingPlanHash' in input.intent
+      ? evmTestPerpNettingResidualEvidence({ intent: input.intent, plan, observation })
+      : evmTestPerpNettingResidualEvidence({ intent: input.intent, plan, observation });
+    verifyEvidence(evidence, input.intent);
     attempt = await this.#journal.recordTerminal({ intentHash: expectedKey, evidence });
     requireCondition(attempt.status === 'TERMINAL' && attempt.evidence !== undefined,
       'JOURNAL_STATE_INVALID', 'Base residual terminal evidence was not persisted');

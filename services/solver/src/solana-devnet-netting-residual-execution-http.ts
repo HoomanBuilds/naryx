@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   parseProtocolJson,
   stringifyProtocolJson,
+  type CrossBatchExternalExecutionIntent,
   type NettingExternalExecutionIntent,
 } from '@naryx/protocol-types';
 import {
@@ -11,6 +12,8 @@ import {
 
 export const SOLANA_DEVNET_NETTING_RESIDUAL_EXECUTION_PATH =
   '/internal/netting/solana-devnet/execute-residual';
+export const SOLANA_DEVNET_CROSS_BATCH_RESIDUAL_EXECUTION_PATH =
+  '/internal/netting/solana-devnet/execute-cross-batch-residual';
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const MAX_BODY_BYTES = 65_536;
@@ -58,7 +61,9 @@ export function createSolanaDevnetNettingResidualExecutionInternalHandler(
   }
   return async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://solver.internal');
-    if (url.pathname !== SOLANA_DEVNET_NETTING_RESIDUAL_EXECUTION_PATH || url.search !== '') {
+    const direct = url.pathname === SOLANA_DEVNET_NETTING_RESIDUAL_EXECUTION_PATH;
+    const crossBatch = url.pathname === SOLANA_DEVNET_CROSS_BATCH_RESIDUAL_EXECUTION_PATH;
+    if ((!direct && !crossBatch) || url.search !== '') {
       return false;
     }
     if (!internal(request)) {
@@ -79,10 +84,13 @@ export function createSolanaDevnetNettingResidualExecutionInternalHandler(
         || Array.isArray(input.intent)) {
         throw new Error('request must contain only intent and idempotencyKey');
       }
-      const evidence = await runtime.execute({
-        intent: input.intent as NettingExternalExecutionIntent,
-        idempotencyKey: input.idempotencyKey,
-      });
+      const intent = input.intent as NettingExternalExecutionIntent | CrossBatchExternalExecutionIntent;
+      if (crossBatch !== ('clearingPlanHash' in intent)) {
+        throw new Error('residual intent kind does not match the execution route');
+      }
+      const evidence = 'clearingPlanHash' in intent
+        ? await runtime.execute({ intent, idempotencyKey: input.idempotencyKey })
+        : await runtime.execute({ intent, idempotencyKey: input.idempotencyKey });
       return send(response, 200, { version: 1, evidence });
     } catch (error) {
       if (error instanceof SolanaNettingResidualRuntimeError) {

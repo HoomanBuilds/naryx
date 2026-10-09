@@ -1,14 +1,20 @@
 import {
   parseProtocolJson,
   stringifyProtocolJson,
+  verifyCrossBatchExternalExecutionEvidence,
   verifyNettingExternalExecutionEvidence,
+  type CrossBatchExternalExecutionEvidence,
+  type CrossBatchExternalExecutionIntent,
   type NettingExternalExecutionEvidence,
   type NettingExternalExecutionIntent,
 } from '@naryx/protocol-types';
+import type { RoutedCrossBatchExternalExecutionPort } from './cross-batch-clearing-coordinator.js';
 import type { RoutedNettingExternalExecutionPort } from './netting-execution-coordinator.js';
 
 export const API_SOLANA_DEVNET_NETTING_RESIDUAL_EXECUTION_PATH =
   '/internal/netting/solana-devnet/execute-residual';
+export const API_SOLANA_DEVNET_CROSS_BATCH_RESIDUAL_EXECUTION_PATH =
+  '/internal/netting/solana-devnet/execute-cross-batch-residual';
 
 const MAX_RESPONSE_BYTES = 65_536;
 const EVIDENCE_KEYS = [
@@ -144,6 +150,73 @@ function decodedEvidence(
   return Object.freeze(evidence) as unknown as NettingExternalExecutionEvidence;
 }
 
+function decodedCrossBatchEvidence(
+  value: unknown,
+  intent: CrossBatchExternalExecutionIntent,
+): CrossBatchExternalExecutionEvidence {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new SolanaDevnetNettingResidualExecutionClientError(
+      'INVALID_RESPONSE', 'solver execution result must be an object',
+    );
+  }
+  const root = value as Record<string, unknown>;
+  if (Object.keys(root).sort().join(',') !== 'evidence,version' || root.version !== 1
+    || typeof root.evidence !== 'object' || root.evidence === null
+    || Array.isArray(root.evidence)) {
+    throw new SolanaDevnetNettingResidualExecutionClientError(
+      'INVALID_RESPONSE', 'solver execution result fields are invalid',
+    );
+  }
+  const evidence = root.evidence as Record<string, unknown>;
+  if (Object.keys(evidence).sort().join(',') !== EVIDENCE_KEYS) {
+    throw new SolanaDevnetNettingResidualExecutionClientError(
+      'INVALID_RESPONSE', 'solver execution evidence fields are invalid',
+    );
+  }
+  try {
+    verifyCrossBatchExternalExecutionEvidence(
+      evidence as unknown as CrossBatchExternalExecutionEvidence,
+      intent,
+    );
+  } catch {
+    throw new SolanaDevnetNettingResidualExecutionClientError(
+      'INVALID_RESPONSE', 'solver execution evidence is invalid',
+    );
+  }
+  return Object.freeze(evidence) as unknown as CrossBatchExternalExecutionEvidence;
+}
+
+async function executeRequest(
+  fetchImplementation: typeof fetch,
+  origin: string,
+  path: string,
+  input: Readonly<{ idempotencyKey: string; intent: unknown }>,
+): Promise<unknown> {
+  if (!/^[0-9a-f]{64}$/.test(input.idempotencyKey)) {
+    throw new SolanaDevnetNettingResidualExecutionClientError(
+      'INVALID_REQUEST', 'idempotencyKey must be lowercase 32-byte hex without a prefix',
+    );
+  }
+  const response = await fetchImplementation(`${origin}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: stringifyProtocolJson(input),
+    redirect: 'error',
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (response.status === 409) {
+    throw new SolanaDevnetNettingResidualExecutionClientError(
+      'EVIDENCE_PENDING', 'Solana residual evidence is not terminal yet',
+    );
+  }
+  if (!response.ok) {
+    throw new SolanaDevnetNettingResidualExecutionClientError(
+      'UPSTREAM_REJECTED', `Solana residual execution failed with HTTP ${response.status}`,
+    );
+  }
+  return responseJson(response);
+}
+
 export class HttpSolanaDevnetNettingResidualExecutionClient
 implements RoutedNettingExternalExecutionPort {
   readonly routeId = 'svm:devnet';
@@ -164,31 +237,40 @@ implements RoutedNettingExternalExecutionPort {
     intent: NettingExternalExecutionIntent;
     idempotencyKey: string;
   }>): Promise<NettingExternalExecutionEvidence> {
-    if (!/^[0-9a-f]{64}$/.test(input.idempotencyKey)) {
-      throw new SolanaDevnetNettingResidualExecutionClientError(
-        'INVALID_REQUEST', 'idempotencyKey must be lowercase 32-byte hex without a prefix',
-      );
-    }
-    const response = await this.#fetch(
-      `${this.#origin}${API_SOLANA_DEVNET_NETTING_RESIDUAL_EXECUTION_PATH}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: stringifyProtocolJson(input),
-        redirect: 'error',
-        signal: AbortSignal.timeout(15_000),
-      },
-    );
-    if (response.status === 409) {
-      throw new SolanaDevnetNettingResidualExecutionClientError(
-        'EVIDENCE_PENDING', 'Solana residual evidence is not terminal yet',
-      );
-    }
-    if (!response.ok) {
-      throw new SolanaDevnetNettingResidualExecutionClientError(
-        'UPSTREAM_REJECTED', `Solana residual execution failed with HTTP ${response.status}`,
-      );
-    }
-    return decodedEvidence(await responseJson(response), input.intent);
+    return decodedEvidence(await executeRequest(
+      this.#fetch,
+      this.#origin,
+      API_SOLANA_DEVNET_NETTING_RESIDUAL_EXECUTION_PATH,
+      input,
+    ), input.intent);
+  }
+}
+
+export class HttpSolanaDevnetCrossBatchResidualExecutionClient
+implements RoutedCrossBatchExternalExecutionPort {
+  readonly routeId = 'svm:devnet';
+  readonly #origin: string;
+  readonly #fetch: typeof fetch;
+
+  constructor(endpoint: string, fetchImplementation: typeof fetch = fetch) {
+    this.#origin = loopbackOrigin(endpoint);
+    this.#fetch = fetchImplementation;
+  }
+
+  supports(intent: CrossBatchExternalExecutionIntent): boolean {
+    return intent.domain.domainId === 'svm:devnet'
+      && intent.validUntilUnit === 'SOLANA_SLOT';
+  }
+
+  async execute(input: Readonly<{
+    intent: CrossBatchExternalExecutionIntent;
+    idempotencyKey: string;
+  }>): Promise<CrossBatchExternalExecutionEvidence> {
+    return decodedCrossBatchEvidence(await executeRequest(
+      this.#fetch,
+      this.#origin,
+      API_SOLANA_DEVNET_CROSS_BATCH_RESIDUAL_EXECUTION_PATH,
+      input,
+    ), input.intent);
   }
 }

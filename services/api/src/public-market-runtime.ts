@@ -36,13 +36,22 @@ import {
   HttpHyperliquidCrossBatchResidualExecutionClient,
   HttpHyperliquidNettingResidualExecutionClient,
 } from "./hyperliquid-netting-residual-execution-client.js";
-import { HttpBaseSepoliaNettingResidualExecutionClient } from "./base-sepolia-netting-residual-execution-client.js";
-import { HttpSolanaDevnetNettingResidualExecutionClient } from "./solana-devnet-netting-residual-execution-client.js";
+import {
+  HttpBaseSepoliaCrossBatchResidualExecutionClient,
+  HttpBaseSepoliaNettingResidualExecutionClient,
+} from "./base-sepolia-netting-residual-execution-client.js";
+import {
+  HttpSolanaDevnetCrossBatchResidualExecutionClient,
+  HttpSolanaDevnetNettingResidualExecutionClient,
+} from "./solana-devnet-netting-residual-execution-client.js";
 import {
   NettingExecutionCoordinator,
   NettingExternalExecutionRouter,
 } from "./netting-execution-coordinator.js";
-import { CrossBatchClearingCoordinator } from "./cross-batch-clearing-coordinator.js";
+import {
+  CrossBatchClearingCoordinator,
+  CrossBatchExternalExecutionRouter,
+} from "./cross-batch-clearing-coordinator.js";
 import { createCrossBatchClearingAdminHandler } from "./cross-batch-clearing-admin.js";
 import { SqliteNettingAllocationAttemptStore } from "./netting-allocation-attempt-store.js";
 import {
@@ -588,12 +597,24 @@ export function loadPublicMarketRuntime(
         new NettingExternalExecutionRouter(nettingExecutionRoutes),
       )
       : undefined;
-    const crossBatchExecution = hyperliquidNettingExecutionSetting === "true"
+    const crossBatchExecutionRoutes = [
+      ...(hyperliquidNettingExecutionSetting === "true"
+        ? [new HttpHyperliquidCrossBatchResidualExecutionClient(
+          environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
+        )] : []),
+      ...(baseNettingExecutionSetting === "true"
+        ? [new HttpBaseSepoliaCrossBatchResidualExecutionClient(
+          environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
+        )] : []),
+      ...(solanaNettingExecutionSetting === "true"
+        ? [new HttpSolanaDevnetCrossBatchResidualExecutionClient(
+          environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
+        )] : []),
+    ];
+    const crossBatchExecution = crossBatchExecutionRoutes.length > 0
       ? new CrossBatchClearingCoordinator(
         store,
-        new HttpHyperliquidCrossBatchResidualExecutionClient(
-          environment.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788",
-        ),
+        new CrossBatchExternalExecutionRouter(crossBatchExecutionRoutes),
       )
       : undefined;
     const allocationSettlementSetting = environment.NARYX_NETTING_ALLOCATION_SETTLEMENT_ENABLED ?? "false";

@@ -2,15 +2,21 @@ import { createHash } from 'node:crypto';
 import {
   compileSolanaTestPerpNettingResidualPlan,
   solanaTestPerpNettingResidualEvidence,
+  type SolanaNettingResidualEvidence,
+  type SolanaNettingResidualIntent,
   type SolanaTestPerpNettingResidualBinding,
   type SolanaTestPerpNettingResidualObservation,
   type SolanaTestPerpNettingResidualPlan,
 } from '@naryx/adapter-solana';
 import {
   bytesEqual,
+  crossBatchExternalExecutionIntentHash,
   nettingExternalExecutionIntentHash,
   toHex,
+  verifyCrossBatchExternalExecutionEvidence,
   verifyNettingExternalExecutionEvidence,
+  type CrossBatchExternalExecutionEvidence,
+  type CrossBatchExternalExecutionIntent,
   type NettingExternalExecutionEvidence,
   type NettingExternalExecutionIntent,
   type NettingInstrumentPolicy,
@@ -36,7 +42,7 @@ export interface SolanaNettingResidualAttempt {
   readonly status: SolanaNettingResidualIntentStatus;
   readonly plan: SolanaTestPerpNettingResidualPlan;
   readonly submissions: readonly SolanaNettingResidualSubmission[];
-  readonly evidence?: NettingExternalExecutionEvidence;
+  readonly evidence?: SolanaNettingResidualEvidence;
 }
 
 export interface SolanaNettingResidualJournalPort {
@@ -65,7 +71,7 @@ export interface SolanaNettingResidualJournalPort {
   }>): Promise<SolanaNettingResidualAttempt>;
   recordTerminal(input: Readonly<{
     intentHash: string;
-    evidence: NettingExternalExecutionEvidence;
+    evidence: SolanaNettingResidualEvidence;
   }>): Promise<SolanaNettingResidualAttempt>;
 }
 
@@ -101,7 +107,7 @@ export interface SolanaNettingResidualRuntimeLane {
 }
 
 export interface SolanaNettingResidualRuntimeLaneResolver {
-  resolve(intent: NettingExternalExecutionIntent): SolanaNettingResidualRuntimeLane;
+  resolve(intent: SolanaNettingResidualIntent): SolanaNettingResidualRuntimeLane;
 }
 
 export type SolanaNettingResidualRuntimeErrorCode =
@@ -179,6 +185,17 @@ function activeSubmission(attempt: SolanaNettingResidualAttempt): SolanaNettingR
   return active[0];
 }
 
+function verifyEvidence(
+  evidence: SolanaNettingResidualEvidence,
+  intent: SolanaNettingResidualIntent,
+): void {
+  if ('clearingPlanHash' in intent) {
+    verifyCrossBatchExternalExecutionEvidence(evidence as CrossBatchExternalExecutionEvidence, intent);
+  } else {
+    verifyNettingExternalExecutionEvidence(evidence as NettingExternalExecutionEvidence, intent);
+  }
+}
+
 export class SolanaTestPerpNettingResidualRuntime {
   readonly #resolver: SolanaNettingResidualRuntimeLaneResolver;
   readonly #journal: SolanaNettingResidualJournalPort;
@@ -213,7 +230,15 @@ export class SolanaTestPerpNettingResidualRuntime {
   async execute(input: Readonly<{
     intent: NettingExternalExecutionIntent;
     idempotencyKey: string;
-  }>): Promise<NettingExternalExecutionEvidence> {
+  }>): Promise<NettingExternalExecutionEvidence>;
+  async execute(input: Readonly<{
+    intent: CrossBatchExternalExecutionIntent;
+    idempotencyKey: string;
+  }>): Promise<CrossBatchExternalExecutionEvidence>;
+  async execute(input: Readonly<{
+    intent: SolanaNettingResidualIntent;
+    idempotencyKey: string;
+  }>): Promise<SolanaNettingResidualEvidence> {
     const preceding = this.#queue;
     let release = (): void => undefined;
     this.#queue = new Promise<void>((resolve) => { release = resolve; });
@@ -226,12 +251,15 @@ export class SolanaTestPerpNettingResidualRuntime {
   }
 
   async #execute(input: Readonly<{
-    intent: NettingExternalExecutionIntent;
+    intent: SolanaNettingResidualIntent;
     idempotencyKey: string;
-  }>): Promise<NettingExternalExecutionEvidence> {
+  }>): Promise<SolanaNettingResidualEvidence> {
     const expectedKey = toHex(input.intent.intentHash);
+    const actualHash = 'clearingPlanHash' in input.intent
+      ? crossBatchExternalExecutionIntentHash(input.intent)
+      : nettingExternalExecutionIntentHash(input.intent);
     requireCondition(input.idempotencyKey === expectedKey
-      && toHex(nettingExternalExecutionIntentHash(input.intent)) === expectedKey,
+      && toHex(actualHash) === expectedKey,
     'IDEMPOTENCY_MISMATCH', 'Solana residual idempotency differs from the canonical intent');
     requireCondition(input.intent.domain.domainId === 'svm:devnet'
       && input.intent.validUntilUnit === 'SOLANA_SLOT',
@@ -258,7 +286,7 @@ export class SolanaTestPerpNettingResidualRuntime {
     if (attempt.status === 'TERMINAL') {
       requireCondition(attempt.evidence !== undefined, 'JOURNAL_STATE_INVALID',
         'terminal Solana residual lacks evidence');
-      verifyNettingExternalExecutionEvidence(attempt.evidence, input.intent);
+      verifyEvidence(attempt.evidence, input.intent);
       return attempt.evidence;
     }
 
@@ -324,12 +352,14 @@ export class SolanaTestPerpNettingResidualRuntime {
   }
 
   async #recordTerminal(
-    intent: NettingExternalExecutionIntent,
+    intent: SolanaNettingResidualIntent,
     attempt: SolanaNettingResidualAttempt,
     observation: SolanaTestPerpNettingResidualObservation,
-  ): Promise<NettingExternalExecutionEvidence> {
-    const evidence = solanaTestPerpNettingResidualEvidence({ intent, plan: attempt.plan, observation });
-    verifyNettingExternalExecutionEvidence(evidence, intent);
+  ): Promise<SolanaNettingResidualEvidence> {
+    const evidence = 'clearingPlanHash' in intent
+      ? solanaTestPerpNettingResidualEvidence({ intent, plan: attempt.plan, observation })
+      : solanaTestPerpNettingResidualEvidence({ intent, plan: attempt.plan, observation });
+    verifyEvidence(evidence, intent);
     const stored = await this.#journal.recordTerminal({
       intentHash: attempt.intentHash,
       evidence,

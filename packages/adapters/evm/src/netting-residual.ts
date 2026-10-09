@@ -1,11 +1,14 @@
 import {
   bytesEqual,
+  crossBatchExternalExecutionEvidence,
   nettingExternalExecutionEvidence,
   nettingInstrumentHash,
   scaleDecimals,
   type AdapterRef,
   type AssetRef,
   type CommitmentHash,
+  type CrossBatchExternalExecutionEvidence,
+  type CrossBatchExternalExecutionIntent,
   type DomainRef,
   type NettingExternalExecutionEvidence,
   type NettingExternalExecutionIntent,
@@ -24,6 +27,14 @@ import { encodeTestPerpTradeArgs, NARYX_TEST_PERP_MARKET_ABI } from './testPerpM
 const BASE_SEPOLIA_CHAIN_ID = 84_532;
 const UINT256_MAX = (1n << 256n) - 1n;
 const INT128_MAX = (1n << 127n) - 1n;
+
+export type EvmNettingResidualIntent =
+  | NettingExternalExecutionIntent
+  | CrossBatchExternalExecutionIntent;
+
+export type EvmNettingResidualEvidence =
+  | NettingExternalExecutionEvidence
+  | CrossBatchExternalExecutionEvidence;
 
 export interface EvmTestPerpNettingResidualBinding {
   readonly domain: DomainRef;
@@ -109,7 +120,7 @@ function quoteAtomsFromWad(value: bigint, decimals: number, rounding: 'FLOOR' | 
 }
 
 export function compileEvmTestPerpNettingResidualPlan(input: Readonly<{
-  intent: NettingExternalExecutionIntent;
+  intent: EvmNettingResidualIntent;
   instrument: NettingInstrumentPolicy;
   binding: EvmTestPerpNettingResidualBinding;
   marginQuoteAtoms: bigint;
@@ -198,7 +209,17 @@ export function evmTestPerpNettingResidualEvidence(input: Readonly<{
   intent: NettingExternalExecutionIntent;
   plan: EvmTestPerpNettingResidualPlan;
   observation: EvmTestPerpNettingResidualObservation;
-}>): NettingExternalExecutionEvidence {
+}>): NettingExternalExecutionEvidence;
+export function evmTestPerpNettingResidualEvidence(input: Readonly<{
+  intent: CrossBatchExternalExecutionIntent;
+  plan: EvmTestPerpNettingResidualPlan;
+  observation: EvmTestPerpNettingResidualObservation;
+}>): CrossBatchExternalExecutionEvidence;
+export function evmTestPerpNettingResidualEvidence(input: Readonly<{
+  intent: EvmNettingResidualIntent;
+  plan: EvmTestPerpNettingResidualPlan;
+  observation: EvmTestPerpNettingResidualObservation;
+}>): EvmNettingResidualEvidence {
   const { intent, plan, observation } = input;
   requireCondition(plan.version === 1
     && plan.guarantee === 'SINGLE_TRANSACTION_BOUNDED_FILL_WITH_EVENT'
@@ -230,7 +251,7 @@ export function evmTestPerpNettingResidualEvidence(input: Readonly<{
   const feeQuoteAtoms = succeeded
     ? quoteAtomsFromWad(observation.feeWad, intent.quoteAsset.decimals, 'CEIL')
     : 0n;
-  return nettingExternalExecutionEvidence({
+  const evidence = {
     version: 1,
     intentHash: intent.intentHash,
     outcome: succeeded ? 'EXACT_FILLED' : 'REJECTED',
@@ -243,5 +264,8 @@ export function evmTestPerpNettingResidualEvidence(input: Readonly<{
     observedAtValue: observation.observedAtSeconds,
     executionReferenceHash: observation.executionReferenceHash,
     authoritativeEvidenceHash: observation.authoritativeEvidenceHash,
-  }, intent);
+  } as const;
+  return 'clearingPlanHash' in intent
+    ? crossBatchExternalExecutionEvidence(evidence, intent)
+    : nettingExternalExecutionEvidence(evidence, intent);
 }

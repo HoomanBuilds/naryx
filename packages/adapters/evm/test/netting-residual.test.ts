@@ -3,6 +3,9 @@ import test from 'node:test';
 import {
   adapterRef,
   assetRef,
+  crossBatchClearingPlan,
+  crossBatchClearingPolicy,
+  crossBatchExternalExecutionIntent,
   domainRef,
   netObligations,
   nettingExternalExecutionIntent,
@@ -74,6 +77,36 @@ const intent = nettingExternalExecutionIntent(result, policy, {
   validUntilValue: 2_000_000_000n,
   sourceFeeCaps: [{ obligationId: result.allocations[0]!.obligationId, maximumFeeQuoteAtoms: 2_000_000n }],
 });
+const sellResult = netObligations([{
+  ownerId: 'seller',
+  strategyOrderHash: id(30),
+  packageOrderId: id(31),
+  settlementReadinessHash: id(32),
+  legId: 'perp',
+  instrumentId: 'weth-perp',
+  signedQuantityAtoms: -2_000_000_000_000_000_000n,
+  limitPriceTicks: 19n,
+  sequence: 2n,
+}], policy);
+const sellIntent = nettingExternalExecutionIntent(sellResult, policy, {
+  instrumentId: 'weth-perp',
+  validUntilUnit: 'EVM_UNIX_SECONDS',
+  validUntilValue: 2_000_000_005n,
+  sourceFeeCaps: [{ obligationId: sellResult.allocations[0]!.obligationId, maximumFeeQuoteAtoms: 3_000_000n }],
+});
+const crossBatchIntent = crossBatchExternalExecutionIntent(crossBatchClearingPlan(
+  [intent, sellIntent],
+  crossBatchClearingPolicy({
+    version: 1,
+    policyId: 'base-sepolia-cross-batch-v1',
+    domain,
+    adapter,
+    expiryUnit: 'EVM_UNIX_SECONDS',
+    maximumSourceIntents: 8,
+    maximumSourceBatches: 8,
+    maximumExpirySpread: 10n,
+  }),
+));
 const binding = {
   domain,
   adapter,
@@ -156,4 +189,32 @@ test('translates only the matching bounded event into terminal evidence', () => 
     plan,
     observation: { ...observation, notionalWad: plan.maximumNotionalWad + 1n },
   }), /violates the bounded trade/);
+});
+
+test('compiles and proves a pooled Base Sepolia residual', () => {
+  const plan = compileEvmTestPerpNettingResidualPlan({
+    intent: crossBatchIntent,
+    instrument: policy.instruments[0]!,
+    binding,
+    marginQuoteAtoms: 400_000_000n,
+  });
+  assert.equal(plan.requestedSignedQuantityAtoms, -1_000_000_000_000_000_000n);
+  const evidence = evmTestPerpNettingResidualEvidence({
+    intent: crossBatchIntent,
+    plan,
+    observation: {
+      executionId: plan.executionId,
+      trader: binding.executionAccount,
+      terminalStatus: 'SUCCEEDED',
+      sizeDeltaWad: plan.sizeDeltaWad,
+      notionalWad: 1_900_000_000_000_000_000_000n,
+      feeWad: 1_000_000_000_000_000_000n,
+      submittedAtSeconds: 1_999_999_999n,
+      observedAtSeconds: 2_000_000_001n,
+      executionReferenceHash: id(42),
+      authoritativeEvidenceHash: id(43),
+    },
+  });
+  assert.equal(evidence.outcome, 'EXACT_FILLED');
+  assert.deepEqual(evidence.intentHash, crossBatchIntent.intentHash);
 });

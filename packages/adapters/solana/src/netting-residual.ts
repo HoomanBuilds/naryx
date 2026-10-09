@@ -1,11 +1,14 @@
 import {
   bytesEqual,
   commitmentHash,
+  crossBatchExternalExecutionEvidence,
   nettingExternalExecutionEvidence,
   nettingInstrumentHash,
   type AdapterRef,
   type AssetRef,
   type CommitmentHash,
+  type CrossBatchExternalExecutionEvidence,
+  type CrossBatchExternalExecutionIntent,
   type DomainRef,
   type NettingExternalExecutionEvidence,
   type NettingExternalExecutionIntent,
@@ -22,6 +25,14 @@ const PLACE_BOUNDED_RESIDUAL_DISCRIMINATOR = Buffer.from('4820954c32b25f8e', 'he
 const NETTING_RESIDUAL_RECEIPT_SEED = Buffer.from('netting-residual-receipt', 'ascii');
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const U64_MAX = (1n << 64n) - 1n;
+
+export type SolanaNettingResidualIntent =
+  | NettingExternalExecutionIntent
+  | CrossBatchExternalExecutionIntent;
+
+export type SolanaNettingResidualEvidence =
+  | NettingExternalExecutionEvidence
+  | CrossBatchExternalExecutionEvidence;
 
 export interface SolanaTestPerpNettingResidualBinding {
   readonly domain: DomainRef;
@@ -159,7 +170,7 @@ export function deriveSolanaNettingResidualReceipt(input: Readonly<{
 }
 
 export function compileSolanaTestPerpNettingResidualPlan(input: Readonly<{
-  intent: NettingExternalExecutionIntent;
+  intent: SolanaNettingResidualIntent;
   instrument: NettingInstrumentPolicy;
   binding: SolanaTestPerpNettingResidualBinding;
 }>): SolanaTestPerpNettingResidualPlan {
@@ -258,7 +269,17 @@ export function solanaTestPerpNettingResidualEvidence(input: Readonly<{
   intent: NettingExternalExecutionIntent;
   plan: SolanaTestPerpNettingResidualPlan;
   observation: SolanaTestPerpNettingResidualObservation;
-}>): NettingExternalExecutionEvidence {
+}>): NettingExternalExecutionEvidence;
+export function solanaTestPerpNettingResidualEvidence(input: Readonly<{
+  intent: CrossBatchExternalExecutionIntent;
+  plan: SolanaTestPerpNettingResidualPlan;
+  observation: SolanaTestPerpNettingResidualObservation;
+}>): CrossBatchExternalExecutionEvidence;
+export function solanaTestPerpNettingResidualEvidence(input: Readonly<{
+  intent: SolanaNettingResidualIntent;
+  plan: SolanaTestPerpNettingResidualPlan;
+  observation: SolanaTestPerpNettingResidualObservation;
+}>): SolanaNettingResidualEvidence {
   const { intent, plan, observation } = input;
   requireCondition(plan.version === 1
     && plan.guarantee === 'SINGLE_TRANSACTION_BOUNDED_FILL_WITH_RECEIPT'
@@ -286,7 +307,7 @@ export function solanaTestPerpNettingResidualEvidence(input: Readonly<{
       && observation.feeQuoteAtoms === 0n,
     'reverted Solana residual cannot carry fill amounts');
   }
-  return nettingExternalExecutionEvidence({
+  const evidence = {
     version: 1,
     intentHash: intent.intentHash,
     outcome: succeeded ? 'EXACT_FILLED' : 'REJECTED',
@@ -299,5 +320,8 @@ export function solanaTestPerpNettingResidualEvidence(input: Readonly<{
     observedAtValue: observation.observedAtSlot,
     executionReferenceHash: observation.executionReferenceHash,
     authoritativeEvidenceHash: observation.authoritativeEvidenceHash,
-  }, intent);
+  } as const;
+  return 'clearingPlanHash' in intent
+    ? crossBatchExternalExecutionEvidence(evidence, intent)
+    : nettingExternalExecutionEvidence(evidence, intent);
 }

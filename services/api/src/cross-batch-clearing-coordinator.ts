@@ -20,6 +20,38 @@ export interface CrossBatchExternalExecutionPort {
   }>): Promise<CrossBatchExternalExecutionEvidence>;
 }
 
+export interface RoutedCrossBatchExternalExecutionPort extends CrossBatchExternalExecutionPort {
+  readonly routeId: string;
+  supports(intent: CrossBatchExternalExecutionIntent): boolean;
+}
+
+export class CrossBatchExternalExecutionRouter implements CrossBatchExternalExecutionPort {
+  readonly #routes: readonly RoutedCrossBatchExternalExecutionPort[];
+
+  constructor(routes: readonly RoutedCrossBatchExternalExecutionPort[]) {
+    if (!Array.isArray(routes) || routes.length === 0
+      || routes.some((route) => typeof route?.routeId !== 'string' || route.routeId.length === 0
+        || typeof route.supports !== 'function' || typeof route.execute !== 'function')
+      || new Set(routes.map((route) => route.routeId)).size !== routes.length) {
+      throw new Error('cross-batch execution routes must be nonempty, unique, and complete');
+    }
+    this.#routes = Object.freeze([...routes]);
+  }
+
+  async execute(input: Readonly<{
+    intent: CrossBatchExternalExecutionIntent;
+    idempotencyKey: string;
+  }>): Promise<CrossBatchExternalExecutionEvidence> {
+    const matches = this.#routes.filter((route) => route.supports(input.intent));
+    if (matches.length !== 1) {
+      throw new Error(matches.length === 0
+        ? 'cross-batch residual has no registered execution route'
+        : 'cross-batch residual matches multiple execution routes');
+    }
+    return matches[0]!.execute(input);
+  }
+}
+
 export interface CrossBatchClearingCoordinatorResult {
   readonly clearing: PreparedCrossBatchClearing;
   readonly executedIntentHash?: string;

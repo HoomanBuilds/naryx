@@ -8,7 +8,7 @@ import {
   type NettingExternalExecutionEvidence,
   type NettingExternalExecutionIntent,
 } from '@naryx/protocol-types';
-import type { CrossBatchExternalExecutionPort } from './cross-batch-clearing-coordinator.js';
+import type { RoutedCrossBatchExternalExecutionPort } from './cross-batch-clearing-coordinator.js';
 import type { RoutedNettingExternalExecutionPort } from './netting-execution-coordinator.js';
 
 export const API_HYPERLIQUID_NETTING_RESIDUAL_EXECUTION_PATH =
@@ -250,13 +250,19 @@ implements RoutedNettingExternalExecutionPort {
 }
 
 export class HttpHyperliquidCrossBatchResidualExecutionClient
-implements CrossBatchExternalExecutionPort {
+implements RoutedCrossBatchExternalExecutionPort {
+  readonly routeId = 'hypercore:testnet';
   readonly #origin: string;
   readonly #fetch: typeof fetch;
 
   constructor(endpoint: string, fetchImplementation: typeof fetch = fetch) {
     this.#origin = loopbackOrigin(endpoint);
     this.#fetch = fetchImplementation;
+  }
+
+  supports(intent: CrossBatchExternalExecutionIntent): boolean {
+    return intent.domain.domainId === 'hypercore:testnet'
+      && intent.validUntilUnit === 'HYPERLIQUID_UNIX_MILLISECONDS';
   }
 
   async execute(input: Readonly<{

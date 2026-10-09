@@ -2,12 +2,14 @@ import { existsSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
-import type { EvmTestPerpNettingResidualPlan } from '@naryx/adapter-evm';
+import type {
+  EvmNettingResidualEvidence,
+  EvmTestPerpNettingResidualPlan,
+} from '@naryx/adapter-evm';
 import {
   parseProtocolJson,
   stringifyProtocolJson,
   toHex,
-  type NettingExternalExecutionEvidence,
 } from '@naryx/protocol-types';
 import type { Hex } from 'viem';
 import type {
@@ -96,13 +98,13 @@ function decodePlan(value: string): EvmTestPerpNettingResidualPlan {
   return Object.freeze(decoded);
 }
 
-function evidenceJson(evidence: NettingExternalExecutionEvidence): string {
+function evidenceJson(evidence: EvmNettingResidualEvidence): string {
   requireCondition(evidence.version === 1, 'EVM residual evidence version is invalid');
   return stringifyProtocolJson(evidence);
 }
 
-function decodeEvidence(value: string): NettingExternalExecutionEvidence {
-  const decoded = parseProtocolJson(value) as NettingExternalExecutionEvidence;
+function decodeEvidence(value: string): EvmNettingResidualEvidence {
+  const decoded = parseProtocolJson(value) as EvmNettingResidualEvidence;
   requireCondition(decoded.version === 1, 'stored EVM residual evidence version is invalid');
   return Object.freeze(decoded);
 }
@@ -233,7 +235,7 @@ export class EvmNettingResidualSqliteJournal implements EvmNettingResidualJourna
 
   async recordTerminal(input: Readonly<{
     intentHash: string;
-    evidence: NettingExternalExecutionEvidence;
+    evidence: EvmNettingResidualEvidence;
   }>): Promise<EvmNettingResidualAttempt> {
     this.#requireOpen();
     const hash = intentHash(input.intentHash);

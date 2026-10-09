@@ -4,12 +4,14 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import bs58 from 'bs58';
 import { PublicKey, TransactionInstruction } from '@solana/web3.js';
-import type { SolanaTestPerpNettingResidualPlan } from '@naryx/adapter-solana';
+import type {
+  SolanaNettingResidualEvidence,
+  SolanaTestPerpNettingResidualPlan,
+} from '@naryx/adapter-solana';
 import {
   parseProtocolJson,
   stringifyProtocolJson,
   toHex,
-  type NettingExternalExecutionEvidence,
 } from '@naryx/protocol-types';
 import type {
   SolanaNettingResidualAttempt,
@@ -165,13 +167,13 @@ function decodePlan(value: string): SolanaTestPerpNettingResidualPlan {
   return plan;
 }
 
-function evidenceJson(evidence: NettingExternalExecutionEvidence): string {
+function evidenceJson(evidence: SolanaNettingResidualEvidence): string {
   requireCondition(evidence.version === 1, 'Solana residual evidence version is invalid');
   return stringifyProtocolJson(evidence);
 }
 
-function decodeEvidence(value: string): NettingExternalExecutionEvidence {
-  const decoded = parseProtocolJson(value) as NettingExternalExecutionEvidence;
+function decodeEvidence(value: string): SolanaNettingResidualEvidence {
+  const decoded = parseProtocolJson(value) as SolanaNettingResidualEvidence;
   requireCondition(decoded.version === 1, 'stored Solana residual evidence version is invalid');
   return Object.freeze(decoded);
 }
@@ -351,7 +353,7 @@ export class SolanaNettingResidualSqliteJournal implements SolanaNettingResidual
 
   async recordTerminal(input: Readonly<{
     intentHash: string;
-    evidence: NettingExternalExecutionEvidence;
+    evidence: SolanaNettingResidualEvidence;
   }>): Promise<SolanaNettingResidualAttempt> {
     this.#requireOpen();
     const hash = intentHash(input.intentHash);

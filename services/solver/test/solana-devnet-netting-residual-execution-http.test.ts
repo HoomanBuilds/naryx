@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import test from 'node:test';
 import { stringifyProtocolJson } from '@naryx/protocol-types';
 import {
+  SOLANA_DEVNET_CROSS_BATCH_RESIDUAL_EXECUTION_PATH,
   SOLANA_DEVNET_NETTING_RESIDUAL_EXECUTION_PATH,
   SolanaNettingResidualRuntimeError,
   createSolanaDevnetNettingResidualExecutionInternalHandler,
@@ -25,6 +26,10 @@ test('Solana residual handler is loopback-only and preserves pending evidence', 
     intent: { domain: { domainId: 'svm:devnet' } },
     idempotencyKey: '11'.repeat(32),
   });
+  const pooled = stringifyProtocolJson({
+    intent: { domain: { domainId: 'svm:devnet' }, clearingPlanHash: '22'.repeat(32) },
+    idempotencyKey: '11'.repeat(32),
+  });
   try {
     const pending = await fetch(url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: request,
@@ -34,6 +39,13 @@ test('Solana residual handler is loopback-only and preserves pending evidence', 
       method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'https://example.com' }, body: request,
     });
     assert.equal(forbidden.status, 403);
+    assert.equal((await fetch(
+      `http://127.0.0.1:${address.port}${SOLANA_DEVNET_CROSS_BATCH_RESIDUAL_EXECUTION_PATH}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: pooled },
+    )).status, 409);
+    assert.equal((await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: pooled,
+    })).status, 400);
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => error === undefined ? resolve() : reject(error));

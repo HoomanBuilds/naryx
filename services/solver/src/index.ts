@@ -867,6 +867,7 @@ export {
   type SolanaDevnetNettingResidualLoadedRuntime,
 } from './solana-devnet-netting-residual-config.js';
 export {
+  SOLANA_DEVNET_CROSS_BATCH_RESIDUAL_EXECUTION_PATH,
   SOLANA_DEVNET_NETTING_RESIDUAL_EXECUTION_PATH,
   createSolanaDevnetNettingResidualExecutionInternalHandler,
 } from './solana-devnet-netting-residual-execution-http.js';
@@ -883,6 +884,7 @@ export {
   type BaseSepoliaNettingResidualLoadedRuntime,
 } from './base-sepolia-netting-residual-config.js';
 export {
+  BASE_SEPOLIA_CROSS_BATCH_RESIDUAL_EXECUTION_PATH,
   BASE_SEPOLIA_NETTING_RESIDUAL_EXECUTION_PATH,
   createBaseSepoliaNettingResidualExecutionInternalHandler,
 } from './base-sepolia-netting-residual-execution-http.js';

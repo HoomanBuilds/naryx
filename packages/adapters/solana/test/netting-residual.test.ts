@@ -3,6 +3,9 @@ import test from 'node:test';
 import {
   adapterRef,
   assetRef,
+  crossBatchClearingPlan,
+  crossBatchClearingPolicy,
+  crossBatchExternalExecutionIntent,
   domainRef,
   netObligations,
   nettingExternalExecutionIntent,
@@ -74,6 +77,36 @@ const intent = nettingExternalExecutionIntent(result, policy, {
   validUntilValue: 500_000_000n,
   sourceFeeCaps: [{ obligationId: result.allocations[0]!.obligationId, maximumFeeQuoteAtoms: 60_000n }],
 });
+const sellResult = netObligations([{
+  ownerId: 'seller',
+  strategyOrderHash: id(30),
+  packageOrderId: id(31),
+  settlementReadinessHash: id(32),
+  legId: 'perp',
+  instrumentId: 'wsol-perp',
+  signedQuantityAtoms: -2_000_000_000n,
+  limitPriceTicks: 99_500n,
+  sequence: 2n,
+}], policy);
+const sellIntent = nettingExternalExecutionIntent(sellResult, policy, {
+  instrumentId: 'wsol-perp',
+  validUntilUnit: 'SOLANA_SLOT',
+  validUntilValue: 500_000_005n,
+  sourceFeeCaps: [{ obligationId: sellResult.allocations[0]!.obligationId, maximumFeeQuoteAtoms: 70_000n }],
+});
+const crossBatchIntent = crossBatchExternalExecutionIntent(crossBatchClearingPlan(
+  [intent, sellIntent],
+  crossBatchClearingPolicy({
+    version: 1,
+    policyId: 'solana-devnet-cross-batch-v1',
+    domain,
+    adapter,
+    expiryUnit: 'SOLANA_SLOT',
+    maximumSourceIntents: 8,
+    maximumSourceBatches: 8,
+    maximumExpirySpread: 10n,
+  }),
+));
 const binding = {
   domain,
   adapter,
@@ -148,4 +181,36 @@ test('translates only the matching Solana receipt into terminal evidence', () =>
     plan,
     observation: { ...observation, authority: key(99) },
   }), /another execution account/);
+});
+
+test('compiles and proves a pooled Solana Devnet residual', () => {
+  const plan = compileSolanaTestPerpNettingResidualPlan({
+    intent: crossBatchIntent,
+    instrument: policy.instruments[0]!,
+    binding,
+  });
+  assert.equal(plan.requestedSignedQuantityAtoms, -1_000_000_000n);
+  const evidence = solanaTestPerpNettingResidualEvidence({
+    intent: crossBatchIntent,
+    plan,
+    observation: {
+      intentHash: crossBatchIntent.intentHash,
+      authority: binding.executionAccount,
+      market: binding.marketAddress,
+      position: binding.positionAddress,
+      terminalStatus: 'SUCCEEDED',
+      side: 'SELL',
+      baseLots: 1_000n,
+      fillPricePerLot: 100_000n,
+      grossQuoteAtoms: 100_000_000n,
+      feeQuoteAtoms: 50_000n,
+      executionSlot: 499_999_991n,
+      submittedAtSlot: 499_999_990n,
+      observedAtSlot: 499_999_992n,
+      executionReferenceHash: id(42),
+      authoritativeEvidenceHash: id(43),
+    },
+  });
+  assert.equal(evidence.outcome, 'EXACT_FILLED');
+  assert.deepEqual(evidence.intentHash, crossBatchIntent.intentHash);
 });
