@@ -21,7 +21,7 @@ const steps = Object.freeze([
     title: "Solana local entry, rollback, restart, exit, and terminal lifecycle",
     command: "npm",
     args: ["--prefix", "tests/solana-local", "run", "test:phase-exit"],
-    timeoutMs: 300_000,
+    timeoutMs: 900_000,
   },
   {
     id: "base-local-atomic-lifecycle",

@@ -44,6 +44,7 @@ import {
   HttpInternalOrderProvider,
   HttpSelectedSolanaAdmissionProvider,
   SolanaExecutionAuthorizationService,
+  SqliteAtomicQuoteNonceSource,
   SqliteInternalAtomicQuoteStore,
   SqliteSolanaExecutionAuthorizationStore,
 } from "@naryx/solver";
@@ -386,7 +387,7 @@ test(
           let quoteSlot = BigInt(manifest.rpc.manifestSlot);
           const market = createLocalAtomicMarketRuntime(
             manifest.runtime.catalog,
-            undefined,
+            new SqliteAtomicQuoteNonceSource(quotes, "svm:local:phase-exit"),
             () => quoteSlot,
           );
           const entryQuotes = createInternalAtomicQuoteCoordinator({

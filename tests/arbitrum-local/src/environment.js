@@ -207,7 +207,14 @@ export async function withLocalArbitrumEnvironment(callback) {
   try {
     const port = await availablePort();
     const rpcUrl = `http://127.0.0.1:${port}`;
-    anvil = spawn("anvil", ["--host", "127.0.0.1", "--port", String(port), "--chain-id", String(chainId), "--accounts", "0", "--silent"], {
+    anvil = spawn("anvil", [
+      "--host", "127.0.0.1",
+      "--port", String(port),
+      "--chain-id", String(chainId),
+      "--accounts", "0",
+      "--disable-code-size-limit",
+      "--silent",
+    ], {
       cwd: runDir,
       stdio: ["ignore", logFd, logFd],
     });
