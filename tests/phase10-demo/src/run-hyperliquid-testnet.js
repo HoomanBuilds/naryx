@@ -1,8 +1,11 @@
 import { randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   HyperliquidSdkTestnetAuthorityReader,
+  HyperliquidRecoveryTestnetHttpExecution,
+  HYPERLIQUID_TESTNET_MARKET_INFO_URL,
   HyperliquidTestnetHttpExchangeTransport,
   HyperliquidSdkTestnetMarketReadClient,
   createHyperliquidTestnetExecutor,
@@ -11,8 +14,16 @@ import {
   loadHyperliquidTestnetExecutorRuntime,
 } from "../../../services/solver/dist/index.js";
 import {
+  HYPERCORE_RECONCILIATION_SOURCE,
+  HyperliquidRecoveryCompiler,
+  beginHyperliquidReconciliation,
+  createHyperliquidPackageAttempt,
+  reconcileHyperliquidPackageAttempt,
+} from "../../../services/keeper/dist/index.js";
+import {
   boundedIocPrice,
   buildCashCarryPlan,
+  buildCashCarryRecoverySourcePlan,
 } from "./hyperliquid-testnet-plan.js";
 
 const required = (name) => {
@@ -44,6 +55,7 @@ const perpetualAssetId = 3;
 const spotTokenIndex = 2202;
 const quoteTokenIndex = 0;
 const quantityAtoms = 2_000_000n;
+const recoveryDrill = process.argv.includes("--recovery-drill");
 const attempts = new Map();
 const provider = Object.freeze({ resolve: async (attemptId) => attempts.get(attemptId) });
 const signer = loadHyperliquidTestnetAgentSigner(keyPath, agentAddress);
@@ -79,6 +91,37 @@ function attemptId(label) {
   return `hl-${label}-${Date.now().toString(36)}-${randomBytes(8).toString("hex")}`;
 }
 
+function decimalAtoms(value, decimals, name) {
+  if (typeof value !== "string" || !/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(value)) {
+    throw new Error(`${name} is invalid`);
+  }
+  const negative = value.startsWith("-");
+  const unsigned = negative ? value.slice(1) : value;
+  const [whole, fraction = ""] = unsigned.split(".");
+  if (fraction.length > decimals) throw new Error(`${name} exceeds asset precision`);
+  const atoms = BigInt(`${whole}${fraction.padEnd(decimals, "0")}`);
+  return negative ? -atoms : atoms;
+}
+
+async function lightweightPerpetualPosition() {
+  const query = async (body) => {
+    const response = await fetch(new URL("/info", HYPERLIQUID_TESTNET_MARKET_INFO_URL), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new Error(`Hyperliquid account read failed with ${response.status}`);
+    return response.json();
+  };
+  const clearing = await query({ type: "clearinghouseState", user: tradingAccount });
+  const position = clearing?.assetPositions?.find(
+    (item) => item?.position?.coin === perpetualCoin,
+  )?.position?.szi ?? "0";
+  return decimalAtoms(position, baseDecimals, "perpetual position");
+}
+
 async function livePrices(action) {
   const entry = action === "ENTRY";
   for (let attempt = 0; attempt < 12; attempt += 1) {
@@ -99,7 +142,7 @@ async function livePrices(action) {
   throw new Error("qualified books remained one-sided for 30 seconds");
 }
 
-async function registerAttempt(action, spotAtoms, perpetualAtoms) {
+async function registerAttempt(action, spotAtoms, perpetualAtoms, options = {}) {
   const id = attemptId(action.toLowerCase());
   const selectedAtMs = Date.now();
   const expiresAtMs = selectedAtMs + 120_000;
@@ -115,6 +158,7 @@ async function registerAttempt(action, spotAtoms, perpetualAtoms) {
     perpetualAssetId,
     ...prices,
     expiresAtMs,
+    forceEntryPerpetualReduceOnly: options.forcePerpetualNoFill === true,
   });
   attempts.set(id, Object.freeze({
     attemptId: id,
@@ -157,12 +201,108 @@ async function registerAttempt(action, spotAtoms, perpetualAtoms) {
     selectedAtMs,
     strategy: Object.freeze({ graphHash: plan.graphHash, plan }),
   }));
-  return id;
+  return Object.freeze({ id, plan, seriesManifestHash: attempts.get(id).seriesManifestHash,
+    executionClassManifestHash: attempts.get(id).executionClassManifestHash });
 }
 
 async function inventory() {
   const snapshot = await authorityReader.read(account, agentAddress, [perpetualCoin]);
   return hyperliquidTestnetAccountInventory(snapshot, perpetualCoin, spotTokenIndex, baseDecimals);
+}
+
+async function recoveryIdentity() {
+  const path = required("NARYX_HYPERLIQUID_TESTNET_RECOVERY_CONFIG");
+  const config = JSON.parse(await readFile(path, "utf8"));
+  if (config?.environment !== "HYPERLIQUID_TESTNET"
+    || config?.verifierIdentity?.environment !== "testnet") {
+    throw new Error("Hyperliquid recovery config is not pinned to testnet");
+  }
+  return config.verifierIdentity;
+}
+
+function recoverySourceAttempt({ registration, result, before, identity, prices }) {
+  const spotEvidence = result.stages.flatMap((stage) => stage.evidence?.legs ?? [])
+    .find((leg) => leg.legId === "spot");
+  const perpetualEvidence = result.stages.flatMap((stage) => stage.evidence?.legs ?? [])
+    .find((leg) => leg.legId === "perpetual");
+  if (!spotEvidence || !perpetualEvidence) throw new Error("partial package evidence is incomplete");
+  const now = Date.now();
+  const sourcePlan = buildCashCarryRecoverySourcePlan({
+    strategyPlan: registration.plan,
+    seriesManifestHash: registration.seriesManifestHash,
+    executionClassManifestHash: registration.executionClassManifestHash,
+    prePerpetualPositionAtoms: before.perpetualPositionAtoms,
+    recoveryIdentity: identity,
+    rollbackSpotPrice: prices.spotPrice,
+    rollbackPerpetualPrice: prices.perpetualPrice,
+    recoveryActionExpiryMs: now + 240_000,
+    recoveryDeadlineMs: now + 600_000,
+  });
+  const fees = result.stages.flatMap((stage) => stage.evidence?.legs ?? [])
+    .filter((leg) => BigInt(leg.feeAtoms) > 0n)
+    .map((leg) => Object.freeze({
+      assetId: leg.feeAssetId,
+      assetDecimals: leg.feeAssetDecimals,
+      amountAtoms: BigInt(leg.feeAtoms),
+      evidenceStatus: "CONFIRMED",
+    }));
+  const baseFeeAtoms = fees
+    .filter((fee) => fee.assetId === sourcePlan.legs[0].baseAsset.assetId)
+    .reduce((sum, fee) => sum + fee.amountAtoms, 0n);
+  const spotFill = BigInt(spotEvidence.filledSignedBaseAtoms);
+  const perpetualFill = BigInt(perpetualEvidence.filledSignedBaseAtoms);
+  const observedAtMs = BigInt(Math.max(
+    ...result.stages.map((stage) => Number(stage.evidence?.observedAtMs ?? 0)),
+  ));
+  const planned = beginHyperliquidReconciliation(createHyperliquidPackageAttempt(
+    sourcePlan,
+    account,
+  ));
+  const attempt = reconcileHyperliquidPackageAttempt(planned, {
+    source: HYPERCORE_RECONCILIATION_SOURCE,
+    domain: sourcePlan.domain,
+    commitments: sourcePlan.commitments,
+    account,
+    evidenceVersion: 1n,
+    observedAtMs,
+    spot: Object.freeze({
+      clientOrderId: sourcePlan.legs[0].clientOrderId,
+      terminalStatus: spotEvidence.terminalStatus,
+      openOrderStatus: spotEvidence.openOrderStatus,
+      filledSignedBaseAtoms: spotFill,
+    }),
+    perpetual: Object.freeze({
+      clientOrderId: sourcePlan.legs[1].clientOrderId,
+      terminalStatus: perpetualEvidence.terminalStatus,
+      openOrderStatus: perpetualEvidence.openOrderStatus,
+      filledSignedBaseAtoms: perpetualFill,
+    }),
+    netSpotDeltaAtoms: spotFill - baseFeeAtoms,
+    perpetualPositionDeltaAtoms: perpetualFill,
+    observedPerpetualPositionAtoms: before.perpetualPositionAtoms + perpetualFill,
+    perpetualPositionTargetAtoms: sourcePlan.signedPerpTargetAtoms,
+    feeEvidenceComplete: true,
+    fees: Object.freeze(fees),
+  });
+  if (attempt.status !== "RECOVERY_REQUIRED") {
+    throw new Error(`partial package did not compile a recovery obligation: ${attempt.status}`);
+  }
+  return attempt;
+}
+
+async function waitForRecoveredPosition(expectedPerpetualAtoms, expectedSpotAtoms) {
+  for (let read = 0; read < 18; read += 1) {
+    try {
+      const perpetualPositionAtoms = await lightweightPerpetualPosition();
+      if (perpetualPositionAtoms === expectedPerpetualAtoms) {
+        return Object.freeze({ spotBalanceAtoms: expectedSpotAtoms, perpetualPositionAtoms });
+      }
+    } catch {
+      // Hyperliquid Testnet can temporarily rate limit account reads after submission.
+    }
+    await delay(5_000);
+  }
+  throw new Error("recovery submission did not reach the expected perpetual position");
 }
 
 const loaded = await loadHyperliquidTestnetExecutorRuntime(process.env, {
@@ -180,9 +320,77 @@ try {
   if (before.perpetualPositionAtoms !== 0n || before.spotBalanceAtoms >= lotAtoms) {
     throw new Error("the dedicated test account must start without a tradable package position");
   }
-  const entryId = await registerAttempt("ENTRY", quantityAtoms, quantityAtoms);
+  const entryRegistration = await registerAttempt(
+    "ENTRY",
+    quantityAtoms,
+    quantityAtoms,
+    recoveryDrill ? { forcePerpetualNoFill: true } : {},
+  );
+  const entryId = entryRegistration.id;
   const entry = await executor.execute({ attemptId: entryId, idempotencyKey: `${entryId}-run` });
-  if (entry.status !== "STRATEGY_EXECUTION" || entry.packageStatus !== "COMPLETED") {
+  let recovery = null;
+  if (recoveryDrill) {
+    if (entry.status !== "STRATEGY_EXECUTION" || entry.packageStatus !== "RECOVERY_REQUIRED") {
+      throw new Error(`entry did not require recovery: ${JSON.stringify(entry)}`);
+    }
+    const sourceAttempt = recoverySourceAttempt({
+      registration: entryRegistration,
+      result: entry,
+      before,
+      identity: await recoveryIdentity(),
+      prices: await livePrices("EXIT"),
+    });
+    const recoveryAttemptId = attemptId("recovery");
+    const recoveryClient = new HyperliquidRecoveryTestnetHttpExecution({
+      keeperOrigin: required("NARYX_HYPERLIQUID_TESTNET_KEEPER_ORIGIN"),
+      timeoutMs: 30_000,
+    });
+    const costCaps = sourceAttempt.plan.recoveryPolicy.maxRecoveryCostCaps;
+    const projectedRecoveryCosts = Object.freeze(costCaps.map((cap) => Object.freeze({
+      asset: cap.asset,
+      atoms: cap.maxAtoms,
+    })));
+    const projectedAggregateLoss = sourceAttempt.plan.recoveryPolicy.maxAggregateRecoveryLoss;
+    new HyperliquidRecoveryCompiler(await recoveryIdentity()).compile({
+      attempt: sourceAttempt,
+      nowMs: sourceAttempt.acceptedEvidence.observedAtMs,
+      recoverySequence: 0,
+      projectedRecoveryCosts,
+      projectedAggregateLoss,
+    });
+    const recoveryResult = await recoveryClient.execute({
+      recoveryAttemptId,
+      sourceAttempt,
+      recoverySequence: 0,
+      projectedRecoveryCosts,
+      projectedAggregateLoss,
+    });
+    if (recoveryResult.submission.status !== "ACKNOWLEDGED") {
+      throw new Error(`recovery submission was not acknowledged: ${recoveryResult.submission.status}`);
+    }
+    const recovered = await waitForRecoveredPosition(
+      sourceAttempt.plan.perpetualPositionTargetAtoms,
+      before.spotBalanceAtoms + sourceAttempt.acceptedEvidence.netSpotDeltaAtoms,
+    );
+    recovery = Object.freeze({
+      recoveryAttemptId,
+      submissionStatus: recoveryResult.submission.status,
+      mode: recoveryResult.plan.mode,
+      orderCount: recoveryResult.plan.orders.length,
+      inventory: Object.freeze({
+        spot: recovered.spotBalanceAtoms.toString(),
+        perpetual: recovered.perpetualPositionAtoms.toString(),
+      }),
+    });
+    if (typeof loaded.releaseLane !== "function") {
+      throw new Error("testnet executor cannot release a recovered strategy lane");
+    }
+    await loaded.releaseLane({
+      attemptId: entryId,
+      disposition: "ABANDONED",
+      reason: "Testnet recovery drill verified the bounded recovery submission and account target.",
+    });
+  } else if (entry.status !== "STRATEGY_EXECUTION" || entry.packageStatus !== "COMPLETED") {
     throw new Error(`entry did not complete: ${JSON.stringify(entry)}`);
   }
   const opened = await inventory();
@@ -191,7 +399,8 @@ try {
   if (exitSpotAtoms <= 0n || exitPerpetualAtoms <= 0n) {
     throw new Error("entry produced no closable package inventory");
   }
-  const exitId = await registerAttempt("EXIT", exitSpotAtoms, exitPerpetualAtoms);
+  const exitRegistration = await registerAttempt("EXIT", exitSpotAtoms, exitPerpetualAtoms);
+  const exitId = exitRegistration.id;
   const exit = await executor.execute({ attemptId: exitId, idempotencyKey: `${exitId}-run` });
   if (exit.status !== "STRATEGY_EXECUTION" || exit.packageStatus !== "COMPLETED") {
     throw new Error(`exit did not complete: ${JSON.stringify(exit)}`);
@@ -201,10 +410,13 @@ try {
     throw new Error("exit left a tradable package position");
   }
   process.stdout.write(`${JSON.stringify({
-    evidenceClass: "NARYX_HYPERLIQUID_TESTNET_PACKAGE_V1",
+    evidenceClass: recoveryDrill
+      ? "NARYX_HYPERLIQUID_TESTNET_BOUNDED_RECOVERY_V1"
+      : "NARYX_HYPERLIQUID_TESTNET_PACKAGE_V1",
     environment: "TESTNET",
     market: { spot: spotCoin, perpetual: perpetualCoin },
     entry,
+    recovery,
     exit,
     inventory: {
       before: { spot: before.spotBalanceAtoms.toString(), perpetual: before.perpetualPositionAtoms.toString() },

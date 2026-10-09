@@ -11,6 +11,17 @@ function positiveDecimal(value, name) {
   return Number(value);
 }
 
+function gcd(left, right) {
+  let a = left;
+  let b = right;
+  while (b !== 0n) {
+    const remainder = a % b;
+    a = b;
+    b = remainder;
+  }
+  return a;
+}
+
 function priceIncrement(price) {
   if (price >= 100_000) return 10;
   if (price >= 10_000) return 1;
@@ -54,6 +65,7 @@ export function buildCashCarryPlan({
   spotPrice,
   perpetualPrice,
   expiresAtMs,
+  forceEntryPerpetualReduceOnly = false,
 }) {
   const entry = action === "ENTRY";
   if (!entry && action !== "EXIT") throw new Error("action is invalid");
@@ -69,13 +81,7 @@ export function buildCashCarryPlan({
     decimals: quoteDecimals,
     assetManifestHash: hash("naryx:testnet:hypercore-usdc-v1"),
   });
-  const price = (value) => Object.freeze({
-    baseAsset,
-    quoteAsset,
-    quoteAtoms: BigInt(value.replace(".", "")),
-    baseAtoms: 10n ** BigInt((value.split(".")[1] ?? "").length),
-    roundingDirection: "CEIL",
-  });
+  const price = (value) => exactPrice(value, baseAsset, quoteAsset, "CEIL");
   const orders = Object.freeze([
     Object.freeze({
       legId: "spot",
@@ -108,7 +114,7 @@ export function buildCashCarryPlan({
         b: !entry,
         p: perpetualPrice,
         s: perpetualSize,
-        r: !entry,
+        r: !entry || forceEntryPerpetualReduceOnly,
         t: Object.freeze({ limit: Object.freeze({ tif: "Ioc" }) }),
         c: clientOrderId(attemptId, "perpetual"),
       }),
@@ -147,5 +153,226 @@ export function buildCashCarryPlan({
       maximumCostQuoteAtoms: 100_000_000n,
     }))),
     maximumRecoveryCostQuoteAtoms: 200_000_000n,
+  });
+}
+
+function hexBytes(value, name) {
+  const normalized = value.startsWith("0x") ? value.slice(2) : value;
+  if (!/^[0-9a-f]{64}$/.test(normalized)) throw new Error(`${name} is invalid`);
+  return Uint8Array.from(Buffer.from(normalized, "hex"));
+}
+
+function exactPrice(value, baseAsset, quoteAsset, roundingDirection) {
+  const [whole, fraction = ""] = value.split(".");
+  const numerator = BigInt(`${whole}${fraction}`) * 10n ** BigInt(quoteAsset.decimals);
+  const denominator = 10n ** BigInt(fraction.length + baseAsset.decimals);
+  const divisor = gcd(numerator, denominator);
+  return Object.freeze({
+    baseAsset,
+    quoteAsset,
+    quoteAtoms: numerator / divisor,
+    baseAtoms: denominator / divisor,
+    roundingDirection,
+  });
+}
+
+function manifestRef(subjectId, label) {
+  return Object.freeze({
+    subjectId,
+    manifestVersion: 1,
+    manifestHash: hash(label),
+  });
+}
+
+function adapterRef(adapterId, label) {
+  return Object.freeze({
+    adapterId,
+    adapterManifestVersion: 1,
+    adapterManifestHash: hash(label),
+  });
+}
+
+export function buildCashCarryRecoverySourcePlan({
+  strategyPlan,
+  seriesManifestHash,
+  executionClassManifestHash,
+  prePerpetualPositionAtoms,
+  recoveryIdentity,
+  rollbackSpotPrice,
+  rollbackPerpetualPrice,
+  recoveryActionExpiryMs,
+  recoveryDeadlineMs,
+}) {
+  const spot = strategyPlan.orders.find((order) => order.legId === "spot");
+  const perpetual = strategyPlan.orders.find((order) => order.legId === "perpetual");
+  if (!spot || !perpetual || spot.signedBaseDeltaAtoms <= 0n
+    || perpetual.signedBaseDeltaAtoms >= 0n) {
+    throw new Error("entry recovery source requires long spot and short perpetual legs");
+  }
+  const spotAdapter = adapterRef("hypercore-spot-v1", "naryx:testnet:hypercore-spot-adapter-v1");
+  const perpetualAdapter = adapterRef(
+    "hypercore-perpetual-v1",
+    "naryx:testnet:hypercore-perpetual-adapter-v1",
+  );
+  const venue = manifestRef("hypercore-testnet", "naryx:testnet:hypercore-venue-v1");
+  const spotMarket = manifestRef("pobtc-usdc-spot", "naryx:testnet:pobtc-usdc-spot-v1");
+  const perpetualMarket = manifestRef(
+    "btc-usdc-perpetual",
+    "naryx:testnet:btc-usdc-perpetual-v1",
+  );
+  const baseAsset = spot.baseAsset;
+  const quoteAsset = spot.quoteAsset;
+  const quantityAtoms = spot.signedBaseDeltaAtoms;
+  const perpetualQuantityAtoms = -perpetual.signedBaseDeltaAtoms;
+  const residualCapAtoms = 5_000n;
+  const spotLeg = Object.freeze({
+    legId: "spot",
+    role: "SPOT",
+    legIndex: 0,
+    adapter: spotAdapter,
+    venue,
+    market: spotMarket,
+    baseAsset,
+    quoteAsset,
+    side: "BUY",
+    quantityAtoms,
+    sizeDecimals: 5,
+    maxPriceDecimals: 3,
+    signedBaseDeltaAtoms: quantityAtoms,
+    clientOrderId: spot.clientOrderId,
+    order: spot.wire,
+  });
+  const perpetualLeg = Object.freeze({
+    legId: "perpetual",
+    role: "PERPETUAL",
+    legIndex: 1,
+    adapter: perpetualAdapter,
+    venue,
+    market: perpetualMarket,
+    baseAsset,
+    quoteAsset,
+    side: "SELL",
+    quantityAtoms: perpetualQuantityAtoms,
+    sizeDecimals: 5,
+    maxPriceDecimals: 1,
+    signedBaseDeltaAtoms: -perpetualQuantityAtoms,
+    clientOrderId: perpetual.clientOrderId,
+    order: Object.freeze({ ...perpetual.wire, r: false }),
+  });
+  const completeSpotPrice = spot.limitPrice;
+  const completePerpetualPrice = perpetual.limitPrice;
+  const rollbackSpot = exactPrice(rollbackSpotPrice, baseAsset, quoteAsset, "CEIL");
+  const rollbackPerpetual = exactPrice(
+    rollbackPerpetualPrice,
+    baseAsset,
+    quoteAsset,
+    "FLOOR",
+  );
+  const recoveryCostCap = 200_000_000n;
+  return Object.freeze({
+    version: 1,
+    guarantee: "BATCHED_IOC_WITH_BOUNDED_RECOVERY",
+    domain: strategyPlan.domain,
+    commitments: Object.freeze({
+      seriesManifestHash: hexBytes(seriesManifestHash, "seriesManifestHash"),
+      executionClassManifestHash: hexBytes(
+        executionClassManifestHash,
+        "executionClassManifestHash",
+      ),
+      orderHash: strategyPlan.orderHash,
+      quoteHash: strategyPlan.quoteHash,
+      routeHash: strategyPlan.routeHash,
+    }),
+    requestExpiryMs: strategyPlan.requestExpiryMs,
+    unsignedRequestFields: Object.freeze({
+      action: Object.freeze({
+        type: "order",
+        orders: Object.freeze([spot.wire, Object.freeze({ ...perpetual.wire, r: false })]),
+        grouping: "na",
+      }),
+      expiresAfter: Number(strategyPlan.requestExpiryMs),
+    }),
+    legs: Object.freeze([spotLeg, perpetualLeg]),
+    grossSpotQuantityAtoms: quantityAtoms,
+    prePerpPositionAtoms: prePerpetualPositionAtoms,
+    signedPerpDeltaAtoms: -perpetualQuantityAtoms,
+    signedPerpTargetAtoms: prePerpetualPositionAtoms - perpetualQuantityAtoms,
+    terminalResidualPolicy: Object.freeze({
+      kind: "BOUNDED_NET",
+      minNetSpotDeltaAtoms: quantityAtoms - residualCapAtoms,
+      maxNetSpotDeltaAtoms: quantityAtoms,
+      maxTerminalResidualBaseAtoms: residualCapAtoms,
+      residualValuationSchemaVersion: 1,
+      residualValuationReferencePrice: spot.limitPrice,
+      maxTerminalResidualQuoteAtoms: 200_000_000n,
+    }),
+    recoveryPolicy: Object.freeze({
+      policyVersion: 1,
+      controllerId: recoveryIdentity.controllerId,
+      controllerCodeHash: hexBytes(recoveryIdentity.controllerCodeHash, "controllerCodeHash"),
+      authorityModeId: recoveryIdentity.authorityModeId,
+      recoveryExpiryUnit: "HYPERLIQUID_UNIX_MILLISECONDS",
+      maxActionExpiryValue: BigInt(recoveryActionExpiryMs),
+      deadlineValue: BigInt(recoveryDeadlineMs),
+      minRecoveryWindowMs: 30_000n,
+      maxRecoveryCostCaps: Object.freeze([
+        Object.freeze({ asset: quoteAsset, maxAtoms: recoveryCostCap }),
+      ]),
+      maxAggregateRecoveryLoss: Object.freeze({ asset: quoteAsset, atoms: recoveryCostCap }),
+      maxIntermediateResidual: Object.freeze({ asset: baseAsset, atoms: quantityAtoms }),
+      maxTerminalResidual: Object.freeze({ asset: baseAsset, atoms: residualCapAtoms }),
+      reconciledStateSchemaHash: hash("naryx:testnet:hypercore-reconciled-state-v1"),
+      actionBuilderCodeHash: hexBytes(
+        recoveryIdentity.actionBuilderCodeHash,
+        "actionBuilderCodeHash",
+      ),
+      actionSlots: Object.freeze([
+        Object.freeze({
+          sequence: 0,
+          action: "COMPLETE_SPOT",
+          targetLeg: 0,
+          adapter: spotAdapter,
+          markets: Object.freeze([spotMarket]),
+          maxQuantity: Object.freeze({ asset: baseAsset, atoms: quantityAtoms }),
+          limitPrice: completeSpotPrice,
+          reduceOnly: false,
+          timeInForce: "IOC",
+        }),
+        Object.freeze({
+          sequence: 1,
+          action: "COMPLETE_PERP",
+          targetLeg: 1,
+          adapter: perpetualAdapter,
+          markets: Object.freeze([perpetualMarket]),
+          maxQuantity: Object.freeze({ asset: baseAsset, atoms: perpetualQuantityAtoms }),
+          limitPrice: completePerpetualPrice,
+          reduceOnly: false,
+          timeInForce: "IOC",
+        }),
+        Object.freeze({
+          sequence: 2,
+          action: "ROLLBACK_SPOT",
+          targetLeg: 0,
+          adapter: spotAdapter,
+          markets: Object.freeze([spotMarket]),
+          maxQuantity: Object.freeze({ asset: baseAsset, atoms: quantityAtoms }),
+          limitPrice: rollbackSpot,
+          reduceOnly: false,
+          timeInForce: "IOC",
+        }),
+        Object.freeze({
+          sequence: 3,
+          action: "ROLLBACK_PERP",
+          targetLeg: 1,
+          adapter: perpetualAdapter,
+          markets: Object.freeze([perpetualMarket]),
+          maxQuantity: Object.freeze({ asset: baseAsset, atoms: perpetualQuantityAtoms }),
+          limitPrice: rollbackPerpetual,
+          reduceOnly: true,
+          timeInForce: "IOC",
+        }),
+      ]),
+    }),
+    recoveryDeadlineMs: BigInt(recoveryDeadlineMs),
   });
 }

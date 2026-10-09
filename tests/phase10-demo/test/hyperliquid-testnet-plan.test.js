@@ -4,6 +4,7 @@ import {
   baseAtomsToSize,
   boundedIocPrice,
   buildCashCarryPlan,
+  buildCashCarryRecoverySourcePlan,
 } from "../src/hyperliquid-testnet-plan.js";
 
 test("builds bounded live entry and exit plans", () => {
@@ -28,4 +29,34 @@ test("builds bounded live entry and exit plans", () => {
     [1, 3, false, false],
   ]);
   assert.deepEqual(entry.batches.map((batch) => batch.legIds), [["spot"], ["perpetual"]]);
+  assert.equal(entry.orders[1].limitPrice.quoteAtoms, 6_157n);
+  assert.equal(entry.orders[1].limitPrice.baseAtoms, 5n);
+
+  const recovery = buildCashCarryRecoverySourcePlan({
+    strategyPlan: entry,
+    seriesManifestHash: "11".repeat(32),
+    executionClassManifestHash: "22".repeat(32),
+    prePerpetualPositionAtoms: 0n,
+    recoveryIdentity: {
+      controllerId: "hypercore-recovery-controller-v1",
+      controllerCodeHash: "33".repeat(32),
+      authorityModeId: "agent-wallet-v1",
+      actionBuilderCodeHash: "44".repeat(32),
+    },
+    rollbackSpotPrice: "122000",
+    rollbackPerpetualPrice: "124000",
+    recoveryActionExpiryMs: 2_100_000,
+    recoveryDeadlineMs: 2_200_000,
+  });
+  assert.deepEqual(recovery.legs.map((leg) => [leg.role, leg.signedBaseDeltaAtoms]), [
+    ["SPOT", 2_000_000n],
+    ["PERPETUAL", -2_000_000n],
+  ]);
+  assert.deepEqual(recovery.recoveryPolicy.actionSlots.map((slot) => slot.action), [
+    "COMPLETE_SPOT",
+    "COMPLETE_PERP",
+    "ROLLBACK_SPOT",
+    "ROLLBACK_PERP",
+  ]);
+  assert.equal(recovery.terminalResidualPolicy.kind, "BOUNDED_NET");
 });
