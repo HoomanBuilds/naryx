@@ -4,10 +4,16 @@ import { describe, test } from 'node:test';
 import {
   assetRef,
   clearPackageReopeningAuction,
+  crossBatchClearingPlan,
+  crossBatchClearingPolicy,
+  crossBatchClearingReceipt,
   domainRef,
   emptyPackageBook,
   matchPackageOrder,
   netObligations,
+  nettingExternalExecutionIntent,
+  nettingFinalAllocationReceipt,
+  nettingPolicyManifest,
   packageAllocationHash,
   packageBookAmendmentBytes,
   packageBookAmendmentHash,
@@ -349,6 +355,141 @@ describe('public API client', () => {
       client({ 'POST /v1/netting/simulate': { body: { simulated: true, result: { ...netting, allocations: netting.allocations.slice(1) } } } })
         .simulateNetting(obligations, NETTING_POLICY),
       /verification/,
+    );
+  });
+
+  test('prepares, reads, and executes independently verified netting batches', async () => {
+    const obligations = [
+      nettingObligation(1, 'alice', 10n),
+      nettingObligation(2, 'bob', -10n),
+    ];
+    const nettingPolicy = nettingPolicyManifest(NETTING_POLICY);
+    const result = netObligations(obligations, nettingPolicy);
+    const proofHash = toHex(result.proofHash);
+    const finalAllocationReceipt = nettingFinalAllocationReceipt(result, nettingPolicy, [], []);
+    const packages = [...new Map(result.allocations.map((allocation) => [
+      toHex(allocation.packageOrderId),
+      {
+        packageOrderIdHex: toHex(allocation.packageOrderId),
+        strategyOrderHashHex: toHex(allocation.strategyOrderHash),
+        settlementReadinessHashHex: toHex(allocation.settlementReadinessHash),
+      },
+    ])).values()].sort((left, right) => left.packageOrderIdHex.localeCompare(right.packageOrderIdHex));
+    const batch = {
+      status: 'PREPARED',
+      proofHashHex: proofHash,
+      policy: nettingPolicy,
+      result,
+      externalExecutions: [],
+      externalExecutionStatus: 'NOT_REQUIRED',
+      finalAllocationReceipt,
+      settlementEvidence: [],
+      settlementStatus: 'AWAITING_SETTLEMENT',
+      packages,
+      recordedAtMs: 1_000,
+    };
+    const sdk = client({
+      'POST /v1/netting/batches': { body: { batch, replayed: false } },
+      [`/v1/netting/batches/${proofHash}`]: { body: batch },
+      [`POST /v1/netting/batches/${proofHash}/execute`]: { body: { batch, executedIntentHashes: [] } },
+    });
+    const prepared = await sdk.prepareNettingBatch(packages.map((entry) => entry.packageOrderIdHex), NETTING_POLICY);
+    assert.equal(prepared.replayed, false);
+    assert.equal(prepared.batch.proofHash, proofHash);
+    assert.equal(prepared.batch.finalAllocationReceipt?.allocations.length, 2);
+    assert.equal((await sdk.getNettingBatch(proofHash)).settlementStatus, 'AWAITING_SETTLEMENT');
+    assert.deepEqual((await sdk.executeNettingBatch(proofHash)).executedIntentHashes, []);
+
+    await assert.rejects(
+      client({
+        [`/v1/netting/batches/${proofHash}`]: {
+          body: { ...batch, result: { ...result, allocations: result.allocations.slice(1) } },
+        },
+      }).getNettingBatch(proofHash),
+      /failed verification/,
+    );
+  });
+
+  test('verifies cross-batch clearing against every source netting batch', async () => {
+    const nettingPolicy = nettingPolicyManifest(NETTING_POLICY);
+    const source = (number: number, ownerId: string, quantity: bigint) => {
+      const result = netObligations([nettingObligation(number, ownerId, quantity)], nettingPolicy);
+      const allocation = result.allocations[0]!;
+      const intent = nettingExternalExecutionIntent(result, nettingPolicy, {
+        instrumentId: 'sol',
+        validUntilUnit: 'SOLANA_SLOT',
+        validUntilValue: 2_000n + BigInt(number),
+        sourceFeeCaps: [{ obligationId: allocation.obligationId, maximumFeeQuoteAtoms: 1n }],
+      });
+      return { result, intent, allocation };
+    };
+    const buy = source(3, 'buyer', 10n);
+    const sell = source(4, 'seller', -10n);
+    const instrument = nettingPolicy.instruments[0]!;
+    const clearingPolicy = crossBatchClearingPolicy({
+      version: 1,
+      policyId: 'solana-cross-batch',
+      domain: instrument.domain,
+      adapter: instrument.adapter,
+      expiryUnit: 'SOLANA_SLOT',
+      maximumSourceIntents: 4,
+      maximumSourceBatches: 4,
+      maximumExpirySpread: 10n,
+    });
+    const sourceIntents = [buy.intent, sell.intent].sort((left, right) => (
+      toHex(left.intentHash).localeCompare(toHex(right.intentHash))
+    ));
+    const plan = crossBatchClearingPlan(sourceIntents, clearingPolicy);
+    const receipt = crossBatchClearingReceipt(plan);
+    const resolution = { policy: clearingPolicy, sourceIntents, plan, receipt };
+    const planHash = toHex(plan.planHash);
+    const batch = (entry: typeof buy) => ({
+      status: 'PREPARED',
+      proofHashHex: toHex(entry.result.proofHash),
+      policy: nettingPolicy,
+      result: entry.result,
+      externalExecutions: [{
+        intent: entry.intent,
+        crossBatchClearingPlanHashHex: planHash,
+        crossBatchStatus: 'EXACT_FILLED',
+      }],
+      externalExecutionStatus: 'EXACT_FILLED',
+      finalAllocationReceipt: nettingFinalAllocationReceipt(entry.result, nettingPolicy, [entry.intent], [], [resolution]),
+      settlementEvidence: [],
+      settlementStatus: 'AWAITING_SETTLEMENT',
+      packages: [{
+        packageOrderIdHex: toHex(entry.allocation.packageOrderId),
+        strategyOrderHashHex: toHex(entry.allocation.strategyOrderHash),
+        settlementReadinessHashHex: toHex(entry.allocation.settlementReadinessHash),
+      }],
+      recordedAtMs: 1_000,
+    });
+    const buyBatch = batch(buy);
+    const sellBatch = batch(sell);
+    const routes = {
+      [`/v1/netting/batches/${buyBatch.proofHashHex}`]: { body: buyBatch },
+      [`/v1/netting/batches/${sellBatch.proofHashHex}`]: { body: sellBatch },
+      [`/v1/netting/cross-batch/${planHash}`]: {
+        body: { status: 'EXACT_FILLED', policy: clearingPolicy, sourceIntents, plan, receipt, recordedAtMs: 1_001 },
+      },
+    };
+    const verified = await client(routes).getNettingBatch(buyBatch.proofHashHex);
+    assert.equal(verified.crossBatchClearings.length, 1);
+    assert.equal(verified.crossBatchResolutions.length, 1);
+    assert.equal(verified.externalExecutionStatus, 'EXACT_FILLED');
+
+    await assert.rejects(
+      client({
+        ...routes,
+        [`/v1/netting/batches/${sellBatch.proofHashHex}`]: {
+          body: {
+            ...sellBatch,
+            externalExecutions: [{ ...sellBatch.externalExecutions[0], crossBatchStatus: 'PENDING' }],
+            externalExecutionStatus: 'PENDING',
+          },
+        },
+      }).getNettingBatch(buyBatch.proofHashHex),
+      /source provenance differs/,
     );
   });
 

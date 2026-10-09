@@ -31,6 +31,19 @@ import {
   packageMatchingPolicy,
   packageMatchingPolicyHash,
   netObligations,
+  nettingPolicyManifest,
+  nettingPolicyManifestHash,
+  nettingResultHash,
+  verifyNettingExternalExecutionIntent,
+  verifyNettingExternalExecutionEvidence,
+  verifyNettingFinalAllocationReceipt,
+  verifyNettingAllocationSettlementEvidence,
+  verifyNettingSettlementCompletionReceipt,
+  crossBatchClearingPolicy,
+  verifyCrossBatchClearingPlan,
+  verifyCrossBatchExternalExecutionIntent,
+  verifyCrossBatchExternalExecutionEvidence,
+  verifyCrossBatchClearingReceipt,
   packageOrderBytes,
   packageOrderHash,
   packageTakerOrderHash,
@@ -160,6 +173,18 @@ import {
   type NettingObligationInput,
   type NettingPolicyManifestInput,
   type NettingResult,
+  type NettingPolicyManifest,
+  type NettingExternalExecutionIntent,
+  type NettingExternalExecutionEvidence,
+  type NettingFinalAllocationReceipt,
+  type NettingAllocationSettlementEvidence,
+  type NettingSettlementCompletionReceipt,
+  type CrossBatchClearingPolicy,
+  type CrossBatchClearingPlan,
+  type CrossBatchExternalExecutionIntent,
+  type CrossBatchExternalExecutionEvidence,
+  type CrossBatchClearingReceipt,
+  type CrossBatchNettingResolution,
   type PositionSnapshotRecord,
   type PositionSnapshotRecordInput,
   type PortfolioCandidateDecision,
@@ -699,6 +724,55 @@ export interface StrategyHealthView {
   readonly manualTakeover: boolean;
   /** The public read omits the authority signature, so authenticity is asserted by the API. */
   readonly evidence: 'SERVER_ASSERTED';
+}
+
+export interface VerifiedNettingExternalExecution {
+  readonly intent: NettingExternalExecutionIntent;
+  readonly evidence?: NettingExternalExecutionEvidence;
+  readonly crossBatchClearingPlanHash?: string;
+  readonly crossBatchStatus?: 'PENDING' | 'EXACT_FILLED' | 'RECOVERY_REQUIRED';
+}
+
+export interface VerifiedCrossBatchClearing {
+  readonly status: 'PENDING' | 'EXACT_FILLED' | 'RECOVERY_REQUIRED';
+  readonly policy: CrossBatchClearingPolicy;
+  readonly sourceIntents: readonly NettingExternalExecutionIntent[];
+  readonly plan: CrossBatchClearingPlan;
+  readonly intent?: CrossBatchExternalExecutionIntent;
+  readonly evidence?: CrossBatchExternalExecutionEvidence;
+  readonly receipt?: CrossBatchClearingReceipt;
+  readonly recordedAtMs: number;
+}
+
+export interface VerifiedPreparedNettingBatch {
+  readonly status: 'PREPARED';
+  readonly proofHash: string;
+  readonly policy: NettingPolicyManifest;
+  readonly result: NettingResult;
+  readonly externalExecutions: readonly VerifiedNettingExternalExecution[];
+  readonly externalExecutionStatus: 'NOT_REQUIRED' | 'PENDING' | 'EXACT_FILLED' | 'RECOVERY_REQUIRED';
+  readonly finalAllocationReceipt?: NettingFinalAllocationReceipt;
+  readonly settlementEvidence: readonly NettingAllocationSettlementEvidence[];
+  readonly settlementStatus: 'AWAITING_FINAL_ALLOCATION' | 'AWAITING_SETTLEMENT' | 'SETTLED';
+  readonly settlementCompletionReceipt?: NettingSettlementCompletionReceipt;
+  readonly packages: readonly Readonly<{
+    readonly packageOrderId: string;
+    readonly strategyOrderHash: string;
+    readonly settlementReadinessHash: string;
+  }>[];
+  readonly crossBatchClearings: readonly VerifiedCrossBatchClearing[];
+  readonly crossBatchResolutions: readonly CrossBatchNettingResolution[];
+  readonly recordedAtMs: number;
+}
+
+export interface PreparedNettingBatchResult {
+  readonly batch: VerifiedPreparedNettingBatch;
+  readonly replayed: boolean;
+}
+
+export interface ExecutedNettingBatchResult {
+  readonly batch: VerifiedPreparedNettingBatch;
+  readonly executedIntentHashes: readonly string[];
 }
 
 export interface VerifiedRiskGroup {
@@ -1714,6 +1788,211 @@ async function verifyStrategyAdmission(
   return Object.freeze(admission);
 }
 
+type VerifiedPreparedNettingBatchCore = Omit<
+  VerifiedPreparedNettingBatch,
+  'crossBatchClearings' | 'crossBatchResolutions'
+>;
+
+function verifyPreparedNettingBatchCore(
+  value: unknown,
+  expectedProofHash?: string,
+): VerifiedPreparedNettingBatchCore {
+  const body = record(value, 'prepared netting batch');
+  if (body.status !== 'PREPARED') throw new NaryxEvidenceError('prepared netting batch has an invalid status');
+  const proofHash = hashHex(body.proofHashHex, 'prepared netting batch.proofHashHex');
+  if (expectedProofHash !== undefined && proofHash !== hashHex(expectedProofHash, 'netting proof hash')) {
+    throw new NaryxEvidenceError('prepared netting batch does not match the requested proof hash');
+  }
+
+  let policy: NettingPolicyManifest;
+  let result: NettingResult;
+  try {
+    policy = nettingPolicyManifest(body.policy as NettingPolicyManifestInput);
+    result = body.result as NettingResult;
+    verifyNettingResultAgainstPolicy(result, policy);
+    if (
+      toHex(nettingPolicyManifestHash(policy)) !== toHex(result.nettingPolicyHash)
+      || toHex(nettingResultHash(result)) !== proofHash
+      || toHex(result.proofHash) !== proofHash
+    ) {
+      throw new Error('proof or policy identity differs');
+    }
+  } catch (error) {
+    throw new NaryxEvidenceError(`prepared netting batch failed verification: ${(error as Error).message}`);
+  }
+
+  const packages = list(body.packages, 'prepared netting batch.packages').map((entry, index) => {
+    const item = record(entry, `prepared netting batch.packages[${index}]`);
+    return Object.freeze({
+      packageOrderId: hashHex(item.packageOrderIdHex, `prepared netting batch.packages[${index}].packageOrderIdHex`),
+      strategyOrderHash: hashHex(item.strategyOrderHashHex, `prepared netting batch.packages[${index}].strategyOrderHashHex`),
+      settlementReadinessHash: hashHex(item.settlementReadinessHashHex, `prepared netting batch.packages[${index}].settlementReadinessHashHex`),
+    });
+  });
+  const packageIds = packages.map((entry) => entry.packageOrderId);
+  if (
+    packages.length === 0
+    || new Set(packageIds).size !== packageIds.length
+    || packageIds.join('\0') !== [...packageIds].sort().join('\0')
+  ) {
+    throw new NaryxEvidenceError('prepared netting batch packages must be nonempty, unique, and sorted');
+  }
+  const allocatedPackages = [...new Set(result.allocations.map((allocation) => toHex(allocation.packageOrderId)))].sort();
+  if (allocatedPackages.length !== packageIds.length || allocatedPackages.some((packageOrderId, index) => packageOrderId !== packageIds[index])) {
+    throw new NaryxEvidenceError('prepared netting batch packages differ from its allocations');
+  }
+
+  const externalExecutions = list(body.externalExecutions, 'prepared netting batch.externalExecutions').map((entry, index) => {
+    const context = `prepared netting batch.externalExecutions[${index}]`;
+    const item = record(entry, context);
+    const intent = item.intent as NettingExternalExecutionIntent;
+    try {
+      verifyNettingExternalExecutionIntent(intent, result, policy);
+    } catch (error) {
+      throw new NaryxEvidenceError(`${context}.intent failed verification: ${(error as Error).message}`);
+    }
+    let evidence: NettingExternalExecutionEvidence | undefined;
+    if (item.evidence !== undefined) {
+      evidence = item.evidence as NettingExternalExecutionEvidence;
+      try {
+        verifyNettingExternalExecutionEvidence(evidence, intent);
+      } catch (error) {
+        throw new NaryxEvidenceError(`${context}.evidence failed verification: ${(error as Error).message}`);
+      }
+    }
+    const planHash = item.crossBatchClearingPlanHashHex === undefined
+      ? undefined
+      : hashHex(item.crossBatchClearingPlanHashHex, `${context}.crossBatchClearingPlanHashHex`);
+    const crossBatchStatus = item.crossBatchStatus;
+    if ((planHash === undefined) !== (crossBatchStatus === undefined)) {
+      throw new NaryxEvidenceError(`${context} has incomplete cross-batch evidence`);
+    }
+    if (crossBatchStatus !== undefined && !['PENDING', 'EXACT_FILLED', 'RECOVERY_REQUIRED'].includes(crossBatchStatus as string)) {
+      throw new NaryxEvidenceError(`${context}.crossBatchStatus is unsupported`);
+    }
+    if (evidence !== undefined && planHash !== undefined) {
+      throw new NaryxEvidenceError(`${context} cannot carry direct and cross-batch execution evidence`);
+    }
+    return Object.freeze({
+      intent,
+      ...(evidence === undefined ? {} : { evidence }),
+      ...(planHash === undefined ? {} : {
+        crossBatchClearingPlanHash: planHash,
+        crossBatchStatus: crossBatchStatus as 'PENDING' | 'EXACT_FILLED' | 'RECOVERY_REQUIRED',
+      }),
+    });
+  });
+  const intentHashes = externalExecutions.map((entry) => toHex(entry.intent.intentHash));
+  if (new Set(intentHashes).size !== intentHashes.length) {
+    throw new NaryxEvidenceError('prepared netting batch repeats an external execution intent');
+  }
+  const expectedExternalInstruments = result.underlyings
+    .filter((summary) => summary.externalNetAtoms !== 0n)
+    .map((summary) => summary.instrumentId)
+    .sort();
+  const actualExternalInstruments = externalExecutions.map((entry) => entry.intent.instrumentId).sort();
+  if (
+    actualExternalInstruments.length !== expectedExternalInstruments.length
+    || actualExternalInstruments.some((instrumentId, index) => instrumentId !== expectedExternalInstruments[index])
+  ) {
+    throw new NaryxEvidenceError('prepared netting batch external intents do not cover its exact residuals');
+  }
+  const expectedExternalStatus = externalExecutions.length === 0
+    ? 'NOT_REQUIRED'
+    : externalExecutions.some((entry) => entry.crossBatchStatus === 'RECOVERY_REQUIRED'
+      || (entry.evidence !== undefined && entry.evidence.outcome !== 'EXACT_FILLED'))
+      ? 'RECOVERY_REQUIRED'
+      : externalExecutions.every((entry) => entry.crossBatchStatus === 'EXACT_FILLED' || entry.evidence?.outcome === 'EXACT_FILLED')
+        ? 'EXACT_FILLED'
+        : 'PENDING';
+  if (body.externalExecutionStatus !== expectedExternalStatus) {
+    throw new NaryxEvidenceError('prepared netting batch external execution status is inconsistent');
+  }
+
+  const finalAllocationReceipt = body.finalAllocationReceipt as NettingFinalAllocationReceipt | undefined;
+  const settlementEvidence = list(body.settlementEvidence, 'prepared netting batch.settlementEvidence') as readonly NettingAllocationSettlementEvidence[];
+  const settlementCompletionReceipt = body.settlementCompletionReceipt as NettingSettlementCompletionReceipt | undefined;
+  const expectedSettlementStatus = finalAllocationReceipt === undefined
+    ? 'AWAITING_FINAL_ALLOCATION'
+    : settlementCompletionReceipt === undefined
+      ? 'AWAITING_SETTLEMENT'
+      : 'SETTLED';
+  if (body.settlementStatus !== expectedSettlementStatus) {
+    throw new NaryxEvidenceError('prepared netting batch settlement status is inconsistent');
+  }
+  if (finalAllocationReceipt === undefined && (settlementEvidence.length !== 0 || settlementCompletionReceipt !== undefined)) {
+    throw new NaryxEvidenceError('prepared netting batch carries settlement evidence before final allocation');
+  }
+
+  return Object.freeze({
+    status: 'PREPARED',
+    proofHash,
+    policy,
+    result,
+    externalExecutions: Object.freeze(externalExecutions),
+    externalExecutionStatus: expectedExternalStatus,
+    ...(finalAllocationReceipt === undefined ? {} : { finalAllocationReceipt }),
+    settlementEvidence: Object.freeze([...settlementEvidence]),
+    settlementStatus: expectedSettlementStatus,
+    ...(settlementCompletionReceipt === undefined ? {} : { settlementCompletionReceipt }),
+    packages: Object.freeze(packages),
+    recordedAtMs: count(body.recordedAtMs, 'prepared netting batch.recordedAtMs'),
+  });
+}
+
+function verifyCrossBatchClearingEvidence(
+  value: unknown,
+  expectedPlanHash: string,
+): VerifiedCrossBatchClearing {
+  const body = record(value, 'cross-batch clearing');
+  let policy: CrossBatchClearingPolicy;
+  let sourceIntents: readonly NettingExternalExecutionIntent[];
+  let plan: CrossBatchClearingPlan;
+  let intent: CrossBatchExternalExecutionIntent | undefined;
+  let evidence: CrossBatchExternalExecutionEvidence | undefined;
+  let receipt: CrossBatchClearingReceipt | undefined;
+  try {
+    policy = crossBatchClearingPolicy(body.policy as CrossBatchClearingPolicy);
+    sourceIntents = list(body.sourceIntents, 'cross-batch clearing.sourceIntents') as readonly NettingExternalExecutionIntent[];
+    plan = body.plan as CrossBatchClearingPlan;
+    verifyCrossBatchClearingPlan(plan, sourceIntents, policy);
+    if (toHex(plan.planHash) !== hashHex(expectedPlanHash, 'cross-batch clearing plan hash')) {
+      throw new Error('plan does not match the requested hash');
+    }
+    intent = body.intent as CrossBatchExternalExecutionIntent | undefined;
+    evidence = body.evidence as CrossBatchExternalExecutionEvidence | undefined;
+    receipt = body.receipt as CrossBatchClearingReceipt | undefined;
+    if (intent !== undefined) verifyCrossBatchExternalExecutionIntent(intent, plan);
+    if (evidence !== undefined) {
+      if (intent === undefined) throw new Error('execution evidence lacks an intent');
+      verifyCrossBatchExternalExecutionEvidence(evidence, intent);
+    }
+    if (receipt !== undefined) verifyCrossBatchClearingReceipt(receipt, plan, intent, evidence);
+  } catch (error) {
+    throw new NaryxEvidenceError(`cross-batch clearing failed verification: ${(error as Error).message}`);
+  }
+  const sourceHashes = sourceIntents.map((source) => toHex(source.intentHash));
+  if (sourceHashes.join('\0') !== [...sourceHashes].sort().join('\0')) {
+    throw new NaryxEvidenceError('cross-batch clearing source intents are not canonically ordered');
+  }
+  const status = receipt !== undefined
+    ? 'EXACT_FILLED'
+    : evidence !== undefined && evidence.outcome !== 'EXACT_FILLED'
+      ? 'RECOVERY_REQUIRED'
+      : 'PENDING';
+  if (body.status !== status) throw new NaryxEvidenceError('cross-batch clearing status is inconsistent');
+  return Object.freeze({
+    status,
+    policy,
+    sourceIntents: Object.freeze([...sourceIntents]),
+    plan,
+    ...(intent === undefined ? {} : { intent }),
+    ...(evidence === undefined ? {} : { evidence }),
+    ...(receipt === undefined ? {} : { receipt }),
+    recordedAtMs: count(body.recordedAtMs, 'cross-batch clearing.recordedAtMs'),
+  });
+}
+
 function sizesQuery(sizes: readonly bigint[]): string {
   if (!Array.isArray(sizes) || sizes.length === 0 || sizes.length > 16 || sizes.some((size) => typeof size !== 'bigint' || size <= 0n)) {
     throw new TypeError('sizes must be 1 to 16 positive integers');
@@ -1814,6 +2093,126 @@ export class NaryxClient {
       throw new NaryxApiError(response.status, String(error.code), String(error.message));
     }
     return parsed;
+  }
+
+  async #verifiedPreparedNettingBatch(value: unknown, expectedProofHash?: string): Promise<VerifiedPreparedNettingBatch> {
+    const core = verifyPreparedNettingBatchCore(value, expectedProofHash);
+    const clearingPlanHashes = [...new Set(core.externalExecutions.flatMap((entry) => (
+      entry.crossBatchClearingPlanHash === undefined ? [] : [entry.crossBatchClearingPlanHash]
+    )))].sort();
+    const crossBatchClearings = await Promise.all(clearingPlanHashes.map(async (planHash) => (
+      verifyCrossBatchClearingEvidence(
+        await this.#request('GET', `/v1/netting/cross-batch/${planHash}`),
+        planHash,
+      )
+    )));
+
+    const sourceProofHashes = [...new Set(crossBatchClearings.flatMap((clearing) => (
+      clearing.sourceIntents.map((intent) => toHex(intent.nettingProofHash))
+    )))];
+    const sourceBatches = new Map<string, VerifiedPreparedNettingBatchCore>([[core.proofHash, core]]);
+    await Promise.all(sourceProofHashes.map(async (proofHash) => {
+      if (sourceBatches.has(proofHash)) return;
+      sourceBatches.set(
+        proofHash,
+        verifyPreparedNettingBatchCore(
+          await this.#request('GET', `/v1/netting/batches/${proofHash}`),
+          proofHash,
+        ),
+      );
+    }));
+
+    for (const clearing of crossBatchClearings) {
+      const planHash = toHex(clearing.plan.planHash);
+      for (const sourceIntent of clearing.sourceIntents) {
+        const sourceBatch = sourceBatches.get(toHex(sourceIntent.nettingProofHash));
+        const sourceRecord = sourceBatch?.externalExecutions.find((entry) => (
+          toHex(entry.intent.intentHash) === toHex(sourceIntent.intentHash)
+        ));
+        if (
+          sourceRecord === undefined
+          || !sameProtocolValue(sourceRecord.intent, sourceIntent)
+          || sourceRecord.evidence !== undefined
+          || sourceRecord.crossBatchClearingPlanHash !== planHash
+          || sourceRecord.crossBatchStatus !== clearing.status
+        ) {
+          throw new NaryxEvidenceError('cross-batch clearing source provenance differs from its prepared netting batch');
+        }
+      }
+    }
+    for (const execution of core.externalExecutions) {
+      if (execution.crossBatchClearingPlanHash === undefined) continue;
+      const clearing = crossBatchClearings.find((candidate) => (
+        toHex(candidate.plan.planHash) === execution.crossBatchClearingPlanHash
+      ));
+      if (
+        clearing === undefined
+        || execution.crossBatchStatus !== clearing.status
+        || !clearing.sourceIntents.some((source) => sameProtocolValue(source, execution.intent))
+      ) {
+        throw new NaryxEvidenceError('prepared netting batch cites inconsistent cross-batch clearing evidence');
+      }
+    }
+
+    const crossBatchResolutions = Object.freeze(crossBatchClearings.flatMap((clearing): CrossBatchNettingResolution[] => (
+      clearing.receipt === undefined ? [] : [Object.freeze({
+        policy: clearing.policy,
+        sourceIntents: clearing.sourceIntents,
+        plan: clearing.plan,
+        ...(clearing.intent === undefined ? {} : { intent: clearing.intent }),
+        ...(clearing.evidence === undefined ? {} : { evidence: clearing.evidence }),
+        receipt: clearing.receipt,
+      })]
+    )));
+    const intents = core.externalExecutions.map((entry) => entry.intent);
+    const evidence = core.externalExecutions.flatMap((entry) => entry.evidence === undefined ? [] : [entry.evidence]);
+    try {
+      if (core.finalAllocationReceipt !== undefined) {
+        verifyNettingFinalAllocationReceipt(
+          core.finalAllocationReceipt,
+          core.result,
+          core.policy,
+          intents,
+          evidence,
+          crossBatchResolutions,
+        );
+        const settlementHashes = new Set<string>();
+        for (const settlement of core.settlementEvidence) {
+          verifyNettingAllocationSettlementEvidence(
+            settlement,
+            core.finalAllocationReceipt,
+            core.result,
+            core.policy,
+            intents,
+            evidence,
+            crossBatchResolutions,
+          );
+          const allocationHash = toHex(settlement.allocationReceiptHash);
+          if (settlementHashes.has(allocationHash)) throw new Error('allocation settlement evidence repeats');
+          settlementHashes.add(allocationHash);
+        }
+        if (core.settlementCompletionReceipt !== undefined) {
+          verifyNettingSettlementCompletionReceipt(
+            core.settlementCompletionReceipt,
+            core.finalAllocationReceipt,
+            core.settlementEvidence,
+            core.result,
+            core.policy,
+            intents,
+            evidence,
+            crossBatchResolutions,
+          );
+        }
+      }
+    } catch (error) {
+      throw new NaryxEvidenceError(`prepared netting settlement evidence failed verification: ${(error as Error).message}`);
+    }
+
+    return Object.freeze({
+      ...core,
+      crossBatchClearings: Object.freeze(crossBatchClearings),
+      crossBatchResolutions,
+    });
   }
 
   // ---------------------------------------------------------------- registries
@@ -4128,6 +4527,65 @@ export class NaryxClient {
       throw new NaryxEvidenceError('server netting result disagrees with local deterministic allocation');
     }
     return result;
+  }
+
+  /** Reads a prepared batch and independently verifies its policy, residual execution, clearing, and settlement evidence. */
+  async getNettingBatch(proofHash: string): Promise<VerifiedPreparedNettingBatch> {
+    const requested = hashHex(proofHash, 'netting proof hash');
+    return this.#verifiedPreparedNettingBatch(
+      await this.#request('GET', `/v1/netting/batches/${requested}`),
+      requested,
+    );
+  }
+
+  /** Derives and persists a batch from durable package settlement evidence, then verifies the complete returned evidence chain. */
+  async prepareNettingBatch(
+    packageOrderIds: readonly string[],
+    policyInput: NettingPolicyManifestInput,
+  ): Promise<PreparedNettingBatchResult> {
+    if (!Array.isArray(packageOrderIds) || packageOrderIds.length === 0) {
+      throw new TypeError('packageOrderIds must be nonempty');
+    }
+    const normalizedIds = packageOrderIds.map((packageOrderId, index) => hashHex(packageOrderId, `packageOrderIds[${index}]`));
+    if (new Set(normalizedIds).size !== normalizedIds.length) throw new TypeError('packageOrderIds must be unique');
+    let policy: NettingPolicyManifest;
+    try {
+      policy = nettingPolicyManifest(policyInput);
+    } catch (error) {
+      throw new TypeError(`netting policy is invalid: ${(error as Error).message}`);
+    }
+    const body = record(
+      await this.#request('POST', '/v1/netting/batches', { packageOrderIds: normalizedIds, policy }),
+      'prepared netting response',
+    );
+    if (typeof body.replayed !== 'boolean') throw new NaryxEvidenceError('prepared netting response has an invalid replay flag');
+    return Object.freeze({
+      batch: await this.#verifiedPreparedNettingBatch(body.batch),
+      replayed: body.replayed,
+    });
+  }
+
+  /** Executes every still-direct external residual and verifies the returned batch after execution. */
+  async executeNettingBatch(proofHash: string): Promise<ExecutedNettingBatchResult> {
+    const requested = hashHex(proofHash, 'netting proof hash');
+    const body = record(
+      await this.#request('POST', `/v1/netting/batches/${requested}/execute`, {}),
+      'executed netting response',
+    );
+    const batch = await this.#verifiedPreparedNettingBatch(body.batch, requested);
+    const executedIntentHashes = list(body.executedIntentHashes, 'executed netting response.executedIntentHashes').map((value, index) => (
+      hashHex(value, `executed netting response.executedIntentHashes[${index}]`)
+    ));
+    if (new Set(executedIntentHashes).size !== executedIntentHashes.length) {
+      throw new NaryxEvidenceError('executed netting response repeats an intent hash');
+    }
+    for (const intentHash of executedIntentHashes) {
+      const execution = batch.externalExecutions.find((entry) => toHex(entry.intent.intentHash) === intentHash);
+      if (execution?.evidence === undefined) {
+        throw new NaryxEvidenceError('executed netting response does not carry evidence for an executed intent');
+      }
+    }
+    return Object.freeze({ batch, executedIntentHashes: Object.freeze(executedIntentHashes) });
   }
 
   async validateDeRisk(input: { readonly positions: readonly unknown[]; readonly policy: unknown; readonly stateCertain: boolean; readonly openRiskIncreasingOrderIds?: readonly string[] }): Promise<readonly unknown[]> {

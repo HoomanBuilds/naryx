@@ -234,6 +234,7 @@ export type PublicExchangeStore = Pick<
   | "queueReopeningOrder"
   | "recordPreparedNettingBatch"
   | "nettingBatch"
+  | "crossBatchClearing"
   | "amendEntry"
   | "cancelEntry"
 >;
@@ -1520,6 +1521,12 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const batch = exchange.nettingBatch(match[1] as string);
       if (batch === undefined) throw new RequestError(404, "NETTING_BATCH_NOT_FOUND", "No prepared netting batch exists for this proof hash.");
       return batch;
+    }
+    if ((match = /^\/v1\/netting\/cross-batch\/([0-9a-f]{64})$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const clearing = exchange.crossBatchClearing(match[1] as string);
+      if (clearing === undefined) throw new RequestError(404, "CROSS_BATCH_CLEARING_NOT_FOUND", "No cross-batch clearing evidence exists for this plan hash.");
+      return clearing;
     }
     if ((match = /^\/v1\/package-book\/reopenings\/([0-9a-f]{64})$/.exec(path)) !== null) {
       onlyParams(url, []);

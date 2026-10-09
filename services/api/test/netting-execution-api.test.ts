@@ -10,6 +10,7 @@ import {
 } from '../src/index.js';
 
 const proofHash = '11'.repeat(32);
+const crossBatchPlanHash = '33'.repeat(32);
 
 test('public API triggers only an existing authorized netting batch', async () => {
   const batch = { proofHashHex: proofHash, externalExecutionStatus: 'PENDING' } as never;
@@ -17,6 +18,9 @@ test('public API triggers only an existing authorized netting batch', async () =
   const handler = createPublicApiHandler({
     exchange: {
       nettingBatch: (value: Uint8Array | string) => value === proofHash ? batch : undefined,
+      crossBatchClearing: (value: Uint8Array | string) => value === crossBatchPlanHash
+        ? { status: 'PENDING', plan: { planHash: crossBatchPlanHash } }
+        : undefined,
     } as never,
     nettingExecution: {
       async execute(value) {
@@ -46,6 +50,9 @@ test('public API triggers only an existing authorized netting batch', async () =
     },
   );
   try {
+    const clearing = await fetch(`http://127.0.0.1:${port}/v1/netting/cross-batch/${crossBatchPlanHash}`);
+    assert.equal(clearing.status, 200);
+    assert.equal((fromProtocolJson(await clearing.json()) as { status: string }).status, 'PENDING');
     const completed = await execute();
     assert.equal(completed.status, 200);
     const body = fromProtocolJson(await completed.json()) as {
