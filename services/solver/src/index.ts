@@ -66,6 +66,14 @@ export {
   type NettingBatchPreparationResult,
 } from './netting-batch-participant.js';
 export {
+  CrossBatchClearingParticipant,
+  CrossBatchClearingParticipantError,
+  HttpCrossBatchClearingControlClient,
+  loadCrossBatchClearingPolicies,
+  type CrossBatchClearingControlPort,
+  type CrossBatchClearingPreparationResult,
+} from './cross-batch-clearing-participant.js';
+export {
   prepareNettingAllocationExecution,
   type PreparedNettingAllocationExecution,
 } from './netting-allocation-execution-preparer.js';

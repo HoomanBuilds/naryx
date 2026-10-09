@@ -56,6 +56,13 @@ export interface SolverProcessConfig {
       policyPaths: readonly string[];
       pollIntervalMs: number;
     }>;
+  readonly crossBatchClearing:
+    | Readonly<{ kind: 'DISABLED' }>
+    | Readonly<{
+      kind: 'ENABLED';
+      policyPaths: readonly string[];
+      pollIntervalMs: number;
+    }>;
 }
 
 export function explicitBoolean(value: string | undefined, name: string): boolean {
@@ -238,6 +245,40 @@ export function loadSolverProcessConfig(env: NodeJS.ProcessEnv): SolverProcessCo
       pollIntervalMs: nettingBatchPollIntervalMs,
     })
     : Object.freeze({ kind: 'DISABLED' as const });
+  const crossBatchClearingEnabled = explicitBoolean(
+    env.NARYX_CROSS_BATCH_CLEARING_PARTICIPANT_ENABLED,
+    'NARYX_CROSS_BATCH_CLEARING_PARTICIPANT_ENABLED',
+  );
+  const crossBatchClearingPollIntervalMs = crossBatchClearingEnabled
+    ? positiveInteger(
+      env.NARYX_CROSS_BATCH_CLEARING_POLL_INTERVAL_MS,
+      'NARYX_CROSS_BATCH_CLEARING_POLL_INTERVAL_MS',
+      1_000,
+    )
+    : 1_000;
+  if (crossBatchClearingEnabled && crossBatchClearingPollIntervalMs < 100) {
+    throw new Error('NARYX_CROSS_BATCH_CLEARING_POLL_INTERVAL_MS must be at least 100');
+  }
+  const crossBatchClearingPolicyPaths = crossBatchClearingEnabled
+    ? (env.NARYX_CROSS_BATCH_CLEARING_POLICY_PATHS ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter((value) => value !== '')
+      .map((value) => absolutePath(value, 'NARYX_CROSS_BATCH_CLEARING_POLICY_PATHS'))
+    : [];
+  if (crossBatchClearingEnabled && crossBatchClearingPolicyPaths.length === 0) {
+    throw new Error('NARYX_CROSS_BATCH_CLEARING_POLICY_PATHS is required when cross-batch clearing is enabled');
+  }
+  if (new Set(crossBatchClearingPolicyPaths).size !== crossBatchClearingPolicyPaths.length) {
+    throw new Error('NARYX_CROSS_BATCH_CLEARING_POLICY_PATHS must not repeat paths');
+  }
+  const crossBatchClearing = crossBatchClearingEnabled
+    ? Object.freeze({
+      kind: 'ENABLED' as const,
+      policyPaths: Object.freeze(crossBatchClearingPolicyPaths),
+      pollIntervalMs: crossBatchClearingPollIntervalMs,
+    })
+    : Object.freeze({ kind: 'DISABLED' as const });
   return Object.freeze({
     host: loopbackHost(env.NARYX_SOLVER_HOST ?? '127.0.0.1'),
     port: tcpPort(env.NARYX_SOLVER_PORT, 'NARYX_SOLVER_PORT', DEFAULT_SOLVER_PORT),
@@ -249,5 +290,6 @@ export function loadSolverProcessConfig(env: NodeJS.ProcessEnv): SolverProcessCo
     privateRfqs,
     makerControls,
     nettingBatches,
+    crossBatchClearing,
   });
 }

@@ -24,6 +24,7 @@ test('composes the fixed local fixture only on explicit opt-in and otherwise req
   assert.equal(durable.privateRfqs.kind, 'DISABLED');
   assert.equal(durable.makerControls.kind, 'DISABLED');
   assert.equal(durable.nettingBatches.kind, 'DISABLED');
+  assert.equal(durable.crossBatchClearing.kind, 'DISABLED');
   assert.equal(loadSolverProcessConfig({
     ...base,
     NARYX_SOLVER_QUOTE_DB: '/external/quotes.sqlite',
@@ -56,6 +57,28 @@ test('netting batch participation requires reviewed absolute policy paths', () =
   assert.deepEqual(loadSolverProcessConfig(enabled).nettingBatches, {
     kind: 'ENABLED',
     policyPaths: ['/external/netting-a.json', '/external/netting-b.json'],
+    pollIntervalMs: 1_000,
+  });
+});
+
+test('cross-batch clearing requires reviewed absolute policy paths', () => {
+  const enabled = {
+    ...base,
+    NARYX_SOLVER_QUOTE_DB: '/external/quotes.sqlite',
+    NARYX_CROSS_BATCH_CLEARING_PARTICIPANT_ENABLED: 'true',
+    NARYX_CROSS_BATCH_CLEARING_POLICY_PATHS: '/external/cross-batch-a.json,/external/cross-batch-b.json',
+  };
+  assert.throws(
+    () => loadSolverProcessConfig({ ...enabled, NARYX_CROSS_BATCH_CLEARING_POLICY_PATHS: 'relative.json' }),
+    /must be an absolute path/,
+  );
+  assert.throws(
+    () => loadSolverProcessConfig({ ...enabled, NARYX_CROSS_BATCH_CLEARING_POLL_INTERVAL_MS: '99' }),
+    /at least 100/,
+  );
+  assert.deepEqual(loadSolverProcessConfig(enabled).crossBatchClearing, {
+    kind: 'ENABLED',
+    policyPaths: ['/external/cross-batch-a.json', '/external/cross-batch-b.json'],
     pollIntervalMs: 1_000,
   });
 });

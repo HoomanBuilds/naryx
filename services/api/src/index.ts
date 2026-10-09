@@ -308,6 +308,11 @@ export {
   type PrepareNextAuthoritativeNettingBatchResult,
 } from "./authoritative-netting.js";
 export {
+  prepareNextAuthoritativeCrossBatchClearing,
+  type AuthoritativeCrossBatchClearingPort,
+  type PrepareNextAuthoritativeCrossBatchClearingResult,
+} from './authoritative-cross-batch-clearing.js';
+export {
   createPackageReopeningAdminHandler,
   type PackageReopeningAdminOptions,
 } from "./package-reopening-admin.js";

@@ -56,6 +56,7 @@ import {
 import { createNettingAllocationAdminHandler } from "./netting-allocation-admin.js";
 import { createNettingBatchAdminHandler } from "./netting-batch-admin.js";
 import { prepareNextAuthoritativeNettingBatch } from "./authoritative-netting.js";
+import { prepareNextAuthoritativeCrossBatchClearing } from './authoritative-cross-batch-clearing.js';
 import {
   createViemBaseSepoliaReadClient,
   loadBaseSepoliaRuntimeManifest,
@@ -695,6 +696,7 @@ export function loadPublicMarketRuntime(
       })]),
       createCrossBatchClearingAdminHandler({
         exchange: store,
+        prepareNext: (policy) => prepareNextAuthoritativeCrossBatchClearing(store, policy),
         ...(crossBatchExecution === undefined ? {} : { execution: crossBatchExecution }),
       }),
       ...(keeper === undefined ? [] : [createKeeperExecutorHandler({ executor: keeper, nowIn: keeperClock(clockMs) })]),

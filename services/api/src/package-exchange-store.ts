@@ -2393,6 +2393,55 @@ export class SqlitePackageExchangeStore {
     });
   }
 
+  pendingCrossBatchSourceIntents(
+    policyInput: CrossBatchClearingPolicyInput | CrossBatchClearingPolicy,
+    maximumCandidates = 512,
+  ): readonly NettingExternalExecutionIntent[] {
+    if (!Number.isSafeInteger(maximumCandidates) || maximumCandidates < 2 || maximumCandidates > 4_096) {
+      throw new PackageExchangeStoreError("INVALID_INPUT", "Cross-batch candidate limit must be from 2 to 4096.");
+    }
+    const policy = guarded("INVALID_INPUT", "Cross-batch clearing policy is invalid.", () =>
+      crossBatchClearingPolicy(policyInput));
+    const rows = this.db.prepare(`
+      SELECT i.intent_hash, i.proof_hash, i.intent_json
+      FROM netting_external_execution_intents i
+      LEFT JOIN netting_external_execution_evidence e ON e.intent_hash = i.intent_hash
+      LEFT JOIN cross_batch_clearing_sources s ON s.source_intent_hash = i.intent_hash
+      WHERE e.intent_hash IS NULL AND s.source_intent_hash IS NULL
+      ORDER BY i.recorded_at_ms, i.intent_hash
+    `).iterate() as Iterable<{
+      intent_hash: unknown;
+      proof_hash: unknown;
+      intent_json: unknown;
+    }>;
+    const candidates: NettingExternalExecutionIntent[] = [];
+    for (const row of rows) {
+      const intent = parseProtocolJson(jsonText(row.intent_json, "intent_json")) as NettingExternalExecutionIntent;
+      const proofHash = hashBytes(row.proof_hash, "proof_hash");
+      const batch = this.nettingBatch(proofHash);
+      if (batch === undefined) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Cross-batch source intent lost its netting batch.");
+      }
+      guarded("CORRUPT_ROW", "Stored cross-batch source intent failed validation.", () =>
+        verifyNettingExternalExecutionIntent(intent, batch.result, batch.policy));
+      if (!bytesEqual(intent.intentHash, hashBytes(row.intent_hash, "intent_hash"))
+        || !bytesEqual(intent.nettingProofHash, proofHash)) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored cross-batch source identity is inconsistent.");
+      }
+      const sameDomain = intent.domain.domainId === policy.domain.domainId
+        && intent.domain.domainManifestVersion === policy.domain.domainManifestVersion
+        && bytesEqual(intent.domain.domainManifestHash, policy.domain.domainManifestHash);
+      const sameAdapter = intent.adapter.adapterId === policy.adapter.adapterId
+        && intent.adapter.adapterManifestVersion === policy.adapter.adapterManifestVersion
+        && bytesEqual(intent.adapter.adapterManifestHash, policy.adapter.adapterManifestHash);
+      if (sameDomain && sameAdapter && intent.validUntilUnit === policy.expiryUnit) {
+        candidates.push(intent);
+        if (candidates.length === maximumCandidates) break;
+      }
+    }
+    return Object.freeze(candidates);
+  }
+
   crossBatchClearing(planHashInput: Uint8Array | string): PreparedCrossBatchClearing | undefined {
     const planHash = commitmentHash(planHashInput);
     const row = this.db.prepare(`

@@ -24,7 +24,11 @@ import {
   versionedManifestRef,
   type NettingPolicyManifestInput,
 } from "@naryx/protocol-types";
-import { PackageExchangeStoreError, SqlitePackageExchangeStore } from "../src/index.js";
+import {
+  PackageExchangeStoreError,
+  SqlitePackageExchangeStore,
+  prepareNextAuthoritativeCrossBatchClearing,
+} from "../src/index.js";
 import { MAX_ENTRIES_PER_PARTICIPANT } from "../src/package-exchange-store.js";
 import {
   CLASS,
@@ -419,22 +423,25 @@ test("cross-batch clearing durably settles source batches without direct double 
       }).batch;
       return { result, intent, batch };
     });
-    const created = store.recordPreparedCrossBatchClearing({
-      policy: {
-        version: 1,
-        policyId: "solana-devnet-cross-batch-v1",
-        domain: instrument.domain,
-        adapter: instrument.adapter,
-        expiryUnit: "SOLANA_SLOT",
-        maximumSourceIntents: 8,
-        maximumSourceBatches: 8,
-        maximumExpirySpread: 10n,
-      },
-      sourceIntentHashes: prepared.map(({ intent }) => intent.intentHash),
-    });
+    const clearingPolicy = {
+      version: 1,
+      policyId: "solana-devnet-cross-batch-v1",
+      domain: instrument.domain,
+      adapter: instrument.adapter,
+      expiryUnit: "SOLANA_SLOT" as const,
+      maximumSourceIntents: 8,
+      maximumSourceBatches: 8,
+      maximumExpirySpread: 10n,
+    };
+    assert.equal(store.pendingCrossBatchSourceIntents(clearingPolicy).length, 3);
+    const next = prepareNextAuthoritativeCrossBatchClearing(store, clearingPolicy);
+    assert.equal(next.status, "PREPARED");
+    if (next.status !== "PREPARED") throw new Error("cross-batch clearing was not prepared");
+    const created = next;
     assert.equal(created.replayed, false);
     assert.equal(created.clearing.status, "PENDING");
     assert.ok(created.clearing.intent);
+    assert.equal(prepareNextAuthoritativeCrossBatchClearing(store, clearingPolicy).status, "IDLE");
     for (const { batch } of prepared) {
       const pooled = store.nettingBatch(batch.result.proofHash)!;
       assert.equal(pooled.externalExecutionStatus, "PENDING");

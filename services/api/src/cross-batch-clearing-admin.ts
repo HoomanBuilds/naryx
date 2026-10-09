@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { CrossBatchClearingPolicyInput } from '@naryx/protocol-types';
+import { toHex, type CrossBatchClearingPolicyInput } from '@naryx/protocol-types';
+import type { PrepareNextAuthoritativeCrossBatchClearingResult } from './authoritative-cross-batch-clearing.js';
 import { internalCaller, readInternalBody, sendError, sendJson } from './internal-http.js';
 import {
   PackageExchangeStoreError,
@@ -20,6 +21,9 @@ export interface CrossBatchClearingAdminOptions {
   readonly execution?: Readonly<{
     execute(planHash: Uint8Array | string): Promise<CrossBatchClearingCoordinatorResult>;
   }>;
+  readonly prepareNext?: (
+    policy: CrossBatchClearingPolicyInput,
+  ) => PrepareNextAuthoritativeCrossBatchClearingResult | Promise<PrepareNextAuthoritativeCrossBatchClearingResult>;
 }
 
 function exactKeys(body: Record<string, unknown>, expected: readonly string[]): boolean {
@@ -50,9 +54,10 @@ export function createCrossBatchClearingAdminHandler(
   return (request, response) => {
     const url = new URL(request.url ?? '/', 'http://internal.local');
     const prepare = url.pathname === '/internal/netting/cross-batch/prepare';
+    const prepareNext = url.pathname === '/internal/netting/cross-batch/prepare-next';
     const inspect = /^\/internal\/netting\/cross-batch\/([0-9a-f]{64})$/.exec(url.pathname);
     const execute = /^\/internal\/netting\/cross-batch\/([0-9a-f]{64})\/execute$/.exec(url.pathname);
-    if (!prepare && inspect === null && execute === null) return false;
+    if (!prepare && !prepareNext && inspect === null && execute === null) return false;
     if (!internalCaller(request)) {
       return sendError(response, 403, 'FORBIDDEN', 'Cross-batch controls answer loopback callers only.');
     }
@@ -73,6 +78,35 @@ export function createCrossBatchClearingAdminHandler(
       return sendError(response, 415, 'INVALID_CONTENT_TYPE', 'Content-Type must be application/json.');
     }
     readInternalBody(request, response, (body) => {
+      if (prepareNext) {
+        if (!exactKeys(body, ['policy'])
+          || typeof body.policy !== 'object' || body.policy === null || Array.isArray(body.policy)) {
+          sendError(response, 400, 'INVALID_REQUEST', 'Preparation requires one cross-batch clearing policy.');
+          return;
+        }
+        if (options.prepareNext === undefined) {
+          sendError(response, 503, 'CROSS_BATCH_PREPARATION_UNAVAILABLE', 'Authoritative cross-batch preparation is disabled.');
+          return;
+        }
+        void Promise.resolve().then(
+          () => options.prepareNext!(body.policy as CrossBatchClearingPolicyInput),
+        ).then(
+          (result) => result.status === 'IDLE'
+            ? sendJson(response, 200, { version: 1, status: 'IDLE' })
+            : sendJson(response, 200, {
+                version: 1,
+                status: 'PREPARED',
+                planHashHex: toHex(result.clearing.plan.planHash),
+                policyHashHex: toHex(result.clearing.policy.policyHash),
+                sourceIntentHashes: result.clearing.sourceIntents.map((intent) => toHex(intent.intentHash)),
+                clearingStatus: result.clearing.status,
+                executionRequired: result.clearing.status === 'PENDING' && result.clearing.intent !== undefined,
+                replayed: result.replayed,
+              }),
+          (error: unknown) => rejected(response, error),
+        );
+        return;
+      }
       if (prepare) {
         try {
           if (!exactKeys(body, ['policy', 'sourceIntentHashes'])

@@ -76,6 +76,9 @@ import {
   HttpNettingBatchPreparationClient,
   NettingBatchParticipant,
   loadNettingBatchPolicies,
+  CrossBatchClearingParticipant,
+  HttpCrossBatchClearingControlClient,
+  loadCrossBatchClearingPolicies,
   NettingAllocationLifecycleService,
   createNettingAllocationLifecycleInternalHandler,
   EvmStrategyExecutionObservationService,
@@ -546,6 +549,13 @@ const nettingBatchParticipant = config.nettingBatches.kind === 'DISABLED'
       preparation: new HttpNettingBatchPreparationClient(apiOrigin),
     });
 let stopNettingBatches: (() => void) | undefined;
+const crossBatchClearingParticipant = config.crossBatchClearing.kind === 'DISABLED'
+  ? undefined
+  : new CrossBatchClearingParticipant({
+      policies: loadCrossBatchClearingPolicies(config.crossBatchClearing.policyPaths),
+      controls: new HttpCrossBatchClearingControlClient(apiOrigin),
+    });
+let stopCrossBatchClearing: (() => void) | undefined;
 const evmPreparationLanes = Object.freeze([
   ...(evmOptionRuntime?.preparationLanes ?? []),
   ...(evmCalendarRuntime?.preparationLanes ?? []),
@@ -880,10 +890,17 @@ try {
       (error) => process.stderr.write(`Netting batch participant error: ${error instanceof Error ? error.message : 'unknown error'}\n`),
     );
   }
+  if (crossBatchClearingParticipant !== undefined && config.crossBatchClearing.kind === 'ENABLED') {
+    stopCrossBatchClearing = crossBatchClearingParticipant.start(
+      config.crossBatchClearing.pollIntervalMs,
+      (error) => process.stderr.write(`Cross-batch clearing participant error: ${error instanceof Error ? error.message : 'unknown error'}\n`),
+    );
+  }
 } catch (error) {
   stopSealedAuctions?.();
   stopPrivateRfqs?.();
   stopNettingBatches?.();
+  stopCrossBatchClearing?.();
   await Promise.allSettled([close(quoteServer), close(executorServer), close(arbitrumExecutorServer)]);
   executorRuntime?.close();
   arbitrumJournal?.close();
@@ -906,6 +923,7 @@ const generalizedHyperliquid = generalizedStrategyLanes.length > 0
 const sealedAuctions = config.sealedAuctions.kind;
 const privateRfqs = config.privateRfqs.kind;
 const nettingBatches = config.nettingBatches.kind;
+const crossBatchClearing = config.crossBatchClearing.kind;
 const baseResidualExecution = baseResidualRuntime === undefined ? 'DISABLED' : 'BASE_SEPOLIA';
 const solanaResidualExecution = solanaResidualRuntime === undefined ? 'DISABLED' : 'SOLANA_DEVNET';
 process.stdout.write(`Internal solver listening on http://${host}:${listenPort} `
@@ -913,6 +931,7 @@ process.stdout.write(`Internal solver listening on http://${host}:${listenPort} 
   + `arbitrumSepoliaQuotes=${arbitrumQuotes} hyperliquidStrategies=${generalizedHyperliquid} `
   + `sealedAuctions=${sealedAuctions} privateRfqs=${privateRfqs} `
   + `nettingBatches=${nettingBatches} `
+  + `crossBatchClearing=${crossBatchClearing} `
   + `baseResidualExecution=${baseResidualExecution} solanaResidualExecution=${solanaResidualExecution}\n`);
 if (config.localRuntime.kind === 'LOCAL_FIXTURE') {
   process.stdout.write('LOCAL FIXTURE MODE: local quotes use fixed catalog prices and placeholder '
