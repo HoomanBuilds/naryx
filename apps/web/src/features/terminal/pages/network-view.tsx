@@ -1,5 +1,7 @@
 "use client";
 
+import { NaryxClient, type VerifiedCrossBatchClearing } from "@naryx/sdk";
+import { useQuery } from "@tanstack/react-query";
 import { ChainIcon } from "@/features/brand/chain-icons";
 import { SolverMetrics } from "../pro/solver-metrics";
 import type { PrivateTerminalRuntimeHealth, RuntimeBoundaryHealth } from "../private-http-terminal-provider";
@@ -42,8 +44,37 @@ function domainGateUp(domain: DomainId, health: PrivateTerminalRuntimeHealth | n
     entry.domainId === DOMAIN_META[domain].domainId);
 }
 
+function hex(value: Uint8Array): string {
+  return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function compact(value: string): string {
+  return value.length > 19 ? `${value.slice(0, 10)}...${value.slice(-6)}` : value;
+}
+
+function clearingDomain(clearing: VerifiedCrossBatchClearing): string {
+  const domain = DOMAIN_ORDER.find((candidate) => DOMAIN_META[candidate].domainId === clearing.plan.domain.domainId);
+  return domain === undefined ? clearing.plan.domain.domainId : DOMAIN_META[domain].label;
+}
+
+function clearingStatusClass(status: VerifiedCrossBatchClearing["status"]): string {
+  if (status === "EXACT_FILLED") return styles.pillOk;
+  if (status === "RECOVERY_REQUIRED") return styles.pillBad;
+  return styles.pillWarn;
+}
+
 export function NetworkView() {
   const { selectedDomain, setSelectedDomain, runtimeHealth, healthState, refreshHealth, publicApiBaseUrl } = useTerminal();
+  const pooledClearings = useQuery({
+    queryKey: ["recent-cross-batch-clearings", publicApiBaseUrl],
+    enabled: publicApiBaseUrl !== null,
+    retry: false,
+    refetchInterval: 15_000,
+    queryFn: () => {
+      if (publicApiBaseUrl === null) throw new Error("Public API not configured.");
+      return new NaryxClient({ baseUrl: publicApiBaseUrl }).listRecentCrossBatchClearings(20);
+    },
+  });
   const gateUp = domainGateUp(selectedDomain, runtimeHealth);
   const anyTestnetLive = DOMAIN_ORDER.some((domain) => domainLive(domain, runtimeHealth));
   const selectedMeta = DOMAIN_META[selectedDomain];
@@ -100,7 +131,15 @@ export function NetworkView() {
         <div className={styles.headActions}>
           <span className={healthState === "ok" ? styles.pillOk : healthState === "unavailable" ? styles.pillWarn : styles.pill}>{serviceLabel}</span>
           {healthState !== "unconfigured" ? (
-            <button type="button" className={styles.ghost} disabled={healthState === "checking"} onClick={refreshHealth}>
+            <button
+              type="button"
+              className={styles.ghost}
+              disabled={healthState === "checking" || pooledClearings.isFetching}
+              onClick={() => {
+                refreshHealth();
+                void pooledClearings.refetch();
+              }}
+            >
               Refresh
             </button>
           ) : null}
@@ -156,6 +195,74 @@ export function NetworkView() {
             </li>
           ))}
         </ol>
+      </section>
+
+      <section className={styles.card} aria-labelledby="pooled-clearing-title">
+        <div className={styles.cardHead}>
+          <h2 id="pooled-clearing-title">Pooled cross-batch clearing</h2>
+          <p>Verified internal matching and the smaller residual sent to an external venue.</p>
+          <span className={styles.pill}>{pooledClearings.data?.length ?? 0} RECENT</span>
+        </div>
+        {publicApiBaseUrl === null ? (
+          <div className={styles.empty}>
+            <strong>Public clearing evidence is not connected</strong>
+            <p>Configure the public API to inspect independently verified pooled clearings.</p>
+          </div>
+        ) : pooledClearings.isPending ? (
+          <div className={styles.empty}>
+            <strong>Reading pooled clearing evidence</strong>
+            <p>Every plan and terminal receipt is verified before it appears here.</p>
+          </div>
+        ) : pooledClearings.isError ? (
+          <div className={styles.empty}>
+            <strong>Pooled clearing evidence unavailable</strong>
+            <p>{pooledClearings.error instanceof Error ? pooledClearings.error.message : "The public API request failed."}</p>
+          </div>
+        ) : pooledClearings.data.length === 0 ? (
+          <div className={styles.empty}>
+            <strong>No pooled clearings recorded</strong>
+            <p>Cross-batch activity appears after compatible package residuals are matched across separate batches.</p>
+          </div>
+        ) : (
+          <div className={styles.scroll}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>Plan</th>
+                  <th>Domain</th>
+                  <th>Status</th>
+                  <th className={styles.num}>Batches</th>
+                  <th className={styles.num}>Sources</th>
+                  <th className={styles.num}>Internally matched</th>
+                  <th>External residual</th>
+                  <th>Recorded</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pooledClearings.data.map((clearing) => {
+                  const planHash = hex(clearing.plan.planHash);
+                  const sourceBatches = new Set(clearing.sourceIntents.map((intent) => hex(intent.nettingProofHash))).size;
+                  return (
+                    <tr key={planHash}>
+                      <td className={styles.mono} title={planHash}>{compact(planHash)}</td>
+                      <td>{clearingDomain(clearing)}</td>
+                      <td><span className={clearingStatusClass(clearing.status)}>{clearing.status.replaceAll("_", " ")}</span></td>
+                      <td className={styles.num}>{sourceBatches}</td>
+                      <td className={styles.num}>{clearing.sourceIntents.length}</td>
+                      <td className={styles.num}>{clearing.plan.internalMatchedQuantityAtoms.toLocaleString("en-US")} atoms</td>
+                      <td className={styles.mono}>
+                        {clearing.plan.externalSide === undefined
+                          ? "NONE"
+                          : `${clearing.plan.externalSide} ${clearing.plan.externalQuantityAtoms.toLocaleString("en-US")} atoms`}
+                      </td>
+                      <td>{new Date(clearing.recordedAtMs).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
 
       <div className={styles.split}>
