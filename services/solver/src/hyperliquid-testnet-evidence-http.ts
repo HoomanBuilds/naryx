@@ -1,6 +1,7 @@
 import {
   parseProtocolJson,
   stringifyProtocolJson,
+  type AssetRef,
 } from '@naryx/protocol-types';
 import type {
   HyperliquidReconciliationHandoff,
@@ -34,6 +35,8 @@ export const SOLVER_TESTNET_STRATEGY_EVIDENCE_RECONCILE_PATH =
   '/internal/keeper/hyperliquid-testnet/strategy/reconcile';
 export const SOLVER_TESTNET_NETTING_RESIDUAL_EVIDENCE_RECONCILE_PATH =
   '/internal/keeper/hyperliquid-testnet/netting-residual/reconcile';
+export const SOLVER_TESTNET_RECOVERY_EXECUTE_PATH =
+  '/internal/keeper/hyperliquid-testnet/recovery/execute';
 
 const MAX_RESPONSE_BYTES = 65_536;
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -105,6 +108,32 @@ export interface HyperliquidNettingResidualEvidenceCollectInput {
   readonly window: HyperliquidTestnetRuntimeEvidenceWindow;
 }
 
+export type HyperliquidRecoveryBound = Readonly<{
+  asset: AssetRef;
+  atoms: bigint;
+}>;
+
+export type HyperliquidRecoveryExecuteInput = Readonly<{
+  recoveryAttemptId: string;
+  sourceAttempt: Readonly<Record<string, unknown>>;
+  recoverySequence: number;
+  projectedRecoveryCosts: readonly HyperliquidRecoveryBound[];
+  projectedAggregateLoss: HyperliquidRecoveryBound;
+}>;
+
+export type HyperliquidRecoveryExecuteResult = Readonly<{
+  plan: Readonly<Record<string, unknown>>;
+  submission: Readonly<{
+    status: 'ACKNOWLEDGED' | 'SUBMISSION_REJECTED'
+      | 'SUBMISSION_AMBIGUOUS' | 'RECONCILIATION_REQUIRED';
+    handoff: Readonly<Record<string, unknown> & {
+      recoveryAttemptId: string;
+      recoverySequence: number;
+    }>;
+    errorCommitment: `0x${string}` | null;
+  }>;
+}>;
+
 export type HyperliquidNettingResidualEvidenceResult = Readonly<{
   status: 'COMPLETE';
   observation: HyperliquidNettingResidualObservation;
@@ -151,6 +180,13 @@ function checkedTimeout(value: number | undefined): number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length
+    && actual.every((key, index) => key === wanted[index]);
 }
 
 async function readBoundedProtocolJson(response: Response, context: string): Promise<unknown> {
@@ -239,6 +275,45 @@ function decodeReconcileResult(value: unknown): unknown {
     throw new Error('keeper evidence reconcile result is invalid');
   }
   return value;
+}
+
+function decodeRecoveryExecuteResult(
+  value: unknown,
+  expectedAttemptId: string,
+  expectedSequence: number,
+): HyperliquidRecoveryExecuteResult {
+  if (!isRecord(value) || !hasExactKeys(value, ['plan', 'submission'])
+    || !isRecord(value.plan) || !isRecord(value.submission)) {
+    throw new Error('keeper recovery result is invalid');
+  }
+  const plan = value.plan;
+  const submission = value.submission;
+  const domain = isRecord(plan.domain) ? plan.domain : undefined;
+  if (plan.version !== 1 || plan.guarantee !== 'NARYX_UNSIGNED_HYPERCORE_RECOVERY_V1'
+    || plan.recoverySequence !== expectedSequence
+    || !Array.isArray(plan.orders) || plan.orders.length < 1
+    || typeof plan.actionExpiryMs !== 'bigint' || typeof plan.recoveryDeadlineMs !== 'bigint'
+    || domain?.domainId !== 'hypercore:testnet'
+    || typeof domain.domainManifestVersion !== 'number'
+    || !Number.isSafeInteger(domain.domainManifestVersion) || domain.domainManifestVersion < 1
+    || !(domain.domainManifestHash instanceof Uint8Array)
+    || domain.domainManifestHash.length !== 32) {
+    throw new Error('keeper recovery result is invalid');
+  }
+  if (!hasExactKeys(submission, ['errorCommitment', 'handoff', 'status'])
+    || (submission.status !== 'ACKNOWLEDGED'
+      && submission.status !== 'SUBMISSION_REJECTED'
+      && submission.status !== 'SUBMISSION_AMBIGUOUS'
+      && submission.status !== 'RECONCILIATION_REQUIRED')
+    || !isRecord(submission.handoff)
+    || submission.handoff.recoveryAttemptId !== expectedAttemptId
+    || submission.handoff.recoverySequence !== expectedSequence
+    || (submission.errorCommitment !== null
+      && (typeof submission.errorCommitment !== 'string'
+        || !/^0x[0-9a-f]{64}$/.test(submission.errorCommitment)))) {
+    throw new Error('keeper recovery result is invalid');
+  }
+  return value as unknown as HyperliquidRecoveryExecuteResult;
 }
 
 function decodeStrategyReconcileResult(value: unknown): HyperliquidStrategyEvidenceResult {
@@ -436,6 +511,39 @@ implements HyperliquidTestnetStructuralEvidencePort<unknown, unknown> {
       return decodeReconcileResult(decoded);
     } catch {
       throw new Error('keeper evidence request failed');
+    }
+  }
+}
+
+export class HyperliquidRecoveryTestnetHttpExecution {
+  readonly #origin: string;
+  readonly #fetch: typeof fetch;
+  readonly #timeoutMs: number;
+
+  constructor(options: HyperliquidTestnetEvidenceHttpOptions) {
+    this.#origin = requireLoopbackKeeperOrigin(options.keeperOrigin);
+    this.#fetch = options.fetchImplementation ?? fetch;
+    this.#timeoutMs = checkedTimeout(options.timeoutMs);
+  }
+
+  async execute(input: HyperliquidRecoveryExecuteInput): Promise<HyperliquidRecoveryExecuteResult> {
+    let decoded: unknown;
+    try {
+      decoded = await postProtocolJson(
+        this.#origin,
+        SOLVER_TESTNET_RECOVERY_EXECUTE_PATH,
+        input,
+        'solver.recovery.execute',
+        this.#timeoutMs,
+        this.#fetch,
+      );
+      return decodeRecoveryExecuteResult(
+        decoded,
+        input.recoveryAttemptId,
+        input.recoverySequence,
+      );
+    } catch {
+      throw new Error('keeper recovery execution failed');
     }
   }
 }

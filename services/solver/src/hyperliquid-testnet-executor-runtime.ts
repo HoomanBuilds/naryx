@@ -24,8 +24,10 @@ import {
   type HyperliquidTestnetExchangeTransport,
 } from './index.js';
 import {
+  HyperliquidRecoveryTestnetHttpExecution,
   HyperliquidTestnetHttpStructuralEvidence,
   HyperliquidStrategyTestnetHttpEvidence,
+  type HyperliquidRecoveryExecuteResult,
   type HyperliquidTestnetEvidenceHttpOptions,
 } from './hyperliquid-testnet-evidence-http.js';
 import { HyperliquidStrategySqliteDurableJournal } from './hyperliquid-strategy-sqlite-journal.js';
@@ -34,10 +36,12 @@ import { HyperliquidStrategyTestnetRuntime } from './hyperliquid-strategy-testne
 import {
   hyperliquidLaneNotSubmitted,
   hyperliquidReconciledExecutorResult,
+  HyperliquidTestnetRecoveryError,
   type HyperliquidTestnetAccountInventory,
   type HyperliquidTestnetExecutorRuntimeFactory,
   type HyperliquidTestnetAttemptHandoff,
   type HyperliquidTestnetLaneReleaseRequest,
+  type HyperliquidTestnetRecoveryRequest,
   type HyperliquidTestnetTrustedAttemptProvider,
 } from './hyperliquid-testnet-executor-http.js';
 import {
@@ -97,6 +101,7 @@ export type LoadedHyperliquidTestnetExecutorRuntime = Readonly<{
    * the holder shows nothing pending, ABANDONED on the operator's stated reason.
    */
   releaseLane(request: HyperliquidTestnetLaneReleaseRequest): Promise<HyperliquidLaneRelease>;
+  recover(request: HyperliquidTestnetRecoveryRequest): Promise<HyperliquidRecoveryExecuteResult>;
   close(): void;
 }>;
 
@@ -596,6 +601,9 @@ export async function loadHyperliquidTestnetExecutorRuntime(
       async releaseLane() {
         throw new Error('Hyperliquid Testnet execution lane is unavailable');
       },
+      async recover() {
+        throw new Error('Hyperliquid Testnet recovery is unavailable');
+      },
       close() {},
     });
   }
@@ -624,6 +632,7 @@ export async function loadHyperliquidTestnetExecutorRuntime(
     ? { keeperOrigin, fetchImplementation: dependencies.fetchImplementation }
     : { keeperOrigin };
   const evidence = new HyperliquidTestnetHttpStructuralEvidence(evidenceOptions);
+  const recoveryExecution = new HyperliquidRecoveryTestnetHttpExecution(evidenceOptions);
   const signerAddress = (await getWalletAddress(signer)).toLowerCase();
   if (!ADDRESS.test(signerAddress) || signerAddress !== expectedAgent) {
     throw new Error('injected signer does not match the configured Testnet agent address');
@@ -703,12 +712,19 @@ export async function loadHyperliquidTestnetExecutorRuntime(
       recordContext: (attemptId, contextJson) => lanePort.recordReconcileContext(attemptId, contextJson),
     });
     const coordinator = new HyperliquidTestnetRuntimeCoordinator(alignedEvidence, submission);
-    // A fresh keeper reconciliation of the holder from its stored inputs, or undefined.
-    const freshHolderResult = async (stored: Parameters<typeof hyperliquidReconciledExecutorResult>[0]) => {
+    const freshHolderObservation = async (
+      stored: Parameters<typeof hyperliquidReconciledExecutorResult>[0],
+    ) => {
       const context = lanePort.reconcileContext(stored.attemptId);
       if (context === undefined) return undefined;
+      const reconciliation = await alignedEvidence.reconcileStored(context);
+      const result = hyperliquidReconciledExecutorResult(stored, reconciliation);
+      return result === undefined ? undefined : Object.freeze({ reconciliation, result });
+    };
+    // A fresh keeper reconciliation of the holder from its stored inputs, or undefined.
+    const freshHolderResult = async (stored: Parameters<typeof hyperliquidReconciledExecutorResult>[0]) => {
       try {
-        return hyperliquidReconciledExecutorResult(stored, await alignedEvidence.reconcileStored(context));
+        return (await freshHolderObservation(stored))?.result;
       } catch {
         return undefined;
       }
@@ -918,6 +934,61 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         }
         return lanePort.release({
           holderAttemptId: holder.attemptId, disposition: 'FINAL', reason: request.reason, result,
+        });
+      },
+      async recover(
+        request: HyperliquidTestnetRecoveryRequest,
+      ): Promise<HyperliquidRecoveryExecuteResult> {
+        const holder = lanePort.blockedHolder();
+        if (holder === undefined || holder.attemptId !== request.attemptId) {
+          throw new HyperliquidTestnetLaneError(
+            'LANE_NOT_BLOCKED_BY_ATTEMPT',
+            'Hyperliquid lane is not blocked by that attempt',
+          );
+        }
+        if (holder.result === null) {
+          throw new HyperliquidTestnetRecoveryError(
+            'RECOVERY_EVIDENCE_UNAVAILABLE',
+            'the blocked attempt has no durable result to reconcile',
+          );
+        }
+        let observation;
+        try {
+          observation = await freshHolderObservation(holder.result);
+        } catch {
+          throw new HyperliquidTestnetRecoveryError(
+            'RECOVERY_EVIDENCE_UNAVAILABLE',
+            'fresh authoritative recovery evidence is unavailable',
+          );
+        }
+        if (observation === undefined) {
+          throw new HyperliquidTestnetRecoveryError(
+            'RECOVERY_EVIDENCE_UNAVAILABLE',
+            'the blocked attempt has no stored reconciliation context',
+          );
+        }
+        if (observation.result.status !== 'RECONCILED'
+          || observation.result.packageStatus !== 'RECOVERY_REQUIRED') {
+          throw new HyperliquidTestnetRecoveryError(
+            'RECOVERY_NOT_REQUIRED',
+            'fresh authoritative evidence does not require recovery',
+          );
+        }
+        if (!isRecord(observation.reconciliation)
+          || observation.reconciliation.status !== 'RECONCILED'
+          || !isRecord(observation.reconciliation.attempt)
+          || observation.reconciliation.attempt.status !== 'RECOVERY_REQUIRED') {
+          throw new HyperliquidTestnetRecoveryError(
+            'RECOVERY_EVIDENCE_UNAVAILABLE',
+            'fresh authoritative source attempt is invalid',
+          );
+        }
+        return recoveryExecution.execute({
+          recoveryAttemptId: request.recoveryAttemptId,
+          sourceAttempt: observation.reconciliation.attempt,
+          recoverySequence: 0,
+          projectedRecoveryCosts: request.projectedRecoveryCosts,
+          projectedAggregateLoss: request.projectedAggregateLoss,
         });
       },
       close: () => {

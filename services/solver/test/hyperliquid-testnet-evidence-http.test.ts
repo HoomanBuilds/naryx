@@ -2,14 +2,16 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
-import { parseProtocolJson, stringifyProtocolJson } from '@naryx/protocol-types';
+import { assetRef, parseProtocolJson, stringifyProtocolJson } from '@naryx/protocol-types';
 import {
   HyperliquidNettingResidualTestnetHttpEvidence,
+  HyperliquidRecoveryTestnetHttpExecution,
   HyperliquidStrategyTestnetHttpEvidence,
   HyperliquidTestnetHttpStructuralEvidence,
   SOLVER_TESTNET_EVIDENCE_PREPARE_PATH,
   SOLVER_TESTNET_EVIDENCE_RECONCILE_PATH,
   SOLVER_TESTNET_NETTING_RESIDUAL_EVIDENCE_RECONCILE_PATH,
+  SOLVER_TESTNET_RECOVERY_EXECUTE_PATH,
   SOLVER_TESTNET_STRATEGY_EVIDENCE_RECONCILE_PATH,
   createHyperliquidTestnetLoopbackCoordinator,
 } from '../src/hyperliquid-testnet-evidence-http.js';
@@ -332,6 +334,57 @@ test('reconcile binds prepared, handoff, binding, and window with exact keys', a
     assert.equal(result.status, 'HANDOFF_REJECTED');
     assert.equal(result.reason, 'ACTION_HASH_MISMATCH');
     assert.equal(server.captured.length, 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('recovery execution forwards a reconciled source attempt and validates the keeper result', async () => {
+  const sourceAttempt = { version: 1, status: 'RECOVERY_REQUIRED' };
+  const asset = assetRef('usdc', new Uint8Array(32).fill(9), 6);
+  const server = await startServer((captured, request, response) => {
+    assert.equal(request.method, 'POST');
+    assert.equal(request.url, SOLVER_TESTNET_RECOVERY_EXECUTE_PATH);
+    const decoded = parseProtocolJson(captured.rawBody,
+      'test.recovery.execute.request') as Record<string, unknown>;
+    assert.deepEqual(Object.keys(decoded).sort(), [
+      'projectedAggregateLoss', 'projectedRecoveryCosts', 'recoveryAttemptId',
+      'recoverySequence', 'sourceAttempt',
+    ]);
+    assert.deepEqual(decoded.sourceAttempt, sourceAttempt);
+    assert.equal(decoded.recoverySequence, 0);
+    jsonResponse(response, 200, stringifyProtocolJson({
+      plan: {
+        version: 1,
+        guarantee: 'NARYX_UNSIGNED_HYPERCORE_RECOVERY_V1',
+        domain: {
+          domainId: 'hypercore:testnet',
+          domainManifestVersion: 1,
+          domainManifestHash: new Uint8Array(32).fill(1),
+        },
+        recoverySequence: 0,
+        actionExpiryMs: 1_001_000n,
+        recoveryDeadlineMs: 1_010_000n,
+        orders: [{ action: 'COMPLETE_MISSING_LEG' }],
+      },
+      submission: {
+        status: 'ACKNOWLEDGED',
+        handoff: { recoveryAttemptId: 'recovery-attempt-0001', recoverySequence: 0 },
+        errorCommitment: null,
+      },
+    }, 'test.recovery.execute.response'));
+  });
+  try {
+    const client = new HyperliquidRecoveryTestnetHttpExecution({ keeperOrigin: server.origin });
+    const result = await client.execute({
+      recoveryAttemptId: 'recovery-attempt-0001',
+      sourceAttempt,
+      recoverySequence: 0,
+      projectedRecoveryCosts: [{ asset, atoms: 10n }],
+      projectedAggregateLoss: { asset, atoms: 100n },
+    });
+    assert.equal(result.plan.recoverySequence, 0);
+    assert.equal(result.submission.status, 'ACKNOWLEDGED');
   } finally {
     await server.close();
   }

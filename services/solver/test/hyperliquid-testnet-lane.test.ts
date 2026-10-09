@@ -7,8 +7,10 @@ import test from 'node:test';
 import Database from 'better-sqlite3';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
+import { stringifyProtocolJson } from '@naryx/protocol-types';
 import {
   HyperliquidTestnetLane,
+  SOLVER_TESTNET_RECOVER_PATH,
   SOLVER_TESTNET_RELEASE_LANE_PATH,
   createHyperliquidTestnetExecutorRequestHandler,
   hyperliquidLaneNotSubmitted,
@@ -288,11 +290,14 @@ function operatorRequest(
   body: unknown,
   headers: Record<string, string> = {},
   remoteAddress = '127.0.0.1',
+  path = SOLVER_TESTNET_RELEASE_LANE_PATH,
 ): IncomingMessage {
-  const request = Readable.from([Buffer.from(JSON.stringify(body))]) as unknown as IncomingMessage;
+  const request = Readable.from([
+    Buffer.from(stringifyProtocolJson(body, 'test.operator.request')),
+  ]) as unknown as IncomingMessage;
   Object.assign(request, {
     method: 'POST',
-    url: SOLVER_TESTNET_RELEASE_LANE_PATH,
+    url: path,
     headers: { 'content-type': 'application/json', ...headers },
     socket: { remoteAddress },
   });
@@ -318,6 +323,9 @@ test('exposes lane release only to direct loopback operators and maps refusals',
   const holder = 'attempt-holder-00003';
   await subject.run(holder, KEY, async () => reconciled(holder, 'RECOVERY_REQUIRED'));
   const operator: HyperliquidTestnetLaneOperator = {
+    async recover() {
+      throw new Error('recovery is not under test');
+    },
     async releaseLane(request) {
       if (request.disposition === 'FINAL') {
         return subject.release({ holderAttemptId: request.attemptId, disposition: 'FINAL', reason: request.reason,
@@ -359,6 +367,46 @@ test('exposes lane release only to direct loopback operators and maps refusals',
   assert.equal(again.captured.status, 409);
   assert.match(again.captured.body, /LANE_NOT_BLOCKED_BY_ATTEMPT/);
   subject.close();
+});
+
+test('recovery operator accepts only bounded economics and never a caller-supplied plan', async () => {
+  const asset = {
+    assetId: 'usdc', assetManifestHash: new Uint8Array(32).fill(4), decimals: 6,
+  };
+  let received: unknown;
+  const operator: HyperliquidTestnetLaneOperator = {
+    async recover(request) {
+      received = request;
+      return {
+        plan: {},
+        submission: {
+          status: 'RECONCILIATION_REQUIRED',
+          handoff: { recoveryAttemptId: request.recoveryAttemptId, recoverySequence: 0 },
+          errorCommitment: null,
+        },
+      };
+    },
+    async releaseLane() {
+      throw new Error('lane release is not under test');
+    },
+  };
+  const handler = createHyperliquidTestnetExecutorRequestHandler(undefined, operator);
+  const body = {
+    attemptId: 'attempt-holder-00004',
+    recoveryAttemptId: 'recovery-attempt-0004',
+    projectedRecoveryCosts: [{ asset, atoms: 10n }],
+    projectedAggregateLoss: { asset, atoms: 100n },
+  };
+  const accepted = capturedResponse();
+  await handler(operatorRequest(body, {}, '127.0.0.1', SOLVER_TESTNET_RECOVER_PATH), accepted.response);
+  assert.equal(accepted.captured.status, 200);
+  assert.deepEqual(received, body);
+
+  const suppliedPlan = capturedResponse();
+  await handler(operatorRequest({ ...body, plan: {} }, {}, '127.0.0.1', SOLVER_TESTNET_RECOVER_PATH),
+    suppliedPlan.response);
+  assert.equal(suppliedPlan.captured.status, 400);
+  assert.match(suppliedPlan.captured.body, /INVALID_REQUEST/);
 });
 
 test('aligns keeper windows to the checkpoint read and re-reads incomplete evidence within the age bound', async () => {

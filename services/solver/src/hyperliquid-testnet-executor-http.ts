@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { HyperliquidStrategyExecutionPlan } from '@naryx/adapter-hyperliquid';
-import { parseProtocolJson, stringifyProtocolJson, type PackageAdmission } from '@naryx/protocol-types';
+import {
+  assetRef,
+  parseProtocolJson,
+  stringifyProtocolJson,
+  type PackageAdmission,
+} from '@naryx/protocol-types';
 import type {
   HyperliquidPackageSubmissionResult,
 } from './index.js';
@@ -14,6 +19,10 @@ import type {
 import type {
   HyperliquidStrategyRuntimeResult,
 } from './hyperliquid-strategy-testnet-runtime.js';
+import type {
+  HyperliquidRecoveryBound,
+  HyperliquidRecoveryExecuteResult,
+} from './hyperliquid-testnet-evidence-http.js';
 import {
   HYPERLIQUID_LANE_RELEASE_REASON,
   HyperliquidTestnetLane,
@@ -28,6 +37,8 @@ export const SOLVER_TESTNET_EXECUTE_PATH = '/internal/solver/hyperliquid-testnet
 export const SOLVER_TESTNET_ATTEMPT_STATUS_PATH = '/internal/solver/hyperliquid-testnet/attempt-status';
 /** Operator-only: direct loopback callers, never a proxied or browser request. */
 export const SOLVER_TESTNET_RELEASE_LANE_PATH = '/internal/solver/hyperliquid-testnet/release-lane';
+/** Operator-only: compiles recovery from a fresh authoritative source attempt. */
+export const SOLVER_TESTNET_RECOVER_PATH = '/internal/solver/hyperliquid-testnet/recover';
 
 const MAX_BODY_BYTES = 4_096;
 const ID = /^[A-Za-z0-9_-]{16,64}$/;
@@ -52,6 +63,13 @@ export type HyperliquidTestnetLaneReleaseRequest = Readonly<{
   attemptId: string;
   disposition: HyperliquidLaneReleaseDisposition;
   reason: string;
+}>;
+
+export type HyperliquidTestnetRecoveryRequest = Readonly<{
+  attemptId: string;
+  recoveryAttemptId: string;
+  projectedRecoveryCosts: readonly HyperliquidRecoveryBound[];
+  projectedAggregateLoss: HyperliquidRecoveryBound;
 }>;
 
 export type HyperliquidTestnetLegExecutionEvidence = Readonly<{
@@ -113,6 +131,7 @@ export type HyperliquidTestnetStrategyStageEvidence = Readonly<{
 /** The operator actions of a loaded executor runtime that the loopback route exposes. */
 export interface HyperliquidTestnetLaneOperator {
   releaseLane(request: HyperliquidTestnetLaneReleaseRequest): Promise<HyperliquidLaneRelease>;
+  recover(request: HyperliquidTestnetRecoveryRequest): Promise<HyperliquidRecoveryExecuteResult>;
 }
 
 export type HyperliquidTestnetAttemptStatusResponse = Readonly<{
@@ -300,6 +319,16 @@ export class HyperliquidTestnetExecutorError extends Error {
   }
 }
 
+export class HyperliquidTestnetRecoveryError extends Error {
+  readonly code: 'RECOVERY_EVIDENCE_UNAVAILABLE' | 'RECOVERY_NOT_REQUIRED';
+
+  constructor(code: HyperliquidTestnetRecoveryError['code'], message: string) {
+    super(message);
+    this.name = 'HyperliquidTestnetRecoveryError';
+    this.code = code;
+  }
+}
+
 function requireCondition(condition: boolean, code: HyperliquidTestnetExecutorError['code'], message: string):
 asserts condition {
   if (!condition) throw new HyperliquidTestnetExecutorError(code, message);
@@ -348,6 +377,58 @@ export function parseHyperliquidTestnetLaneReleaseRequest(value: unknown): Hyper
     && value.reason.trim().length >= 8, 'INVALID_REQUEST',
   'reason must be 8 to 280 printable ASCII characters');
   return Object.freeze({ attemptId: value.attemptId, disposition: value.disposition, reason: value.reason });
+}
+
+function recoveryBound(value: unknown, context: string): HyperliquidRecoveryBound {
+  requireCondition(isRecord(value) && hasExactKeys(value, ['asset', 'atoms']), 'INVALID_REQUEST',
+    `${context} must contain only asset and atoms`);
+  requireCondition(isRecord(value.asset)
+    && hasExactKeys(value.asset, ['assetId', 'assetManifestHash', 'decimals'])
+    && typeof value.asset.assetId === 'string'
+    && (value.asset.assetManifestHash instanceof Uint8Array
+      || typeof value.asset.assetManifestHash === 'string')
+    && typeof value.asset.decimals === 'number', 'INVALID_REQUEST', `${context}.asset is invalid`);
+  requireCondition(typeof value.atoms === 'bigint' && value.atoms >= 0n, 'INVALID_REQUEST',
+    `${context}.atoms must be a nonnegative bigint`);
+  let asset;
+  try {
+    asset = assetRef(
+      value.asset.assetId,
+      value.asset.assetManifestHash,
+      value.asset.decimals,
+      `${context}.asset`,
+    );
+  } catch {
+    throw new HyperliquidTestnetExecutorError('INVALID_REQUEST', `${context}.asset is invalid`);
+  }
+  return Object.freeze({ asset, atoms: value.atoms });
+}
+
+export function parseHyperliquidTestnetRecoveryRequest(value: unknown): HyperliquidTestnetRecoveryRequest {
+  requireCondition(isRecord(value), 'INVALID_REQUEST', 'request must be an object');
+  requireCondition(hasExactKeys(value, [
+    'attemptId', 'projectedAggregateLoss', 'projectedRecoveryCosts', 'recoveryAttemptId',
+  ]), 'INVALID_REQUEST', 'recovery request fields are invalid');
+  requireCondition(typeof value.attemptId === 'string' && ID.test(value.attemptId),
+    'INVALID_REQUEST', 'attemptId is invalid');
+  requireCondition(typeof value.recoveryAttemptId === 'string' && ID.test(value.recoveryAttemptId)
+    && value.recoveryAttemptId !== value.attemptId,
+  'INVALID_REQUEST', 'recoveryAttemptId is invalid');
+  requireCondition(Array.isArray(value.projectedRecoveryCosts)
+    && value.projectedRecoveryCosts.length >= 1 && value.projectedRecoveryCosts.length <= 16,
+  'INVALID_REQUEST', 'projectedRecoveryCosts must contain 1 to 16 bounds');
+  const projectedRecoveryCosts = value.projectedRecoveryCosts.map((bound, index) =>
+    recoveryBound(bound, `projectedRecoveryCosts[${index}]`));
+  const identities = projectedRecoveryCosts.map((bound) =>
+    `${bound.asset.assetId}:${Buffer.from(bound.asset.assetManifestHash).toString('hex')}:${bound.asset.decimals}`);
+  requireCondition(new Set(identities).size === identities.length, 'INVALID_REQUEST',
+    'projectedRecoveryCosts must not contain duplicate assets');
+  return Object.freeze({
+    attemptId: value.attemptId,
+    recoveryAttemptId: value.recoveryAttemptId,
+    projectedRecoveryCosts: Object.freeze(projectedRecoveryCosts),
+    projectedAggregateLoss: recoveryBound(value.projectedAggregateLoss, 'projectedAggregateLoss'),
+  });
 }
 
 /** A lane refusal: nothing was signed or sent, and the reason is committed rather than echoed. */
@@ -1187,6 +1268,36 @@ async function releaseLane(
   }
 }
 
+async function recover(
+  request: IncomingMessage,
+  response: ServerResponse,
+  operator: HyperliquidTestnetLaneOperator | undefined,
+): Promise<void> {
+  if (!directLoopbackRequest(request)) {
+    reject(response, 403, 'DIRECT_LOOPBACK_REQUIRED', 'recovery is a direct loopback operator action');
+    return;
+  }
+  if (operator === undefined) {
+    reject(response, 503, 'EXECUTION_UNAVAILABLE', 'Hyperliquid Testnet execution is unavailable');
+    return;
+  }
+  try {
+    const body = parseHyperliquidTestnetRecoveryRequest(await readRequest(request));
+    sendJson(response, 200, await operator.recover(body));
+  } catch (error) {
+    if (error instanceof HyperliquidTestnetExecutorError) {
+      reject(response, 400, error.code, error.message);
+    } else if (error instanceof HyperliquidTestnetLaneError) {
+      reject(response, RELEASE_ERROR_STATUS[error.code], error.code, error.message);
+    } else if (error instanceof HyperliquidTestnetRecoveryError) {
+      reject(response, error.code === 'RECOVERY_NOT_REQUIRED' ? 409 : 502,
+        error.code, error.message);
+    } else {
+      reject(response, 502, 'RECOVERY_FAILED', 'Hyperliquid recovery failed closed');
+    }
+  }
+}
+
 export function createHyperliquidTestnetExecutorRequestHandler(
   executor?: HyperliquidTestnetExecutorPort,
   operator?: HyperliquidTestnetLaneOperator,
@@ -1199,7 +1310,8 @@ export function createHyperliquidTestnetExecutorRequestHandler(
     const url = new URL(request.url ?? '/', 'http://solver.internal');
     if ((url.pathname !== SOLVER_TESTNET_EXECUTE_PATH
       && url.pathname !== SOLVER_TESTNET_ATTEMPT_STATUS_PATH
-      && url.pathname !== SOLVER_TESTNET_RELEASE_LANE_PATH) || url.search !== '') {
+      && url.pathname !== SOLVER_TESTNET_RELEASE_LANE_PATH
+      && url.pathname !== SOLVER_TESTNET_RECOVER_PATH) || url.search !== '') {
       reject(response, 404, 'NOT_FOUND', 'internal route was not found');
       return;
     }
@@ -1210,6 +1322,10 @@ export function createHyperliquidTestnetExecutorRequestHandler(
     }
     if (url.pathname === SOLVER_TESTNET_RELEASE_LANE_PATH) {
       await releaseLane(request, response, operator);
+      return;
+    }
+    if (url.pathname === SOLVER_TESTNET_RECOVER_PATH) {
+      await recover(request, response, operator);
       return;
     }
     if (executor === undefined) {
