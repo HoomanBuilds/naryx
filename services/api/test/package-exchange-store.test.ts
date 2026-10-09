@@ -195,6 +195,9 @@ test("owner authorization and prepared netting evidence are immutable and replay
     assert.equal(created.batch.settlementStatus, "AWAITING_SETTLEMENT");
     assert.equal(store.recordPreparedNettingBatch({ policy, result, externalIntents: [], packages }).replayed, true);
     assert.deepEqual(store.nettingBatch(created.batch.proofHashHex), created.batch);
+    assert.deepEqual(store.nettingBatchForPackage(maker.orderId), created.batch);
+    assert.deepEqual(store.nettingBatchForPackage(taker.orderId), created.batch);
+    assert.equal(store.nettingBatchForPackage(id(999)), undefined);
 
     const orderByPackage = new Map([
       [toHex(commitmentHash(maker.orderId)), maker],

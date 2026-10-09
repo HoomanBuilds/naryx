@@ -4603,17 +4603,20 @@ export function GeneralizedStrategyPreparationPanel({
   }
 
   async function loadNettingAllocation() {
-    if (publicApiBaseUrl === null || packageSubmission === null || !HASH.test(nettingProofHash)) return;
+    if (publicApiBaseUrl === null || packageSubmission === null) return;
     setNettingBusy("LOAD");
     setError(null);
     try {
+      const batch = await new NaryxClient({ baseUrl: publicApiBaseUrl })
+        .getNettingBatchForPackage(packageSubmission.packageOrderId);
       const selection = nettingAllocationSelection(
-        await new NaryxClient({ baseUrl: publicApiBaseUrl }).getNettingBatch(nettingProofHash),
-        nettingProofHash,
+        batch,
+        batch.proofHash,
         packageSubmission.packageOrderId,
         orderHash,
         expectedDomainId,
       );
+      setNettingProofHash(batch.proofHash);
       setNettingSelection(selection);
       setNettingCurrentAllocationHash("");
       setNettingAttemptId("");
@@ -6420,33 +6423,18 @@ export function GeneralizedStrategyPreparationPanel({
             <span>{expectedDomainId}</span>
           </div>
           <div className={styles.strategyPrepareForm}>
-            <label htmlFor="generalized-strategy-netting-proof">Netting proof hash</label>
-            <input
-              id="generalized-strategy-netting-proof"
-              value={nettingProofHash}
-              inputMode="text"
-              autoComplete="off"
-              spellCheck={false}
-              placeholder="64 lowercase hex characters"
-              onChange={(event) => {
-                setNettingProofHash(event.target.value.trim());
-                setNettingSelection(null);
-                setNettingCurrentAllocationHash("");
-                setNettingAttemptId("");
-                setNettingAuthorizationHash("");
-                setNettingExecutionReference("");
-                setNettingReconciliation(null);
-                setError(null);
-              }}
-            />
+            <span>Netting proof</span>
+            <strong title={nettingProofHash || undefined}>
+              {nettingProofHash === "" ? "Discovered from package" : compact(nettingProofHash)}
+            </strong>
             <button
               type="button"
               className={styles.secondaryAction}
               disabled={publicApiBaseUrl === null || packageSubmission === null
-                || nettingBusy !== null || !HASH.test(nettingProofHash)}
+                || nettingBusy !== null}
               onClick={() => void loadNettingAllocation()}
             >
-              {nettingBusy === "LOAD" ? "Loading final allocations" : "Load final allocations"}
+              {nettingBusy === "LOAD" ? "Discovering final allocations" : "Discover final allocations"}
             </button>
           </div>
           {nettingSelection !== null ? (

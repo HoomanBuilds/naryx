@@ -4538,6 +4538,18 @@ export class NaryxClient {
     );
   }
 
+  /** Discovers and verifies the one prepared batch that owns a package order. */
+  async getNettingBatchForPackage(packageOrderId: string): Promise<VerifiedPreparedNettingBatch> {
+    const requested = hashHex(packageOrderId, 'package order id');
+    const batch = await this.#verifiedPreparedNettingBatch(
+      await this.#request('GET', `/v1/netting/packages/${requested}`),
+    );
+    if (!batch.packages.some((entry) => entry.packageOrderId === requested)) {
+      throw new NaryxEvidenceError('prepared netting batch does not contain the requested package order');
+    }
+    return batch;
+  }
+
   /** Derives and persists a batch from durable package settlement evidence, then verifies the complete returned evidence chain. */
   async prepareNettingBatch(
     packageOrderIds: readonly string[],

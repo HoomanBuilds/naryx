@@ -2206,6 +2206,16 @@ export class SqlitePackageExchangeStore {
     });
   }
 
+  nettingBatchForPackage(packageOrderIdInput: Uint8Array | string): PreparedNettingBatch | undefined {
+    const packageOrderId = commitmentHash(packageOrderIdInput);
+    const row = this.db.prepare(`
+      SELECT proof_hash
+      FROM netting_batch_packages
+      WHERE package_order_id = ?
+    `).get(packageOrderId) as { proof_hash: unknown } | undefined;
+    return row === undefined ? undefined : this.nettingBatch(hashBytes(row.proof_hash, "proof_hash"));
+  }
+
   recordVerifiedNettingExternalExecutionEvidence(
     evidence: NettingExternalExecutionEvidence,
   ): { readonly evidence: NettingExternalExecutionEvidence; readonly replayed: boolean } {

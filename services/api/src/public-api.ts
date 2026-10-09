@@ -234,6 +234,7 @@ export type PublicExchangeStore = Pick<
   | "queueReopeningOrder"
   | "recordPreparedNettingBatch"
   | "nettingBatch"
+  | "nettingBatchForPackage"
   | "crossBatchClearing"
   | "amendEntry"
   | "cancelEntry"
@@ -1520,6 +1521,12 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       onlyParams(url, []);
       const batch = exchange.nettingBatch(match[1] as string);
       if (batch === undefined) throw new RequestError(404, "NETTING_BATCH_NOT_FOUND", "No prepared netting batch exists for this proof hash.");
+      return batch;
+    }
+    if ((match = /^\/v1\/netting\/packages\/([0-9a-f]{64})$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const batch = exchange.nettingBatchForPackage(match[1] as string);
+      if (batch === undefined) throw new RequestError(404, "NETTING_BATCH_NOT_FOUND", "No prepared netting batch exists for this package order.");
       return batch;
     }
     if ((match = /^\/v1\/netting\/cross-batch\/([0-9a-f]{64})$/.exec(path)) !== null) {

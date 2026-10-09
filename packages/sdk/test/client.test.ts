@@ -391,6 +391,7 @@ describe('public API client', () => {
     const sdk = client({
       'POST /v1/netting/batches': { body: { batch, replayed: false } },
       [`/v1/netting/batches/${proofHash}`]: { body: batch },
+      [`/v1/netting/packages/${packages[0]!.packageOrderIdHex}`]: { body: batch },
       [`POST /v1/netting/batches/${proofHash}/execute`]: { body: { batch, executedIntentHashes: [] } },
     });
     const prepared = await sdk.prepareNettingBatch(packages.map((entry) => entry.packageOrderIdHex), NETTING_POLICY);
@@ -398,6 +399,7 @@ describe('public API client', () => {
     assert.equal(prepared.batch.proofHash, proofHash);
     assert.equal(prepared.batch.finalAllocationReceipt?.allocations.length, 2);
     assert.equal((await sdk.getNettingBatch(proofHash)).settlementStatus, 'AWAITING_SETTLEMENT');
+    assert.equal((await sdk.getNettingBatchForPackage(packages[0]!.packageOrderIdHex)).proofHash, proofHash);
     assert.deepEqual((await sdk.executeNettingBatch(proofHash)).executedIntentHashes, []);
 
     await assert.rejects(
@@ -407,6 +409,12 @@ describe('public API client', () => {
         },
       }).getNettingBatch(proofHash),
       /failed verification/,
+    );
+    await assert.rejects(
+      client({
+        [`/v1/netting/packages/${id(999)}`]: { body: batch },
+      }).getNettingBatchForPackage(id(999)),
+      /does not contain the requested package order/,
     );
   });
 
