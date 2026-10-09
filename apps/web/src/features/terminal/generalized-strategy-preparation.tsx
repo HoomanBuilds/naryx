@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Fragment, useEffect, useState } from "react";
 import bs58 from "bs58";
+import { NaryxClient, type VerifiedPreparedNettingBatch } from "@naryx/sdk";
 import {
   NARYX_RFQ_HPKE_SUITE_ID,
   decodePrivateRfqQuoteResponse,
@@ -2076,63 +2077,35 @@ function parseAuthorizedEvmExecution(payload: unknown, review: StrategyPreparati
   return Object.freeze({ chainId, to, data, value: "0", quoteHash, expectedNextStateHash });
 }
 
-function parseNettingAllocationSelection(
-  payload: unknown,
+function nettingAllocationSelection(
+  batch: VerifiedPreparedNettingBatch,
   expectedProofHash: string,
   expectedPackageOrderId: string,
   expectedStrategyOrderHash: string,
   expectedDomainId: string,
 ): NettingAllocationSelection {
-  const root = record(decode(payload as Json), "Netting batch");
-  if (root.status !== "PREPARED" || hash(root.proofHashHex, "Netting proof hash") !== expectedProofHash) {
+  if (batch.proofHash !== expectedProofHash) {
     throw new Error("Netting batch identity differs from the requested proof.");
   }
-  const packages = list(root.packages, "Netting batch packages").map((candidate, index) => {
-    const item = record(candidate, `Netting batch package ${index}`);
-    return Object.freeze({
-      packageOrderId: hash(item.packageOrderIdHex, `Netting batch package ${index} order`),
-      strategyOrderHash: hash(item.strategyOrderHashHex, `Netting batch package ${index} strategy order`),
-    });
-  });
-  if (!packages.some((item) => item.packageOrderId === expectedPackageOrderId
+  if (!batch.packages.some((item) => item.packageOrderId === expectedPackageOrderId
     && item.strategyOrderHash === expectedStrategyOrderHash)) {
     throw new Error("Netting batch does not contain the selected package order.");
   }
-  const policy = record(root.policy, "Netting policy");
-  const domainInstrumentIds = new Set(list(policy.instruments, "Netting policy instruments")
-    .flatMap((candidate, index) => {
-      const instrument = record(candidate, `Netting policy instrument ${index}`);
-      const domain = record(instrument.domain, `Netting policy instrument ${index} domain`);
-      return domain.domainId === expectedDomainId
-        ? [text(instrument.instrumentId, `Netting policy instrument ${index} id`)]
-        : [];
-    }));
+  const domainInstrumentIds = new Set(batch.policy.instruments
+    .filter((instrument) => instrument.domain.domainId === expectedDomainId)
+    .map((instrument) => instrument.instrumentId));
   if (domainInstrumentIds.size === 0) {
     throw new Error("Netting batch has no instrument for the selected execution domain.");
   }
-  const receipt = record(root.finalAllocationReceipt, "Netting final allocation receipt");
-  if (receipt.version !== 1
-    || hash(receipt.nettingProofHash, "Final allocation proof hash") !== expectedProofHash) {
+  const receipt = batch.finalAllocationReceipt;
+  if (receipt === undefined || toHex(receipt.nettingProofHash) !== expectedProofHash) {
     throw new Error("Netting batch has no bound final allocation receipt.");
   }
-  hash(receipt.receiptHash, "Final allocation receipt hash");
-  const allocationReceiptHashes = list(receipt.allocations, "Netting final allocations")
-    .map((candidate, index) => {
-      const allocation = record(candidate, `Netting final allocation ${index}`);
-      return Object.freeze({
-        packageOrderId: hash(allocation.packageOrderId, `Netting final allocation ${index} package`),
-        strategyOrderHash: hash(allocation.strategyOrderHash, `Netting final allocation ${index} order`),
-        instrumentId: text(allocation.instrumentId, `Netting final allocation ${index} instrument`),
-        allocationReceiptHash: hash(
-          allocation.allocationReceiptHash,
-          `Netting final allocation ${index} receipt`,
-        ),
-      });
-    })
-    .filter((allocation) => allocation.packageOrderId === expectedPackageOrderId
-      && allocation.strategyOrderHash === expectedStrategyOrderHash
+  const allocationReceiptHashes = receipt.allocations
+    .filter((allocation) => toHex(allocation.packageOrderId) === expectedPackageOrderId
+      && toHex(allocation.strategyOrderHash) === expectedStrategyOrderHash
       && domainInstrumentIds.has(allocation.instrumentId))
-    .map((allocation) => allocation.allocationReceiptHash);
+    .map((allocation) => toHex(allocation.allocationReceiptHash));
   if (allocationReceiptHashes.length === 0 || new Set(allocationReceiptHashes).size !== allocationReceiptHashes.length) {
     throw new Error("Netting batch has no unique final allocations for the selected package.");
   }
@@ -4634,15 +4607,8 @@ export function GeneralizedStrategyPreparationPanel({
     setNettingBusy("LOAD");
     setError(null);
     try {
-      const response = await fetch(`${publicApiBaseUrl}/v1/netting/batches/${nettingProofHash}`, {
-        headers: { Accept: "application/json" },
-        cache: "no-store",
-        credentials: "omit",
-        referrerPolicy: "no-referrer",
-      });
-      if (!response.ok) throw new Error(await failureMessage(response));
-      const selection = parseNettingAllocationSelection(
-        await response.json(),
+      const selection = nettingAllocationSelection(
+        await new NaryxClient({ baseUrl: publicApiBaseUrl }).getNettingBatch(nettingProofHash),
         nettingProofHash,
         packageSubmission.packageOrderId,
         orderHash,
