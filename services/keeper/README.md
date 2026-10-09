@@ -22,7 +22,7 @@ The authoritative evidence collector is a testnet-only read path over Hyperliqui
 
 `@nktkas/hyperliquid` is pinned at `0.33.3` for the maintained TypeScript Info API request types and transport. The release is MIT licensed, requires Node `>=22.12.0`, and has npm integrity `sha512-fvnEw/2ejN14ZZVXA+nFQ9YgfFNjCI1yLliYyUboC6hr3Gwd/RwC4Ox90K4e8tkKWqkVpOcLRQ30p0nTeK4NBQ==`. The upstream repository and npm release history show continuing maintenance through this pinned release. `npm audit --omit=dev` reports zero vulnerabilities. Only `InfoClient` and the HTTP transport are imported; signing and exchange APIs are not imported or exposed.
 
-The endpoint shapes and pagination limits come from the official [Info endpoint documentation](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint). Official reads expose fills, fees, balances, and positions but do not define the aggregate recovery loss required by the signed recovery policy. Recovery collection therefore returns typed incomplete evidence with observed state and raw commitments, never a fabricated zero or a post-recovery reducer input.
+The endpoint shapes and pagination limits come from the official [Info endpoint documentation](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint). Recovery collection binds source and recovery orders to authoritative fills, values completion slippage against the original signed leg limit, values rollback loss against the source fills being unwound, and rounds adverse quote loss upward. Venue fees remain a separate actual recovery-cost ledger. Missing or inconsistent fill evidence returns typed incomplete evidence with raw commitments and never fabricates zero loss.
 
 ## Mainnet shadow reader
 

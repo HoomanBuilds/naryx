@@ -30,6 +30,7 @@ export * from './hyperliquid-submission-journal.js';
 export * from './hyperliquid-recovery-compiler.js';
 export * from './hyperliquid-recovery-validation.js';
 export * from './hyperliquid-recovery-reconciliation.js';
+export * from './hyperliquid-recovery-loss.js';
 export * from './hyperliquid-recovery-submission-journal.js';
 export * from './hyperliquid-recovery-store.js';
 export * from './hyperliquid-recovery-testnet-runtime.js';

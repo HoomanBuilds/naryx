@@ -10,7 +10,7 @@ import {
   type UserFillsByTimeResponse,
   type UserRoleResponse,
 } from '@nktkas/hyperliquid/api/info';
-import type { AssetRef } from '@naryx/protocol-types';
+import { bytesEqual, type AssetRef } from '@naryx/protocol-types';
 import {
   HYPERCORE_RECONCILIATION_SOURCE,
   type HyperliquidAccountIdentity,
@@ -20,9 +20,11 @@ import {
   type HyperliquidReconciliationSnapshotInput,
 } from './index.js';
 import {
+  HYPERCORE_RECOVERY_RECONCILIATION_SOURCE,
   type HyperliquidRecoveryAttempt,
   type HyperliquidRecoveryReconciliationSnapshotInput,
 } from './hyperliquid-recovery-reconciliation.js';
+import { hyperliquidRecoveryAggregateLossQuoteAtoms } from './hyperliquid-recovery-loss.js';
 
 export const HYPERLIQUID_TESTNET_INFO_URL = TESTNET_API_URL;
 
@@ -368,6 +370,12 @@ function decimalToAtoms(value: string, decimals: number): bigint {
 
 function absolute(value: bigint): bigint {
   return value < 0n ? -value : value;
+}
+
+function sameAsset(left: AssetRef, right: AssetRef): boolean {
+  return left.assetId === right.assetId
+    && left.decimals === right.decimals
+    && bytesEqual(left.assetManifestHash, right.assetManifestHash);
 }
 
 function normalizedAssetSymbol(value: string): string | null {
@@ -794,8 +802,12 @@ function reduceOrders(
   let baseFeeAtoms = 0n;
   let baseFeeObserved = false;
   const orderIds = new Set<number>();
-  orders.forEach((order, index) => {
-    const response = evidence.statuses[index]!.payload;
+  orders.forEach((order) => {
+    const matchingStatuses = evidence.statuses.filter(
+      (status) => status.request.cloid === order.cloid,
+    );
+    if (matchingStatuses.length !== 1) addReason(reasons, 'AMBIGUOUS_CLOID');
+    const response = matchingStatuses[0]?.payload ?? { status: 'unknownOid' as const };
     if (response.status === 'order') {
       const statusOrder = response.order.order;
       if (statusOrder.cloid?.toLowerCase() !== order.cloid || statusOrder.coin !== order.coin
@@ -840,6 +852,9 @@ function reduceOrders(
         } catch {
           addReason(reasons, 'MALFORMED_RESPONSE');
           continue;
+        }
+        if ((signedSize > 0n) !== (order.signedBaseAtoms > 0n)) {
+          addReason(reasons, 'MALFORMED_RESPONSE');
         }
         let fillFeeAtoms: bigint;
         try {
@@ -1127,8 +1142,13 @@ export class HyperliquidAuthoritativeEvidenceCollector {
       attempt.sourceAttempt.plan.legs[0].baseAsset,
       attempt.sourceAttempt.plan.legs[0].quoteAsset, reasons);
     if (markets === null) return incomplete(reasons, [], allEnvelopes(accountData));
-    const orders = expectedRecoveryOrders(attempt, markets);
-    if (orders.some((order) => order.wireAsset !== (order.role === 'SPOT'
+    const sourceOrders = expectedPackageOrders(attempt.sourceAttempt, markets);
+    const recoveryOrders = expectedRecoveryOrders(attempt, markets);
+    const orders = Object.freeze([...sourceOrders, ...recoveryOrders]);
+    if (new Set(orders.map((order) => order.cloid)).size !== orders.length) {
+      addReason(reasons, 'AMBIGUOUS_CLOID');
+    }
+    if (recoveryOrders.some((order) => order.wireAsset !== (order.role === 'SPOT'
       ? 10_000 + binding.spotUniverseIndex : binding.perpetualAssetIndex))) {
       addReason(reasons, 'UNKNOWN_ASSET_OR_MARKET');
     }
@@ -1140,8 +1160,13 @@ export class HyperliquidAuthoritativeEvidenceCollector {
     }
     const envelopes = allEnvelopes(accountData, orderData);
     verifySnapshotSkew(envelopes, window, reasons);
-    const reduced = reduceOrders(
-      orders, orderData, attempt.sourceAttempt.plan.legs[0].quoteAsset,
+    const reducedSource = reduceOrders(
+      sourceOrders, orderData, attempt.sourceAttempt.plan.legs[0].quoteAsset,
+      markets.feeToken, attempt.sourceAttempt.plan.legs[0].baseAsset, markets.spotBalanceCoin,
+      window, reasons,
+    );
+    const reducedRecovery = reduceOrders(
+      recoveryOrders, orderData, attempt.sourceAttempt.plan.legs[0].quoteAsset,
       markets.feeToken, attempt.sourceAttempt.plan.legs[0].baseAsset, markets.spotBalanceCoin,
       window, reasons,
     );
@@ -1157,19 +1182,83 @@ export class HyperliquidAuthoritativeEvidenceCollector {
     } catch {
       addReason(reasons, 'MALFORMED_RESPONSE');
     }
-    addReason(reasons, 'AGGREGATE_RECOVERY_LOSS_UNAVAILABLE');
+    let aggregateLoss = 0n;
+    try {
+      aggregateLoss = hyperliquidRecoveryAggregateLossQuoteAtoms({
+        attempt,
+        sourceOrders: reducedSource.orderInputs,
+        recoveryOrders: reducedRecovery.orderInputs,
+        sourceFills: reducedSource.observedFills,
+        recoveryFills: reducedRecovery.observedFills,
+      });
+    } catch {
+      addReason(reasons, 'AGGREGATE_RECOVERY_LOSS_UNAVAILABLE');
+    }
+    const sourceEvidence = attempt.sourceAttempt.acceptedEvidence;
+    if (sourceEvidence === null) addReason(reasons, 'AGGREGATE_RECOVERY_LOSS_UNAVAILABLE');
+    const recoveryFees = Object.freeze(reducedRecovery.fees.map((fee) => Object.freeze({
+      asset: fee.assetId === attempt.sourceAttempt.plan.legs[0].baseAsset.assetId
+        ? attempt.sourceAttempt.plan.legs[0].baseAsset : attempt.sourceAttempt.plan.legs[0].quoteAsset,
+      amountAtoms: fee.amountAtoms,
+      evidenceStatus: fee.evidenceStatus,
+    })));
     const accountObservation: HyperliquidCollectedStateObservation = Object.freeze({
-      orders: reduced.orderInputs,
+      orders: reducedRecovery.orderInputs,
       netSpotBalanceDeltaAtoms: spotBalance - checkpoint.baseSpotBalanceAtoms,
       perpetualPositionDeltaAtoms: perpPosition - checkpoint.perpetualPositionAtoms,
       observedPerpetualPositionAtoms: perpPosition,
-      fees: Object.freeze(reduced.fees.map((fee) => Object.freeze({
-        asset: fee.assetId === attempt.sourceAttempt.plan.legs[0].baseAsset.assetId
-          ? attempt.sourceAttempt.plan.legs[0].baseAsset : attempt.sourceAttempt.plan.legs[0].quoteAsset,
-        amountAtoms: fee.amountAtoms,
-        evidenceStatus: fee.evidenceStatus,
-      }))),
+      fees: recoveryFees,
     });
-    return incomplete(reasons, reduced.observedFills, envelopes, accountObservation);
+    const observedFills = Object.freeze([
+      ...reducedSource.observedFills,
+      ...reducedRecovery.observedFills,
+    ]);
+    if (reasons.length > 0 || sourceEvidence === null) {
+      return incomplete(reasons, observedFills, envelopes, accountObservation);
+    }
+    const observedAtMs = Math.max(...envelopes.map((value) => value.receivedAtMs));
+    const recoveryPolicy = attempt.sourceAttempt.plan.recoveryPolicy;
+    const actualRecoveryCosts = Object.freeze(recoveryPolicy.maxRecoveryCostCaps.map((cap) => {
+      const amountAtoms = recoveryFees.filter((fee) => sameAsset(fee.asset, cap.asset))
+        .reduce((total, fee) => total + fee.amountAtoms, 0n);
+      return Object.freeze({
+        asset: cap.asset,
+        amountAtoms: amountAtoms > 0n ? amountAtoms : 0n,
+        evidenceStatus: 'CONFIRMED' as const,
+      });
+    }));
+    const input: HyperliquidRecoveryReconciliationSnapshotInput = Object.freeze({
+      source: HYPERCORE_RECOVERY_RECONCILIATION_SOURCE,
+      domain: attempt.plan.domain,
+      commitments: attempt.plan.commitments,
+      account,
+      reconciledStateSchemaHash: attempt.plan.reconciledStateSchemaHash,
+      sourceEvidenceVersion: attempt.plan.sourceEvidenceVersion,
+      recoverySequence: attempt.plan.recoverySequence,
+      evidenceVersion: BigInt(observedAtMs),
+      observedAtMs: BigInt(observedAtMs),
+      recoveryOrders: reducedRecovery.orderInputs,
+      netSpotBalanceDeltaAtoms: spotBalance - checkpoint.baseSpotBalanceAtoms,
+      perpetualPositionDeltaAtoms: perpPosition - checkpoint.perpetualPositionAtoms,
+      observedPerpetualPositionAtoms: perpPosition,
+      perpetualPositionTargetAtoms: attempt.plan.mode === 'PAIRED_ROLLBACK'
+        ? attempt.sourceAttempt.plan.prePerpetualPositionAtoms
+        : attempt.sourceAttempt.plan.perpetualPositionTargetAtoms,
+      costEvidenceComplete: true,
+      fees: recoveryFees,
+      actualRecoveryCosts,
+      actualAggregateLoss: Object.freeze({
+        asset: recoveryPolicy.maxAggregateRecoveryLoss.asset,
+        amountAtoms: aggregateLoss,
+        evidenceStatus: 'CONFIRMED' as const,
+      }),
+    });
+    return Object.freeze({
+      status: 'COMPLETE' as const,
+      input,
+      accountObservation,
+      observedFills,
+      rawResponseCommitments: Object.freeze(envelopes.map(rawCommitment)),
+    });
   }
 }

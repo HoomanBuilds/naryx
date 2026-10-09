@@ -68,11 +68,11 @@ function packageAttempt(): HyperliquidPackageAttempt {
       legs: [
         {
           role: 'SPOT', clientOrderId: spotCloid, signedBaseDeltaAtoms: 100n,
-          baseAsset, quoteAsset, sizeDecimals: 8, order: { a: 10_007 },
+          baseAsset, quoteAsset, sizeDecimals: 8, order: { a: 10_007, p: '60000' },
         },
         {
           role: 'PERPETUAL', clientOrderId: perpCloid, signedBaseDeltaAtoms: -100n,
-          baseAsset, quoteAsset, sizeDecimals: 6, order: { a: 3 },
+          baseAsset, quoteAsset, sizeDecimals: 6, order: { a: 3, p: '60000' },
         },
       ],
       spotClientOrderId: spotCloid,
@@ -361,29 +361,80 @@ test('collects a one-leg partial IOC without inventing a full fill', async () =>
   assert.equal(result.input.spot.filledSignedBaseAtoms, 50n);
 });
 
-test('collects recovery fills but withholds reducer input when aggregate loss is unavailable', async () => {
+test('collects authoritative recovery fills, costs, and adverse execution loss', async () => {
   const client = new FixtureClient();
-  const source = packageAttempt();
+  const initial = packageAttempt();
+  const source = {
+    ...initial,
+    status: 'RECOVERY_REQUIRED',
+    acceptedEvidence: {
+      source: 'HYPERCORE_ACCOUNT_RECONCILIATION',
+      domain: initial.plan.domain,
+      commitments: initial.plan.commitments,
+      account,
+      evidenceVersion: 5n,
+      observedAtMs: 5_100n,
+      spot: {
+        clientOrderId: spotCloid,
+        terminalStatus: 'FILLED',
+        openOrderStatus: 'NONE',
+        filledSignedBaseAtoms: 100n,
+      },
+      perpetual: {
+        clientOrderId: perpCloid,
+        terminalStatus: 'UNFILLED_IOC_CANCELLED',
+        openOrderStatus: 'NONE',
+        filledSignedBaseAtoms: 0n,
+      },
+      netSpotDeltaAtoms: 100n,
+      perpetualPositionDeltaAtoms: 0n,
+      observedPerpetualPositionAtoms: 0n,
+      perpetualPositionTargetAtoms: -100n,
+      feeEvidenceComplete: true,
+      fees: [],
+    },
+    plan: {
+      ...initial.plan,
+      prePerpetualPositionAtoms: 0n,
+      recoveryPolicy: {
+        maxRecoveryCostCaps: [{ asset: quoteAsset, maxAtoms: 100n }],
+        maxAggregateRecoveryLoss: { asset: quoteAsset, atoms: 1_000n },
+      },
+    },
+  } as unknown as HyperliquidPackageAttempt;
   const before = await checkpoint(client);
   client.stamp = 9_950;
-  client.statuses.set(recoveryCloid, orderStatus(recoveryCloid, 3, 'BTC', 'B'));
-  client.fills = [fill(recoveryCloid, 3, 12, 'BTC', 'B')];
-  client.perpetualSize = '0.000001';
+  client.statuses.set(spotCloid, orderStatus(spotCloid, 1, '@7', 'B'));
+  client.statuses.set(perpCloid, orderStatus(perpCloid, 2, 'BTC', 'A', 'canceled'));
+  client.statuses.set(recoveryCloid, orderStatus(recoveryCloid, 3, 'BTC', 'A'));
+  client.fills = [
+    fill(spotCloid, 1, 10, '@7', 'B'),
+    fill(recoveryCloid, 3, 12, 'BTC', 'A'),
+  ];
+  client.spotTotal = '1.000001';
+  client.perpetualSize = '-0.000001';
   const recovery = {
     sourceAttempt: source,
     plan: {
+      mode: 'COMPLETE_MISSING_LEG',
+      domain: source.plan.domain,
+      commitments: source.plan.commitments,
       account,
+      reconciledStateSchemaHash: manifestHash('47'.repeat(32)),
+      sourceEvidenceVersion: 5n,
+      recoverySequence: 0,
       orders: [{ role: 'PERPETUAL', clientOrderId: recoveryCloid,
-        signedBaseDeltaAtoms: 100n, order: { a: 3 } }],
+        signedBaseDeltaAtoms: -100n, order: { a: 3 } }],
     },
   } as unknown as HyperliquidRecoveryAttempt;
   const result = await new HyperliquidAuthoritativeEvidenceCollector(client)
     .collectRecovery(recovery, before, binding, evidenceWindow);
-  assert.equal(result.status, 'INCOMPLETE');
-  assert.ok(result.reasons.includes('AGGREGATE_RECOVERY_LOSS_UNAVAILABLE'));
-  assert.equal(result.input, null);
-  assert.equal(result.observedFills[0]!.clientOrderId, recoveryCloid);
-  assert.equal(result.accountObservation!.observedPerpetualPositionAtoms, 100n);
+  assert.equal(result.status, 'COMPLETE');
+  assert.equal(result.input.actualAggregateLoss.amountAtoms, 0n);
+  assert.equal(result.input.actualRecoveryCosts[0]!.amountAtoms, 1n);
+  assert.deepEqual(client.queriedCloids, [spotCloid, perpCloid, recoveryCloid]);
+  assert.equal(result.observedFills.length, 2);
+  assert.equal(result.accountObservation.observedPerpetualPositionAtoms, -100n);
 });
 
 test('rejects duplicate open-order evidence for an exact cloid', async () => {

@@ -41,6 +41,7 @@ import {
   createHyperliquidRecoverySubmissionJournal,
   fenceHyperliquidRecoveryAgent,
   hyperliquidRecoveryReconciliationHandoff,
+  hyperliquidRecoveryAggregateLossQuoteAtoms,
   initializeHyperliquidRecoveryJournal,
   markHyperliquidRecoverySubmittedUnknown,
   markHyperliquidSubmissionUnknown,
@@ -54,6 +55,7 @@ import {
   type HyperliquidRecoveryExecutionPlan,
   type HyperliquidRecoveryReconciliationSnapshotInput,
   type HyperliquidRecoverySubmissionJournal,
+  type HyperliquidObservedFill,
 } from '../src/index.js';
 
 const nowMs = 1_000_000n;
@@ -374,6 +376,110 @@ function recoveryEvidence(
 function recoveryAttempt(source: HyperliquidPackageAttempt, compiled: HyperliquidRecoveryExecutionPlan) {
   return createHyperliquidRecoveryAttempt(source, compiled, identity, nowMs);
 }
+
+function observedFill(
+  clientOrderId: `0x${string}`,
+  signedBaseAtoms: bigint,
+  priceCoefficient: bigint,
+  ordinal: number,
+  priceScale = 0,
+): HyperliquidObservedFill {
+  return {
+    clientOrderId,
+    orderId: ordinal,
+    transactionId: ordinal,
+    coin: 'BTC',
+    signedBaseAtoms,
+    price: { coefficient: priceCoefficient, scale: priceScale },
+    feeToken: 'USDC',
+    feeAtoms: 0n,
+    observedAtMs: Number(nowMs) + ordinal,
+  };
+}
+
+test('values completion and rollback loss from authoritative fills with upward rounding', () => {
+  const completionSource = sourceAttempt(100n, 0n);
+  const completionPlan = recoveryPlan(completionSource);
+  const completion = recoveryAttempt(completionSource, completionPlan);
+  assert.equal(hyperliquidRecoveryAggregateLossQuoteAtoms({
+    attempt: completion,
+    sourceOrders: [
+      completionSource.acceptedEvidence!.spot,
+      completionSource.acceptedEvidence!.perpetual,
+    ],
+    recoveryOrders: [{
+      clientOrderId: completionPlan.orders[0]!.clientOrderId,
+      terminalStatus: 'FILLED',
+      openOrderStatus: 'NONE',
+      filledSignedBaseAtoms: -100n,
+    }],
+    sourceFills: [observedFill(spotClientOrderId, 100n, 60_000n, 1)],
+    recoveryFills: [observedFill(
+      completionPlan.orders[0]!.clientOrderId,
+      -100n,
+      5_999_999n,
+      2,
+      2,
+    )],
+  }), 1n);
+
+  const rollbackSource = sourceAttempt(200n, -100n, {
+    quantityAtoms: 200n,
+    includeCompletePerp: false,
+    intermediateCap: 200n,
+  });
+  const rollbackPlan = recoveryPlan(rollbackSource);
+  const rollback = recoveryAttempt(rollbackSource, rollbackPlan);
+  const spotRollback = rollbackPlan.orders.find((order) => order.role === 'SPOT')!;
+  const perpRollback = rollbackPlan.orders.find((order) => order.role === 'PERPETUAL')!;
+  assert.equal(hyperliquidRecoveryAggregateLossQuoteAtoms({
+    attempt: rollback,
+    sourceOrders: [
+      rollbackSource.acceptedEvidence!.spot,
+      rollbackSource.acceptedEvidence!.perpetual,
+    ],
+    recoveryOrders: [
+      {
+        clientOrderId: spotRollback.clientOrderId,
+        terminalStatus: 'FILLED',
+        openOrderStatus: 'NONE',
+        filledSignedBaseAtoms: -200n,
+      },
+      {
+        clientOrderId: perpRollback.clientOrderId,
+        terminalStatus: 'FILLED',
+        openOrderStatus: 'NONE',
+        filledSignedBaseAtoms: 100n,
+      },
+    ],
+    sourceFills: [
+      observedFill(spotClientOrderId, 200n, 60_000n, 3),
+      observedFill(perpetualClientOrderId, -100n, 60_000n, 4),
+    ],
+    recoveryFills: [
+      observedFill(spotRollback.clientOrderId, -200n, 59_900n, 5),
+      observedFill(perpRollback.clientOrderId, 100n, 60_100n, 6),
+    ],
+  }), 300n);
+});
+
+test('rejects recovery valuation when fills differ from accepted evidence', () => {
+  const source = sourceAttempt(100n, 0n);
+  const compiled = recoveryPlan(source);
+  const attempt = recoveryAttempt(source, compiled);
+  assert.throws(() => hyperliquidRecoveryAggregateLossQuoteAtoms({
+    attempt,
+    sourceOrders: [source.acceptedEvidence!.spot, source.acceptedEvidence!.perpetual],
+    recoveryOrders: [{
+      clientOrderId: compiled.orders[0]!.clientOrderId,
+      terminalStatus: 'FILLED',
+      openOrderStatus: 'NONE',
+      filledSignedBaseAtoms: -100n,
+    }],
+    sourceFills: [observedFill(spotClientOrderId, 99n, 60_000n, 1)],
+    recoveryFills: [observedFill(compiled.orders[0]!.clientOrderId, -100n, 59_900n, 2)],
+  }), /source fill evidence differs/);
+});
 
 test('keeper compiles the recovery plan before handing it to submission', async () => {
   const source = sourceAttempt(100n, 0n);
