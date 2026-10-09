@@ -1327,6 +1327,135 @@ describe('order intake and terminal evidence', () => {
       /strategy route does not hash to its served hash/,
     );
 
+    const validated = await client({
+      'POST /v1/strategy-orders/validate': { body: { valid: true, order, orderHash: proof.orderHash } },
+    }).validateStrategyOrder(orderInput);
+    assert.equal(validated.valid, true);
+    if (validated.valid) assert.equal(validated.orderHash, proof.orderHash);
+
+    const intake = await client({
+      'POST /v1/strategy-orders': {
+        body: {
+          version: 1,
+          status: 'STORED_FOR_QUOTING',
+          created: true,
+          orderHashHex: proof.orderHash,
+          graphHashHex: proof.graphHash,
+          currentTime: { unit: graph.expiryUnit, value: 100n },
+          timeSource: 'SERVER',
+          stages: graph.stages,
+        },
+      },
+    }).submitStrategyOrder(orderInput, graphInput);
+    assert.equal(intake.created, true);
+    assert.equal(intake.graphHash, proof.graphHash);
+
+    const requestedQuoteBody = {
+      version: 1,
+      status: 'SIGNED_AND_STORED',
+      orderHash: proof.orderHash,
+      graphHash: proof.graphHash,
+      quoteHash,
+      routeHash: proof.routeHash,
+      quote,
+      route,
+    };
+    const requested = await client({
+      'POST /v1/strategy-quotes/request': { body: requestedQuoteBody },
+    }).requestStrategyQuote({
+      orderHash: proof.orderHash,
+      graphHash: proof.graphHash,
+      idempotencyKey: 'quote-request-0001',
+    });
+    assert.equal(requested.signatureVerified, true);
+    assert.equal(requested.quoteHash, quoteHash);
+    await assert.rejects(
+      client({
+        'POST /v1/strategy-quotes/request': { body: { ...requestedQuoteBody, routeHash: 'aa'.repeat(32) } },
+      }).requestStrategyQuote({ orderHash: proof.orderHash, graphHash: proof.graphHash, idempotencyKey: 'quote-request-0002' }),
+      /commitments differ/,
+    );
+
+    const compiledGraph = {
+      compiled: true,
+      graphHash: packageGraphHash(graph),
+      stages: graph.stages,
+      groups: [{
+        groupId: 'atomic',
+        domainId: domain.domainId,
+        legIds: ['perp', 'spot'],
+        actionCount: 2,
+        maximumActionsPerTransaction: 4,
+      }],
+      ungroupedLegIds: [],
+      worstCaseRecoveryCostQuoteAtoms: 0n,
+    };
+    const adapterSupport = [
+      {
+        domain,
+        adapter: spotAdapter,
+        legFamily: 'SPOT_SWAP' as const,
+        supportedSides: ['BUY' as const],
+        materializationClassId: 'spot-swap-v1',
+        executionPlanKind: 'SVM_ATOMIC_CPI' as const,
+        supportedSettlementClasses: ['ATOMIC_POSTCONDITION' as const],
+      },
+      {
+        domain,
+        adapter: perpAdapter,
+        legFamily: 'PERP_OPEN' as const,
+        supportedSides: ['SELL' as const],
+        materializationClassId: 'perp-open-v1',
+        executionPlanKind: 'SVM_ATOMIC_CPI' as const,
+        supportedSettlementClasses: ['ATOMIC_POSTCONDITION' as const],
+      },
+    ];
+    const compiled = await client({
+      'POST /v1/strategy-routes/compile': {
+        body: {
+          ...compiledGraph,
+          graph: compiledGraph,
+          route,
+          routeHash: typedStrategyRouteHash(route),
+          currentTime: { unit: graph.expiryUnit, value: 100n },
+          timeSource: 'SERVER',
+        },
+      },
+    }).compileStrategyRoute({
+      graph: graphInput,
+      adapterSupport,
+      orderHash: proof.orderHash,
+      solverId: route.solverId,
+      routeExpiryValue: route.routeExpiryValue,
+    });
+    assert.equal(compiled.compiled, true);
+    if (compiled.compiled) assert.equal(compiled.routeHash, proof.routeHash);
+
+    const admittedBody = { order, graph, quote, route, compiledGraph };
+    const admitted = await client({
+      'POST /v1/strategy-quotes/admit': { body: admittedBody },
+    }).admitStrategyPackage(orderInput, graphInput, quote, route);
+    assert.equal(admitted.quoteHash, quoteHash);
+    assert.equal(admitted.signatureVerified, true);
+
+    const submitted = await client({
+      'POST /v1/strategy-packages/submit': {
+        body: {
+          admitted: admittedBody,
+          storage: {
+            orderCreated: true,
+            quoteCreated: true,
+            orderHashHex: proof.orderHash,
+            graphHashHex: proof.graphHash,
+            quoteHashHex: proof.quoteHash,
+            routeHashHex: proof.routeHash,
+          },
+        },
+      },
+    }).submitStrategyPackage(orderInput, graphInput, quote, route);
+    assert.equal(submitted.orderCreated, true);
+    assert.equal(submitted.quoteCreated, true);
+
     const receiptInput: StrategyPackageReceiptInput = {
       version: 1,
       environment: order.environment,

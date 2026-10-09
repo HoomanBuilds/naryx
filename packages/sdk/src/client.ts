@@ -91,6 +91,7 @@ import {
   type MarginOffsetContext,
   type MarginOffsetPolicy,
   privateRfqEnvelopeHash,
+  protocolId,
   ProtocolError,
   QUALIFICATION_OBJECT_TYPE,
   qualificationRecord,
@@ -149,6 +150,7 @@ import {
   type PackageReopeningSettlementHandoff,
   type PackageGraphInput,
   type PackageGraph,
+  type CompiledPackageGraph,
   type AssetRef,
   type DomainRef,
   type ExposureGraph,
@@ -193,13 +195,16 @@ import {
   type StrategyPackageReceipt,
   type StrategyPackageReceiptInput,
   type StrategyTemplateDefinition,
+  type TypedAdapterActionSupportInput,
   type TypedStrategyRoute,
+  type TypedStrategyRouteRejection,
 } from '@naryx/protocol-types';
 import { verifyTypedData, type Hex } from 'viem';
 
 const MAX_RESPONSE_CHARS = 2_097_152;
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const HASH_HEX = /^[0-9a-f]{64}$/;
+const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/;
 const BASE_URL = /^(https:\/\/[A-Za-z0-9.-]+(:\d{1,5})?|http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?)(\/[A-Za-z0-9._~\/-]*)?$/;
 
 /** The minimal fetch surface the client needs, so any runtime or test double can supply it. */
@@ -721,6 +726,56 @@ export interface VerifiedPortfolioOptimization {
   readonly selectedCandidate: PortfolioCandidateDecision;
   readonly allPositionSignaturesVerified: boolean;
   readonly allCollateralSignaturesVerified: boolean;
+}
+
+export type StrategyOrderValidation =
+  | Readonly<{ readonly valid: true; readonly order: StrategyPackageOrder; readonly orderHash: string }>
+  | Readonly<{ readonly valid: false; readonly code: string; readonly context: string; readonly detail: string }>;
+
+export interface StrategyOrderIntake {
+  readonly order: StrategyPackageOrder;
+  readonly graph: PackageGraph;
+  readonly orderHash: string;
+  readonly graphHash: string;
+  readonly created: boolean;
+  readonly status: 'STORED_FOR_QUOTING';
+  readonly currentTime: Readonly<{ readonly unit: StrategyPackageOrder['expiryUnit']; readonly value: bigint }>;
+  readonly timeSource: 'SERVER' | 'CALLER';
+  readonly stages: PackageGraph['stages'];
+}
+
+export interface VerifiedRequestedStrategyQuote {
+  readonly orderHash: string;
+  readonly graphHash: string;
+  readonly quoteHash: string;
+  readonly routeHash: string;
+  readonly quote: StrategyPackageQuote;
+  readonly route: TypedStrategyRoute;
+  /** True when this runtime verified the embedded Ed25519 quote key over the quote hash. */
+  readonly signatureVerified: boolean;
+}
+
+export type StrategyRouteCompilation =
+  | Readonly<{
+    readonly compiled: true;
+    readonly graph: CompiledPackageGraph;
+    readonly route: TypedStrategyRoute;
+    readonly routeHash: string;
+    readonly currentTime: Readonly<{ readonly unit: PackageGraph['expiryUnit']; readonly value: bigint }>;
+    readonly timeSource: 'SERVER' | 'CALLER';
+  }>
+  | Readonly<{
+    readonly compiled: false;
+    readonly reasons: readonly TypedStrategyRouteRejection[];
+    readonly currentTime: Readonly<{ readonly unit: PackageGraph['expiryUnit']; readonly value: bigint }>;
+    readonly timeSource: 'SERVER' | 'CALLER';
+  }>;
+
+export interface VerifiedStrategyAdmission extends Omit<VerifiedStrategyQuoteProof, 'recordedAtMs'> {}
+
+export interface VerifiedStrategyPackageSubmission extends VerifiedStrategyAdmission {
+  readonly orderCreated: boolean;
+  readonly quoteCreated: boolean;
 }
 
 export interface VerifiedStrategyQuoteProof {
@@ -1402,6 +1457,229 @@ async function webCryptoEd25519(publicKey: Uint8Array, message: Uint8Array, sign
     return undefined;
   }
   return (await subtle.verify({ name: 'Ed25519' }, key, signature, message)) as boolean;
+}
+
+function idempotencyKey(value: string): string {
+  if (typeof value !== 'string' || !IDEMPOTENCY_KEY.test(value)) {
+    throw new TypeError('idempotency key must be 16 to 128 supported characters');
+  }
+  return value;
+}
+
+function strategyResponseTime(
+  value: unknown,
+  timeSourceValue: unknown,
+  expiryUnit: PackageGraph['expiryUnit'],
+  atSlot: bigint | undefined,
+  context: string,
+): Readonly<{ currentTime: Readonly<{ unit: PackageGraph['expiryUnit']; value: bigint }>; timeSource: 'SERVER' | 'CALLER' }> {
+  const current = record(value, `${context}.currentTime`);
+  const unit = enumKey(EXPIRY_UNIT, current.unit, `${context}.currentTime.unit`) as PackageGraph['expiryUnit'];
+  const time = big(current.value, `${context}.currentTime.value`);
+  if (unit !== expiryUnit || time <= 0n) throw new NaryxEvidenceError(`${context} uses an invalid current time`);
+  if (timeSourceValue !== 'SERVER' && timeSourceValue !== 'CALLER') throw new NaryxEvidenceError(`${context}.timeSource is unsupported`);
+  if (timeSourceValue === 'CALLER' && (atSlot === undefined || time !== atSlot)) {
+    throw new NaryxEvidenceError(`${context} did not use the caller's slot`);
+  }
+  return Object.freeze({ currentTime: Object.freeze({ unit, value: time }), timeSource: timeSourceValue });
+}
+
+function verifyRouteAgainstGraph(
+  routeValue: unknown,
+  graph: PackageGraph,
+  orderHash: string,
+  solverId: string,
+  routeExpiryValue: bigint,
+  servedRouteHash?: unknown,
+): Readonly<{ route: TypedStrategyRoute; routeHash: string }> {
+  let route: TypedStrategyRoute;
+  let computedHash: string;
+  try {
+    route = routeValue as TypedStrategyRoute;
+    computedHash = toHex(typedStrategyRouteHash(route));
+  } catch (error) {
+    throw new NaryxEvidenceError(`compiled strategy route is malformed: ${(error as Error).message}`);
+  }
+  if (servedRouteHash !== undefined && toHex(commitmentHash(servedRouteHash as Uint8Array | string, 'routeHash')) !== computedHash) {
+    throw new NaryxEvidenceError('compiled strategy route does not hash to its served hash');
+  }
+  requireStrategyProof(route.version === 1
+    && route.environment === graph.environment
+    && toHex(route.orderHash) === orderHash
+    && toHex(route.graphHash) === toHex(packageGraphHash(graph))
+    && route.solverId === solverId
+    && route.settlementClass === graph.settlementClass
+    && route.routeExpiryUnit === graph.expiryUnit
+    && route.routeExpiryValue === routeExpiryValue,
+  'compiled strategy route header differs from the request');
+  const graphLegs = [...graph.legs].sort((left, right) => left.legId.localeCompare(right.legId));
+  const routeLegs = [...route.legs].sort((left, right) => left.legId.localeCompare(right.legId));
+  requireStrategyProof(graphLegs.length === routeLegs.length, 'compiled strategy route leg count differs from the graph');
+  for (let index = 0; index < graphLegs.length; index += 1) {
+    const graphLeg = graphLegs[index]!;
+    const routeLeg = routeLegs[index]!;
+    const group = graph.executionGroups.find((candidate) => candidate.legIds.includes(graphLeg.legId));
+    const stage = graph.stages.findIndex((candidate) => candidate.includes(graphLeg.legId));
+    requireStrategyProof(routeLeg.legId === graphLeg.legId
+      && routeLeg.legFamily === graphLeg.legFamily
+      && sameDomainRef(routeLeg.domain, graphLeg.domain)
+      && sameAdapterRef(routeLeg.adapter, graphLeg.adapter)
+      && routeLeg.stage === stage
+      && routeLeg.groupId === group?.groupId,
+    `compiled strategy route differs for ${graphLeg.legId}`);
+  }
+  const graphDomains = graph.legs.reduce<DomainRef[]>((domains, leg) => {
+    if (!domains.some((domain) => sameDomainRef(domain, leg.domain))) domains.push(leg.domain);
+    return domains;
+  }, []).sort((left, right) => left.domainId.localeCompare(right.domainId));
+  const plans = [...route.domainPlans].sort((left, right) => left.domain.domainId.localeCompare(right.domain.domainId));
+  requireStrategyProof(plans.length === graphDomains.length, 'compiled strategy route domain plan count differs from the graph');
+  for (let index = 0; index < graphDomains.length; index += 1) {
+    const domain = graphDomains[index]!;
+    const plan = plans[index]!;
+    const domainLegs = route.legs.filter((leg) => sameDomainRef(leg.domain, domain));
+    const legIds = domainLegs.map((leg) => leg.legId).sort();
+    const kinds = [...new Set(domainLegs.map((leg) => leg.executionPlanKind))];
+    requireStrategyProof(sameDomainRef(plan.domain, domain)
+      && kinds.length === 1
+      && plan.executionPlanKind === kinds[0]
+      && plan.legIds.length === legIds.length
+      && [...plan.legIds].sort().every((legId, legIndex) => legId === legIds[legIndex])
+      && plan.stageCount === new Set(domainLegs.map((leg) => leg.stage)).size,
+    `compiled strategy route domain plan differs for ${domain.domainId}`);
+  }
+  return Object.freeze({ route, routeHash: computedHash });
+}
+
+function verifiedCompiledGraph(value: unknown, graph: PackageGraph): CompiledPackageGraph {
+  const served = record(value, 'compiled strategy graph');
+  if (served.compiled !== true || toHex(commitmentHash(served.graphHash as Uint8Array | string, 'compiled graph hash')) !== toHex(packageGraphHash(graph))) {
+    throw new NaryxEvidenceError('compiled strategy graph does not bind the requested graph');
+  }
+  if (!sameProtocolValue(served.stages, graph.stages)) throw new NaryxEvidenceError('compiled strategy graph stages differ from the graph');
+  const grouped = new Set(graph.executionGroups.flatMap((group) => group.legIds));
+  const ungrouped = graph.legs.map((leg) => leg.legId).filter((legId) => !grouped.has(legId));
+  if (!sameProtocolValue(served.ungroupedLegIds, ungrouped)) throw new NaryxEvidenceError('compiled strategy graph ungrouped legs differ');
+  const recoveryCost = graph.recoverySlots.reduce((sum, slot) => sum + slot.maximumCostQuoteAtoms, 0n);
+  if (big(served.worstCaseRecoveryCostQuoteAtoms, 'compiled strategy graph.worstCaseRecoveryCostQuoteAtoms') !== recoveryCost) {
+    throw new NaryxEvidenceError('compiled strategy graph recovery cost differs from the graph');
+  }
+  const groups = list(served.groups, 'compiled strategy graph.groups').map((entry, index) => {
+    const item = record(entry, `compiled strategy graph.groups[${index}]`);
+    const groupId = protocolId(item.groupId as string, `compiled strategy graph.groups[${index}].groupId`);
+    const source = graph.executionGroups.find((group) => group.groupId === groupId);
+    if (source === undefined) throw new NaryxEvidenceError('compiled strategy graph names an unknown group');
+    const legIds = list(item.legIds, `compiled strategy graph.groups[${index}].legIds`).map((legId, legIndex) => protocolId(legId as string, `compiled strategy graph.groups[${index}].legIds[${legIndex}]`));
+    const actionCount = count(item.actionCount, `compiled strategy graph.groups[${index}].actionCount`);
+    const maximumActionsPerTransaction = count(item.maximumActionsPerTransaction, `compiled strategy graph.groups[${index}].maximumActionsPerTransaction`);
+    const domains = source.legIds.map((legId) => graph.legs.find((leg) => leg.legId === legId)?.domain.domainId);
+    const domainId = protocolId(item.domainId as string, `compiled strategy graph.groups[${index}].domainId`);
+    if (new Set(domains).size !== 1 || domains[0] !== domainId || !sameProtocolValue(legIds, source.legIds)
+      || actionCount !== source.legIds.length || maximumActionsPerTransaction < actionCount) {
+      throw new NaryxEvidenceError(`compiled strategy graph group ${groupId} is inconsistent`);
+    }
+    return Object.freeze({ groupId, domainId, legIds: Object.freeze(legIds), actionCount, maximumActionsPerTransaction });
+  });
+  if (groups.length !== graph.executionGroups.length) throw new NaryxEvidenceError('compiled strategy graph group count differs');
+  return Object.freeze({
+    compiled: true,
+    graphHash: commitmentHash(served.graphHash as Uint8Array | string, 'compiled graph hash'),
+    stages: graph.stages,
+    groups: Object.freeze(groups),
+    ungroupedLegIds: Object.freeze(ungrouped),
+    worstCaseRecoveryCostQuoteAtoms: recoveryCost,
+  });
+}
+
+async function verifyRequestedStrategyQuote(
+  expectedOrderHash: string,
+  expectedGraphHash: string,
+  value: unknown,
+): Promise<VerifiedRequestedStrategyQuote> {
+  const orderHash = hashHex(expectedOrderHash, 'order hash');
+  const graphHash = hashHex(expectedGraphHash, 'graph hash');
+  const body = record(value, 'requested strategy quote');
+  if (body.version !== 1 || body.status !== 'SIGNED_AND_STORED' || body.executionBinding !== undefined || body.executionBindingHash !== undefined) {
+    throw new NaryxEvidenceError('requested strategy quote has an invalid envelope');
+  }
+  let quote: StrategyPackageQuote;
+  let route: TypedStrategyRoute;
+  let quoteHash: string;
+  let routeHash: string;
+  try {
+    quote = strategyPackageQuote(body.quote as StrategyPackageQuoteInput);
+    route = body.route as TypedStrategyRoute;
+    quoteHash = toHex(strategyPackageQuoteHash(quote));
+    routeHash = toHex(typedStrategyRouteHash(route));
+  } catch (error) {
+    throw new NaryxEvidenceError(`requested strategy quote is malformed: ${(error as Error).message}`);
+  }
+  requireStrategyProof(hashHex(body.orderHash, 'served order hash') === orderHash
+    && hashHex(body.graphHash, 'served graph hash') === graphHash
+    && hashHex(body.quoteHash, 'served quote hash') === quoteHash
+    && hashHex(body.routeHash, 'served route hash') === routeHash,
+  'requested strategy quote commitments differ from their served hashes');
+  requireStrategyProof(toHex(quote.orderHash) === orderHash && toHex(route.orderHash) === orderHash
+    && toHex(quote.graphHash) === graphHash && toHex(route.graphHash) === graphHash
+    && toHex(quote.routeHash) === routeHash,
+  'requested strategy quote does not bind the expected order, graph, and route');
+  requireStrategyProof(quote.environment === route.environment
+    && quote.solverId === route.solverId
+    && quote.settlementClass === route.settlementClass
+    && quote.validUntilUnit === route.routeExpiryUnit
+    && route.routeExpiryValue > 0n
+    && route.routeExpiryValue <= quote.validUntilValue,
+  'requested strategy quote and route headers differ');
+  requireStrategyProof(quote.legEconomics.reduce((sum, leg) => sum + leg.grossNotional.atoms, 0n) === quote.totalGrossNotional.atoms
+    && quote.legEconomics.reduce((sum, leg) => sum + leg.marginDelta.atoms, 0n) === quote.totalMarginDelta.atoms
+    && quote.legEconomics.reduce((sum, leg) => sum + leg.residualValue.atoms, 0n) === quote.totalResidualValue.atoms,
+  'requested strategy quote totals are inconsistent');
+  const quoteLegIds = quote.legEconomics.map((leg) => leg.legId).sort();
+  const routeLegIds = route.legs.map((leg) => leg.legId).sort();
+  requireStrategyProof(quoteLegIds.length === routeLegIds.length && quoteLegIds.every((legId, index) => legId === routeLegIds[index]),
+    'requested strategy quote legs differ from the route');
+  const domains = [...quote.domains].sort((left, right) => left.domainId.localeCompare(right.domainId));
+  const plans = [...route.domainPlans].sort((left, right) => left.domain.domainId.localeCompare(right.domain.domainId));
+  requireStrategyProof(domains.length === plans.length && domains.every((domain, index) => sameDomainRef(domain, plans[index]!.domain)),
+    'requested strategy quote domains differ from the route');
+  for (const plan of plans) {
+    const domainLegs = route.legs.filter((leg) => sameDomainRef(leg.domain, plan.domain));
+    const legIds = domainLegs.map((leg) => leg.legId).sort();
+    const kinds = [...new Set(domainLegs.map((leg) => leg.executionPlanKind))];
+    requireStrategyProof(domainLegs.length > 0
+      && kinds.length === 1
+      && plan.executionPlanKind === kinds[0]
+      && plan.legIds.length === legIds.length
+      && [...plan.legIds].sort().every((legId, index) => legId === legIds[index])
+      && plan.stageCount === new Set(domainLegs.map((leg) => leg.stage)).size,
+    `requested strategy route domain plan differs for ${plan.domain.domainId}`);
+  }
+  requireStrategyProof(quote.solverSignatureScheme === 'ED25519', 'requested strategy quote uses an unsupported signature scheme');
+  const verdict = await webCryptoEd25519(quote.solverVerificationKey, strategyPackageQuoteHash(quote), quote.signature);
+  if (verdict === false) throw new NaryxEvidenceError('requested strategy quote signature does not verify');
+  return Object.freeze({ orderHash, graphHash, quoteHash, routeHash, quote, route, signatureVerified: verdict === true });
+}
+
+async function verifyStrategyAdmission(
+  value: unknown,
+  expectedQuoteHash: string,
+): Promise<VerifiedStrategyAdmission> {
+  const body = record(value, 'strategy admission');
+  const verified = await verifyStrategyQuoteProof(expectedQuoteHash, {
+    version: 1,
+    orderHash: toHex(strategyPackageOrderHash(body.order as StrategyPackageOrderInput)),
+    graphHash: toHex(packageGraphHash(body.graph as PackageGraphInput)),
+    quoteHash: toHex(strategyPackageQuoteHash(body.quote as StrategyPackageQuoteInput)),
+    routeHash: toHex(typedStrategyRouteHash(body.route as TypedStrategyRoute)),
+    order: body.order,
+    graph: body.graph,
+    quote: body.quote,
+    route: body.route,
+    recordedAtMs: 0,
+  });
+  const { recordedAtMs: _recordedAtMs, ...admission } = verified;
+  void _recordedAtMs;
+  return Object.freeze(admission);
 }
 
 function sizesQuery(sizes: readonly bigint[]): string {
@@ -2508,6 +2786,194 @@ export class NaryxClient {
       operatorSignatureVerified = verdict === true;
     }
     return Object.freeze({ solverId: id, manifestHash: computed, manifestNonce: count(body.manifestNonce, 'manifestNonce'), manifest, operatorSignatureVerified });
+  }
+
+  /** Validates a typed strategy order through the public API and checks every successful hash locally. */
+  async validateStrategyOrder(orderInput: StrategyPackageOrderInput): Promise<StrategyOrderValidation> {
+    const body = record(await this.#request('POST', '/v1/strategy-orders/validate', { order: orderInput }), 'strategy order validation');
+    if (body.valid === false) {
+      const error = record(body.error, 'strategy order validation.error');
+      if (typeof error.code !== 'string' || error.code.length === 0
+        || typeof error.context !== 'string' || error.context.length === 0
+        || typeof error.detail !== 'string' || error.detail.length === 0) {
+        throw new NaryxEvidenceError('strategy order validation error is malformed');
+      }
+      return Object.freeze({ valid: false, code: error.code, context: error.context, detail: error.detail });
+    }
+    if (body.valid !== true) throw new NaryxEvidenceError('strategy order validation result is malformed');
+    let expected: StrategyPackageOrder;
+    let served: StrategyPackageOrder;
+    try {
+      expected = strategyPackageOrder(orderInput);
+      served = strategyPackageOrder(body.order as StrategyPackageOrderInput);
+    } catch (error) {
+      throw new NaryxEvidenceError(`validated strategy order is malformed: ${(error as Error).message}`);
+    }
+    const expectedHash = toHex(strategyPackageOrderHash(expected));
+    if (toHex(strategyPackageOrderHash(served)) !== expectedHash || hashHex(body.orderHash, 'strategy order validation.orderHash') !== expectedHash) {
+      throw new NaryxEvidenceError('validated strategy order differs from the submitted order');
+    }
+    return Object.freeze({ valid: true, order: served, orderHash: expectedHash });
+  }
+
+  /** Stores one typed order and graph for quoting after checking the server acknowledged their exact identities. */
+  async submitStrategyOrder(orderInput: StrategyPackageOrderInput, graphInput: PackageGraphInput, atSlot?: bigint): Promise<StrategyOrderIntake> {
+    let order: StrategyPackageOrder;
+    let graph: PackageGraph;
+    try {
+      order = strategyPackageOrder(orderInput);
+      graph = packageGraph(graphInput);
+    } catch (error) {
+      throw new TypeError(`strategy order or graph is malformed: ${(error as Error).message}`);
+    }
+    const orderHash = toHex(strategyPackageOrderHash(order));
+    const graphHash = toHex(packageGraphHash(graph));
+    if (toHex(order.graphHash) !== graphHash) throw new TypeError('strategy order does not bind the submitted graph');
+    if (atSlot !== undefined && (typeof atSlot !== 'bigint' || atSlot <= 0n)) throw new TypeError('atSlot must be a positive integer');
+    const body = record(await this.#request('POST', '/v1/strategy-orders', {
+      order,
+      graph,
+      ...(atSlot === undefined ? {} : { atSlot }),
+    }), 'strategy order intake');
+    if (body.version !== 1 || body.status !== 'STORED_FOR_QUOTING' || typeof body.created !== 'boolean'
+      || hashHex(body.orderHashHex, 'strategy order intake.orderHashHex') !== orderHash
+      || hashHex(body.graphHashHex, 'strategy order intake.graphHashHex') !== graphHash
+      || !sameProtocolValue(body.stages, graph.stages)) {
+      throw new NaryxEvidenceError('strategy order intake response differs from the submitted order and graph');
+    }
+    const time = strategyResponseTime(body.currentTime, body.timeSource, graph.expiryUnit, atSlot, 'strategy order intake');
+    return Object.freeze({
+      order,
+      graph,
+      orderHash,
+      graphHash,
+      created: body.created,
+      status: 'STORED_FOR_QUOTING',
+      ...time,
+      stages: graph.stages,
+    });
+  }
+
+  /** Requests one signed solver quote for a stored strategy order and verifies its exposed commitments. */
+  async requestStrategyQuote(input: Readonly<{
+    orderHash: string;
+    graphHash: string;
+    idempotencyKey: string;
+  }>): Promise<VerifiedRequestedStrategyQuote> {
+    const orderHash = hashHex(input.orderHash, 'order hash');
+    const graphHash = hashHex(input.graphHash, 'graph hash');
+    const key = idempotencyKey(input.idempotencyKey);
+    return verifyRequestedStrategyQuote(
+      orderHash,
+      graphHash,
+      await this.#request('POST', '/v1/strategy-quotes/request', { orderHash, idempotencyKey: key }),
+    );
+  }
+
+  /** Compiles a typed route against server registry state and verifies its graph and route bindings locally. */
+  async compileStrategyRoute(input: Readonly<{
+    graph: PackageGraphInput;
+    adapterSupport: readonly TypedAdapterActionSupportInput[];
+    orderHash: string;
+    solverId: string;
+    routeExpiryValue: bigint;
+    atSlot?: bigint;
+  }>): Promise<StrategyRouteCompilation> {
+    let graph: PackageGraph;
+    try {
+      graph = packageGraph(input.graph);
+    } catch (error) {
+      throw new TypeError(`strategy graph is malformed: ${(error as Error).message}`);
+    }
+    const orderHash = hashHex(input.orderHash, 'order hash');
+    const solverId = checkId(input.solverId, 'solver id');
+    if (typeof input.routeExpiryValue !== 'bigint' || input.routeExpiryValue <= 0n || input.routeExpiryValue > graph.packageExpiryValue) {
+      throw new TypeError('route expiry must be positive and not outlive the graph');
+    }
+    if (input.atSlot !== undefined && (typeof input.atSlot !== 'bigint' || input.atSlot <= 0n)) throw new TypeError('atSlot must be a positive integer');
+    const body = record(await this.#request('POST', '/v1/strategy-routes/compile', {
+      graph,
+      adapterSupport: input.adapterSupport,
+      orderHash,
+      solverId,
+      routeExpiryValue: input.routeExpiryValue,
+      ...(input.atSlot === undefined ? {} : { atSlot: input.atSlot }),
+    }), 'strategy route compilation');
+    const time = strategyResponseTime(body.currentTime, body.timeSource, graph.expiryUnit, input.atSlot, 'strategy route compilation');
+    if (body.compiled === false) {
+      const allowed = new Set<TypedStrategyRouteRejection>([
+        'GRAPH_INVALID',
+        'GRAPH_COMPILE_FAILED',
+        'ADAPTER_ACTION_UNSUPPORTED',
+        'ADAPTER_ACTION_AMBIGUOUS',
+        'SETTLEMENT_CLASS_UNSUPPORTED',
+        'MIXED_PLAN_KIND_IN_DOMAIN',
+      ]);
+      const reasons = list(body.reasons, 'strategy route compilation.reasons').map((reason, index) => {
+        if (typeof reason !== 'string' || !allowed.has(reason as TypedStrategyRouteRejection)) {
+          throw new NaryxEvidenceError(`strategy route compilation.reasons[${index}] is unsupported`);
+        }
+        return reason as TypedStrategyRouteRejection;
+      });
+      if (reasons.length === 0 || new Set(reasons).size !== reasons.length || !sameProtocolValue(reasons, [...reasons].sort())) {
+        throw new NaryxEvidenceError('strategy route compilation rejection reasons must be nonempty, unique, and sorted');
+      }
+      return Object.freeze({ compiled: false, reasons: Object.freeze(reasons), ...time });
+    }
+    if (body.compiled !== true) throw new NaryxEvidenceError('strategy route compilation status is malformed');
+    const compiledGraph = verifiedCompiledGraph(body.graph, graph);
+    const verifiedRoute = verifyRouteAgainstGraph(
+      body.route,
+      graph,
+      orderHash,
+      solverId,
+      input.routeExpiryValue,
+      body.routeHash,
+    );
+    return Object.freeze({ compiled: true, graph: compiledGraph, ...verifiedRoute, ...time });
+  }
+
+  /** Checks one signed quote and route against current server registry state without storing them. */
+  async admitStrategyPackage(
+    order: StrategyPackageOrderInput,
+    graph: PackageGraphInput,
+    quote: StrategyPackageQuoteInput,
+    route: TypedStrategyRoute,
+    atSlot?: bigint,
+  ): Promise<VerifiedStrategyAdmission> {
+    const expectedQuoteHash = toHex(strategyPackageQuoteHash(quote));
+    return verifyStrategyAdmission(
+      await this.#request('POST', '/v1/strategy-quotes/admit', { order, graph, quote, route, ...(atSlot === undefined ? {} : { atSlot }) }),
+      expectedQuoteHash,
+    );
+  }
+
+  /** Admits and durably stores one complete strategy package, verifying all returned identities locally. */
+  async submitStrategyPackage(
+    order: StrategyPackageOrderInput,
+    graph: PackageGraphInput,
+    quote: StrategyPackageQuoteInput,
+    route: TypedStrategyRoute,
+    atSlot?: bigint,
+  ): Promise<VerifiedStrategyPackageSubmission> {
+    const expectedQuoteHash = toHex(strategyPackageQuoteHash(quote));
+    const body = record(await this.#request('POST', '/v1/strategy-packages/submit', {
+      order,
+      graph,
+      quote,
+      route,
+      ...(atSlot === undefined ? {} : { atSlot }),
+    }), 'strategy package submission');
+    const admitted = await verifyStrategyAdmission(body.admitted, expectedQuoteHash);
+    const storage = record(body.storage, 'strategy package submission.storage');
+    if (typeof storage.orderCreated !== 'boolean' || typeof storage.quoteCreated !== 'boolean'
+      || hashHex(storage.orderHashHex, 'strategy package submission.storage.orderHashHex') !== admitted.orderHash
+      || hashHex(storage.graphHashHex, 'strategy package submission.storage.graphHashHex') !== admitted.graphHash
+      || hashHex(storage.quoteHashHex, 'strategy package submission.storage.quoteHashHex') !== admitted.quoteHash
+      || hashHex(storage.routeHashHex, 'strategy package submission.storage.routeHashHex') !== admitted.routeHash) {
+      throw new NaryxEvidenceError('strategy package storage acknowledgements differ from the admitted package');
+    }
+    return Object.freeze({ ...admitted, orderCreated: storage.orderCreated, quoteCreated: storage.quoteCreated });
   }
 
   /**
