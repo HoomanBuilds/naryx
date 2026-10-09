@@ -1,5 +1,5 @@
 {
-  "address": "GpwzEWfFySnTdRp8iTPYz9AmsbePDeeC5ThGhMV5PxPq",
+  "address": "Gt9Tqv2QYVADWVhRtJWTPvmVgwtwqfCgAYysjQUjtELg",
   "metadata": {
     "name": "naryx_core",
     "version": "0.1.0",
@@ -337,6 +337,194 @@
       "args": []
     },
     {
+      "name": "activate_fee_policy",
+      "discriminator": [
+        119,
+        24,
+        163,
+        79,
+        44,
+        91,
+        42,
+        46
+      ],
+      "accounts": [
+        {
+          "name": "executor",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "policy",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  45,
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "policy.domain_identity_hash",
+                "account": "FeePolicyRecord"
+              },
+              {
+                "kind": "account",
+                "path": "policy.direction",
+                "account": "FeePolicyRecord"
+              },
+              {
+                "kind": "account",
+                "path": "policy.quote_asset.subject_id",
+                "account": "FeePolicyRecord"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "activate_fee_policy_resume",
+      "discriminator": [
+        26,
+        157,
+        212,
+        176,
+        7,
+        80,
+        101,
+        207
+      ],
+      "accounts": [
+        {
+          "name": "executor",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "policy",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  45,
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "policy.domain_identity_hash",
+                "account": "FeePolicyRecord"
+              },
+              {
+                "kind": "account",
+                "path": "policy.direction",
+                "account": "FeePolicyRecord"
+              },
+              {
+                "kind": "account",
+                "path": "policy.quote_asset.subject_id",
+                "account": "FeePolicyRecord"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "activate_initial_cash_carry_series_binding",
       "discriminator": [
         92,
@@ -641,6 +829,138 @@
       "args": []
     },
     {
+      "name": "activate_initial_risk_domain",
+      "discriminator": [
+        147,
+        6,
+        99,
+        126,
+        64,
+        19,
+        48,
+        119
+      ],
+      "accounts": [
+        {
+          "name": "executor",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107,
+                  45,
+                  100,
+                  111,
+                  109,
+                  97,
+                  105,
+                  110,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.risk_domain_id",
+                "account": "RiskDomainRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107,
+                  45,
+                  100,
+                  111,
+                  109,
+                  97,
+                  105,
+                  110,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.risk_domain_id",
+                "account": "RiskDomainRecord"
+              },
+              {
+                "kind": "account",
+                "path": "record.policy.manifest_version",
+                "account": "RiskDomainRecord"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "activate_resource_control",
       "discriminator": [
         230,
@@ -887,6 +1207,234 @@
                 "kind": "account",
                 "path": "record.manifest.identity.manifest_version",
                 "account": "ResourceRecord"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "activate_risk_domain_resume",
+      "discriminator": [
+        54,
+        226,
+        169,
+        37,
+        53,
+        77,
+        161,
+        18
+      ],
+      "accounts": [
+        {
+          "name": "actor",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107,
+                  45,
+                  100,
+                  111,
+                  109,
+                  97,
+                  105,
+                  110,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.risk_domain_id",
+                "account": "RiskDomainRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "activate_risk_domain_version",
+      "discriminator": [
+        113,
+        24,
+        230,
+        235,
+        29,
+        23,
+        149,
+        121
+      ],
+      "accounts": [
+        {
+          "name": "executor",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107,
+                  45,
+                  100,
+                  111,
+                  109,
+                  97,
+                  105,
+                  110,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.risk_domain_id",
+                "account": "RiskDomainRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "previous_record",
+          "writable": true
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107,
+                  45,
+                  100,
+                  111,
+                  109,
+                  97,
+                  105,
+                  110,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.risk_domain_id",
+                "account": "RiskDomainRecord"
+              },
+              {
+                "kind": "account",
+                "path": "record.policy.manifest_version",
+                "account": "RiskDomainRecord"
               }
             ]
           }
@@ -1302,6 +1850,194 @@
       "args": []
     },
     {
+      "name": "cancel_fee_policy_proposal",
+      "discriminator": [
+        53,
+        57,
+        60,
+        203,
+        174,
+        112,
+        216,
+        86
+      ],
+      "accounts": [
+        {
+          "name": "canceller",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "policy",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  45,
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "policy.domain_identity_hash",
+                "account": "FeePolicyRecord"
+              },
+              {
+                "kind": "account",
+                "path": "policy.direction",
+                "account": "FeePolicyRecord"
+              },
+              {
+                "kind": "account",
+                "path": "policy.quote_asset.subject_id",
+                "account": "FeePolicyRecord"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cancel_fee_policy_resume",
+      "discriminator": [
+        119,
+        159,
+        144,
+        121,
+        33,
+        92,
+        169,
+        185
+      ],
+      "accounts": [
+        {
+          "name": "canceller",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "policy",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  45,
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "policy.domain_identity_hash",
+                "account": "FeePolicyRecord"
+              },
+              {
+                "kind": "account",
+                "path": "policy.direction",
+                "account": "FeePolicyRecord"
+              },
+              {
+                "kind": "account",
+                "path": "policy.quote_asset.subject_id",
+                "account": "FeePolicyRecord"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "cancel_resource_control",
       "discriminator": [
         161,
@@ -1495,6 +2231,193 @@
                 "kind": "account",
                 "path": "record.manifest.identity.subject_id",
                 "account": "ResourceRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cancel_risk_domain_proposal",
+      "discriminator": [
+        255,
+        100,
+        196,
+        146,
+        20,
+        37,
+        222,
+        147
+      ],
+      "accounts": [
+        {
+          "name": "canceller",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107,
+                  45,
+                  100,
+                  111,
+                  109,
+                  97,
+                  105,
+                  110,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.risk_domain_id",
+                "account": "RiskDomainRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cancel_risk_domain_resume",
+      "discriminator": [
+        98,
+        141,
+        12,
+        14,
+        210,
+        185,
+        62,
+        29
+      ],
+      "accounts": [
+        {
+          "name": "actor",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107,
+                  45,
+                  100,
+                  111,
+                  109,
+                  97,
+                  105,
+                  110,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.risk_domain_id",
+                "account": "RiskDomainRecord"
               }
             ]
           }
@@ -1924,7 +2847,7 @@
         },
         {
           "name": "program",
-          "address": "GpwzEWfFySnTdRp8iTPYz9AmsbePDeeC5ThGhMV5PxPq"
+          "address": "Gt9Tqv2QYVADWVhRtJWTPvmVgwtwqfCgAYysjQUjtELg"
         },
         {
           "name": "program_data"
@@ -2057,6 +2980,192 @@
               }
             ]
           }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "pause_fee_policy",
+      "discriminator": [
+        79,
+        152,
+        10,
+        186,
+        239,
+        45,
+        86,
+        221
+      ],
+      "accounts": [
+        {
+          "name": "pauser",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "policy",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  45,
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "policy.domain_identity_hash",
+                "account": "FeePolicyRecord"
+              },
+              {
+                "kind": "account",
+                "path": "policy.direction",
+                "account": "FeePolicyRecord"
+              },
+              {
+                "kind": "account",
+                "path": "policy.quote_asset.subject_id",
+                "account": "FeePolicyRecord"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "pause_risk_domain_entry",
+      "discriminator": [
+        198,
+        27,
+        66,
+        191,
+        69,
+        18,
+        224,
+        77
+      ],
+      "accounts": [
+        {
+          "name": "actor",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107,
+                  45,
+                  100,
+                  111,
+                  109,
+                  97,
+                  105,
+                  110,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.risk_domain_id",
+                "account": "RiskDomainRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true
         }
       ],
       "args": []
@@ -2790,6 +3899,209 @@
       ]
     },
     {
+      "name": "propose_fee_policy",
+      "discriminator": [
+        234,
+        171,
+        129,
+        124,
+        30,
+        177,
+        169,
+        8
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "proposer",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "policy",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  45,
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.expected_domain_identity_hash"
+              },
+              {
+                "kind": "arg",
+                "path": "args.direction"
+              },
+              {
+                "kind": "arg",
+                "path": "args.quote_asset.subject_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ProposeFeePolicyArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "propose_fee_policy_resume",
+      "discriminator": [
+        239,
+        195,
+        9,
+        208,
+        205,
+        143,
+        134,
+        74
+      ],
+      "accounts": [
+        {
+          "name": "proposer",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "policy",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  45,
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "policy.domain_identity_hash",
+                "account": "FeePolicyRecord"
+              },
+              {
+                "kind": "account",
+                "path": "policy.direction",
+                "account": "FeePolicyRecord"
+              },
+              {
+                "kind": "account",
+                "path": "policy.quote_asset.subject_id",
+                "account": "FeePolicyRecord"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "propose_initial_cash_carry_series_binding",
       "discriminator": [
         168,
@@ -2955,6 +4267,153 @@
           "type": {
             "defined": {
               "name": "ProposeCashCarrySeriesBindingArgs"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "propose_initial_risk_domain",
+      "discriminator": [
+        237,
+        27,
+        132,
+        98,
+        105,
+        212,
+        101,
+        59
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "proposer",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107,
+                  45,
+                  100,
+                  111,
+                  109,
+                  97,
+                  105,
+                  110,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.risk_domain_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107,
+                  45,
+                  100,
+                  111,
+                  109,
+                  97,
+                  105,
+                  110,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.risk_domain_id"
+              },
+              {
+                "kind": "arg",
+                "path": "args.policy.manifest_version"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ProposeRiskDomainArgs"
             }
           }
         }
@@ -3259,6 +4718,245 @@
           "type": {
             "defined": {
               "name": "ResourceControl"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "propose_risk_domain_resume",
+      "discriminator": [
+        252,
+        252,
+        194,
+        51,
+        182,
+        167,
+        48,
+        230
+      ],
+      "accounts": [
+        {
+          "name": "actor",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107,
+                  45,
+                  100,
+                  111,
+                  109,
+                  97,
+                  105,
+                  110,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "record.risk_domain_id",
+                "account": "RiskDomainRecord"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "propose_risk_domain_version",
+      "discriminator": [
+        127,
+        242,
+        31,
+        232,
+        114,
+        251,
+        112,
+        113
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "proposer",
+          "signer": true,
+          "relations": [
+            "config"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "index",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107,
+                  45,
+                  100,
+                  111,
+                  109,
+                  97,
+                  105,
+                  110,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.risk_domain_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "record",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  105,
+                  115,
+                  107,
+                  45,
+                  100,
+                  111,
+                  109,
+                  97,
+                  105,
+                  110,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.risk_domain_id"
+              },
+              {
+                "kind": "arg",
+                "path": "args.policy.manifest_version"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ProposeRiskDomainArgs"
             }
           }
         }
@@ -3975,6 +5673,19 @@
       ]
     },
     {
+      "name": "FeePolicyRecord",
+      "discriminator": [
+        164,
+        110,
+        35,
+        205,
+        9,
+        36,
+        174,
+        231
+      ]
+    },
+    {
       "name": "ProtocolConfig",
       "discriminator": [
         207,
@@ -4011,6 +5722,32 @@
         227,
         144,
         245
+      ]
+    },
+    {
+      "name": "RiskDomainIndex",
+      "discriminator": [
+        216,
+        71,
+        105,
+        51,
+        210,
+        161,
+        194,
+        15
+      ]
+    },
+    {
+      "name": "RiskDomainRecord",
+      "discriminator": [
+        219,
+        118,
+        63,
+        209,
+        242,
+        203,
+        177,
+        210
       ]
     },
     {
@@ -4224,6 +5961,97 @@
       ]
     },
     {
+      "name": "FeePolicyActivated",
+      "discriminator": [
+        133,
+        218,
+        58,
+        9,
+        241,
+        41,
+        13,
+        12
+      ]
+    },
+    {
+      "name": "FeePolicyPaused",
+      "discriminator": [
+        70,
+        75,
+        155,
+        26,
+        148,
+        255,
+        233,
+        186
+      ]
+    },
+    {
+      "name": "FeePolicyProposalCancelled",
+      "discriminator": [
+        220,
+        37,
+        183,
+        20,
+        52,
+        213,
+        222,
+        8
+      ]
+    },
+    {
+      "name": "FeePolicyProposed",
+      "discriminator": [
+        192,
+        192,
+        2,
+        29,
+        228,
+        181,
+        228,
+        27
+      ]
+    },
+    {
+      "name": "FeePolicyResumeActivated",
+      "discriminator": [
+        245,
+        205,
+        116,
+        49,
+        72,
+        69,
+        237,
+        195
+      ]
+    },
+    {
+      "name": "FeePolicyResumeCancelled",
+      "discriminator": [
+        81,
+        191,
+        190,
+        93,
+        183,
+        173,
+        231,
+        47
+      ]
+    },
+    {
+      "name": "FeePolicyResumeProposed",
+      "discriminator": [
+        234,
+        13,
+        28,
+        185,
+        34,
+        163,
+        91,
+        196
+      ]
+    },
+    {
       "name": "ProtocolConfigInitialized",
       "discriminator": [
         243,
@@ -4325,6 +6153,97 @@
         88,
         151,
         57
+      ]
+    },
+    {
+      "name": "RiskDomainEntryPaused",
+      "discriminator": [
+        93,
+        183,
+        133,
+        228,
+        29,
+        250,
+        224,
+        124
+      ]
+    },
+    {
+      "name": "RiskDomainPolicyActivated",
+      "discriminator": [
+        166,
+        244,
+        219,
+        189,
+        20,
+        101,
+        88,
+        159
+      ]
+    },
+    {
+      "name": "RiskDomainPolicyCancelled",
+      "discriminator": [
+        57,
+        52,
+        10,
+        195,
+        203,
+        73,
+        36,
+        97
+      ]
+    },
+    {
+      "name": "RiskDomainPolicyProposed",
+      "discriminator": [
+        174,
+        163,
+        171,
+        74,
+        150,
+        69,
+        51,
+        116
+      ]
+    },
+    {
+      "name": "RiskDomainResumeActivated",
+      "discriminator": [
+        12,
+        102,
+        141,
+        61,
+        163,
+        147,
+        176,
+        100
+      ]
+    },
+    {
+      "name": "RiskDomainResumeCancelled",
+      "discriminator": [
+        42,
+        76,
+        76,
+        206,
+        147,
+        148,
+        11,
+        249
+      ]
+    },
+    {
+      "name": "RiskDomainResumeProposed",
+      "discriminator": [
+        50,
+        15,
+        56,
+        53,
+        13,
+        87,
+        31,
+        201
       ]
     },
     {
@@ -5234,6 +7153,236 @@
       "code": 6175,
       "name": "SolverSetFull",
       "msg": "Solver set or proposal queue is full"
+    },
+    {
+      "code": 6176,
+      "name": "FeePolicyVersionZero",
+      "msg": "Fee policy version is zero"
+    },
+    {
+      "code": 6177,
+      "name": "FeePolicyHashZero",
+      "msg": "Fee policy manifest hash is all zero"
+    },
+    {
+      "code": 6178,
+      "name": "FeePolicyCapTooHigh",
+      "msg": "Fee policy total cap exceeds the hard maximum"
+    },
+    {
+      "code": 6179,
+      "name": "FeePolicyRecipientInvalid",
+      "msg": "Fee policy recipient is the default Pubkey"
+    },
+    {
+      "code": 6180,
+      "name": "FeePolicyIdentityMismatch",
+      "msg": "Fee policy identity does not match its domain, direction, or quote asset"
+    },
+    {
+      "code": 6181,
+      "name": "FeePolicyProposalExists",
+      "msg": "A fee policy proposal is already pending"
+    },
+    {
+      "code": 6182,
+      "name": "FeePolicyProposalMissing",
+      "msg": "No fee policy proposal is pending"
+    },
+    {
+      "code": 6183,
+      "name": "FeePolicyProposalNotReady",
+      "msg": "Fee policy proposal is before its activation slot"
+    },
+    {
+      "code": 6184,
+      "name": "FeePolicyVersionNotIncreasing",
+      "msg": "Fee policy version is not increasing"
+    },
+    {
+      "code": 6185,
+      "name": "FeePolicyUnknown",
+      "msg": "Fee policy is unknown"
+    },
+    {
+      "code": 6186,
+      "name": "FeePolicyAlreadyPaused",
+      "msg": "Fee policy is already paused"
+    },
+    {
+      "code": 6187,
+      "name": "FeePolicyNotPaused",
+      "msg": "Fee policy is not paused"
+    },
+    {
+      "code": 6188,
+      "name": "FeePolicyResumeExists",
+      "msg": "A fee policy resume is already pending"
+    },
+    {
+      "code": 6189,
+      "name": "FeePolicyResumeMissing",
+      "msg": "No fee policy resume is pending"
+    },
+    {
+      "code": 6190,
+      "name": "FeePolicyResumeNotReady",
+      "msg": "Fee policy resume is before its activation slot"
+    },
+    {
+      "code": 6191,
+      "name": "FeePolicyNotActive",
+      "msg": "Fee policy is not active for this quote"
+    },
+    {
+      "code": 6192,
+      "name": "FeePolicyNotionalZero",
+      "msg": "Fee policy package notional is zero"
+    },
+    {
+      "code": 6193,
+      "name": "FeePolicyFeeExceeded",
+      "msg": "Fee exceeds the active policy cap"
+    },
+    {
+      "code": 6194,
+      "name": "RiskDomainSchemaUnsupported",
+      "msg": "Risk domain schema is unsupported"
+    },
+    {
+      "code": 6195,
+      "name": "RiskDomainManifestInvalid",
+      "msg": "Risk domain manifest identity is invalid"
+    },
+    {
+      "code": 6196,
+      "name": "RiskDomainDomainMismatch",
+      "msg": "Risk domain does not match the active protocol domain"
+    },
+    {
+      "code": 6197,
+      "name": "RiskDomainLimitInvalid",
+      "msg": "Risk domain economic limit is invalid"
+    },
+    {
+      "code": 6198,
+      "name": "RiskDomainLeverageInvalid",
+      "msg": "Risk domain leverage limit is invalid"
+    },
+    {
+      "code": 6199,
+      "name": "RiskDomainTimingInvalid",
+      "msg": "Risk domain timing limit is invalid"
+    },
+    {
+      "code": 6200,
+      "name": "RiskDomainHaircutInvalid",
+      "msg": "Risk domain haircut is invalid"
+    },
+    {
+      "code": 6201,
+      "name": "RiskDomainSeriesInvalid",
+      "msg": "Risk domain series set is invalid"
+    },
+    {
+      "code": 6202,
+      "name": "RiskDomainDependencyInvalid",
+      "msg": "Risk domain dependency set is invalid"
+    },
+    {
+      "code": 6203,
+      "name": "RiskDomainIdentityMismatch",
+      "msg": "Risk domain identity does not match its account"
+    },
+    {
+      "code": 6204,
+      "name": "RiskDomainProposalExists",
+      "msg": "A risk domain registration is already pending"
+    },
+    {
+      "code": 6205,
+      "name": "RiskDomainProposalMissing",
+      "msg": "No risk domain registration is pending"
+    },
+    {
+      "code": 6206,
+      "name": "RiskDomainProposalNotReady",
+      "msg": "Risk domain registration is before its activation slot"
+    },
+    {
+      "code": 6207,
+      "name": "RiskDomainVersionNotIncreasing",
+      "msg": "Risk domain manifest version is not increasing"
+    },
+    {
+      "code": 6208,
+      "name": "RiskDomainAlreadyPaused",
+      "msg": "Risk domain entry is already paused"
+    },
+    {
+      "code": 6209,
+      "name": "RiskDomainNotPaused",
+      "msg": "Risk domain entry is not paused"
+    },
+    {
+      "code": 6210,
+      "name": "RiskDomainResumeExists",
+      "msg": "A risk domain resume is already pending"
+    },
+    {
+      "code": 6211,
+      "name": "RiskDomainResumeMissing",
+      "msg": "No risk domain resume is pending"
+    },
+    {
+      "code": 6212,
+      "name": "RiskDomainResumeNotReady",
+      "msg": "Risk domain resume is before its activation slot"
+    },
+    {
+      "code": 6213,
+      "name": "RiskDomainEntryUnavailable",
+      "msg": "Risk domain does not allow entry"
+    },
+    {
+      "code": 6214,
+      "name": "RiskDomainSeriesUnsupported",
+      "msg": "Risk domain does not support the requested series"
+    },
+    {
+      "code": 6215,
+      "name": "RiskDomainExposureExceeded",
+      "msg": "Risk domain exposure exceeds its limit"
+    },
+    {
+      "code": 6216,
+      "name": "RiskDomainMarginInsufficient",
+      "msg": "Risk domain margin is insufficient"
+    },
+    {
+      "code": 6217,
+      "name": "RiskDomainRecoveryReserveInsufficient",
+      "msg": "Risk domain recovery reserve is insufficient"
+    },
+    {
+      "code": 6218,
+      "name": "RiskDomainObservationStale",
+      "msg": "Risk domain observation is stale"
+    },
+    {
+      "code": 6219,
+      "name": "RiskDomainUnwindTooSlow",
+      "msg": "Risk domain unwind duration exceeds its limit"
+    },
+    {
+      "code": 6220,
+      "name": "RiskDomainDependencyExceeded",
+      "msg": "Risk domain dependency exposure exceeds its limit"
+    },
+    {
+      "code": 6221,
+      "name": "RiskDomainArithmeticOverflow",
+      "msg": "Risk domain arithmetic overflowed"
     }
   ],
   "types": [
@@ -5397,6 +7546,36 @@
           {
             "name": "entry_receipt",
             "type": "pubkey"
+          },
+          {
+            "name": "risk_domain_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "risk_policy_version",
+            "type": "u32"
+          },
+          {
+            "name": "risk_policy_manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "risk_series",
+            "type": {
+              "defined": {
+                "name": "RiskDomainSeriesRef"
+              }
+            }
           }
         ]
       }
@@ -6411,6 +8590,324 @@
           },
           {
             "name": "Perp"
+          },
+          {
+            "name": "Inventory"
+          },
+          {
+            "name": "Future"
+          },
+          {
+            "name": "Option"
+          },
+          {
+            "name": "Lending"
+          },
+          {
+            "name": "Collateral"
+          },
+          {
+            "name": "Margin"
+          },
+          {
+            "name": "Account"
+          },
+          {
+            "name": "Escrow"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FeePolicyActivated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "policy",
+            "type": "pubkey"
+          },
+          {
+            "name": "version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "maximum_protocol_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "maximum_solver_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "protocol_fee_recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "paused",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FeePolicyDirection",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Entry"
+          },
+          {
+            "name": "Exit"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FeePolicyPaused",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "policy",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FeePolicyProposalCancelled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "policy",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FeePolicyProposed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "policy",
+            "type": "pubkey"
+          },
+          {
+            "name": "direction",
+            "type": {
+              "defined": {
+                "name": "FeePolicyDirection"
+              }
+            }
+          },
+          {
+            "name": "quote_asset",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "maximum_protocol_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "maximum_solver_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "protocol_fee_recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FeePolicyRecord",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "domain",
+            "type": {
+              "defined": {
+                "name": "DomainRef"
+              }
+            }
+          },
+          {
+            "name": "domain_identity_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "direction",
+            "type": {
+              "defined": {
+                "name": "FeePolicyDirection"
+              }
+            }
+          },
+          {
+            "name": "quote_asset",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "active_version",
+            "type": "u32"
+          },
+          {
+            "name": "active_manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "maximum_protocol_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "maximum_solver_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "protocol_fee_recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "paused",
+            "type": "bool"
+          },
+          {
+            "name": "pending",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "PendingFeePolicy"
+                }
+              }
+            }
+          },
+          {
+            "name": "pending_resume_slot",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FeePolicyResumeActivated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "policy",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FeePolicyResumeCancelled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "policy",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FeePolicyResumeProposed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "policy",
+            "type": "pubkey"
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
           }
         ]
       }
@@ -6624,6 +9121,43 @@
                 "name": "DomainRef"
               }
             }
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PendingFeePolicy",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "maximum_protocol_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "maximum_solver_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "protocol_fee_recipient",
+            "type": "pubkey"
           },
           {
             "name": "activation_slot",
@@ -6855,6 +9389,64 @@
       }
     },
     {
+      "name": "ProposeFeePolicyArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "expected_domain_identity_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "direction",
+            "type": {
+              "defined": {
+                "name": "FeePolicyDirection"
+              }
+            }
+          },
+          {
+            "name": "quote_asset",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "maximum_protocol_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "maximum_solver_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "protocol_fee_recipient",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
       "name": "ProposeMarketArgs",
       "type": {
         "kind": "struct",
@@ -6912,6 +9504,31 @@
             "type": {
               "defined": {
                 "name": "ResourceControl"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProposeRiskDomainArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "risk_domain_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "policy",
+            "type": {
+              "defined": {
+                "name": "RiskDomainPolicyV1"
               }
             }
           }
@@ -7680,6 +10297,474 @@
           {
             "name": "activation_slot",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RiskDomainDependencyLimit",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "dependency_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "maximum_gross_quote_atoms",
+            "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RiskDomainEntryPaused",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "risk_domain_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "RiskDomainIndex",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "risk_domain_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "latest_version",
+            "type": "u32"
+          },
+          {
+            "name": "active_record",
+            "type": "pubkey"
+          },
+          {
+            "name": "pending_record",
+            "type": "pubkey"
+          },
+          {
+            "name": "activation_slot",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "entry_paused",
+            "type": "bool"
+          },
+          {
+            "name": "pending_resume_slot",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RiskDomainPolicyActivated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "previous_record",
+            "type": "pubkey"
+          },
+          {
+            "name": "risk_domain_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "manifest_version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "lifecycle",
+            "type": {
+              "defined": {
+                "name": "Lifecycle"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "RiskDomainPolicyCancelled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "risk_domain_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "manifest_version",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RiskDomainPolicyProposed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "risk_domain_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "manifest_version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RiskDomainPolicyV1",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "schema_version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "domain_ref_identity_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "accounting_asset",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "gross_cap_quote_atoms",
+            "type": "u128"
+          },
+          {
+            "name": "net_cap_quote_atoms",
+            "type": "u128"
+          },
+          {
+            "name": "minimum_margin_floor_quote_atoms",
+            "type": "u128"
+          },
+          {
+            "name": "maximum_leverage_bps",
+            "type": "u64"
+          },
+          {
+            "name": "maximum_staleness_ms",
+            "type": "u64"
+          },
+          {
+            "name": "maximum_time_to_unwind_ms",
+            "type": "u64"
+          },
+          {
+            "name": "required_recovery_reserve_quote_atoms",
+            "type": "u128"
+          },
+          {
+            "name": "aggregate_haircut_bps",
+            "type": "u16"
+          },
+          {
+            "name": "eligible_series",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "RiskDomainSeriesRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "dependency_limits",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "RiskDomainDependencyLimit"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "RiskDomainRecord",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "domain",
+            "type": {
+              "defined": {
+                "name": "DomainRef"
+              }
+            }
+          },
+          {
+            "name": "risk_domain_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "policy",
+            "type": {
+              "defined": {
+                "name": "RiskDomainPolicyV1"
+              }
+            }
+          },
+          {
+            "name": "lifecycle",
+            "type": {
+              "defined": {
+                "name": "Lifecycle"
+              }
+            }
+          },
+          {
+            "name": "active",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RiskDomainResumeActivated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "risk_domain_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "RiskDomainResumeCancelled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "risk_domain_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "RiskDomainResumeProposed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actor",
+            "type": "pubkey"
+          },
+          {
+            "name": "record",
+            "type": "pubkey"
+          },
+          {
+            "name": "risk_domain_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RiskDomainSeriesRef",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "series_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "manifest_version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           }
         ]
       }
