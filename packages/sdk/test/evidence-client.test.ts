@@ -23,6 +23,7 @@ import {
   builderManifestHash,
   collateralSnapshotHash,
   strategyCommandHash,
+  strategyHealthSnapshotHash,
   strategyState,
   strategyStateHash,
   strategyPackageOrder,
@@ -58,6 +59,7 @@ import {
   type EvidenceManifestInput,
   type MarketCatalogueInput,
   type StrategyCommandInput,
+  type StrategyHealthSnapshotInput,
   type StrategyState,
   type PackageOrderInput,
   type PackageGraphInput,
@@ -676,6 +678,11 @@ describe('order intake and terminal evidence', () => {
       client({ [route]: { body: body({ ...signed, ownAvailableQuoteAtoms: 2_000_000n }) } }).getCollateral('strategy-1'),
       /does not match its record hash/,
     );
+    const published = await client({
+      'POST /v1/collateral-snapshots': { body: { recordHashHex: snapshotHash, replayed: false } },
+    }).publishCollateralSnapshot(signed);
+    assert.equal(published.recordHash, snapshotHash);
+    assert.equal(published.replayed, false);
   });
 
   test('positions are re-hashed and signature-checked against trusted keys, and risk is recomputed locally', async () => {
@@ -744,6 +751,10 @@ describe('order intake and terminal evidence', () => {
     const reader = (positions: unknown, risk: unknown = riskBody()) => client({ 'GET /v1/positions/strategy-1': { body: positions }, 'GET /v1/risk/strategy-1': { body: risk } });
     const verified = await reader(positionsBody()).getPositions('strategy-1', { trustedAuthorities: trust });
     assert.equal(verified.sources[0]?.signatureVerified, true);
+    const published = await client({
+      'POST /v1/position-snapshots': { body: { recordHashHex: toHex(positionSnapshotRecordHash(signed)), replayed: false } },
+    }).publishPositionSnapshot(signed);
+    assert.equal(published.recordHash, toHex(positionSnapshotRecordHash(signed)));
     assert.equal((await reader(positionsBody()).getPositions('strategy-1')).sources[0]?.signatureVerified, false);
     await assert.rejects(reader(positionsBody()).getPositions('strategy-1', { trustedAuthorities: new Map([['position-key-1', new Uint8Array(32).fill(9)]]) }), /does not verify/);
     // A position altered after signing no longer matches its served hash.
@@ -779,6 +790,57 @@ describe('order intake and terminal evidence', () => {
     const inflated = { ...buildExposureGraph(normalized.positions, usdc), byUnderlying: [] };
     await assert.rejects(reader(positionsBody(), riskBody(inflated)).getRisk('strategy-1'), /differs from the local computation/);
     await assert.rejects(reader(positionsBody(), riskBody(undefined, [{ ...stress[0], lossQuoteAtoms: 0n }, stress[1]])).getRisk('strategy-1'), /stress differs from the local computation/);
+  });
+
+  test('health publication signs the canonical snapshot and current health stays bound to strategy state', async () => {
+    const { privateKey } = generateKeyPairSync('ed25519');
+    const snapshot: StrategyHealthSnapshotInput = {
+      snapshotVersion: 1,
+      environment: 'testnet',
+      strategyId: 'strategy-1',
+      strategyStateHash: '51'.repeat(32),
+      observedAtUnit: 'EVM_UNIX_SECONDS',
+      observedAtValue: 1_000n,
+      deltaBaseAtoms: -40n,
+      grossNotionalQuoteAtoms: 30_000_000_000n,
+      leverageBps: 30_000n,
+      marginHealthBps: 2_500n,
+      liquidationDistanceBps: 1_800n,
+      basisTicks: 60n,
+      fundingPpm: 120n,
+      volatilityPpm: 450_000n,
+      residualBaseAtoms: 0n,
+      maximumLossBoundQuoteAtoms: 900n,
+      dependencyState: 'HEALTHY',
+      recoveryCapacityQuoteAtoms: 5_000n,
+      evidenceHash: '52'.repeat(32),
+    };
+    const snapshotHash = toHex(strategyHealthSnapshotHash(snapshot));
+    const signed: Uint8Array[] = [];
+    const routes = {
+      'POST /v1/health-snapshots': { body: { snapshotHash, replayed: false } },
+      'GET /v1/strategies/strategy-1/health': {
+        body: { snapshot, stateHash: '51'.repeat(32), manualTakeover: false },
+      },
+    };
+    const api = client(routes);
+    const published = await api.publishStrategyHealth(snapshot, 'health-authority-1', async (digest) => {
+      signed.push(digest);
+      return new Uint8Array(sign(null, digest, privateKey));
+    });
+    assert.equal(published.snapshotHash, snapshotHash);
+    assert.deepEqual(signed, [strategyHealthSnapshotHash(snapshot)]);
+    const health = await api.getStrategyHealth('strategy-1');
+    assert.equal(health.snapshotHash, snapshotHash);
+    assert.equal(health.evidence, 'SERVER_ASSERTED');
+    await assert.rejects(
+      client({
+        'GET /v1/strategies/strategy-1/health': {
+          body: { snapshot, stateHash: '53'.repeat(32), manualTakeover: false },
+        },
+      }).getStrategyHealth('strategy-1'),
+      /does not describe the requested current state/,
+    );
   });
 
   test('portfolio optimization is replayed over current signed position and collateral snapshots', async () => {

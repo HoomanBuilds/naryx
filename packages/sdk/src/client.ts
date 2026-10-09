@@ -75,6 +75,8 @@ import {
   strategyPackageQuoteHash,
   strategyPackageReceipt,
   strategyPackageReceiptHash,
+  strategyHealthSnapshot,
+  strategyHealthSnapshotHash,
   strategyTemplateDefinitions,
   typedStrategyRouteHash,
   type StrategyCommandInput,
@@ -194,6 +196,8 @@ import {
   type StrategyPackageQuoteInput,
   type StrategyPackageReceipt,
   type StrategyPackageReceiptInput,
+  type StrategyHealthSnapshot,
+  type StrategyHealthSnapshotInput,
   type StrategyTemplateDefinition,
   type TypedAdapterActionSupportInput,
   type TypedStrategyRoute,
@@ -667,6 +671,34 @@ export interface VerifiedPositions {
   readonly label: 'OBSERVED';
   readonly sources: readonly VerifiedPositionSource[];
   readonly positions: readonly NormalizedPosition[];
+}
+
+export interface PublishedPositionSnapshot {
+  readonly record: PositionSnapshotRecord;
+  readonly recordHash: string;
+  readonly replayed: boolean;
+}
+
+export interface PublishedCollateralSnapshot {
+  readonly record: CollateralSnapshot;
+  readonly recordHash: string;
+  readonly replayed: boolean;
+}
+
+export interface PublishedStrategyHealth {
+  readonly snapshot: StrategyHealthSnapshot;
+  readonly snapshotHash: string;
+  readonly authority: string;
+  readonly replayed: boolean;
+}
+
+export interface StrategyHealthView {
+  readonly snapshot: StrategyHealthSnapshot;
+  readonly snapshotHash: string;
+  readonly stateHash: string;
+  readonly manualTakeover: boolean;
+  /** The public read omits the authority signature, so authenticity is asserted by the API. */
+  readonly evidence: 'SERVER_ASSERTED';
 }
 
 export interface VerifiedRiskGroup {
@@ -3397,6 +3429,85 @@ export class NaryxClient {
     if (signatureVerified) this.#catalogueSequences.set(key, catalogue.sequence);
     const current = marketCatalogueCurrent(catalogue, options.nowMs ?? BigInt(Date.now()));
     return Object.freeze({ catalogue, catalogueHash: hash, signatureVerified, current, search: (query: MarketCatalogueQuery) => searchMarketCatalogue(catalogue, query) });
+  }
+
+  /** Publishes one already signed position observation and verifies the stored identity. */
+  async publishPositionSnapshot(input: PositionSnapshotRecordInput): Promise<PublishedPositionSnapshot> {
+    let snapshot: PositionSnapshotRecord;
+    let snapshotHash: string;
+    try {
+      snapshot = positionSnapshotRecord(input);
+      snapshotHash = toHex(positionSnapshotRecordHash(snapshot));
+    } catch (error) {
+      throw new TypeError(`position snapshot is malformed: ${(error as Error).message}`);
+    }
+    const body = record(await this.#request('POST', '/v1/position-snapshots', { record: snapshot }), 'position snapshot publication');
+    if (hashHex(body.recordHashHex, 'position snapshot publication.recordHashHex') !== snapshotHash || typeof body.replayed !== 'boolean') {
+      throw new NaryxEvidenceError('position snapshot publication acknowledged another record');
+    }
+    return Object.freeze({ record: snapshot, recordHash: snapshotHash, replayed: body.replayed });
+  }
+
+  /** Publishes one already signed collateral observation and verifies the stored identity. */
+  async publishCollateralSnapshot(input: CollateralSnapshotInput): Promise<PublishedCollateralSnapshot> {
+    let snapshot: CollateralSnapshot;
+    let snapshotHash: string;
+    try {
+      snapshot = collateralSnapshot(input);
+      snapshotHash = toHex(collateralSnapshotHash(snapshot));
+    } catch (error) {
+      throw new TypeError(`collateral snapshot is malformed: ${(error as Error).message}`);
+    }
+    const body = record(await this.#request('POST', '/v1/collateral-snapshots', { record: snapshot }), 'collateral snapshot publication');
+    if (hashHex(body.recordHashHex, 'collateral snapshot publication.recordHashHex') !== snapshotHash || typeof body.replayed !== 'boolean') {
+      throw new NaryxEvidenceError('collateral snapshot publication acknowledged another record');
+    }
+    return Object.freeze({ record: snapshot, recordHash: snapshotHash, replayed: body.replayed });
+  }
+
+  /** Signs and publishes one strategy health observation without exposing the authority key. */
+  async publishStrategyHealth(
+    snapshotInput: StrategyHealthSnapshotInput,
+    authority: string,
+    sign: StrategyCommandSigner,
+  ): Promise<PublishedStrategyHealth> {
+    const authorityId = checkId(authority, 'health authority');
+    if (typeof sign !== 'function') throw new TypeError('a health signer is required');
+    let snapshot: StrategyHealthSnapshot;
+    let digest: Uint8Array;
+    try {
+      snapshot = strategyHealthSnapshot(snapshotInput);
+      digest = strategyHealthSnapshotHash(snapshot);
+    } catch (error) {
+      throw new TypeError(`strategy health snapshot is malformed: ${(error as Error).message}`);
+    }
+    const signature = await sign(digest);
+    if (!(signature instanceof Uint8Array) || signature.length !== 64) throw new TypeError('the signer must return a 64-byte signature');
+    const snapshotHash = toHex(digest);
+    const body = record(await this.#request('POST', '/v1/health-snapshots', { snapshot, authority: authorityId, signature }), 'strategy health publication');
+    if (hashHex(body.snapshotHash, 'strategy health publication.snapshotHash') !== snapshotHash || typeof body.replayed !== 'boolean') {
+      throw new NaryxEvidenceError('strategy health publication acknowledged another snapshot');
+    }
+    return Object.freeze({ snapshot, snapshotHash, authority: authorityId, replayed: body.replayed });
+  }
+
+  /** Reads current strategy health without claiming signature evidence the public route omits. */
+  async getStrategyHealth(strategyId: string): Promise<StrategyHealthView> {
+    const id = checkId(strategyId, 'strategy id');
+    const body = record(await this.#request('GET', `/v1/strategies/${id}/health`), 'strategy health');
+    let snapshot: StrategyHealthSnapshot;
+    let snapshotHash: string;
+    try {
+      snapshot = strategyHealthSnapshot(body.snapshot as StrategyHealthSnapshotInput);
+      snapshotHash = toHex(strategyHealthSnapshotHash(snapshot));
+    } catch (error) {
+      throw new NaryxEvidenceError(`strategy health snapshot is malformed: ${(error as Error).message}`);
+    }
+    const stateHash = hashHex(body.stateHash, 'strategy health.stateHash');
+    if (snapshot.strategyId !== id || toHex(snapshot.strategyStateHash) !== stateHash || typeof body.manualTakeover !== 'boolean') {
+      throw new NaryxEvidenceError('strategy health does not describe the requested current state');
+    }
+    return Object.freeze({ snapshot, snapshotHash, stateHash, manualTakeover: body.manualTakeover, evidence: 'SERVER_ASSERTED' as const });
   }
 
   /**
