@@ -11,6 +11,12 @@ import type {
   HyperliquidJournalStatus,
   HyperliquidSubmissionAccount,
 } from './index.js';
+import {
+  allocateHyperliquidTrustedNonce,
+  persistHyperliquidTrustedTimeDecision,
+  requireHyperliquidTrustedTimeDecision,
+} from './hyperliquid-trusted-time-store.js';
+import type { HyperliquidTrustedTimeDecision } from './hyperliquid-trusted-time.js';
 
 const SCHEMA_VERSION = 1;
 const ACTION_COMMITMENT_SCHEME = 'NARYX_CANONICAL_HYPERCORE_ACTION_SHA256_V1' as const;
@@ -151,7 +157,9 @@ export interface HyperliquidStrategyDurableSubmissionJournalPort {
     agentWallet: `0x${string}`;
     signerLeaseId: string;
     nowMs: bigint;
+    timeDecisionHash: `0x${string}`;
   }>): Readonly<{ expectedVersion: bigint; nonce: bigint }>;
+  recordTrustedTimeDecision(scope: string, decision: HyperliquidTrustedTimeDecision): void;
   prepare(input: HyperliquidStrategyJournalPrepareInput): Promise<HyperliquidStrategyJournalReceipt>;
   confirmDurable(input: Readonly<{
     expectedVersion: bigint;
@@ -558,6 +566,7 @@ implements HyperliquidStrategyDurableSubmissionJournalPort {
     agentWallet: `0x${string}`;
     signerLeaseId: string;
     nowMs: bigint;
+    timeDecisionHash: `0x${string}`;
   }>): Readonly<{ expectedVersion: bigint; nonce: bigint }> {
     this.#requireOpen();
     const account = normalizedAccount(input.account);
@@ -570,9 +579,19 @@ implements HyperliquidStrategyDurableSubmissionJournalPort {
         AND agent_wallet = ? AND signer_lease_id = ?
     `).get(account.masterAccount, account.tradingAccount, account.accountKind, agentWallet, signerLeaseId);
     const previous = row === undefined ? 0n : decodedBigint(row.highest_nonce_decimal, 'stored nonce high-water');
-    const nonce = nowMs > previous ? nowMs : previous + 1n;
-    requireCondition(nonce <= MAX_SAFE_INTEGER, 'allocated nonce must fit a safe integer');
+    const maximumFutureLead = requireHyperliquidTrustedTimeDecision(
+      this.#database, input.timeDecisionHash, nowMs,
+    );
+    const nonce = allocateHyperliquidTrustedNonce(nowMs, previous, maximumFutureLead);
     return Object.freeze({ expectedVersion: this.#metadata().journalRevision, nonce });
+  }
+
+  recordTrustedTimeDecision(scope: string, decision: HyperliquidTrustedTimeDecision): void {
+    this.#requireOpen();
+    const transaction = this.#database.transaction(() => {
+      persistHyperliquidTrustedTimeDecision(this.#database, scope, decision);
+    });
+    transaction.immediate();
   }
 
   async prepare(input: HyperliquidStrategyJournalPrepareInput): Promise<HyperliquidStrategyJournalReceipt> {

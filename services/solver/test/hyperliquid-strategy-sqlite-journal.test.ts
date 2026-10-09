@@ -12,6 +12,7 @@ import {
   HyperliquidStrategySqliteDurableJournal,
   type HyperliquidStrategyJournalPrepareInput,
 } from '../src/index.js';
+import { trustedTimeDecision } from './hyperliquid-trusted-time-fixture.js';
 
 const masterAccount = `0x${'11'.repeat(20)}` as const;
 const tradingAccount = `0x${'22'.repeat(20)}` as const;
@@ -140,11 +141,16 @@ test('shares the signer nonce fence and rejects changed or ambiguous package bin
   const path = databasePath(t);
   const journal = new HyperliquidStrategySqliteDurableJournal({ databasePath: path });
   const prepared = await journal.prepare(input());
+  const timeDecision = trustedTimeDecision(
+    Number(nowMs), 10_000, 'strategy-attempt-1:stage-0',
+  );
+  journal.recordTrustedTimeDecision('strategy-attempt-1:stage-0', timeDecision);
   assert.deepEqual(journal.submissionContext({
     account: { masterAccount, tradingAccount, accountKind: 'SUBACCOUNT' },
     agentWallet,
     signerLeaseId: 'solver-process-1',
     nowMs,
+    timeDecisionHash: timeDecision.decisionHash,
   }), { expectedVersion: 1n, nonce: nowMs + 2n });
   const replay = await journal.prepare(input());
   assert.equal(replay.record.recordHash, prepared.record.recordHash);

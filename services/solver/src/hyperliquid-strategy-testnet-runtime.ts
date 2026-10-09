@@ -13,6 +13,10 @@ import type {
   HyperliquidStrategyTestnetSubmissionService,
   HyperliquidSubmissionAccount,
 } from './index.js';
+import type {
+  HyperliquidTrustedTimeDecision,
+  HyperliquidTrustedTimePort,
+} from './hyperliquid-trusted-time.js';
 
 const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -22,7 +26,9 @@ export interface HyperliquidStrategyRuntimeJournalPort {
     agentWallet: `0x${string}`;
     signerLeaseId: string;
     nowMs: bigint;
+    timeDecisionHash: `0x${string}`;
   }>): Readonly<{ expectedVersion: bigint; nonce: bigint }>;
+  recordTrustedTimeDecision(scope: string, decision: HyperliquidTrustedTimeDecision): void;
 }
 
 export interface HyperliquidStrategyRuntimeSubmissionPort {
@@ -61,6 +67,7 @@ export interface HyperliquidStrategyTestnetRuntimeOptions {
   readonly maxSnapshotSkewMs: number;
   readonly maxFillPages: number;
   readonly evidenceBinding: HyperliquidStrategyEvidenceBinding;
+  readonly trustedTime: HyperliquidTrustedTimePort;
   readonly evidenceReadBudgetMs?: number;
   readonly currentTimeMs?: () => number;
 }
@@ -107,12 +114,15 @@ export class HyperliquidStrategyTestnetRuntime {
     evidence: HyperliquidStrategyRuntimeEvidencePort,
     options: HyperliquidStrategyTestnetRuntimeOptions,
   ) {
-    requireCondition(typeof journal?.submissionContext === 'function',
+    requireCondition(typeof journal?.submissionContext === 'function'
+      && typeof journal.recordTrustedTimeDecision === 'function',
       'strategy runtime requires a durable nonce journal');
     requireCondition(typeof submission?.submitBatch === 'function',
       'strategy runtime requires a submission port');
     requireCondition(typeof evidence?.collect === 'function',
       'strategy runtime requires an evidence port');
+    requireCondition(typeof options.trustedTime?.decide === 'function',
+      'strategy runtime requires trusted time');
     requireCondition(options.account.accountKind === 'MASTER' || options.account.accountKind === 'SUBACCOUNT',
       'strategy runtime account kind is invalid');
     requireCondition(/^0x[0-9a-f]{40}$/.test(options.agentWallet)
@@ -149,14 +159,21 @@ export class HyperliquidStrategyTestnetRuntime {
     const results: HyperliquidStrategyStageRuntimeResult[] = [];
     const completedStages: number[] = [];
     for (const batch of stages) {
-      const startedAtMs = clockValue(this.#options.currentTimeMs);
+      const decisionScope = `${attemptId}:stage-${batch.stage}`;
+      const timeDecision = await this.#options.trustedTime.decide(decisionScope);
+      const startedAtMs = timeDecision.selectedTimeMs;
       requireCondition(plan.requestExpiryMs > BigInt(startedAtMs)
         && plan.requestExpiryMs <= MAX_SAFE_INTEGER, 'strategy plan is expired');
+      this.#journal.recordTrustedTimeDecision(
+        decisionScope,
+        timeDecision,
+      );
       const context = this.#journal.submissionContext({
         account: this.#options.account,
         agentWallet: this.#options.agentWallet,
         signerLeaseId: this.#options.signerLeaseId,
         nowMs: BigInt(startedAtMs),
+        timeDecisionHash: timeDecision.decisionHash,
       });
       const submission = await this.#submission.submitBatch({
         expectedVersion: context.expectedVersion,

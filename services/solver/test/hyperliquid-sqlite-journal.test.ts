@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
+import Database from 'better-sqlite3';
 import {
   HYPERCORE_EXECUTION_GUARANTEE,
   type HypercoreOrderWire,
@@ -12,6 +13,7 @@ import {
   HyperliquidSqliteDurableJournal,
   type HyperliquidJournalPrepareInput,
 } from '../src/index.js';
+import { trustedTimeDecision } from './hyperliquid-trusted-time-fixture.js';
 
 const masterAccount = `0x${'11'.repeat(20)}` as const;
 const tradingAccount = `0x${'22'.repeat(20)}` as const;
@@ -134,11 +136,14 @@ test('persists the complete journal lifecycle across reopen', async (t) => {
 test('rejects changed replay, stale CAS, signer lease changes, and nonce reuse', async (t) => {
   const path = databasePath(t);
   let journal = new HyperliquidSqliteDurableJournal({ databasePath: path });
+  const timeDecision = trustedTimeDecision(Number(nowMs), 10_000, 'attempt-1');
+  journal.recordTrustedTimeDecision('attempt-1', timeDecision);
   assert.deepEqual(journal.submissionContext({
     account: { masterAccount, tradingAccount, accountKind: 'SUBACCOUNT' },
     agentWallet,
     signerLeaseId: 'solver-process-1',
     nowMs,
+    timeDecisionHash: timeDecision.decisionHash,
   }), { expectedVersion: 0n, nonce: nowMs });
   const prepared = await journal.prepare(input());
   assert.deepEqual(journal.submissionContext({
@@ -146,6 +151,7 @@ test('rejects changed replay, stale CAS, signer lease changes, and nonce reuse',
     agentWallet,
     signerLeaseId: 'solver-process-1',
     nowMs,
+    timeDecisionHash: timeDecision.decisionHash,
   }), { expectedVersion: 1n, nonce: nonce + 1n });
   const replay = await journal.prepare(input());
   assert.equal(replay.record.recordHash, prepared.record.recordHash);
@@ -214,5 +220,48 @@ test('lists restart-recoverable prepared and response-unknown attempts', async (
     attemptId: 'attempt-unknown',
   });
   assert.equal(reconciling.record.status, 'RECONCILING');
+  journal.close();
+});
+
+test('migrates a version-one journal and fences an unrecoverable future nonce', async (t) => {
+  const path = databasePath(t);
+  let journal = new HyperliquidSqliteDurableJournal({ databasePath: path });
+  journal.close();
+
+  let database = new Database(path);
+  database.exec('DROP TABLE hyperliquid_trusted_time_decisions');
+  database.prepare(`
+    UPDATE hyperliquid_journal_metadata SET schema_version = 1 WHERE singleton = 1
+  `).run();
+  database.pragma('user_version = 1');
+  database.close();
+
+  journal = new HyperliquidSqliteDurableJournal({ databasePath: path });
+  const decision = trustedTimeDecision(Number(nowMs), 10_000, 'migration-attempt');
+  journal.recordTrustedTimeDecision('migration-attempt', decision);
+  assert.deepEqual(journal.submissionContext({
+    account: { masterAccount, tradingAccount, accountKind: 'SUBACCOUNT' },
+    agentWallet,
+    signerLeaseId: 'solver-process-1',
+    nowMs,
+    timeDecisionHash: decision.decisionHash,
+  }), { expectedVersion: 0n, nonce: nowMs });
+  await journal.prepare(input());
+  journal.close();
+
+  database = new Database(path);
+  database.prepare(`
+    UPDATE hyperliquid_nonce_fences SET highest_nonce_decimal = ?
+  `).run((nowMs + 20_000n).toString());
+  database.close();
+
+  journal = new HyperliquidSqliteDurableJournal({ databasePath: path });
+  assert.throws(() => journal.submissionContext({
+    account: { masterAccount, tradingAccount, accountKind: 'SUBACCOUNT' },
+    agentWallet,
+    signerLeaseId: 'solver-process-1',
+    nowMs,
+    timeDecisionHash: decision.decisionHash,
+  }), /fresh agent replacement is required/);
   journal.close();
 });

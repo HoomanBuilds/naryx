@@ -280,7 +280,7 @@ export type HyperliquidTestnetExecutorRuntime = Readonly<{
   prepareAttempt(
     attempt: HyperliquidTestnetAttemptHandoff,
     inventory?: HyperliquidTestnetAccountInventory,
-  ): HyperliquidTestnetRuntimeCoordinatorInput;
+  ): Promise<HyperliquidTestnetRuntimeCoordinatorInput>;
   coordinator: HyperliquidTestnetRuntimeCoordinator<unknown, unknown>;
   executeStrategy?(attempt: HyperliquidTestnetAttemptHandoff): Promise<HyperliquidStrategyRuntimeResult>;
   /** The durable lane; absent, the executor serializes in memory for this process only. */
@@ -1064,7 +1064,7 @@ export function createHyperliquidTestnetExecutor(
             enterSubmission();
             return sanitizeStrategyResult(request, await runtime.executeStrategy(handoff));
           }
-          const input = runtime.prepareAttempt(handoff, inventory ?? undefined);
+          const input = await runtime.prepareAttempt(handoff, inventory ?? undefined);
           enterSubmission();
           return sanitizeResult(request, await runtime.coordinator.execute(input));
         });

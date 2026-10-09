@@ -182,7 +182,7 @@ async function start(
   const server = createHyperliquidTestnetExecutorServer(() => ({
     attempts: { resolve: () => handoff },
     preflight: async () => {},
-    prepareAttempt: () => resolved as HyperliquidTestnetRuntimeCoordinatorInput,
+    prepareAttempt: async () => resolved as HyperliquidTestnetRuntimeCoordinatorInput,
     coordinator,
   }));
   await new Promise<void>((resolve, reject) => {
@@ -331,7 +331,7 @@ test('executor exposes generalized strategy stages without using the cash coordi
   const server = createHyperliquidTestnetExecutorServer(() => ({
     attempts: { resolve: () => handoff },
     preflight: async () => {},
-    prepareAttempt: () => { throw new Error('cash preparation must not run'); },
+    prepareAttempt: async () => { throw new Error('cash preparation must not run'); },
     coordinator: {
       execute: async () => {
         cashCalls += 1;

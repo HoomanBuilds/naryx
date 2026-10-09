@@ -34,6 +34,13 @@ import {
   HyperliquidNettingResidualTestnetHttpEvidence,
   type HyperliquidNettingResidualEvidenceBinding,
 } from './hyperliquid-testnet-evidence-http.js';
+import { HyperliquidSdkTestnetMarketReadClient } from './hyperliquid-testnet-market-preflight.js';
+import {
+  createHyperliquidTrustedTimeSources,
+  HyperliquidTrustedClock,
+  hyperliquidTrustedTimePolicyFromEnvironment,
+  type HyperliquidTrustedTimePort,
+} from './hyperliquid-trusted-time.js';
 
 export const HYPERLIQUID_NETTING_RESIDUAL_ENABLED_ENV =
   'NARYX_HYPERLIQUID_TESTNET_NETTING_RESIDUAL_ENABLED';
@@ -53,6 +60,7 @@ export interface HyperliquidNettingResidualRuntimeDependencies {
   readonly transportFactory?: () => HyperliquidTestnetExchangeTransport;
   readonly fetchImplementation?: typeof fetch;
   readonly clock?: () => number;
+  readonly trustedTime?: HyperliquidTrustedTimePort;
 }
 
 function object(value: unknown, context: string): Record<string, unknown> {
@@ -287,6 +295,11 @@ export async function loadHyperliquidNettingResidualTestnetRuntime(
     databasePath: required(environment, 'NARYX_HYPERLIQUID_TESTNET_JOURNAL_DB'),
   });
   try {
+    const clock = dependencies.clock ?? Date.now;
+    const trustedTime = dependencies.trustedTime ?? new HyperliquidTrustedClock(
+      hyperliquidTrustedTimePolicyFromEnvironment(environment),
+      createHyperliquidTrustedTimeSources(new HyperliquidSdkTestnetMarketReadClient(), clock),
+    );
     const transport = (dependencies.transportFactory
       ?? (() => new HyperliquidTestnetHttpExchangeTransport()))();
     if (transport.isTestnet !== true || transport.apiUrl !== HYPERLIQUID_TESTNET_EXCHANGE_URL) {
@@ -333,6 +346,7 @@ export async function loadHyperliquidNettingResidualTestnetRuntime(
           16,
           64,
         ),
+        trustedTime,
         ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
       },
     );

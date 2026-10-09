@@ -15,6 +15,7 @@ import {
   type HyperliquidTestnetAttemptHandoff,
   type HyperliquidTestnetTrustedAttemptProvider,
 } from '../src/index.js';
+import { trustedTimePort } from './hyperliquid-trusted-time-fixture.js';
 
 const agentWallet = `0x${'11'.repeat(20)}` as const;
 const masterAccount = `0x${'22'.repeat(20)}` as const;
@@ -133,6 +134,7 @@ test('composes the pinned transport, durable journal, evidence client, and bound
     attempts: attempts(),
     signer: signer(),
     marketReader: marketReader(),
+    trustedTime: trustedTimePort(1_000_000),
     transportFactory: () => {
       transportCalls += 1;
       return transport();
@@ -197,6 +199,7 @@ test('does not accept account identity from the API attempt handoff', async () =
     attempts: attempts(agentWallet, `0x${'55'.repeat(20)}`),
     signer: signer(),
     marketReader: marketReader(),
+    trustedTime: trustedTimePort(1_000_000),
     transportFactory: transport,
   });
   try {

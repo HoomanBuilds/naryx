@@ -793,6 +793,18 @@ export {
   type HyperliquidSqliteJournalOptions,
 } from './hyperliquid-sqlite-journal.js';
 export {
+  createHyperliquidTrustedTimeSources,
+  HyperliquidTrustedClock,
+  hyperliquidTrustedTimeDecisionHash,
+  hyperliquidTrustedTimeDecisionJson,
+  hyperliquidTrustedTimePolicyFromEnvironment,
+  type HyperliquidTrustedTimeDecision,
+  type HyperliquidTrustedTimePolicy,
+  type HyperliquidTrustedTimePort,
+  type HyperliquidTrustedTimeSample,
+  type HyperliquidTrustedTimeSources,
+} from './hyperliquid-trusted-time.js';
+export {
   HyperliquidStrategySqliteDurableJournal,
   type HyperliquidStrategyDurableSubmissionJournalPort,
   type HyperliquidStrategyJournalCommitments,

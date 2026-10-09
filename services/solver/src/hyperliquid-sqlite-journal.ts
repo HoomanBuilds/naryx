@@ -16,8 +16,15 @@ import type {
   HyperliquidJournalStatus,
   HyperliquidSubmissionAccount,
 } from './index.js';
+import {
+  allocateHyperliquidTrustedNonce,
+  installHyperliquidTrustedTimeStore,
+  persistHyperliquidTrustedTimeDecision,
+  requireHyperliquidTrustedTimeDecision,
+} from './hyperliquid-trusted-time-store.js';
+import type { HyperliquidTrustedTimeDecision } from './hyperliquid-trusted-time.js';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const ACTION_COMMITMENT_SCHEME = 'NARYX_CANONICAL_HYPERCORE_ACTION_SHA256_V1' as const;
 const RECORD_COMMITMENT_SCHEME = 'naryx/hypercore/sqlite-submission-record/v1';
 const ADDRESS = /^0x[0-9a-f]{40}$/;
@@ -594,6 +601,7 @@ export class HyperliquidSqliteDurableJournal implements HyperliquidDurableSubmis
     agentWallet: `0x${string}`;
     signerLeaseId: string;
     nowMs: bigint;
+    timeDecisionHash: `0x${string}`;
   }>): Readonly<{ expectedVersion: bigint; nonce: bigint }> {
     this.#requireOpen();
     const account = normalizedAccount(input.account);
@@ -615,9 +623,19 @@ export class HyperliquidSqliteDurableJournal implements HyperliquidDurableSubmis
     const previous = row === undefined
       ? 0n
       : decodedBigint(row.highest_nonce_decimal, 'stored nonce high-water');
-    const nonce = nowMs > previous ? nowMs : previous + 1n;
-    requireCondition(nonce <= MAX_SAFE_INTEGER, 'allocated nonce must fit a safe integer');
+    const maximumFutureLead = requireHyperliquidTrustedTimeDecision(
+      this.#database, input.timeDecisionHash, nowMs,
+    );
+    const nonce = allocateHyperliquidTrustedNonce(nowMs, previous, maximumFutureLead);
     return Object.freeze({ expectedVersion: this.#metadata().journalRevision, nonce });
+  }
+
+  recordTrustedTimeDecision(scope: string, decision: HyperliquidTrustedTimeDecision): void {
+    this.#requireOpen();
+    const transaction = this.#database.transaction(() => {
+      persistHyperliquidTrustedTimeDecision(this.#database, scope, decision);
+    });
+    transaction.immediate();
   }
 
   async confirmDurable(input: Readonly<{
@@ -863,9 +881,22 @@ export class HyperliquidSqliteDurableJournal implements HyperliquidDurableSubmis
         this.#database.pragma(`user_version = ${SCHEMA_VERSION}`);
       });
       initialize.exclusive();
+      installHyperliquidTrustedTimeStore(this.#database);
+    } else if (userVersion === 1) {
+      const migrate = this.#database.transaction(() => {
+        installHyperliquidTrustedTimeStore(this.#database);
+        const update = this.#database.prepare(`
+          UPDATE hyperliquid_journal_metadata SET schema_version = ?
+          WHERE singleton = 1 AND schema_version = 1
+        `).run(SCHEMA_VERSION);
+        requireCondition(update.changes === 1, 'Hyperliquid journal schema migration failed');
+        this.#database.pragma(`user_version = ${SCHEMA_VERSION}`);
+      });
+      migrate.exclusive();
     } else {
       requireCondition(userVersion === SCHEMA_VERSION,
         `unsupported Hyperliquid journal schema version ${userVersion}`);
+      installHyperliquidTrustedTimeStore(this.#database);
     }
     const metadata = this.#metadata();
     requireCondition(metadata.schemaVersion === SCHEMA_VERSION,

@@ -32,6 +32,7 @@ import {
   type HyperliquidServerSigner,
   type HyperliquidTestnetExchangeTransport,
 } from '../src/index.js';
+import { trustedTimePort } from './hyperliquid-trusted-time-fixture.js';
 
 const id = (value: number): string => value.toString(16).padStart(64, '0');
 const masterAccount = `0x${'11'.repeat(20)}` as const;
@@ -253,6 +254,7 @@ test('executes one durable residual and resumes evidence without rebroadcast', a
       vaultAddress: tradingAccount,
       maximumEvidenceAgeMs: 1_000,
       maximumSnapshotSkewMs: 100,
+      trustedTime: trustedTimePort(1_999_999_999_900),
       clock: () => nowMs,
     },
   );

@@ -7,6 +7,7 @@ import {
   HypercoreLocalConformanceVenue,
   HyperliquidStrategyTestnetRuntime,
 } from '../src/index.js';
+import { trustedTimePort } from './hyperliquid-trusted-time-fixture.js';
 
 const masterAccount = `0x${'11'.repeat(20)}` as const;
 const tradingAccount = `0x${'22'.repeat(20)}` as const;
@@ -83,6 +84,7 @@ function runtime(venue: HypercoreLocalConformanceVenue) {
       baseFeeToken: 'SOL',
       quoteFeeToken: 'USDC',
     },
+    trustedTime: trustedTimePort(1_000),
     currentTimeMs: () => nowMs++,
   });
 }

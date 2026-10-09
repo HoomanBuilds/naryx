@@ -31,6 +31,7 @@ import type {
   HyperliquidNettingResidualTestnetSubmissionService,
 } from './hyperliquid-netting-residual-testnet-submission.js';
 import type { HyperliquidSubmissionAccount } from './index.js';
+import type { HyperliquidTrustedTimePort } from './hyperliquid-trusted-time.js';
 
 const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -80,6 +81,7 @@ export interface HyperliquidNettingResidualRuntimeOptions {
   readonly maximumEvidenceAgeMs: number;
   readonly maximumSnapshotSkewMs: number;
   readonly maximumFillPages?: number;
+  readonly trustedTime: HyperliquidTrustedTimePort;
   readonly clock?: () => number;
 }
 
@@ -154,6 +156,7 @@ export class HyperliquidNettingResidualTestnetRuntime {
   | 'maximumEvidenceAgeMs' | 'maximumSnapshotSkewMs'>> &
   Pick<HyperliquidNettingResidualRuntimeOptions, 'maximumFillPages'>>;
   readonly #clock: () => number;
+  readonly #trustedTime: HyperliquidTrustedTimePort;
 
   constructor(
     resolver: HyperliquidNettingResidualRuntimeLaneResolver,
@@ -166,6 +169,10 @@ export class HyperliquidNettingResidualTestnetRuntime {
       || typeof journal?.readAttempt !== 'function' || typeof submission?.submitResidual !== 'function'
       || typeof evidence?.collect !== 'function') {
       throw new Error('complete Hyperliquid residual runtime ports are required');
+    }
+    if (typeof options.trustedTime?.decide !== 'function'
+      || typeof journal.recordTrustedTimeDecision !== 'function') {
+      throw new Error('Hyperliquid residual runtime requires trusted time and durable evidence');
     }
     const maximumEvidenceAgeMs = requireBoundedPositiveInteger(
       options.maximumEvidenceAgeMs, 'maximumEvidenceAgeMs', 86_400_000,
@@ -189,6 +196,7 @@ export class HyperliquidNettingResidualTestnetRuntime {
       ...(maximumFillPages === undefined ? {} : { maximumFillPages }),
     });
     this.#clock = options.clock ?? Date.now;
+    this.#trustedTime = options.trustedTime;
   }
 
   async execute(input: Readonly<{
@@ -219,7 +227,6 @@ export class HyperliquidNettingResidualTestnetRuntime {
         'UNSUPPORTED_DOMAIN', 'only Hyperliquid Testnet residual intents are executable',
       );
     }
-    const nowMs = checkedNow(this.#clock);
     const id = attemptId(input.intent);
     const lane = this.#resolver.resolve(input.intent);
     const plan: HyperliquidNettingResidualPlan = compileHyperliquidNettingResidualPlan({
@@ -228,10 +235,15 @@ export class HyperliquidNettingResidualTestnetRuntime {
       binding: lane.marketBinding,
     });
     const existing = await this.#journal.readAttempt(id);
+    const timeDecision = existing === null ? await this.#trustedTime.decide(id) : null;
+    const nowMs = timeDecision?.selectedTimeMs ?? checkedNow(this.#clock);
     if (existing === null && input.intent.validUntilValue <= BigInt(nowMs)) {
       throw new HyperliquidNettingResidualRuntimeError(
         'INTENT_EXPIRED', 'residual intent expired before durable submission',
       );
+    }
+    if (timeDecision !== null) {
+      this.#journal.recordTrustedTimeDecision(id, timeDecision);
     }
     const context = existing === null
       ? this.#journal.submissionContext({
@@ -239,6 +251,7 @@ export class HyperliquidNettingResidualTestnetRuntime {
           agentWallet: this.#options.agentWallet,
           signerLeaseId: this.#options.signerLeaseId,
           nowMs: BigInt(nowMs),
+          timeDecisionHash: timeDecision!.decisionHash,
         })
       : { expectedVersion: existing.journalVersion, nonce: existing.record.nonce };
     const submissionInput: HyperliquidNettingResidualSubmissionInput = {

@@ -15,6 +15,7 @@ import type {
   HyperliquidStrategySubmissionInput,
   HyperliquidStrategySubmissionResult,
 } from './hyperliquid-strategy-testnet-submission.js';
+import type { HyperliquidTrustedTimeDecision } from './hyperliquid-trusted-time.js';
 
 export const HYPERCORE_LOCAL_CONFORMANCE_EVIDENCE_CLASS =
   'NARYX_HYPERCORE_LOCAL_CONFORMANCE_V1' as const;
@@ -148,6 +149,7 @@ HyperliquidStrategyRuntimeEvidencePort {
   readonly #feeBps: bigint;
   readonly #positions = new Map<number, bigint>();
   readonly #records = new Map<string, ConformanceRecord>();
+  readonly #timeDecisions = new Set<string>();
   #armedFailure: ArmedFailure | null = null;
   #revision = 0n;
   #lastNonce = 0n;
@@ -170,11 +172,19 @@ HyperliquidStrategyRuntimeEvidencePort {
     agentWallet: `0x${string}`;
     signerLeaseId: string;
     nowMs: bigint;
+    timeDecisionHash: `0x${string}`;
   }>): Readonly<{ expectedVersion: bigint; nonce: bigint }> {
-    requireCondition(input.nowMs > 0n && IDENTIFIER.test(input.signerLeaseId),
+    requireCondition(input.nowMs > 0n && IDENTIFIER.test(input.signerLeaseId)
+      && this.#timeDecisions.has(input.timeDecisionHash),
       'conformance submission context is invalid');
     this.#lastNonce = input.nowMs > this.#lastNonce ? input.nowMs : this.#lastNonce + 1n;
     return Object.freeze({ expectedVersion: this.#revision, nonce: this.#lastNonce });
+  }
+
+  recordTrustedTimeDecision(scope: string, decision: HyperliquidTrustedTimeDecision): void {
+    requireCondition(IDENTIFIER.test(scope) && decision.selectedTimeMs > 0,
+      'conformance trusted time decision is invalid');
+    this.#timeDecisions.add(decision.decisionHash);
   }
 
   async submitBatch(

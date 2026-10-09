@@ -10,6 +10,7 @@ import {
   type HyperliquidStrategySubmissionInput,
   type HyperliquidStrategySubmissionResult,
 } from '../src/index.js';
+import { trustedTimePort } from './hyperliquid-trusted-time-fixture.js';
 
 const masterAccount = `0x${'11'.repeat(20)}` as const;
 const tradingAccount = `0x${'22'.repeat(20)}` as const;
@@ -108,6 +109,7 @@ function runtime(outcomes: readonly ('COMPLETED' | 'NO_EFFECT' | 'RECOVERY_REQUI
   let context = 0;
   const journal: HyperliquidStrategyRuntimeJournalPort = {
     submissionContext: () => ({ expectedVersion: BigInt(context++), nonce: 1_000_001n + BigInt(context) }),
+    recordTrustedTimeDecision: () => undefined,
   };
   const submittedStages: number[] = [];
   const submissionPort: HyperliquidStrategyRuntimeSubmissionPort = {
@@ -139,6 +141,7 @@ function runtime(outcomes: readonly ('COMPLETED' | 'NO_EFFECT' | 'RECOVERY_REQUI
         baseFeeToken: 'BASE',
         quoteFeeToken: 'USDC',
       },
+      trustedTime: trustedTimePort(1_000_001),
       currentTimeMs: () => time++,
     }),
     submittedStages,
@@ -171,4 +174,37 @@ test('treats a later no-effect stage as package recovery required', async () => 
   assert.deepEqual(result.completedStages, [0]);
   assert.deepEqual(fixture.submittedStages, [0, 1]);
   assert.deepEqual(fixture.evidencedStages, [0, 1]);
+});
+
+test('does not reserve a nonce when trusted time fails', async () => {
+  let recorded = 0;
+  let allocated = 0;
+  const runtime = new HyperliquidStrategyTestnetRuntime({
+    recordTrustedTimeDecision: () => { recorded += 1; },
+    submissionContext: () => {
+      allocated += 1;
+      return { expectedVersion: 0n, nonce: 1n };
+    },
+  }, {
+    submitBatch: async () => { throw new Error('submission must not run'); },
+  }, {
+    collect: async () => { throw new Error('evidence must not run'); },
+  }, {
+    account,
+    agentWallet,
+    signerLeaseId: 'solver-process-1',
+    maxEvidenceAgeMs: 30_000,
+    maxSnapshotSkewMs: 5_000,
+    maxFillPages: 4,
+    evidenceBinding: {
+      spotAssetId: 10_007,
+      perpetualAssetId: 3,
+      baseFeeToken: 'BASE',
+      quoteFeeToken: 'USDC',
+    },
+    trustedTime: { decide: async () => { throw new Error('NTP quorum unavailable'); } },
+  });
+  await assert.rejects(runtime.execute('strategy-time-failure', plan()), /NTP quorum unavailable/);
+  assert.equal(recorded, 0);
+  assert.equal(allocated, 0);
 });

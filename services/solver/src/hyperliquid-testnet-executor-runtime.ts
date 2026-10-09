@@ -68,6 +68,12 @@ import {
   type HyperliquidTestnetRuntimeEvidenceWindow,
   type HyperliquidTestnetStructuralEvidencePort,
 } from './hyperliquid-testnet-runtime.js';
+import {
+  createHyperliquidTrustedTimeSources,
+  HyperliquidTrustedClock,
+  hyperliquidTrustedTimePolicyFromEnvironment,
+  type HyperliquidTrustedTimePort,
+} from './hyperliquid-trusted-time.js';
 
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 
@@ -103,6 +109,7 @@ export interface HyperliquidTestnetExecutorRuntimeDependencies {
   readonly marketReader?: HyperliquidTestnetMarketReadPort;
   readonly authorityReader?: HyperliquidTestnetAuthorityReadPort;
   readonly authorityClearance?: HyperliquidAuthorityClearancePort;
+  readonly trustedTime?: HyperliquidTrustedTimePort;
 }
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
@@ -669,6 +676,10 @@ export async function loadHyperliquidTestnetExecutorRuntime(
       dependencies.authorityClearance,
     );
     const marketReader = dependencies.marketReader ?? new HyperliquidSdkTestnetMarketReadClient();
+    const trustedTime = dependencies.trustedTime ?? new HyperliquidTrustedClock(
+      hyperliquidTrustedTimePolicyFromEnvironment(environment),
+      createHyperliquidTrustedTimeSources(marketReader, currentTimeMs),
+    );
     const marketPreflight = new HyperliquidTestnetMarketPreflight(
       marketReader,
       qualificationConfig,
@@ -755,10 +766,13 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         }
         return inventory;
       },
-      prepareAttempt(attempt: HyperliquidTestnetAttemptHandoff, inventory?: HyperliquidTestnetAccountInventory) {
+      async prepareAttempt(
+        attempt: HyperliquidTestnetAttemptHandoff,
+        inventory?: HyperliquidTestnetAccountInventory,
+      ) {
         if (inventory === undefined) throw new Error('the account inventory read under the lane lock is required');
-        const now = currentTimeMs();
-        if (!Number.isSafeInteger(now) || now <= 0) throw new Error('trusted clock is invalid');
+        const timeDecision = await trustedTime.decide(attempt.attemptId);
+        const now = timeDecision.selectedTimeMs;
         const nowMs = BigInt(now);
         if (attempt.strategy !== undefined) {
           throw new Error('generalized strategy plans use the strategy runtime');
@@ -766,11 +780,13 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         if (!('admission' in attempt)) throw new Error('native execution requires a strategy plan');
         const plan = sourceExecutionPlan(attempt, inventory);
         requireExitInventory(plan, inventory);
+        journal.recordTrustedTimeDecision(attempt.attemptId, timeDecision);
         const context = journal.submissionContext({
           account: expectedAccount,
           agentWallet: expectedAgent,
           signerLeaseId,
           nowMs,
+          timeDecisionHash: timeDecision.decisionHash,
         });
         const startTimeMs = Math.max(0, now - attempt.limits.maxEvidenceAgeMs);
         return Object.freeze({
@@ -830,6 +846,7 @@ export async function loadHyperliquidTestnetExecutorRuntime(
               baseFeeToken: qualificationConfig.spotTokenName,
               quoteFeeToken: qualificationConfig.quoteTokenName,
             },
+            trustedTime,
             currentTimeMs,
           },
         );
