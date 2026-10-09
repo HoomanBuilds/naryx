@@ -40,6 +40,7 @@ import {
   createHyperliquidRecoveryAttempt,
   createHyperliquidRecoverySubmissionJournal,
   fenceHyperliquidRecoveryAgent,
+  hyperliquidRecoveryContinuationSource,
   hyperliquidRecoveryReconciliationHandoff,
   hyperliquidRecoveryAggregateLossQuoteAtoms,
   initializeHyperliquidRecoveryJournal,
@@ -1042,6 +1043,11 @@ test('refuses a second recovery action while an earlier one for the package is u
   const record = reconciled.agents[0]!.attempts[0]!;
   assert.equal(record.status, 'RECONCILED');
   assert.equal(record.reconciledEvidenceVersion, partial.acceptedEvidence!.evidenceVersion);
+  assert.deepEqual(record.reconciledAttempt, partial);
+  assert.deepEqual(
+    hyperliquidRecoveryContinuationSource(reconciled, 'recovery-attempt-1'),
+    partial,
+  );
   assert.equal(completeHyperliquidRecoverySubmissionReconciliation(reconciled, {
     expectedVersion: reconciled.version,
     recoveryAttemptId: 'recovery-attempt-1',
@@ -1058,6 +1064,10 @@ test('refuses a second recovery action while an earlier one for the package is u
     reconciledAttempt: complete,
   });
   assert.equal(terminal.agents[0]!.attempts[0]!.reconciledOutcome, 'RECOVERED_COMPLETE');
+  assert.throws(() => hyperliquidRecoveryContinuationSource(
+    terminal,
+    'recovery-attempt-1',
+  ), /no trusted continuation obligation/);
   assert.throws(() => prepareSecond(terminal, recoveryPlan(source, 1)), /terminal or manual outcome/);
 });
 

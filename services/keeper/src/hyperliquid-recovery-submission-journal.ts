@@ -66,6 +66,8 @@ export interface HyperliquidRecoverySubmissionRecord {
   /** Evidence version and outcome recorded when this attempt's reconciliation completed. */
   readonly reconciledEvidenceVersion: bigint | null;
   readonly reconciledOutcome: HyperliquidRecoveryAttempt['status'] | null;
+  readonly reconciledAttemptHash: `0x${string}` | null;
+  readonly reconciledAttempt: HyperliquidRecoveryAttempt | null;
 }
 
 export interface HyperliquidRecoveryAgentJournal {
@@ -193,7 +195,8 @@ function recoveryLineageKey(plan: HyperliquidRecoveryExecutionPlan): `0x${string
 
 type RecordCore = Omit<HyperliquidRecoverySubmissionRecord,
   | 'status' | 'recordHash' | 'durableRevision' | 'acknowledgementId' | 'rejectionId'
-  | 'submissionTimeDecision' | 'reconciledEvidenceVersion' | 'reconciledOutcome'>;
+  | 'submissionTimeDecision' | 'reconciledEvidenceVersion' | 'reconciledOutcome'
+  | 'reconciledAttemptHash' | 'reconciledAttempt'>;
 
 function immutableRecord(
   record: RecordCore | HyperliquidRecoverySubmissionRecord,
@@ -222,6 +225,10 @@ function immutableRecord(
 
 function recordHash(record: RecordCore | HyperliquidRecoverySubmissionRecord): `0x${string}` {
   return sha256(['naryx/hypercore/recovery-submission-record/v1', immutableRecord(record)]);
+}
+
+function reconciledAttemptHash(attempt: HyperliquidRecoveryAttempt): `0x${string}` {
+  return sha256(['naryx/hypercore/reconciled-recovery-attempt/v1', attempt]);
 }
 
 function agentAt(journal: HyperliquidRecoverySubmissionJournal, agentWallet: string): number {
@@ -259,6 +266,20 @@ function locate(
       'journal recovery lineage was modified');
     requireCondition(record.recordHash === recordHash(record),
       'journal recovery record was modified');
+    if (record.reconciledAttempt === null) {
+      requireCondition(record.reconciledAttemptHash === null,
+        'journal reconciled attempt hash has no attempt');
+    } else {
+      requireCondition(record.reconciledAttemptHash === reconciledAttemptHash(record.reconciledAttempt),
+        'journal reconciled attempt was modified');
+      const evidence = record.reconciledAttempt.acceptedEvidence
+        ?? record.reconciledAttempt.lockEvidence;
+      requireCondition(record.status === 'RECONCILED'
+        && evidence !== null
+        && record.reconciledEvidenceVersion === evidence.evidenceVersion
+        && record.reconciledOutcome === record.reconciledAttempt.status,
+      'journal reconciled attempt metadata differs');
+    }
     if (record.submissionTimeDecision !== null) {
       requireHyperliquidTrustedTimeDecision(
         record.submissionTimeDecision,
@@ -471,6 +492,8 @@ export function prepareHyperliquidRecoverySubmission(
     rejectionId: null,
     reconciledEvidenceVersion: null,
     reconciledOutcome: null,
+    reconciledAttemptHash: null,
+    reconciledAttempt: null,
   });
   return replaceAgent(journal, agentIndex, {
     ...agent,
@@ -641,9 +664,11 @@ export function completeHyperliquidRecoverySubmissionReconciliation(
     'reconciled attempt does not belong to this recovery record');
   const evidence = reconciled.acceptedEvidence ?? reconciled.lockEvidence;
   requireCondition(evidence !== null, 'recovery reconciliation carries no evidence');
+  const attemptHash = reconciledAttemptHash(reconciled);
   if (located.record.status === 'RECONCILED') {
     requireCondition(located.record.reconciledEvidenceVersion === evidence.evidenceVersion
-      && located.record.reconciledOutcome === reconciled.status,
+      && located.record.reconciledOutcome === reconciled.status
+      && located.record.reconciledAttemptHash === attemptHash,
     'recovery attempt was already reconciled with different evidence');
     return journal;
   }
@@ -655,7 +680,22 @@ export function completeHyperliquidRecoverySubmissionReconciliation(
     status: 'RECONCILED',
     reconciledEvidenceVersion: evidence.evidenceVersion,
     reconciledOutcome: reconciled.status,
+    reconciledAttemptHash: attemptHash,
+    reconciledAttempt: structuredClone(reconciled),
   });
+}
+
+export function hyperliquidRecoveryContinuationSource(
+  journal: HyperliquidRecoverySubmissionJournal,
+  recoveryAttemptId: string,
+): HyperliquidRecoveryAttempt {
+  const { record } = locate(journal, recoveryAttemptId);
+  requireCondition(record.status === 'RECONCILED'
+    && record.reconciledOutcome === 'RECOVERY_REQUIRED'
+    && record.reconciledAttempt !== null
+    && record.reconciledAttempt.nextRecoveryObligation !== null,
+  'recovery attempt has no trusted continuation obligation');
+  return structuredClone(record.reconciledAttempt);
 }
 
 export function fenceHyperliquidRecoveryAgent(
