@@ -27,6 +27,8 @@ import {
 } from 'viem';
 import {
   readEvmOptionPoolSnapshot,
+  readEvmOptionReferencePrice,
+  type EvmOptionReferencePrice,
   type EvmOptionSpreadContractIdentity,
   type EvmOptionSpreadPoolBinding,
   type EvmOptionSpreadPricingInput,
@@ -169,10 +171,11 @@ function ceilDiv(numerator: bigint, denominator: bigint): bigint {
 function quotePremium(
   basePremium: bigint,
   pricing: EvmOptionSpreadPricingInput,
+  reference: EvmOptionReferencePrice,
   rounding: 'FLOOR' | 'CEIL',
 ): bigint {
-  const numerator = basePremium * pricing.referencePriceQuoteAtomsPerWholeBase;
-  const denominator = 10n ** BigInt(pricing.baseAsset.decimals);
+  const numerator = basePremium * reference.answer * 10n ** BigInt(pricing.quoteAsset.decimals);
+  const denominator = 10n ** BigInt(pricing.baseAsset.decimals + reference.decimals);
   return rounding === 'CEIL' ? ceilDiv(numerator, denominator) : numerator / denominator;
 }
 
@@ -337,13 +340,14 @@ export class EvmOptionSpreadPreparationContextResolver implements StrategyPrepar
       === hash(lane.expectedStrategyAccountCodeHash, 'expected strategy account code hash'), 'factory account code identity changed');
     const account = getAddress(String(accountValue));
     requireCondition(account === getAddress(documents.order.settlementAccount), 'order settlement account is not the owner factory account');
-    const [recognized, accountOwner, accountCode, accountState, longAdapter, shortAdapter, longPool, shortPool] = await Promise.all([
+    const [recognized, accountOwner, accountCode, accountState, longAdapter, shortAdapter, reference, longPool, shortPool] = await Promise.all([
       chain.readContract({ address: accountFactory, abi: ACCOUNT_FACTORY_ABI, functionName: 'isAccount', args: [account] }),
       chain.readContract({ address: account, abi: STRATEGY_ACCOUNT_ABI, functionName: 'owner' }),
       chain.codeHash(account),
       readAccountState(chain, account, checkedPackageId),
       readAdapterState(lane, 'option-long', account, checkedPackageId),
       readAdapterState(lane, 'option-short', account, checkedPackageId),
+      readEvmOptionReferencePrice(lane.pricing, currentTime),
       readEvmOptionPoolSnapshot(lane.pricing, role(lane.pricing.pools, 'option-long')),
       readEvmOptionPoolSnapshot(lane.pricing, role(lane.pricing.pools, 'option-short')),
     ]);
@@ -381,8 +385,8 @@ export class EvmOptionSpreadPreparationContextResolver implements StrategyPrepar
     const shortPost = opening ? shortAdapter.shorts + quantity : shortAdapter.shorts - quantity;
     const longDelta = opening ? -longPremium : longPremium;
     const shortDelta = opening ? shortPremium - quantity : quantity - shortPremium;
-    const longQuotePremium = quotePremium(longPremium, lane.pricing, opening ? 'CEIL' : 'FLOOR');
-    const shortQuotePremium = quotePremium(shortPremium, lane.pricing, opening ? 'FLOOR' : 'CEIL');
+    const longQuotePremium = quotePremium(longPremium, lane.pricing, reference, opening ? 'CEIL' : 'FLOOR');
+    const shortQuotePremium = quotePremium(shortPremium, lane.pricing, reference, opening ? 'FLOOR' : 'CEIL');
     const quotedLong = documents.quote.legEconomics.find((leg) => leg.legId === 'option-long');
     const quotedShort = documents.quote.legEconomics.find((leg) => leg.legId === 'option-short');
     requireCondition(quotedLong?.executionPrice !== undefined && quotedShort?.executionPrice !== undefined,

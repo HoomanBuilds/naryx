@@ -17,8 +17,28 @@ import type {
   GeneralizedStrategyPricingPort,
   GeneralizedStrategyQuoteTerms,
 } from './strategy-quote-service.js';
+import { callSpreadAnalytics } from './option-analytics.js';
 
 const BPS = 10_000n;
+const ORACLE_ABI = [{
+  type: 'function',
+  name: 'decimals',
+  stateMutability: 'view',
+  inputs: [],
+  outputs: [{ name: '', type: 'uint8' }],
+}, {
+  type: 'function',
+  name: 'latestRoundData',
+  stateMutability: 'view',
+  inputs: [],
+  outputs: [
+    { name: 'roundId', type: 'uint80' },
+    { name: 'answer', type: 'int256' },
+    { name: 'startedAt', type: 'uint256' },
+    { name: 'updatedAt', type: 'uint256' },
+    { name: 'answeredInRound', type: 'uint80' },
+  ],
+}] as const satisfies Abi;
 const OPTION_POOL_ABI = [{
   type: 'function',
   name: 'getPoolSettings',
@@ -87,8 +107,8 @@ export interface EvmOptionSpreadPricingInput {
   readonly baseToken: EvmOptionSpreadContractIdentity;
   readonly quoteToken: EvmOptionSpreadContractIdentity;
   readonly oracle: EvmOptionSpreadContractIdentity;
+  readonly maximumOracleAgeSeconds: bigint;
   readonly pools: readonly [EvmOptionSpreadPoolBinding, EvmOptionSpreadPoolBinding];
-  readonly referencePriceQuoteAtomsPerWholeBase: bigint;
   readonly strikeDecimals: number;
   readonly protocolFeeBps: number;
   readonly solverFeeBps: number;
@@ -107,6 +127,13 @@ export interface EvmOptionPoolSnapshot {
   readonly strike: bigint;
   readonly maturity: bigint;
   readonly premiumBps: bigint;
+}
+
+export interface EvmOptionReferencePrice {
+  readonly answer: bigint;
+  readonly decimals: number;
+  readonly observedAt: bigint;
+  readonly updatedAt: bigint;
 }
 
 function requireCondition(condition: boolean, message: string): asserts condition {
@@ -171,6 +198,12 @@ function pow10(decimals: number, context: string): bigint {
   return 10n ** BigInt(decimals);
 }
 
+function decimal(value: bigint, decimals: number, context: string): number {
+  const converted = Number(value) / 10 ** decimals;
+  requireCondition(Number.isFinite(converted) && converted > 0, `${context} is outside the analytics range`);
+  return converted;
+}
+
 function checkedHash(value: Hex, context: string): Hex {
   requireCondition(/^0x[0-9a-fA-F]{64}$/.test(value) && !/^0x0{64}$/.test(value), `${context} code hash is invalid`);
   return value.toLowerCase() as Hex;
@@ -185,9 +218,38 @@ async function assertCode(
   requireCondition(actual !== undefined && checkedHash(actual, context) === checkedHash(identity.expectedCodeHash, context), `${context} code changed`);
 }
 
-function tuple(value: unknown, context: string): readonly unknown[] {
-  requireCondition(Array.isArray(value) && value.length >= 6, `${context} settings are invalid`);
+function tuple(value: unknown, context: string, minimumLength = 6): readonly unknown[] {
+  requireCondition(Array.isArray(value) && value.length >= minimumLength, `${context} settings are invalid`);
   return value;
+}
+
+export async function readEvmOptionReferencePrice(
+  input: EvmOptionSpreadPricingInput,
+  observedAt: bigint,
+): Promise<EvmOptionReferencePrice> {
+  const oracle = getAddress(input.oracle.address);
+  const read = (functionName: string) => input.chain.readContract({
+    address: oracle,
+    abi: ORACLE_ABI,
+    functionName,
+  });
+  const [decimalsValue, roundValue] = await Promise.all([
+    read('decimals'),
+    read('latestRoundData'),
+    assertCode(input.chain, input.oracle, 'oracle'),
+  ]);
+  const round = tuple(roundValue, 'oracle round', 5);
+  const [roundId, answer, , updatedAt, answeredInRound] = round;
+  const decimals = Number(decimalsValue);
+  requireCondition(Number.isInteger(decimals) && decimals >= 0 && decimals <= 38, 'oracle decimals are invalid');
+  requireCondition(typeof roundId === 'bigint' && roundId > 0n
+    && typeof answer === 'bigint' && answer > 0n
+    && typeof updatedAt === 'bigint' && updatedAt > 0n
+    && typeof answeredInRound === 'bigint' && answeredInRound >= roundId,
+  'oracle round is invalid');
+  requireCondition(observedAt >= updatedAt && observedAt - updatedAt <= input.maximumOracleAgeSeconds,
+    'oracle round is stale or from the future');
+  return Object.freeze({ answer, decimals, observedAt, updatedAt });
 }
 
 export async function readEvmOptionPoolSnapshot(
@@ -233,7 +295,7 @@ function validateConfiguration(input: EvmOptionSpreadPricingInput): void {
   requireCondition(input.chainId > 0n && input.domain.domainId === `eip155:${input.chainId}`, 'chain and domain differ');
   requireCondition(input.baseAsset.decimals > 0 && input.quoteAsset.decimals > 0
     && !sameAsset(input.baseAsset, input.quoteAsset), 'base and quote assets are invalid');
-  requireCondition(input.referencePriceQuoteAtomsPerWholeBase > 0n, 'reference price is invalid');
+  requireCondition(input.maximumOracleAgeSeconds > 0n, 'oracle age limit is invalid');
   requireCondition(Number.isInteger(input.protocolFeeBps) && input.protocolFeeBps >= 0 && input.protocolFeeBps < 1_000
     && Number.isInteger(input.solverFeeBps) && input.solverFeeBps >= 0 && input.solverFeeBps < 1_000,
   'service fee rates are invalid');
@@ -268,10 +330,11 @@ function matchLeg(
 function quoteAtomsFromBase(
   baseAtoms: bigint,
   input: EvmOptionSpreadPricingInput,
+  reference: EvmOptionReferencePrice,
   rounding: 'FLOOR' | 'CEIL',
 ): bigint {
-  const numerator = baseAtoms * input.referencePriceQuoteAtomsPerWholeBase;
-  const denominator = pow10(input.baseAsset.decimals, 'base asset');
+  const numerator = baseAtoms * reference.answer * pow10(input.quoteAsset.decimals, 'quote asset');
+  const denominator = pow10(input.baseAsset.decimals, 'base asset') * pow10(reference.decimals, 'oracle');
   return rounding === 'CEIL' ? ceilDiv(numerator, denominator) : numerator / denominator;
 }
 
@@ -315,17 +378,19 @@ export function createEvmOptionSpreadGeneralizedPricing(
       requireCondition(sameAsset(order.economicQuantity.asset, input.baseAsset)
         && sameAsset(order.quoteAsset, input.quoteAsset), 'package assets are unsupported');
       requireCondition(currentTime.unit === 'EVM_UNIX_SECONDS', 'quote clock is invalid');
-      const [chainId, observedAt, longPool, shortPool] = await Promise.all([
+      const [chainId, observedAt] = await Promise.all([
         input.chain.chainId(),
         input.chain.latestBlockTimestamp(),
+      ]);
+      requireCondition(chainId === input.chainId, 'RPC chain identity differs from the reviewed chain');
+      requireCondition(observedAt >= currentTime.value && observedAt - currentTime.value <= 30n, 'quote clock is stale or from another head');
+      const [reference, longPool, shortPool] = await Promise.all([
+        readEvmOptionReferencePrice(input, observedAt),
         readEvmOptionPoolSnapshot(input, input.pools.find((pool) => pool.role === 'option-long')!),
         readEvmOptionPoolSnapshot(input, input.pools.find((pool) => pool.role === 'option-short')!),
         assertCode(input.chain, input.baseToken, 'base token'),
         assertCode(input.chain, input.quoteToken, 'quote token'),
-        assertCode(input.chain, input.oracle, 'oracle'),
       ]);
-      requireCondition(chainId === input.chainId, 'RPC chain identity differs from the reviewed chain');
-      requireCondition(observedAt >= currentTime.value && observedAt - currentTime.value <= 30n, 'quote clock is stale or from another head');
       requireCondition(longPool.maturity === shortPool.maturity && observedAt < longPool.maturity, 'option pools are matured or mismatched');
 
       const longLeg = matchLeg(documents, input.pools.find((pool) => pool.role === 'option-long')!);
@@ -347,10 +412,10 @@ export function createEvmOptionSpreadGeneralizedPricing(
       const quantity = order.economicQuantity.atoms;
       const longPremiumBase = ceilDiv(quantity * longPool.premiumBps, BPS);
       const shortPremiumBase = ceilDiv(quantity * shortPool.premiumBps, BPS);
-      const longPremiumQuote = quoteAtomsFromBase(longPremiumBase, input, opening ? 'CEIL' : 'FLOOR');
-      const shortPremiumQuote = quoteAtomsFromBase(shortPremiumBase, input, opening ? 'FLOOR' : 'CEIL');
+      const longPremiumQuote = quoteAtomsFromBase(longPremiumBase, input, reference, opening ? 'CEIL' : 'FLOOR');
+      const shortPremiumQuote = quoteAtomsFromBase(shortPremiumBase, input, reference, opening ? 'FLOOR' : 'CEIL');
       requireCondition(longPremiumQuote > 0n && shortPremiumQuote > 0n, 'premium conversion rounds to zero');
-      const notional = quoteAtomsFromBase(quantity, input, 'CEIL');
+      const notional = quoteAtomsFromBase(quantity, input, reference, 'CEIL');
       const protocolFee = ceilDiv(notional * 2n * BigInt(input.protocolFeeBps), BPS);
       const solverFee = ceilDiv(notional * 2n * BigInt(input.solverFeeBps), BPS);
       const serviceFees = protocolFee + solverFee;
@@ -359,8 +424,18 @@ export function createEvmOptionSpreadGeneralizedPricing(
         ? shortPremiumQuote - longPremiumQuote
         : longPremiumQuote - shortPremiumQuote;
       const width = strikeWidthQuoteAtoms(quantity, longPool.strike, shortPool.strike, input);
-      const maximumLoss = opening && netPremium < 0n ? -netPremium + totalCosts : 0n;
-      const maximumProfit = opening && width > maximumLoss ? width - maximumLoss : 0n;
+      const maximumLoss = opening && totalCosts > netPremium ? totalCosts - netPremium : 0n;
+      const maximumProfit = opening && width + netPremium > totalCosts ? width + netPremium - totalCosts : 0n;
+      const analyticsSpot = decimal(reference.answer, reference.decimals, 'reference price');
+      const analytics = callSpreadAnalytics({
+        spot: analyticsSpot,
+        longStrike: decimal(longPool.strike, input.strikeDecimals, 'long strike'),
+        shortStrike: decimal(shortPool.strike, input.strikeDecimals, 'short strike'),
+        longPremium: analyticsSpot * Number(longPool.premiumBps) / Number(BPS),
+        shortPremium: analyticsSpot * Number(shortPool.premiumBps) / Number(BPS),
+        secondsToMaturity: Number(longPool.maturity - observedAt),
+        direction: opening ? 1 : -1,
+      });
       const legEconomics: readonly StrategyLegEconomicsInput[] = Object.freeze([
         Object.freeze({
           legId: longLeg.legId,
@@ -408,14 +483,14 @@ export function createEvmOptionSpreadGeneralizedPricing(
           templateId: STRATEGY_TEMPLATE_ID.OPTION_SPREAD,
           values: Object.freeze({
             netPremiumAtoms: netPremium,
-            deltaPpm: 0n,
-            gammaPpm: 0n,
-            vegaPpm: 0n,
-            thetaPpm: 0n,
+            deltaPpm: analytics.deltaPpm,
+            gammaPpm: analytics.gammaPpm,
+            vegaPpm: analytics.vegaPpm,
+            thetaPpm: analytics.thetaPpm,
             maximumProfitAtoms: maximumProfit,
             maximumLossAtoms: maximumLoss,
-            impliedVolatilityPpm: 0n,
-            volatilitySpreadPpm: 0n,
+            impliedVolatilityPpm: analytics.impliedVolatilityPpm,
+            volatilitySpreadPpm: analytics.volatilitySpreadPpm,
           }),
         }),
         legEconomics,

@@ -268,6 +268,10 @@ class Chain implements EvmOptionSpreadReadPort {
       if (request.functionName === 'premiumBps') return lower ? 1_000n : 500n;
       if (request.functionName === 'balanceOf') return 0n;
     }
+    if (target === ORACLE.toLowerCase()) {
+      if (request.functionName === 'decimals') return 8n;
+      if (request.functionName === 'latestRoundData') return [1n, 2_000n * 10n ** 8n, NOW, NOW, 1n];
+    }
     if (target === ACCOUNT_FACTORY.toLowerCase()) {
       if (request.functionName === 'accountOf') return ACCOUNT;
       if (request.functionName === 'isAccount') return true;
@@ -314,6 +318,17 @@ class UndeployedEntryChain extends Chain {
   }
 }
 
+class StaleOracleChain extends Chain {
+  override async readContract(
+    request: Readonly<{ address: Address; abi: Abi; functionName: string; args?: readonly unknown[] }>,
+  ): Promise<unknown> {
+    if (request.address.toLowerCase() === ORACLE.toLowerCase() && request.functionName === 'latestRoundData') {
+      return [1n, 2_000n * 10n ** 8n, NOW - 31n, NOW - 31n, 1n];
+    }
+    return super.readContract(request);
+  }
+}
+
 function zeroBytes(): Hex {
   return `0x${'00'.repeat(32)}`;
 }
@@ -327,6 +342,7 @@ function pricing(chain: Chain): EvmOptionSpreadPricingInput {
     baseToken: { address: BASE_TOKEN, expectedCodeHash: codeHash('1') },
     quoteToken: { address: QUOTE_TOKEN, expectedCodeHash: codeHash('2') },
     oracle: { address: ORACLE, expectedCodeHash: codeHash('3') },
+    maximumOracleAgeSeconds: 30n,
     pools: [{
       role: 'option-long', adapter: longAdapterRef, venue, market: longMarket,
       pool: { address: LONG_POOL, expectedCodeHash: codeHash('4') },
@@ -336,7 +352,6 @@ function pricing(chain: Chain): EvmOptionSpreadPricingInput {
       pool: { address: SHORT_POOL, expectedCodeHash: codeHash('5') },
       expectedStrike: 2_500n * 10n ** 18n, expectedMaturity: MATURITY,
     }],
-    referencePriceQuoteAtomsPerWholeBase: 2_000_000_000n,
     strikeDecimals: 18,
     protocolFeeBps: 10,
     solverFeeBps: 5,
@@ -398,6 +413,14 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
     idempotencyKey: 'evm-option-spread-quote-0001',
   });
   assert.equal(quoted.quote.metrics.find((metric) => metric.metricId === 'net-premium-atoms')?.value, -100_000_000n);
+  assert.ok((quoted.quote.metrics.find((metric) => metric.metricId === 'delta-ppm')?.value ?? 0n) > 0n);
+  assert.notEqual(quoted.quote.metrics.find((metric) => metric.metricId === 'gamma-ppm')?.value, 0n);
+  assert.notEqual(quoted.quote.metrics.find((metric) => metric.metricId === 'vega-ppm')?.value, 0n);
+  assert.notEqual(quoted.quote.metrics.find((metric) => metric.metricId === 'theta-ppm')?.value, 0n);
+  assert.ok((quoted.quote.metrics.find((metric) => metric.metricId === 'implied-volatility-ppm')?.value ?? 0n) > 0n);
+  assert.notEqual(quoted.quote.metrics.find((metric) => metric.metricId === 'volatility-spread-ppm')?.value, 0n);
+  assert.equal(quoted.quote.metrics.find((metric) => metric.metricId === 'maximum-loss-atoms')?.value, 106_001_000n);
+  assert.equal(quoted.quote.metrics.find((metric) => metric.metricId === 'maximum-profit-atoms')?.value, 393_999_000n);
   assert.equal(quoted.quote.totalMarginDelta.atoms, 2_000_000_000n);
   assert.equal(quoted.quote.netPackageOutcome.atoms, -106_001_000n);
 
@@ -675,4 +698,21 @@ test('prepares account and package adapter creation before option entry', async 
     'CREATE_PACKAGE_ADAPTER',
   ]);
   assert.equal(plan?.ready, false);
+});
+
+test('refuses option quotes when the bound oracle round is stale', async () => {
+  const documents: StoredStrategyPackageOrderDocuments = {
+    orderHashHex: protocolHex(orderHash),
+    graphHashHex: protocolHex(packageGraphHash(graph)),
+    order,
+    graph,
+    recordedAtMs: 1,
+  };
+  await assert.rejects(
+    () => createEvmOptionSpreadGeneralizedPricing(pricing(new StaleOracleChain())).quote({
+      documents,
+      currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW },
+    }),
+    /oracle round is stale/,
+  );
 });
