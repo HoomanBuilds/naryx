@@ -24,6 +24,10 @@ import {
   type FundingMarketPort,
 } from './funding-mirror.js';
 import { httpKeeperPorts, KeeperActionJournal, keeperClock, loadKeeperAutomationConfig, runKeeperAutomationPass } from './keeper-automation-pass.js';
+import { loadHyperliquidRecoverySigner, loadHyperliquidRecoveryTestnetConfig } from './hyperliquid-recovery-testnet-config.js';
+import { HyperliquidRecoverySqliteStore } from './hyperliquid-recovery-store.js';
+import { HyperliquidRecoveryTestnetRuntime, initializeHyperliquidRecoveryJournal } from './hyperliquid-recovery-testnet-runtime.js';
+import { createHyperliquidRecoveryTrustedTimeSources, HyperliquidRecoveryTrustedClock, HyperliquidSdkRecoveryClockReader, HyperliquidSdkRecoveryTestnetSubmitter } from './hyperliquid-recovery-testnet-ports.js';
 
 // Keeper automation dispatches only owner-authorized, kernel-approved actions to a loopback
 // executor, consuming each authorization once in its journal. It is off without its config.
@@ -58,6 +62,41 @@ const collector = new HyperliquidAuthoritativeEvidenceCollector(client);
 const runtime = new HyperliquidTestnetEvidenceRuntime(collector);
 const strategy = new HyperliquidStrategyAuthoritativeEvidenceCollector(client);
 const nettingResidual = new HyperliquidNettingResidualAuthoritativeEvidenceCollector(client);
+const recoveryConfig = loadHyperliquidRecoveryTestnetConfig();
+let recoveryStore: HyperliquidRecoverySqliteStore | undefined;
+let recovery: HyperliquidRecoveryTestnetRuntime | undefined;
+if (recoveryConfig !== undefined) {
+  recoveryStore = new HyperliquidRecoverySqliteStore({
+    databasePath: recoveryConfig.databasePath,
+  });
+  try {
+    initializeHyperliquidRecoveryJournal({
+      store: recoveryStore,
+      verifierIdentity: recoveryConfig.verifierIdentity,
+      agentWallet: recoveryConfig.agentWallet,
+      signerLeaseId: recoveryConfig.signerLeaseId,
+    });
+    const signer = loadHyperliquidRecoverySigner(
+      recoveryConfig.keyPath,
+      recoveryConfig.agentWallet,
+    );
+    const trustedTime = new HyperliquidRecoveryTrustedClock(
+      recoveryConfig.trustedTimePolicy,
+      createHyperliquidRecoveryTrustedTimeSources(new HyperliquidSdkRecoveryClockReader()),
+    );
+    recovery = new HyperliquidRecoveryTestnetRuntime({
+      store: recoveryStore,
+      trustedTime,
+      submitter: new HyperliquidSdkRecoveryTestnetSubmitter(signer),
+      agentWallet: recoveryConfig.agentWallet,
+      signerLeaseId: recoveryConfig.signerLeaseId,
+      vaultAddress: recoveryConfig.vaultAddress,
+    });
+  } catch (error) {
+    recoveryStore.close();
+    throw error;
+  }
+}
 
 // The code-hash monitor only reads chain state; it quarantines a scope in its incident journal
 // when reviewed code drifts or disappears.
@@ -73,6 +112,7 @@ const server = createHyperliquidTestnetEvidenceServer({
   runtime,
   strategy,
   nettingResidual,
+  ...(recovery === undefined ? {} : { recovery }),
   ...(dependencyIncidents === undefined ? {} : { dependencyIncidents }),
 });
 let monitorTimer: ReturnType<typeof setInterval> | undefined;
@@ -187,6 +227,7 @@ function shutdown(): void {
   if (positionTimer !== undefined) clearInterval(positionTimer);
   if (collateralTimer !== undefined) clearInterval(collateralTimer);
   server.close(() => {
+    recoveryStore?.close();
     process.exitCode = 0;
   });
 }

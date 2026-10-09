@@ -19,6 +19,9 @@ import type {
   HyperliquidNettingResidualEvidenceRequest,
 } from './hyperliquid-netting-residual-evidence.js';
 import type { DependencyIncidentStatusReader } from './dependency-incident-status.js';
+import type { HyperliquidPackageAttempt } from './index.js';
+import type { HyperliquidRecoveryExecutionPlan } from './hyperliquid-recovery-compiler.js';
+import type { HyperliquidRecoveryTestnetRuntime } from './hyperliquid-recovery-testnet-runtime.js';
 
 export const KEEPER_TESTNET_PREPARE_PATH = '/internal/keeper/hyperliquid-testnet/prepare';
 export const KEEPER_TESTNET_RECONCILE_PATH = '/internal/keeper/hyperliquid-testnet/reconcile';
@@ -26,6 +29,8 @@ export const KEEPER_TESTNET_STRATEGY_RECONCILE_PATH =
   '/internal/keeper/hyperliquid-testnet/strategy/reconcile';
 export const KEEPER_TESTNET_NETTING_RESIDUAL_RECONCILE_PATH =
   '/internal/keeper/hyperliquid-testnet/netting-residual/reconcile';
+export const KEEPER_TESTNET_RECOVERY_EXECUTE_PATH =
+  '/internal/keeper/hyperliquid-testnet/recovery/execute';
 export const KEEPER_DEPENDENCY_INCIDENT_STATUS_PATH = '/internal/keeper/dependency-incidents';
 
 const MAX_BODY_BYTES = 65_536;
@@ -39,6 +44,7 @@ export interface HyperliquidTestnetEvidenceHttpPorts {
   readonly runtime: Pick<HyperliquidTestnetEvidenceRuntime, 'prepare' | 'reconcile'>;
   readonly strategy?: Pick<HyperliquidStrategyAuthoritativeEvidenceCollector, 'collect'>;
   readonly nettingResidual?: Pick<HyperliquidNettingResidualAuthoritativeEvidenceCollector, 'collect'>;
+  readonly recovery?: Pick<HyperliquidRecoveryTestnetRuntime, 'execute'>;
   readonly dependencyIncidents?: Pick<DependencyIncidentStatusReader, 'current'>;
 }
 
@@ -195,6 +201,25 @@ function parseNettingResidualReconcileRequest(
     );
   }
   return value as unknown as HyperliquidNettingResidualEvidenceRequest;
+}
+
+function parseRecoveryExecuteRequest(value: unknown): Readonly<{
+  recoveryAttemptId: string;
+  sourceAttempt: HyperliquidPackageAttempt;
+  plan: HyperliquidRecoveryExecutionPlan;
+}> {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ['plan', 'recoveryAttemptId', 'sourceAttempt'])
+    || typeof value.recoveryAttemptId !== 'string'
+    || !isRecord(value.sourceAttempt)
+    || !isRecord(value.plan)) {
+    throw new KeeperRequestError('INVALID_REQUEST', 'Recovery execute request fields are invalid.');
+  }
+  return value as unknown as Readonly<{
+    recoveryAttemptId: string;
+    sourceAttempt: HyperliquidPackageAttempt;
+    plan: HyperliquidRecoveryExecutionPlan;
+  }>;
 }
 
 export function createHyperliquidTestnetEvidenceRequestHandler(
@@ -355,6 +380,36 @@ export function createHyperliquidTestnetEvidenceRequestHandler(
       } catch {
         reject(response, 400, 'INVALID_REQUEST',
           'Netting residual reconcile request failed closed.');
+      }
+      return;
+    }
+    if (url.pathname === KEEPER_TESTNET_RECOVERY_EXECUTE_PATH) {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST');
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
+        return;
+      }
+      if (ports.recovery === undefined) {
+        reject(response, 503, 'RECOVERY_EXECUTION_DISABLED',
+          'Hyperliquid Testnet recovery execution is unavailable.');
+        return;
+      }
+      let raw: unknown;
+      try {
+        raw = await readProtocolJson(request, 'keeper.recovery.execute.request');
+      } catch (error) {
+        if (error instanceof KeeperRequestError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        reject(response, 400, 'INVALID_JSON', 'Request body must be strict protocol JSON.');
+        return;
+      }
+      try {
+        const result = await ports.recovery.execute(parseRecoveryExecuteRequest(raw));
+        sendJson(response, 200, toProtocolJson(result, 'keeper.recovery.execute.result'));
+      } catch {
+        reject(response, 400, 'INVALID_REQUEST', 'Recovery execution request failed closed.');
       }
       return;
     }

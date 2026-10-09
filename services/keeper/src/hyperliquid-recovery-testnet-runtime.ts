@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { AbstractWalletError, TESTNET_API_URL, ValidationError } from '@nktkas/hyperliquid';
+import { ApiRequestError } from '@nktkas/hyperliquid/api/exchange';
 import type {
   HypercoreBatchedOrderAction,
   HyperliquidTrustedTimeDecision,
@@ -12,6 +14,7 @@ import {
   hyperliquidRecoveryReconciliationHandoff,
   markHyperliquidRecoverySubmittedUnknown,
   prepareHyperliquidRecoverySubmission,
+  rejectHyperliquidRecoverySubmission,
   registerHyperliquidRecoveryAgent,
   type HyperliquidRecoveryReconciliationHandoff,
   type HyperliquidRecoverySubmissionJournal,
@@ -24,7 +27,7 @@ import {
 import type { HyperliquidRecoveryVerifierIdentity } from './hyperliquid-recovery-validation.js';
 
 export const HYPERLIQUID_RECOVERY_TESTNET_EXCHANGE_URL =
-  'https://api.hyperliquid-testnet.xyz' as const;
+  TESTNET_API_URL;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 
 export interface HyperliquidRecoveryTrustedTimePort {
@@ -44,7 +47,8 @@ export interface HyperliquidRecoveryTestnetSubmitter {
 }
 
 export type HyperliquidRecoveryRuntimeResult = Readonly<{
-  status: 'ACKNOWLEDGED' | 'SUBMISSION_AMBIGUOUS' | 'RECONCILIATION_REQUIRED';
+  status: 'ACKNOWLEDGED' | 'SUBMISSION_REJECTED'
+    | 'SUBMISSION_AMBIGUOUS' | 'RECONCILIATION_REQUIRED';
   handoff: HyperliquidRecoveryReconciliationHandoff;
   errorCommitment: `0x${string}` | null;
 }>;
@@ -222,6 +226,39 @@ export class HyperliquidRecoveryTestnetRuntime {
         errorCommitment: null,
       });
     } catch (error) {
+      if (error instanceof ApiRequestError
+        || error instanceof AbstractWalletError
+        || error instanceof ValidationError) {
+        const rejectionId = errorCommitment(error);
+        try {
+          const rejected = rejectHyperliquidRecoverySubmission(snapshot.journal, {
+            expectedVersion: snapshot.journal.version,
+            recoveryAttemptId: attempt.recoveryAttemptId,
+            rejectionId,
+          });
+          snapshot = persist(this.#store, snapshot, rejected);
+          return Object.freeze({
+            status: 'SUBMISSION_REJECTED',
+            handoff: hyperliquidRecoveryReconciliationHandoff(
+              snapshot.journal,
+              input.recoveryAttemptId,
+            ),
+            errorCommitment: rejectionId,
+          });
+        } catch (journalError) {
+          return Object.freeze({
+            status: 'SUBMISSION_AMBIGUOUS',
+            handoff: hyperliquidRecoveryReconciliationHandoff(
+              snapshot.journal,
+              input.recoveryAttemptId,
+            ),
+            errorCommitment: errorCommitment([
+              rejectionId,
+              errorCommitment(journalError),
+            ]),
+          });
+        }
+      }
       return Object.freeze({
         status: 'SUBMISSION_AMBIGUOUS',
         handoff: hyperliquidRecoveryReconciliationHandoff(snapshot.journal, input.recoveryAttemptId),

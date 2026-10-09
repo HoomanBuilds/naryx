@@ -33,6 +33,8 @@ export * from './hyperliquid-recovery-reconciliation.js';
 export * from './hyperliquid-recovery-submission-journal.js';
 export * from './hyperliquid-recovery-store.js';
 export * from './hyperliquid-recovery-testnet-runtime.js';
+export * from './hyperliquid-recovery-testnet-ports.js';
+export * from './hyperliquid-recovery-testnet-config.js';
 export * from './hyperliquid-evidence-collector.js';
 export * from './hyperliquid-strategy-evidence.js';
 export * from './hyperliquid-netting-residual-evidence.js';

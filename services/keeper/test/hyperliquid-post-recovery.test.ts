@@ -989,7 +989,7 @@ test('keeps an ambiguous recovery submission durable and never blindly retries i
   let submissionCount = 0;
   const submitter = {
     environment: 'testnet' as const,
-    apiUrl: HYPERLIQUID_RECOVERY_TESTNET_EXCHANGE_URL,
+    apiUrl: HYPERLIQUID_RECOVERY_TESTNET_EXCHANGE_URL as typeof HYPERLIQUID_RECOVERY_TESTNET_EXCHANGE_URL,
     signerAddress: async () => recoveryAgent,
     submit: async () => {
       submissionCount += 1;

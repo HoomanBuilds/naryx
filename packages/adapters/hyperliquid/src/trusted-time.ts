@@ -37,6 +37,17 @@ export interface HyperliquidTrustedTimeDecision {
   readonly decisionHash: `0x${string}`;
 }
 
+export interface HyperliquidTrustedTimeDecisionInput {
+  readonly scope: string;
+  readonly observedAtMs: number;
+  readonly policy: HyperliquidTrustedTimePolicy;
+  readonly samples: readonly [
+    HyperliquidTrustedTimeSample,
+    HyperliquidTrustedTimeSample,
+    HyperliquidTrustedTimeSample,
+  ];
+}
+
 function requireCondition(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(`Hyperliquid trusted time failed: ${message}`);
 }
@@ -79,6 +90,30 @@ export function hyperliquidTrustedTimeDecisionJson(value: HyperliquidTrustedTime
     === `0x${createHash('sha256').update(encoded).digest('hex')}`,
   'trusted time decision hash does not match its contents');
   return encoded;
+}
+
+export function createHyperliquidTrustedTimeDecision(
+  input: HyperliquidTrustedTimeDecisionInput,
+): HyperliquidTrustedTimeDecision {
+  const policy = structuredClone(input.policy);
+  const samples = structuredClone(input.samples);
+  const orderedTimes = samples.map((sample) => sample.remoteTimeMs)
+    .sort((left, right) => left - right);
+  const selectedTimeMs = orderedTimes[1]!;
+  const unsigned = Object.freeze({
+    version: 1 as const,
+    scope: input.scope,
+    observedAtMs: input.observedAtMs,
+    selectedTimeMs,
+    sourceSpreadMs: orderedTimes[2]! - orderedTimes[0]!,
+    localClockSkewMs: Math.abs(input.observedAtMs - selectedTimeMs),
+    policy: Object.freeze(policy),
+    samples: Object.freeze(samples) as HyperliquidTrustedTimeDecision['samples'],
+  });
+  return requireHyperliquidTrustedTimeDecision(Object.freeze({
+    ...unsigned,
+    decisionHash: hyperliquidTrustedTimeDecisionHash(unsigned),
+  }));
 }
 
 export function requireHyperliquidTrustedTimeDecision(

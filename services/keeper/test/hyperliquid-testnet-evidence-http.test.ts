@@ -7,6 +7,7 @@ import {
   KEEPER_DEPENDENCY_INCIDENT_STATUS_PATH,
   KEEPER_TESTNET_NETTING_RESIDUAL_RECONCILE_PATH,
   KEEPER_TESTNET_PREPARE_PATH,
+  KEEPER_TESTNET_RECOVERY_EXECUTE_PATH,
   KEEPER_TESTNET_RECONCILE_PATH,
   KEEPER_TESTNET_STRATEGY_RECONCILE_PATH,
   type HyperliquidTestnetPrepareResult,
@@ -365,6 +366,48 @@ test('netting residual reconcile forwards only the exact evidence request', asyn
     assert.deepEqual(decoded.observation.filledSignedQuantityAtoms, {
       $naryxType: 'bigint', value: '100',
     });
+  } finally {
+    await close(server);
+  }
+});
+
+test('recovery execution is loopback-only, explicit, and protocol-JSON encoded', async () => {
+  let seenAttempt = '';
+  const server = createHyperliquidTestnetEvidenceServer({
+    runtime: {
+      prepare: async () => { throw new Error('must not be called'); },
+      reconcile: async () => { throw new Error('must not be called'); },
+    },
+    recovery: {
+      execute: async (input) => {
+        seenAttempt = input.recoveryAttemptId;
+        return {
+          status: 'RECONCILIATION_REQUIRED',
+          handoff: { nonce: 1_001n },
+          errorCommitment: null,
+        } as never;
+      },
+    },
+  });
+  const url = await listen(server);
+  try {
+    const response = await fetch(`${url}${KEEPER_TESTNET_RECOVERY_EXECUTE_PATH}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: stringifyProtocolJson({
+        recoveryAttemptId: 'recovery-attempt-1',
+        sourceAttempt: { status: 'RECOVERY_REQUIRED' },
+        plan: { mode: 'COMPLETE_MISSING_LEG' },
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(seenAttempt, 'recovery-attempt-1');
+    const body = await response.json() as {
+      status: string;
+      handoff: { nonce: unknown };
+    };
+    assert.equal(body.status, 'RECONCILIATION_REQUIRED');
+    assert.deepEqual(body.handoff.nonce, { $naryxType: 'bigint', value: '1001' });
   } finally {
     await close(server);
   }
