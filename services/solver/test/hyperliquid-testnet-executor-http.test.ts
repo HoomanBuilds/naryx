@@ -257,7 +257,7 @@ test('executor exposes generalized strategy stages without using the cash coordi
     version: 1,
     guarantee: 'BATCHED_IOC_WITH_BOUNDED_RECOVERY',
     domain: { domainId: 'hypercore:testnet', domainManifestVersion: 1, domainManifestHash: hash(1) },
-    batches: [{ stage: 0 }],
+    batches: [{ stage: 0 }, { stage: 1 }],
   } as unknown as HyperliquidStrategyExecutionPlan;
   const handoff = {
     attemptId: ATTEMPT_ID,
@@ -275,7 +275,7 @@ test('executor exposes generalized strategy stages without using the cash coordi
   } as unknown as HyperliquidTestnetAttemptHandoff;
   const runtimeResult: HyperliquidStrategyRuntimeResult = {
     attemptId: ATTEMPT_ID,
-    status: 'COMPLETED',
+    status: 'EVIDENCE_INCOMPLETE',
     completedStages: [0],
     stages: [{
       batchStage: 0,
@@ -324,6 +324,38 @@ test('executor exposes generalized strategy stages without using the cash coordi
         }],
         rawResponseCommitments: [{ sha256: EVIDENCE }],
       },
+    }, {
+      batchStage: 1,
+      submission: {
+        attemptId: ATTEMPT_ID,
+        batchStage: 1,
+        actionCommitment: ACTION,
+        requestCommitment: REQUEST,
+        status: 'SUBMISSION_ACKNOWLEDGED',
+        evidenceStatus: 'SUBMISSION_EVIDENCE_ONLY',
+        settlementStatus: 'RECONCILIATION_REQUIRED',
+        responseCommitment: `0x${'ef'.repeat(32)}`,
+        reconciliation: {
+          collector: 'HYPERLIQUID_TESTNET_AUTHORITATIVE_EVIDENCE',
+          attemptId: ATTEMPT_ID,
+          batchStage: 1,
+          account: { masterAccount: MASTER, tradingAccount: TRADING, accountKind: 'SUBACCOUNT' },
+          actionHash: ACTION,
+          actionCommitmentScheme: 'NARYX_CANONICAL_HYPERCORE_ACTION_SHA256_V1',
+          requestCommitment: REQUEST,
+          durableRevision: 'strategy-revision-2',
+          legIds: ['leg-1'],
+          clientOrderIds: [PERP_CLOID],
+        },
+      },
+      evidence: {
+        status: 'INCOMPLETE',
+        outcome: null,
+        reasons: ['FILL_HISTORY_INCOMPLETE'],
+        observedAtMs: null,
+        legs: [],
+        rawResponseCommitments: [{ sha256: EVIDENCE }],
+      },
     }],
   };
   let cashCalls = 0;
@@ -354,12 +386,16 @@ test('executor exposes generalized strategy stages without using the cash coordi
     );
     assert.equal(response.status, 200);
     assert.equal(response.body.status, 'STRATEGY_EXECUTION');
-    assert.equal(response.body.packageStatus, 'COMPLETED');
+    assert.equal(response.body.packageStatus, 'EVIDENCE_INCOMPLETE');
     assert.deepEqual(response.body.completedStages, [0]);
     const stages = response.body.stages as Array<Record<string, unknown>>;
     assert.equal(stages[0]?.submissionStatus, 'ACKNOWLEDGED');
     assert.equal(((stages[0]?.evidence as Record<string, unknown>).legs as Array<Record<string, unknown>>)[0]
       ?.filledSignedBaseAtoms, '100');
+    assert.deepEqual(
+      (stages[1]?.evidence as Record<string, unknown>).legs,
+      [],
+    );
     assert.equal(cashCalls, 0);
     assert.equal(strategyCalls, 1);
   } finally {

@@ -1036,14 +1036,16 @@ HyperliquidTestnetStrategyStageEvidence {
   }
   const evidence = value.evidence;
   const reconciliation = submission.reconciliation;
-  requireCondition(submission.reconciliation !== null && evidence.legs.length > 0
-    && evidence.legs.length <= 16, 'INVALID_RESULT', 'strategy evidence legs are invalid');
+  requireCondition(submission.reconciliation !== null && evidence.legs.length <= 16
+    && (evidence.status === 'INCOMPLETE' || evidence.legs.length > 0),
+  'INVALID_RESULT', 'strategy evidence legs are invalid');
   requireCondition(reconciliation !== null
     && reconciliation.batchStage === value.batchStage
     && reconciliation.actionHash === actionCommitment
     && reconciliation.requestCommitment === requestCommitment
-    && reconciliation.legIds.length === evidence.legs.length
-    && reconciliation.clientOrderIds.length === evidence.legs.length,
+    && (evidence.status === 'INCOMPLETE' || reconciliation.legIds.length === evidence.legs.length)
+    && (evidence.status === 'INCOMPLETE'
+      || reconciliation.clientOrderIds.length === evidence.legs.length),
   'INVALID_RESULT', 'strategy reconciliation handoff is invalid');
   requireCondition((evidence.status === 'COMPLETE' && evidence.outcome !== null)
     || (evidence.status === 'INCOMPLETE' && evidence.outcome === null),
