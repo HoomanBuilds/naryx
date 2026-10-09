@@ -335,6 +335,9 @@ test('automatically submits and reconciles deterministic recovery from signed so
           },
         };
       },
+      async continue() {
+        throw new Error('continuation must not be called');
+      },
     },
     recoveryReconciliation: {
       async reconcile(input) {
@@ -406,6 +409,182 @@ test('automatically submits and reconciles deterministic recovery from signed so
       reconciliationInputs[0]!.recoveryAttemptId,
       executionInputs[0]!.recoveryAttemptId,
     );
+  } finally {
+    loaded.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('automatically continues partial recovery with the keeper remaining caps', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'naryx-hyperliquid-runtime-continuation-'));
+  const databasePath = join(directory, 'submission.sqlite');
+  const nowMs = 1_000_000;
+  const holder = 'attempt-runtime-continuation-0004';
+  const key = 'idem-runtime-continuation-0004';
+  const source: HyperliquidTestnetExecutorResult = {
+    attemptId: holder,
+    idempotencyKey: key,
+    domain: 'hypercore:testnet',
+    environment: 'TESTNET',
+    status: 'RECONCILED',
+    submissionStatus: 'ACKNOWLEDGED',
+    packageStatus: 'RECOVERY_REQUIRED',
+    reasons: ['ONE_LEG_FILLED'],
+    actionCommitment: `0x${'51'.repeat(32)}`,
+    requestCommitment: `0x${'52'.repeat(32)}`,
+    rawEvidenceCommitments: [],
+  };
+  const recoveryAsset = {
+    assetId: 'hypercore:testnet:USDC',
+    assetManifestHash: new Uint8Array(32).fill(9),
+    decimals: 6,
+  };
+  const sourceAttempt = {
+    version: 1,
+    status: 'RECOVERY_REQUIRED',
+    plan: {
+      recoveryPolicy: {
+        maxRecoveryCostCaps: [{ asset: recoveryAsset, maxAtoms: 25n }],
+        maxAggregateRecoveryLoss: { asset: recoveryAsset, atoms: 1_000n },
+      },
+    },
+  };
+  const initialInputs: Record<string, unknown>[] = [];
+  const continuationInputs: Record<string, unknown>[] = [];
+  const reconciliationInputs: Record<string, unknown>[] = [];
+  const loaded = await loadHyperliquidTestnetExecutorRuntime(enabledEnvironment(databasePath), {
+    attempts: attempts(),
+    signer: signer(),
+    marketReader: marketReader(),
+    trustedTime: trustedTimePort(nowMs),
+    currentTimeMs: () => nowMs,
+    transportFactory: transport,
+    laneReconcileIntervalMs: 5,
+    recoveryObservation: async () => ({
+      reconciliation: { status: 'RECONCILED', attempt: sourceAttempt },
+      result: source,
+    }),
+    recoveryExecution: {
+      async execute(input) {
+        initialInputs.push(input as unknown as Record<string, unknown>);
+        return {
+          plan: { recoverySequence: 0 },
+          submission: {
+            status: 'ACKNOWLEDGED',
+            handoff: { recoveryAttemptId: input.recoveryAttemptId, recoverySequence: 0 },
+            errorCommitment: null,
+          },
+        };
+      },
+      async continue(input) {
+        continuationInputs.push(input as unknown as Record<string, unknown>);
+        return {
+          plan: { recoverySequence: input.recoverySequence },
+          submission: {
+            status: 'ACKNOWLEDGED',
+            handoff: {
+              recoveryAttemptId: input.recoveryAttemptId,
+              recoverySequence: input.recoverySequence,
+            },
+            errorCommitment: null,
+          },
+        };
+      },
+    },
+    recoveryReconciliation: {
+      async reconcile(input) {
+        if (initialInputs.length === 0) throw new Error('recovery attempt is unknown');
+        reconciliationInputs.push(input as unknown as Record<string, unknown>);
+        const initialRecoveryAttemptId = String(initialInputs[0]!.recoveryAttemptId);
+        if (input.recoveryAttemptId === initialRecoveryAttemptId) {
+          return {
+            status: 'RECONCILED',
+            attempt: {
+              version: 1,
+              status: 'RECOVERY_REQUIRED',
+              reasons: ['INCOMPLETE_RECOVERY'],
+              acceptedEvidence: { evidenceVersion: 2n, observedAtMs: BigInt(nowMs) },
+              lockEvidence: null,
+              nextRecoveryObligation: {
+                recoverySequence: 1,
+                remainingRecoveryCostCaps: [{ asset: recoveryAsset, atoms: 7n }],
+                remainingAggregateLoss: { asset: recoveryAsset, atoms: 800n },
+              },
+            },
+            accountObservation: { orders: [] },
+            observedFills: [],
+            rawResponseCommitments: [],
+          };
+        }
+        if (continuationInputs.length === 0
+          || input.recoveryAttemptId !== continuationInputs[0]!.recoveryAttemptId) {
+          throw new Error('continuation attempt is unknown');
+        }
+        return {
+          status: 'RECONCILED',
+          attempt: {
+            version: 1,
+            status: 'RECOVERED_FLAT',
+            reasons: [],
+            acceptedEvidence: { evidenceVersion: 3n, observedAtMs: BigInt(nowMs) },
+            lockEvidence: null,
+            nextRecoveryObligation: null,
+          },
+          accountObservation: { orders: [] },
+          observedFills: [],
+          rawResponseCommitments: [],
+        };
+      },
+    },
+  });
+  try {
+    const lane = loaded.runtimeFactory?.().lane;
+    assert.ok(lane);
+    await lane.run(holder, key, async () => source);
+    lane.recordReconcileContext(holder, stringifyProtocolJson({
+      prepared: {
+        attemptId: holder,
+        checkpoint: {
+          version: 1,
+          observedAtMs: nowMs - 100,
+          baseSpotBalanceAtoms: 0n,
+          perpetualPositionAtoms: 0n,
+        },
+      },
+      handoff: {},
+      binding: {
+        spotUniverseIndex: 0,
+        spotTokenIndex: 1,
+        perpetualAssetIndex: 2,
+        quoteTokenIndex: 0,
+      },
+      window: {
+        startTimeMs: nowMs - 100,
+        endTimeMs: nowMs,
+        nowMs,
+        maxEvidenceAgeMs: 5_000,
+        maxSnapshotSkewMs: 500,
+        maxFillPages: 2,
+      },
+    }));
+    for (let poll = 0; poll < 100 && lane.laneState().state !== 'FREE'; poll += 1) {
+      await delay(5);
+    }
+    assert.equal(lane.laneState().state, 'FREE');
+    assert.equal(initialInputs.length, 1);
+    assert.equal(continuationInputs.length, 1);
+    assert.equal(continuationInputs[0]!.previousRecoveryAttemptId,
+      initialInputs[0]!.recoveryAttemptId);
+    assert.equal(continuationInputs[0]!.recoverySequence, 1);
+    assert.deepEqual(continuationInputs[0]!.projectedRecoveryCosts, [{
+      asset: recoveryAsset,
+      atoms: 7n,
+    }]);
+    assert.deepEqual(continuationInputs[0]!.projectedAggregateLoss, {
+      asset: recoveryAsset,
+      atoms: 800n,
+    });
+    assert.equal(reconciliationInputs.length, 2);
   } finally {
     loaded.close();
     rmSync(directory, { recursive: true, force: true });

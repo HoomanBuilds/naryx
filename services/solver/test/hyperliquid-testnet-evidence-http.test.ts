@@ -12,6 +12,7 @@ import {
   SOLVER_TESTNET_EVIDENCE_PREPARE_PATH,
   SOLVER_TESTNET_EVIDENCE_RECONCILE_PATH,
   SOLVER_TESTNET_NETTING_RESIDUAL_EVIDENCE_RECONCILE_PATH,
+  SOLVER_TESTNET_RECOVERY_CONTINUE_PATH,
   SOLVER_TESTNET_RECOVERY_EXECUTE_PATH,
   SOLVER_TESTNET_RECOVERY_RECONCILE_PATH,
   SOLVER_TESTNET_STRATEGY_EVIDENCE_RECONCILE_PATH,
@@ -387,6 +388,56 @@ test('recovery execution forwards a reconciled source attempt and validates the 
     });
     assert.equal(result.plan.recoverySequence, 0);
     assert.equal(result.submission.status, 'ACKNOWLEDGED');
+  } finally {
+    await server.close();
+  }
+});
+
+test('recovery continuation forwards only durable lineage coordinates and remaining bounds', async () => {
+  const asset = assetRef('usdc', new Uint8Array(32).fill(9), 6);
+  const server = await startServer((captured, request, response) => {
+    assert.equal(request.method, 'POST');
+    assert.equal(request.url, SOLVER_TESTNET_RECOVERY_CONTINUE_PATH);
+    const decoded = parseProtocolJson(captured.rawBody,
+      'test.recovery.continue.request') as Record<string, unknown>;
+    assert.deepEqual(Object.keys(decoded).sort(), [
+      'previousRecoveryAttemptId', 'projectedAggregateLoss', 'projectedRecoveryCosts',
+      'recoveryAttemptId', 'recoverySequence',
+    ]);
+    assert.equal(decoded.previousRecoveryAttemptId, 'recovery-attempt-0001');
+    assert.equal(decoded.recoverySequence, 1);
+    jsonResponse(response, 200, stringifyProtocolJson({
+      plan: {
+        version: 1,
+        guarantee: 'NARYX_UNSIGNED_HYPERCORE_RECOVERY_V1',
+        domain: {
+          domainId: 'hypercore:testnet',
+          domainManifestVersion: 1,
+          domainManifestHash: new Uint8Array(32).fill(1),
+        },
+        recoverySequence: 1,
+        actionExpiryMs: 1_001_000n,
+        recoveryDeadlineMs: 1_010_000n,
+        orders: [{ action: 'COMPLETE_MISSING_LEG' }],
+      },
+      submission: {
+        status: 'ACKNOWLEDGED',
+        handoff: { recoveryAttemptId: 'recovery-attempt-0002', recoverySequence: 1 },
+        errorCommitment: null,
+      },
+    }, 'test.recovery.continue.response'));
+  });
+  try {
+    const client = new HyperliquidRecoveryTestnetHttpExecution({ keeperOrigin: server.origin });
+    const result = await client.continue({
+      recoveryAttemptId: 'recovery-attempt-0002',
+      previousRecoveryAttemptId: 'recovery-attempt-0001',
+      recoverySequence: 1,
+      projectedRecoveryCosts: [{ asset, atoms: 7n }],
+      projectedAggregateLoss: { asset, atoms: 80n },
+    });
+    assert.equal(result.plan.recoverySequence, 1);
+    assert.equal(result.submission.handoff.recoveryAttemptId, 'recovery-attempt-0002');
   } finally {
     await server.close();
   }

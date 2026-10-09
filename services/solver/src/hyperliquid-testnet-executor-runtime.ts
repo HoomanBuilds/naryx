@@ -30,6 +30,7 @@ import {
   HyperliquidRecoveryTestnetHttpReconciliation,
   HyperliquidTestnetHttpStructuralEvidence,
   HyperliquidStrategyTestnetHttpEvidence,
+  type HyperliquidRecoveryContinueInput,
   type HyperliquidRecoveryExecuteInput,
   type HyperliquidRecoveryExecuteResult,
   type HyperliquidRecoveryReconcileInput,
@@ -136,6 +137,7 @@ export interface HyperliquidTestnetExecutorRuntimeDependencies {
   }> | undefined>;
   readonly recoveryExecution?: Readonly<{
     execute(input: HyperliquidRecoveryExecuteInput): Promise<HyperliquidRecoveryExecuteResult>;
+    continue(input: HyperliquidRecoveryContinueInput): Promise<HyperliquidRecoveryExecuteResult>;
   }>;
   readonly recoveryReconciliation?: Readonly<{
     reconcile(input: HyperliquidRecoveryReconcileInput): Promise<HyperliquidRecoveryReconcileResult>;
@@ -675,6 +677,7 @@ function qualifyStrategyShape(
 
 /** How often a blocked shared lane is re-reconciled for automatic release. */
 const LANE_RECONCILE_INTERVAL_MS = 30_000;
+const MAX_AUTOMATIC_RECOVERY_ADVANCES_PER_TICK = 8;
 
 function automaticRecoveryAttemptId(sourceAttemptId: string, recoverySequence: number): string {
   const digest = createHash('sha256')
@@ -685,6 +688,49 @@ function automaticRecoveryAttemptId(sourceAttemptId: string, recoverySequence: n
     .update(recoverySequence.toString(), 'ascii')
     .digest('hex');
   return `recovery_${digest.slice(0, 32)}`;
+}
+
+function automaticRecoveryBound(
+  value: unknown,
+  amountField: 'maxAtoms' | 'atoms',
+  context: string,
+): Readonly<{ asset: ReturnType<typeof assetRef>; atoms: bigint }> {
+  const atoms = isRecord(value) ? value[amountField] : undefined;
+  if (!isRecord(value) || !isRecord(value.asset)
+    || typeof atoms !== 'bigint' || atoms < 0n) {
+    throw new Error(`${context} is invalid`);
+  }
+  const rawAsset = value.asset;
+  if (typeof rawAsset.assetId !== 'string'
+    || (typeof rawAsset.assetManifestHash !== 'string'
+      && !(rawAsset.assetManifestHash instanceof Uint8Array))
+    || typeof rawAsset.decimals !== 'number') {
+    throw new Error(`${context}.asset is invalid`);
+  }
+  return Object.freeze({
+    asset: assetRef(
+      rawAsset.assetId,
+      rawAsset.assetManifestHash,
+      rawAsset.decimals,
+      `${context}.asset`,
+    ),
+    atoms,
+  });
+}
+
+function uniqueRecoveryCosts(
+  values: readonly unknown[],
+  amountField: 'maxAtoms' | 'atoms',
+  context: string,
+): readonly Readonly<{ asset: ReturnType<typeof assetRef>; atoms: bigint }>[] {
+  const costs = Object.freeze(values.map((value, index) =>
+    automaticRecoveryBound(value, amountField, `${context}[${index}]`)));
+  const identities = costs.map((item) =>
+    `${item.asset.assetId}:${Buffer.from(item.asset.assetManifestHash).toString('hex')}:${item.asset.decimals}`);
+  if (new Set(identities).size !== identities.length) {
+    throw new Error(`${context} assets are duplicated`);
+  }
+  return costs;
 }
 
 function automaticRecoveryBounds(sourceAttempt: Readonly<Record<string, unknown>>): Readonly<{
@@ -705,46 +751,56 @@ function automaticRecoveryBounds(sourceAttempt: Readonly<Record<string, unknown>
     || !isRecord(lossCap) || typeof lossCap.atoms !== 'bigint' || lossCap.atoms < 0n) {
     throw new Error('fresh authoritative recovery bounds are invalid');
   }
-  const bound = (
-    value: unknown,
-    amountField: 'maxAtoms' | 'atoms',
-    context: string,
-  ) => {
-    const atoms = isRecord(value) ? value[amountField] : undefined;
-    if (!isRecord(value) || !isRecord(value.asset)
-      || typeof atoms !== 'bigint' || atoms < 0n) {
-      throw new Error(`${context} is invalid`);
-    }
-    const rawAsset = value.asset;
-    if (typeof rawAsset.assetId !== 'string'
-      || (typeof rawAsset.assetManifestHash !== 'string'
-        && !(rawAsset.assetManifestHash instanceof Uint8Array))
-      || typeof rawAsset.decimals !== 'number') {
-      throw new Error(`${context}.asset is invalid`);
-    }
-    return Object.freeze({
-      asset: assetRef(
-        rawAsset.assetId,
-        rawAsset.assetManifestHash,
-        rawAsset.decimals,
-        `${context}.asset`,
-      ),
-      atoms,
-    });
-  };
-  const projectedRecoveryCosts = Object.freeze(costCaps.map((cap, index) =>
-    bound(cap, 'maxAtoms', `sourceAttempt.plan.recoveryPolicy.maxRecoveryCostCaps[${index}]`)));
-  const identities = projectedRecoveryCosts.map((item) =>
-    `${item.asset.assetId}:${Buffer.from(item.asset.assetManifestHash).toString('hex')}:${item.asset.decimals}`);
-  if (new Set(identities).size !== identities.length) {
-    throw new Error('fresh authoritative recovery cost assets are duplicated');
-  }
+  const projectedRecoveryCosts = uniqueRecoveryCosts(
+    costCaps,
+    'maxAtoms',
+    'sourceAttempt.plan.recoveryPolicy.maxRecoveryCostCaps',
+  );
   return Object.freeze({
     projectedRecoveryCosts,
-    projectedAggregateLoss: bound(
+    projectedAggregateLoss: automaticRecoveryBound(
       lossCap,
       'atoms',
       'sourceAttempt.plan.recoveryPolicy.maxAggregateRecoveryLoss',
+    ),
+  });
+}
+
+function automaticContinuationBounds(
+  recoveryAttempt: Readonly<Record<string, unknown>>,
+  currentSequence: number,
+): Readonly<{
+  recoverySequence: number;
+  projectedRecoveryCosts: readonly Readonly<{
+    asset: ReturnType<typeof assetRef>;
+    atoms: bigint;
+  }>[];
+  projectedAggregateLoss: Readonly<{
+    asset: ReturnType<typeof assetRef>;
+    atoms: bigint;
+  }>;
+}> {
+  const obligation = recoveryAttempt.nextRecoveryObligation;
+  if (!isRecord(obligation)
+    || !Number.isInteger(obligation.recoverySequence)
+    || Number(obligation.recoverySequence) !== currentSequence + 1
+    || !Array.isArray(obligation.remainingRecoveryCostCaps)
+    || obligation.remainingRecoveryCostCaps.length < 1
+    || obligation.remainingRecoveryCostCaps.length > 16
+    || !isRecord(obligation.remainingAggregateLoss)) {
+    throw new Error('fresh authoritative continuation obligation is invalid');
+  }
+  return Object.freeze({
+    recoverySequence: Number(obligation.recoverySequence),
+    projectedRecoveryCosts: uniqueRecoveryCosts(
+      obligation.remainingRecoveryCostCaps,
+      'atoms',
+      'recoveryAttempt.nextRecoveryObligation.remainingRecoveryCostCaps',
+    ),
+    projectedAggregateLoss: automaticRecoveryBound(
+      obligation.remainingAggregateLoss,
+      'atoms',
+      'recoveryAttempt.nextRecoveryObligation.remainingAggregateLoss',
     ),
   });
 }
@@ -1061,11 +1117,12 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         recoveryReconcileInput(context, recoveryAttemptId, currentTimeMs),
       );
       if (reconciliation.status === 'EVIDENCE_INCOMPLETE') return null;
-      return hyperliquidRecoveryExecutorResult(
+      const result = hyperliquidRecoveryExecutorResult(
         holder.result,
         recoveryAttemptId,
         reconciliation,
       );
+      return result === undefined ? undefined : Object.freeze({ reconciliation, result });
     };
     const recoverBlockedHolder = async (
       holder: NonNullable<ReturnType<typeof lanePort.blockedHolder>>,
@@ -1093,18 +1150,6 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         recoverySequence,
         ...bounds,
       });
-      const result = await reconcileRecoveryAttempt(holder, recoveryAttemptId);
-      if (result !== undefined && result !== null && hyperliquidLaneReleases(result)) {
-        lanePort.release({
-          holderAttemptId: holder.attemptId,
-          disposition: 'FINAL',
-          reason: 'automatic: authoritative recovery reconciliation is terminal',
-          result,
-        });
-        process.stdout.write(
-          `Hyperliquid lane released automatically after ${holder.attemptId} recovered\n`,
-        );
-      }
     };
     // The shared account stays serialized until fresh authoritative evidence proves a final source
     // result or a terminal recovery. Interrupted, incomplete, and manual outcomes stay blocked.
@@ -1114,39 +1159,59 @@ export async function loadHyperliquidTestnetExecutorRuntime(
       try {
         const holder = lanePort.blockedHolder();
         if (holder !== undefined && holder.result !== null) {
-          const recoveryAttemptId = automaticRecoveryAttemptId(holder.attemptId, 0);
+          let recoverySequence = 0;
+          let recoveryAttemptId = automaticRecoveryAttemptId(holder.attemptId, recoverySequence);
+          let recovery;
           try {
-            const recoveryResult = await reconcileRecoveryAttempt(holder, recoveryAttemptId);
-            if (recoveryResult === null) return;
-            if (recoveryResult !== undefined) {
-              if (hyperliquidLaneReleases(recoveryResult)) {
-                lanePort.release({
-                  holderAttemptId: holder.attemptId,
-                  disposition: 'FINAL',
-                  reason: 'automatic: authoritative recovery reconciliation is terminal',
-                  result: recoveryResult,
-                });
-                process.stdout.write(
-                  `Hyperliquid lane released automatically after ${holder.attemptId} recovered\n`,
-                );
-              }
+            recovery = await reconcileRecoveryAttempt(holder, recoveryAttemptId);
+          } catch {
+            const observation = await freshHolderObservation(holder.result);
+            const result = observation?.result;
+            if (result !== undefined && hyperliquidLaneReleases(result)) {
+              lanePort.release({
+                holderAttemptId: holder.attemptId,
+                disposition: 'FINAL',
+                reason: 'automatic: fresh reconciliation shows the outcome is final',
+                result,
+              });
+              process.stdout.write(
+                `Hyperliquid lane released automatically after ${holder.attemptId} reconciled final\n`,
+              );
+            } else if (observation !== undefined) {
+              await recoverBlockedHolder(holder, observation);
+            }
+            return;
+          }
+          for (let advance = 0;
+            advance < MAX_AUTOMATIC_RECOVERY_ADVANCES_PER_TICK;
+            advance += 1) {
+            if (recovery === null || recovery === undefined) return;
+            if (hyperliquidLaneReleases(recovery.result)) {
+              lanePort.release({
+                holderAttemptId: holder.attemptId,
+                disposition: 'FINAL',
+                reason: 'automatic: authoritative recovery reconciliation is terminal',
+                result: recovery.result,
+              });
+              process.stdout.write(
+                `Hyperliquid lane released automatically after ${holder.attemptId} recovered\n`,
+              );
               return;
             }
-          } catch {
-            // No recovery is known yet, so fresh source evidence decides whether to create one.
-          }
-          const observation = await freshHolderObservation(holder.result);
-          const result = observation?.result;
-          if (result !== undefined && hyperliquidLaneReleases(result)) {
-            lanePort.release({
-              holderAttemptId: holder.attemptId,
-              disposition: 'FINAL',
-              reason: 'automatic: fresh reconciliation shows the outcome is final',
-              result,
+            if (recovery.result.recoveryStatus !== 'RECOVERY_REQUIRED') return;
+            const continuation = automaticContinuationBounds(
+              recovery.reconciliation.attempt,
+              recoverySequence,
+            );
+            const previousRecoveryAttemptId = recoveryAttemptId;
+            recoverySequence = continuation.recoverySequence;
+            recoveryAttemptId = automaticRecoveryAttemptId(holder.attemptId, recoverySequence);
+            await recoveryExecution.continue({
+              recoveryAttemptId,
+              previousRecoveryAttemptId,
+              ...continuation,
             });
-            process.stdout.write(`Hyperliquid lane released automatically after ${holder.attemptId} reconciled final\n`);
-          } else if (observation !== undefined) {
-            await recoverBlockedHolder(holder, observation);
+            recovery = await reconcileRecoveryAttempt(holder, recoveryAttemptId);
           }
         }
       } catch {

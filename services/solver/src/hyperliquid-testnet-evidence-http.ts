@@ -37,6 +37,8 @@ export const SOLVER_TESTNET_NETTING_RESIDUAL_EVIDENCE_RECONCILE_PATH =
   '/internal/keeper/hyperliquid-testnet/netting-residual/reconcile';
 export const SOLVER_TESTNET_RECOVERY_EXECUTE_PATH =
   '/internal/keeper/hyperliquid-testnet/recovery/execute';
+export const SOLVER_TESTNET_RECOVERY_CONTINUE_PATH =
+  '/internal/keeper/hyperliquid-testnet/recovery/continue';
 export const SOLVER_TESTNET_RECOVERY_RECONCILE_PATH =
   '/internal/keeper/hyperliquid-testnet/recovery/reconcile';
 
@@ -118,6 +120,14 @@ export type HyperliquidRecoveryBound = Readonly<{
 export type HyperliquidRecoveryExecuteInput = Readonly<{
   recoveryAttemptId: string;
   sourceAttempt: Readonly<Record<string, unknown>>;
+  recoverySequence: number;
+  projectedRecoveryCosts: readonly HyperliquidRecoveryBound[];
+  projectedAggregateLoss: HyperliquidRecoveryBound;
+}>;
+
+export type HyperliquidRecoveryContinueInput = Readonly<{
+  recoveryAttemptId: string;
+  previousRecoveryAttemptId: string;
   recoverySequence: number;
   projectedRecoveryCosts: readonly HyperliquidRecoveryBound[];
   projectedAggregateLoss: HyperliquidRecoveryBound;
@@ -641,6 +651,28 @@ export class HyperliquidRecoveryTestnetHttpExecution {
       );
     } catch {
       throw new Error('keeper recovery execution failed');
+    }
+  }
+
+  async continue(input: HyperliquidRecoveryContinueInput):
+  Promise<HyperliquidRecoveryExecuteResult> {
+    let decoded: unknown;
+    try {
+      decoded = await postProtocolJson(
+        this.#origin,
+        SOLVER_TESTNET_RECOVERY_CONTINUE_PATH,
+        input,
+        'solver.recovery.continue',
+        this.#timeoutMs,
+        this.#fetch,
+      );
+      return decodeRecoveryExecuteResult(
+        decoded,
+        input.recoveryAttemptId,
+        input.recoverySequence,
+      );
+    } catch {
+      throw new Error('keeper recovery continuation failed');
     }
   }
 }
