@@ -40,3 +40,10 @@ node --env-file=/absolute/path/to/hyperliquid-executor.env \
 
 The runner is Testnet-only. Hyperliquid does not accept spot and perpetual orders in one action, so
 the evidence truthfully reports ordered settlement with bounded recovery rather than atomicity.
+
+## Base Sepolia package lifecycle
+
+`npm run demo:base-sepolia-testnet` uses the externally stored active-solver test key and the
+committed Base Sepolia release to prove a deliberately failed atomic entry rolls every contract
+state change back, then opens and closes a 0.001 ETH cash-and-carry package. It writes evidence
+outside the repository and labels the deployed perpetual leg `BASE_SEPOLIA_CONFORMANCE_ONLY`.

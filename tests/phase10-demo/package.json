@@ -5,6 +5,7 @@
   "main": "src/run-demo.js",
   "scripts": {
     "demo": "node src/run-demo.js",
+    "demo:base-sepolia-testnet": "npm --prefix ../evm-local run test:base-sepolia",
     "demo:hyperliquid-testnet": "node src/run-hyperliquid-testnet.js",
     "test": "node --test test/*.test.js"
   },

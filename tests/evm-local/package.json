@@ -5,7 +5,8 @@
   "main": "src/environment.js",
   "scripts": {
     "test": "node --test test/*.test.js",
-    "test:scenario": "node --test test/scenario.test.js"
+    "test:scenario": "node --test test/scenario.test.js",
+    "test:base-sepolia": "node src/run-base-sepolia-testnet.js"
   },
   "keywords": [],
   "author": "",
