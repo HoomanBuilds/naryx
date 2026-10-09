@@ -1154,20 +1154,31 @@ export async function loadHyperliquidTestnetExecutorRuntime(
     // The shared account stays serialized until fresh authoritative evidence proves a final source
     // result or a terminal recovery. Interrupted, incomplete, and manual outcomes stay blocked.
     let reconcileTimer: NodeJS.Timeout | undefined;
+    let automaticRecoveryCursor: Readonly<{
+      holderAttemptId: string;
+      recoverySequence: number;
+      recoveryAttemptId: string;
+    }> | undefined;
     let closed = false;
     const reconcileBlockedLane = async () => {
       try {
         const holder = lanePort.blockedHolder();
         if (holder !== undefined && holder.result !== null) {
-          let recoverySequence = 0;
-          let recoveryAttemptId = automaticRecoveryAttemptId(holder.attemptId, recoverySequence);
+          if (automaticRecoveryCursor?.holderAttemptId !== holder.attemptId) {
+            automaticRecoveryCursor = undefined;
+          }
+          let recoverySequence = automaticRecoveryCursor?.recoverySequence ?? 0;
+          let recoveryAttemptId = automaticRecoveryCursor?.recoveryAttemptId
+            ?? automaticRecoveryAttemptId(holder.attemptId, recoverySequence);
           let recovery;
           try {
             recovery = await reconcileRecoveryAttempt(holder, recoveryAttemptId);
           } catch {
+            if (recoverySequence > 0) return;
             const observation = await freshHolderObservation(holder.result);
             const result = observation?.result;
             if (result !== undefined && hyperliquidLaneReleases(result)) {
+              automaticRecoveryCursor = undefined;
               lanePort.release({
                 holderAttemptId: holder.attemptId,
                 disposition: 'FINAL',
@@ -1185,8 +1196,16 @@ export async function loadHyperliquidTestnetExecutorRuntime(
           for (let advance = 0;
             advance < MAX_AUTOMATIC_RECOVERY_ADVANCES_PER_TICK;
             advance += 1) {
-            if (recovery === null || recovery === undefined) return;
+            if (recovery === null || recovery === undefined) {
+              automaticRecoveryCursor = Object.freeze({
+                holderAttemptId: holder.attemptId,
+                recoverySequence,
+                recoveryAttemptId,
+              });
+              return;
+            }
             if (hyperliquidLaneReleases(recovery.result)) {
+              automaticRecoveryCursor = undefined;
               lanePort.release({
                 holderAttemptId: holder.attemptId,
                 disposition: 'FINAL',
@@ -1206,6 +1225,11 @@ export async function loadHyperliquidTestnetExecutorRuntime(
             const previousRecoveryAttemptId = recoveryAttemptId;
             recoverySequence = continuation.recoverySequence;
             recoveryAttemptId = automaticRecoveryAttemptId(holder.attemptId, recoverySequence);
+            automaticRecoveryCursor = Object.freeze({
+              holderAttemptId: holder.attemptId,
+              recoverySequence,
+              recoveryAttemptId,
+            });
             await recoveryExecution.continue({
               recoveryAttemptId,
               previousRecoveryAttemptId,
@@ -1213,6 +1237,8 @@ export async function loadHyperliquidTestnetExecutorRuntime(
             });
             recovery = await reconcileRecoveryAttempt(holder, recoveryAttemptId);
           }
+        } else {
+          automaticRecoveryCursor = undefined;
         }
       } catch {
         // Not final yet, or evidence is unavailable: the lane stays blocked and is retried.

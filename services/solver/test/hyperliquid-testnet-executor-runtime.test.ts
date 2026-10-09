@@ -415,7 +415,7 @@ test('automatically submits and reconciles deterministic recovery from signed so
   }
 });
 
-test('automatically continues partial recovery with the keeper remaining caps', async () => {
+test('automatically continues recovery beyond one bounded reconciliation tick', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'naryx-hyperliquid-runtime-continuation-'));
   const databasePath = join(directory, 'submission.sqlite');
   const nowMs = 1_000_000;
@@ -496,17 +496,28 @@ test('automatically continues partial recovery with the keeper remaining caps', 
         if (initialInputs.length === 0) throw new Error('recovery attempt is unknown');
         reconciliationInputs.push(input as unknown as Record<string, unknown>);
         const initialRecoveryAttemptId = String(initialInputs[0]!.recoveryAttemptId);
-        if (input.recoveryAttemptId === initialRecoveryAttemptId) {
+        const recoverySequence = input.recoveryAttemptId === initialRecoveryAttemptId
+          ? 0
+          : continuationInputs.findIndex((candidate) =>
+              candidate.recoveryAttemptId === input.recoveryAttemptId) + 1;
+        if (recoverySequence < 0
+          || (recoverySequence === 0 && input.recoveryAttemptId !== initialRecoveryAttemptId)) {
+          throw new Error('continuation attempt is unknown');
+        }
+        if (recoverySequence < 9) {
           return {
             status: 'RECONCILED',
             attempt: {
               version: 1,
               status: 'RECOVERY_REQUIRED',
               reasons: ['INCOMPLETE_RECOVERY'],
-              acceptedEvidence: { evidenceVersion: 2n, observedAtMs: BigInt(nowMs) },
+              acceptedEvidence: {
+                evidenceVersion: BigInt(recoverySequence + 2),
+                observedAtMs: BigInt(nowMs),
+              },
               lockEvidence: null,
               nextRecoveryObligation: {
-                recoverySequence: 1,
+                recoverySequence: recoverySequence + 1,
                 remainingRecoveryCostCaps: [{ asset: recoveryAsset, atoms: 7n }],
                 remainingAggregateLoss: { asset: recoveryAsset, atoms: 800n },
               },
@@ -515,10 +526,6 @@ test('automatically continues partial recovery with the keeper remaining caps', 
             observedFills: [],
             rawResponseCommitments: [],
           };
-        }
-        if (continuationInputs.length === 0
-          || input.recoveryAttemptId !== continuationInputs[0]!.recoveryAttemptId) {
-          throw new Error('continuation attempt is unknown');
         }
         return {
           status: 'RECONCILED',
@@ -567,15 +574,19 @@ test('automatically continues partial recovery with the keeper remaining caps', 
         maxFillPages: 2,
       },
     }));
-    for (let poll = 0; poll < 100 && lane.laneState().state !== 'FREE'; poll += 1) {
+    for (let poll = 0; poll < 200 && lane.laneState().state !== 'FREE'; poll += 1) {
       await delay(5);
     }
     assert.equal(lane.laneState().state, 'FREE');
     assert.equal(initialInputs.length, 1);
-    assert.equal(continuationInputs.length, 1);
+    assert.equal(continuationInputs.length, 9);
     assert.equal(continuationInputs[0]!.previousRecoveryAttemptId,
       initialInputs[0]!.recoveryAttemptId);
     assert.equal(continuationInputs[0]!.recoverySequence, 1);
+    assert.equal(continuationInputs[8]!.previousRecoveryAttemptId,
+      continuationInputs[7]!.recoveryAttemptId);
+    assert.equal(continuationInputs[8]!.recoverySequence, 9);
+    assert.equal(new Set(continuationInputs.map((input) => input.recoveryAttemptId)).size, 9);
     assert.deepEqual(continuationInputs[0]!.projectedRecoveryCosts, [{
       asset: recoveryAsset,
       atoms: 7n,
@@ -584,7 +595,7 @@ test('automatically continues partial recovery with the keeper remaining caps', 
       asset: recoveryAsset,
       atoms: 800n,
     });
-    assert.equal(reconciliationInputs.length, 2);
+    assert.ok(reconciliationInputs.length >= 10);
   } finally {
     loaded.close();
     rmSync(directory, { recursive: true, force: true });
