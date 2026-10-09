@@ -6,7 +6,8 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "test:environment": "node --test test/environment.test.js",
-    "test:scenario": "node --test test/scenario.test.js"
+    "test:scenario": "node --test test/scenario.test.js",
+    "test:arbitrum-sepolia": "node src/run-arbitrum-sepolia-testnet.js"
   },
   "keywords": [],
   "author": "",
@@ -14,6 +15,7 @@
   "type": "module",
   "dependencies": {
     "@naryx/adapter-evm": "file:../../packages/adapters/evm",
+    "@naryx/solver": "file:../../services/solver",
     "viem": "2.56.8"
   }
 }
