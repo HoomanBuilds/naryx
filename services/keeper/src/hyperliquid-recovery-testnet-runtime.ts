@@ -328,11 +328,13 @@ export class HyperliquidRecoveryTestnetController {
   readonly #compiler: HyperliquidRecoveryCompiler;
   readonly #trustedTime: HyperliquidRecoveryTrustedTimePort;
   readonly #runtime: Pick<HyperliquidRecoveryTestnetRuntime, 'execute'>;
+  readonly #maximumSourceEvidenceAgeMs: bigint;
 
   constructor(input: Readonly<{
     compiler: HyperliquidRecoveryCompiler;
     trustedTime: HyperliquidRecoveryTrustedTimePort;
     runtime: Pick<HyperliquidRecoveryTestnetRuntime, 'execute'>;
+    maximumSourceEvidenceAgeMs: number;
   }>) {
     requireCondition(input.compiler instanceof HyperliquidRecoveryCompiler,
       'recovery compiler is required');
@@ -340,9 +342,14 @@ export class HyperliquidRecoveryTestnetController {
       'trusted time is required');
     requireCondition(typeof input.runtime?.execute === 'function',
       'recovery runtime is required');
+    requireCondition(Number.isSafeInteger(input.maximumSourceEvidenceAgeMs)
+      && input.maximumSourceEvidenceAgeMs >= 1
+      && input.maximumSourceEvidenceAgeMs <= 60_000,
+    'maximum source evidence age must be between 1 and 60000 ms');
     this.#compiler = input.compiler;
     this.#trustedTime = input.trustedTime;
     this.#runtime = input.runtime;
+    this.#maximumSourceEvidenceAgeMs = BigInt(input.maximumSourceEvidenceAgeMs);
   }
 
   async compileAndExecute(
@@ -351,9 +358,22 @@ export class HyperliquidRecoveryTestnetController {
     requireCondition(typeof input.recoveryAttemptId === 'string'
       && IDENTIFIER.test(input.recoveryAttemptId), 'recovery attempt identity is invalid');
     const decision = await this.#trustedTime.decide(`${input.recoveryAttemptId}:compile`);
+    requireCondition(Number.isSafeInteger(decision.selectedTimeMs)
+      && decision.selectedTimeMs > 0, 'trusted recovery time is invalid');
+    const trustedNowMs = BigInt(decision.selectedTimeMs);
+    const sourceEvidence = input.sourceAttempt.acceptedEvidence;
+    requireCondition(sourceEvidence !== null
+      && sourceEvidence.observedAtMs > 0n
+      && sourceEvidence.observedAtMs <= trustedNowMs
+      && trustedNowMs - sourceEvidence.observedAtMs <= this.#maximumSourceEvidenceAgeMs,
+    'source recovery evidence is stale or from the future');
+    const policy = input.sourceAttempt.plan.recoveryPolicy;
+    requireCondition(trustedNowMs < policy.maxActionExpiryValue
+      && trustedNowMs < policy.deadlineValue,
+    'signed recovery action expiry or deadline is stale');
     const plan = this.#compiler.compile({
       attempt: input.sourceAttempt,
-      nowMs: BigInt(decision.selectedTimeMs),
+      nowMs: sourceEvidence.observedAtMs,
       recoverySequence: input.recoverySequence,
       projectedRecoveryCosts: input.projectedRecoveryCosts,
       projectedAggregateLoss: input.projectedAggregateLoss,

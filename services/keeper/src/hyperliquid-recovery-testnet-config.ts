@@ -24,6 +24,7 @@ export interface HyperliquidRecoveryTestnetConfig {
   readonly agentWallet: `0x${string}`;
   readonly signerLeaseId: string;
   readonly vaultAddress: `0x${string}` | null;
+  readonly maximumSourceEvidenceAgeMs: number;
   readonly verifierIdentity: HyperliquidRecoveryVerifierIdentity;
   readonly trustedTimePolicy: HyperliquidTrustedTimePolicy;
 }
@@ -48,6 +49,12 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[], 
 function address(value: unknown, name: string): `0x${string}` {
   requireCondition(typeof value === 'string' && ADDRESS.test(value), `${name} is invalid`);
   return value as `0x${string}`;
+}
+
+function boundedPositiveInteger(value: unknown, name: string, maximum: number): number {
+  requireCondition(typeof value === 'number' && Number.isSafeInteger(value)
+    && value >= 1 && value <= maximum, `${name} is invalid`);
+  return value;
 }
 
 function externalPath(value: unknown, name: string): string {
@@ -83,7 +90,8 @@ export function loadHyperliquidRecoveryTestnetConfig(
   const value = record(parseProtocolJson(readFile(path), 'hyperliquidRecoveryConfig'), 'config');
   exactKeys(value, [
     'agentWallet', 'databasePath', 'environment', 'keyPath', 'signerLeaseId',
-    'trustedTimePolicy', 'vaultAddress', 'verifierIdentity', 'version',
+    'maximumSourceEvidenceAgeMs', 'trustedTimePolicy', 'vaultAddress',
+    'verifierIdentity', 'version',
   ], 'config');
   requireCondition(value.version === 1 && value.environment === 'HYPERLIQUID_TESTNET',
     'config identity is invalid');
@@ -108,6 +116,11 @@ export function loadHyperliquidRecoveryTestnetConfig(
     agentWallet: address(value.agentWallet, 'agentWallet'),
     signerLeaseId: value.signerLeaseId,
     vaultAddress: value.vaultAddress === null ? null : address(value.vaultAddress, 'vaultAddress'),
+    maximumSourceEvidenceAgeMs: boundedPositiveInteger(
+      value.maximumSourceEvidenceAgeMs,
+      'maximumSourceEvidenceAgeMs',
+      60_000,
+    ),
     verifierIdentity: verifierIdentity as unknown as HyperliquidRecoveryVerifierIdentity,
     trustedTimePolicy: trustedTimePolicy as unknown as HyperliquidTrustedTimePolicy,
   });

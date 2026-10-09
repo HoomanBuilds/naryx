@@ -486,7 +486,10 @@ test('keeper compiles the recovery plan before handing it to submission', async 
   const submitted: HyperliquidRecoveryExecutionPlan[] = [];
   const controller = new HyperliquidRecoveryTestnetController({
     compiler: new HyperliquidRecoveryCompiler(identity),
-    trustedTime: { decide: async (scope) => trustedTimeDecision(scope) },
+    trustedTime: {
+      decide: async (scope) => trustedTimeDecision(scope, Number(nowMs) + 25),
+    },
+    maximumSourceEvidenceAgeMs: 5_000,
     runtime: {
       execute: async (input) => {
         submitted.push(input.plan);
@@ -509,6 +512,25 @@ test('keeper compiles the recovery plan before handing it to submission', async 
   assert.strictEqual(submitted[0], result.plan);
   assert.equal(result.plan.mode, 'COMPLETE_MISSING_LEG');
   assert.equal(result.submission.status, 'RECONCILIATION_REQUIRED');
+  const staleController = new HyperliquidRecoveryTestnetController({
+    compiler: new HyperliquidRecoveryCompiler(identity),
+    trustedTime: {
+      decide: async (scope) => trustedTimeDecision(scope, Number(nowMs) + 25),
+    },
+    maximumSourceEvidenceAgeMs: 10,
+    runtime: {
+      execute: async () => {
+        throw new Error('stale evidence must not reach submission');
+      },
+    },
+  });
+  await assert.rejects(staleController.compileAndExecute({
+    recoveryAttemptId: 'controller-stale-recovery-attempt-1',
+    sourceAttempt: source,
+    recoverySequence: 0,
+    projectedRecoveryCosts: [{ asset: quoteAsset, atoms: 10n }],
+    projectedAggregateLoss: { asset: quoteAsset, atoms: 100n },
+  }), /source recovery evidence is stale or from the future/);
 });
 
 test('reconciles exact completion from authoritative actual evidence', () => {

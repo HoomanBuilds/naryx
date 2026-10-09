@@ -98,6 +98,7 @@ if (recoveryConfig !== undefined) {
       compiler: new HyperliquidRecoveryCompiler(recoveryConfig.verifierIdentity),
       trustedTime,
       runtime: recoveryRuntime,
+      maximumSourceEvidenceAgeMs: recoveryConfig.maximumSourceEvidenceAgeMs,
     });
     recoveryReconciliation = new HyperliquidRecoveryTestnetReconciler({
       store: recoveryStore,

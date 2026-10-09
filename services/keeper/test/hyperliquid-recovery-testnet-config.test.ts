@@ -33,6 +33,7 @@ test('loads only an external Testnet recovery config and matching scoped key', a
     agentWallet,
     signerLeaseId: 'keeper-recovery-1',
     vaultAddress: null,
+    maximumSourceEvidenceAgeMs: 5_000,
     verifierIdentity: {
       environment: 'testnet',
       controllerId: 'hypercore-recovery-controller-v1',
@@ -55,6 +56,7 @@ test('loads only an external Testnet recovery config and matching scoped key', a
   });
   assert.ok(config);
   assert.equal(config.agentWallet, agentWallet);
+  assert.equal(config.maximumSourceEvidenceAgeMs, 5_000);
   const signer = loadHyperliquidRecoverySigner(config.keyPath, config.agentWallet);
   assert.equal(signer.signerScope, HYPERLIQUID_RECOVERY_SIGNER_SCOPE);
   assert.equal((await getWalletAddress(signer)).toLowerCase(), agentWallet);
