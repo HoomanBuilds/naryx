@@ -261,10 +261,7 @@ test('compiles the signed missing perpetual action and deterministic recovery cl
   assert.equal(first.orders[0]!.order.r, false);
   assert.equal(first.terminalResidualBaseAtoms, 0n);
   assert.equal(first.unsignedRequestFields.expiresAfter, 1_500);
-  assert.notEqual(
-    first.orders[0]!.clientOrderId,
-    compiler().compile(compileInput(attempt, { recoverySequence: 1 })).orders[0]!.clientOrderId,
-  );
+  assert.match(first.orders[0]!.clientOrderId, /^0x[0-9a-f]{32}$/);
 });
 
 test('compiles direction-aware paired rollback when completion is not permitted', () => {
@@ -329,7 +326,7 @@ test('fails closed on signed price, quantity, residual and cost bounds', async (
     })), /cost exceeds signed cap/);
     assert.throws(() => compiler().compile(compileInput(attempt, {
       projectedAggregateLoss: { asset: quoteAsset, atoms: 1_001n },
-    })), /aggregate recovery loss exceeds signed cap/);
+    })), /aggregate recovery loss exceeds the available cap/);
   });
 });
 

@@ -19,6 +19,7 @@ import type {
 import {
   HyperliquidRecoveryCompiler,
   type HyperliquidRecoveryBoundInput,
+  type HyperliquidRecoveryContinuationCompileInput,
   type HyperliquidRecoveryExecutionPlan,
 } from './hyperliquid-recovery-compiler.js';
 import {
@@ -27,6 +28,7 @@ import {
   completeHyperliquidRecoverySubmissionReconciliation,
   confirmHyperliquidRecoveryDurableRecord,
   createHyperliquidRecoverySubmissionJournal,
+  hyperliquidRecoveryContinuationSource,
   hyperliquidRecoveryReconciliationHandoff,
   markHyperliquidRecoverySubmittedUnknown,
   prepareHyperliquidRecoverySubmission,
@@ -80,6 +82,13 @@ export interface HyperliquidRecoveryCompileAndExecuteInput {
   readonly recoverySequence: number;
   readonly projectedRecoveryCosts: readonly HyperliquidRecoveryBoundInput[];
   readonly projectedAggregateLoss: HyperliquidRecoveryBoundInput;
+}
+
+export interface HyperliquidRecoveryContinueAndExecuteInput
+  extends Omit<HyperliquidRecoveryContinuationCompileInput, 'previousAttempt' | 'nowMs'> {
+  readonly recoveryAttemptId: string;
+  readonly previousRecoveryAttemptId: string;
+  readonly recoverySequence: number;
 }
 
 export type HyperliquidRecoveryCompileAndExecuteResult = Readonly<{
@@ -213,6 +222,7 @@ export class HyperliquidRecoveryTestnetRuntime {
   async execute(input: Readonly<{
     recoveryAttemptId: string;
     sourceAttempt: HyperliquidPackageAttempt;
+    parentRecoveryAttempt?: HyperliquidRecoveryAttempt;
     plan: HyperliquidRecoveryExecutionPlan;
   }>): Promise<HyperliquidRecoveryRuntimeResult> {
     const signerAddress = address(await this.#submitter.signerAddress(), 'submitter signer');
@@ -228,6 +238,9 @@ export class HyperliquidRecoveryTestnetRuntime {
         agentWallet: this.#agentWallet,
         signerLeaseId: this.#signerLeaseId,
         sourceAttempt: input.sourceAttempt,
+        ...(input.parentRecoveryAttempt === undefined
+          ? {}
+          : { parentRecoveryAttempt: input.parentRecoveryAttempt }),
         plan: input.plan,
         trustedTimeDecision: decision,
         vaultAddress: this.#vaultAddress,
@@ -322,18 +335,24 @@ export class HyperliquidRecoveryTestnetRuntime {
       });
     }
   }
+
+  continuationSource(recoveryAttemptId: string): HyperliquidRecoveryAttempt {
+    const snapshot = this.#store.read();
+    requireCondition(snapshot !== null, 'recovery journal is not initialized');
+    return hyperliquidRecoveryContinuationSource(snapshot.journal, recoveryAttemptId);
+  }
 }
 
 export class HyperliquidRecoveryTestnetController {
   readonly #compiler: HyperliquidRecoveryCompiler;
   readonly #trustedTime: HyperliquidRecoveryTrustedTimePort;
-  readonly #runtime: Pick<HyperliquidRecoveryTestnetRuntime, 'execute'>;
+  readonly #runtime: Pick<HyperliquidRecoveryTestnetRuntime, 'execute' | 'continuationSource'>;
   readonly #maximumSourceEvidenceAgeMs: bigint;
 
   constructor(input: Readonly<{
     compiler: HyperliquidRecoveryCompiler;
     trustedTime: HyperliquidRecoveryTrustedTimePort;
-    runtime: Pick<HyperliquidRecoveryTestnetRuntime, 'execute'>;
+    runtime: Pick<HyperliquidRecoveryTestnetRuntime, 'execute' | 'continuationSource'>;
     maximumSourceEvidenceAgeMs: number;
   }>) {
     requireCondition(input.compiler instanceof HyperliquidRecoveryCompiler,
@@ -342,6 +361,8 @@ export class HyperliquidRecoveryTestnetController {
       'trusted time is required');
     requireCondition(typeof input.runtime?.execute === 'function',
       'recovery runtime is required');
+    requireCondition(typeof input.runtime?.continuationSource === 'function',
+      'recovery continuation source is required');
     requireCondition(Number.isSafeInteger(input.maximumSourceEvidenceAgeMs)
       && input.maximumSourceEvidenceAgeMs >= 1
       && input.maximumSourceEvidenceAgeMs <= 60_000,
@@ -381,6 +402,44 @@ export class HyperliquidRecoveryTestnetController {
     const submission = await this.#runtime.execute({
       recoveryAttemptId: input.recoveryAttemptId,
       sourceAttempt: input.sourceAttempt,
+      plan,
+    });
+    return Object.freeze({ plan, submission });
+  }
+
+  async continueAndExecute(
+    input: HyperliquidRecoveryContinueAndExecuteInput,
+  ): Promise<HyperliquidRecoveryCompileAndExecuteResult> {
+    requireCondition(typeof input.recoveryAttemptId === 'string'
+      && IDENTIFIER.test(input.recoveryAttemptId), 'recovery attempt identity is invalid');
+    requireCondition(typeof input.previousRecoveryAttemptId === 'string'
+      && IDENTIFIER.test(input.previousRecoveryAttemptId),
+    'previous recovery attempt identity is invalid');
+    requireCondition(Number.isSafeInteger(input.recoverySequence)
+      && input.recoverySequence > 0, 'recovery continuation sequence is invalid');
+    const previousAttempt = this.#runtime.continuationSource(input.previousRecoveryAttemptId);
+    const evidence = previousAttempt.acceptedEvidence;
+    requireCondition(evidence !== null, 'previous recovery evidence is unavailable');
+    const decision = await this.#trustedTime.decide(`${input.recoveryAttemptId}:compile`);
+    requireCondition(Number.isSafeInteger(decision.selectedTimeMs)
+      && decision.selectedTimeMs > 0, 'trusted recovery time is invalid');
+    const trustedNowMs = BigInt(decision.selectedTimeMs);
+    requireCondition(evidence.observedAtMs > 0n
+      && evidence.observedAtMs <= trustedNowMs
+      && trustedNowMs - evidence.observedAtMs <= this.#maximumSourceEvidenceAgeMs,
+    'previous recovery evidence is stale or from the future');
+    const plan = this.#compiler.compileContinuation({
+      previousAttempt,
+      nowMs: evidence.observedAtMs,
+      projectedRecoveryCosts: input.projectedRecoveryCosts,
+      projectedAggregateLoss: input.projectedAggregateLoss,
+    });
+    requireCondition(plan.recoverySequence === input.recoverySequence,
+      'recovery continuation sequence differs from the trusted obligation');
+    const submission = await this.#runtime.execute({
+      recoveryAttemptId: input.recoveryAttemptId,
+      sourceAttempt: previousAttempt.sourceAttempt,
+      parentRecoveryAttempt: previousAttempt,
       plan,
     });
     return Object.freeze({ plan, submission });

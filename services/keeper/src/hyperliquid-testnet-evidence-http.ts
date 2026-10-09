@@ -24,6 +24,7 @@ import type { HyperliquidPackageAttempt } from './index.js';
 import type { HyperliquidRecoveryBoundInput } from './hyperliquid-recovery-compiler.js';
 import type {
   HyperliquidRecoveryCompileAndExecuteInput,
+  HyperliquidRecoveryContinueAndExecuteInput,
   HyperliquidRecoveryReconcileInput,
   HyperliquidRecoveryTestnetController,
   HyperliquidRecoveryTestnetReconciler,
@@ -37,6 +38,8 @@ export const KEEPER_TESTNET_NETTING_RESIDUAL_RECONCILE_PATH =
   '/internal/keeper/hyperliquid-testnet/netting-residual/reconcile';
 export const KEEPER_TESTNET_RECOVERY_EXECUTE_PATH =
   '/internal/keeper/hyperliquid-testnet/recovery/execute';
+export const KEEPER_TESTNET_RECOVERY_CONTINUE_PATH =
+  '/internal/keeper/hyperliquid-testnet/recovery/continue';
 export const KEEPER_TESTNET_RECOVERY_RECONCILE_PATH =
   '/internal/keeper/hyperliquid-testnet/recovery/reconcile';
 export const KEEPER_DEPENDENCY_INCIDENT_STATUS_PATH = '/internal/keeper/dependency-incidents';
@@ -52,7 +55,10 @@ export interface HyperliquidTestnetEvidenceHttpPorts {
   readonly runtime: Pick<HyperliquidTestnetEvidenceRuntime, 'prepare' | 'reconcile'>;
   readonly strategy?: Pick<HyperliquidStrategyAuthoritativeEvidenceCollector, 'collect'>;
   readonly nettingResidual?: Pick<HyperliquidNettingResidualAuthoritativeEvidenceCollector, 'collect'>;
-  readonly recovery?: Pick<HyperliquidRecoveryTestnetController, 'compileAndExecute'>;
+  readonly recovery?: Pick<
+    HyperliquidRecoveryTestnetController,
+    'compileAndExecute' | 'continueAndExecute'
+  >;
   readonly recoveryReconciliation?: Pick<HyperliquidRecoveryTestnetReconciler, 'reconcile'>;
   readonly dependencyIncidents?: Pick<DependencyIncidentStatusReader, 'current'>;
 }
@@ -233,6 +239,26 @@ function parseRecoveryExecuteRequest(value: unknown): HyperliquidRecoveryCompile
     projectedRecoveryCosts: readonly HyperliquidRecoveryBoundInput[];
     projectedAggregateLoss: HyperliquidRecoveryBoundInput;
   }>;
+}
+
+function parseRecoveryContinueRequest(
+  value: unknown,
+): HyperliquidRecoveryContinueAndExecuteInput {
+  if (!isRecord(value)
+    || !hasExactKeys(value, [
+      'previousRecoveryAttemptId', 'projectedAggregateLoss', 'projectedRecoveryCosts',
+      'recoveryAttemptId', 'recoverySequence',
+    ])
+    || typeof value.recoveryAttemptId !== 'string'
+    || typeof value.previousRecoveryAttemptId !== 'string'
+    || typeof value.recoverySequence !== 'number'
+    || !Array.isArray(value.projectedRecoveryCosts)
+    || value.projectedRecoveryCosts.some((item) => !isRecord(item))
+    || !isRecord(value.projectedAggregateLoss)) {
+    throw new KeeperRequestError('INVALID_REQUEST',
+      'Recovery continuation request fields are invalid.');
+  }
+  return value as unknown as HyperliquidRecoveryContinueAndExecuteInput;
 }
 
 function parseRecoveryReconcileRequest(value: unknown): HyperliquidRecoveryReconcileInput {
@@ -443,6 +469,38 @@ export function createHyperliquidTestnetEvidenceRequestHandler(
         sendJson(response, 200, toProtocolJson(result, 'keeper.recovery.execute.result'));
       } catch {
         reject(response, 400, 'INVALID_REQUEST', 'Recovery execution request failed closed.');
+      }
+      return;
+    }
+    if (url.pathname === KEEPER_TESTNET_RECOVERY_CONTINUE_PATH) {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST');
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
+        return;
+      }
+      if (ports.recovery === undefined) {
+        reject(response, 503, 'RECOVERY_EXECUTION_DISABLED',
+          'Hyperliquid Testnet recovery execution is unavailable.');
+        return;
+      }
+      let raw: unknown;
+      try {
+        raw = await readProtocolJson(request, 'keeper.recovery.continue.request');
+      } catch (error) {
+        if (error instanceof KeeperRequestError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        reject(response, 400, 'INVALID_JSON', 'Request body must be strict protocol JSON.');
+        return;
+      }
+      try {
+        const result = await ports.recovery.continueAndExecute(
+          parseRecoveryContinueRequest(raw),
+        );
+        sendJson(response, 200, toProtocolJson(result, 'keeper.recovery.continue.result'));
+      } catch {
+        reject(response, 400, 'INVALID_REQUEST', 'Recovery continuation failed closed.');
       }
       return;
     }

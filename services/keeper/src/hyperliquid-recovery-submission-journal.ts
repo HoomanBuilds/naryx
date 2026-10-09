@@ -12,6 +12,7 @@ import type {
 } from './hyperliquid-recovery-compiler.js';
 import type { HyperliquidRecoveryAttempt } from './hyperliquid-recovery-reconciliation.js';
 import {
+  validateHyperliquidRecoveryContinuationExecutionPlan,
   validateHyperliquidRecoveryExecutionPlan,
   type HyperliquidRecoveryVerifierIdentity,
 } from './hyperliquid-recovery-validation.js';
@@ -59,6 +60,7 @@ export interface HyperliquidRecoverySubmissionRecord {
   readonly verifierIdentityHash: `0x${string}`;
   readonly clientOrderIds: readonly `0x${string}`[];
   readonly sourceAttempt: HyperliquidPackageAttempt;
+  readonly parentReconciledAttemptHash: `0x${string}` | null;
   readonly plan: HyperliquidRecoveryExecutionPlan;
   readonly durableRevision: string | null;
   readonly acknowledgementId: string | null;
@@ -103,6 +105,7 @@ export interface HyperliquidRecoveryPrepareInput {
   readonly agentWallet: `0x${string}`;
   readonly signerLeaseId: string;
   readonly sourceAttempt: HyperliquidPackageAttempt;
+  readonly parentRecoveryAttempt?: HyperliquidRecoveryAttempt;
   readonly plan: HyperliquidRecoveryExecutionPlan;
   readonly trustedTimeDecision: HyperliquidTrustedTimeDecision;
   readonly vaultAddress: `0x${string}` | null;
@@ -219,6 +222,7 @@ function immutableRecord(
     verifierIdentityHash: record.verifierIdentityHash,
     clientOrderIds: record.clientOrderIds,
     sourceAttempt: record.sourceAttempt,
+    parentReconciledAttemptHash: record.parentReconciledAttemptHash,
     plan: record.plan,
   };
 }
@@ -229,6 +233,14 @@ function recordHash(record: RecordCore | HyperliquidRecoverySubmissionRecord): `
 
 function reconciledAttemptHash(attempt: HyperliquidRecoveryAttempt): `0x${string}` {
   return sha256(['naryx/hypercore/reconciled-recovery-attempt/v1', attempt]);
+}
+
+function isSameRecoverySource(
+  left: HyperliquidPackageAttempt,
+  right: HyperliquidPackageAttempt,
+): boolean {
+  return sha256(['naryx/hypercore/recovery-package-source/v1', left])
+    === sha256(['naryx/hypercore/recovery-package-source/v1', right]);
 }
 
 function agentAt(journal: HyperliquidRecoverySubmissionJournal, agentWallet: string): number {
@@ -385,12 +397,25 @@ export function prepareHyperliquidRecoverySubmission(
     recoveryAttemptId,
   ));
   const nowMs = BigInt(trustedTimeDecision.selectedTimeMs);
-  validateHyperliquidRecoveryExecutionPlan(
-    input.sourceAttempt,
-    input.plan,
-    journal.verifierIdentity,
-    nowMs,
-  );
+  if (input.parentRecoveryAttempt === undefined) {
+    validateHyperliquidRecoveryExecutionPlan(
+      input.sourceAttempt,
+      input.plan,
+      journal.verifierIdentity,
+      nowMs,
+    );
+  } else {
+    requireCondition(isSameRecoverySource(
+      input.parentRecoveryAttempt.sourceAttempt,
+      input.sourceAttempt,
+    ), 'continuation package source differs');
+    validateHyperliquidRecoveryContinuationExecutionPlan(
+      input.parentRecoveryAttempt,
+      input.plan,
+      journal.verifierIdentity,
+      nowMs,
+    );
+  }
   requireCondition(input.plan.actionExpiryMs > nowMs,
   'recovery expiresAfter is stale');
   requireCondition(agentWallet !== input.plan.account.masterAccount
@@ -438,6 +463,9 @@ export function prepareHyperliquidRecoverySubmission(
       (order) => order.clientOrderId.toLowerCase() as `0x${string}`,
     )),
     sourceAttempt,
+    parentReconciledAttemptHash: input.parentRecoveryAttempt === undefined
+      ? null
+      : reconciledAttemptHash(input.parentRecoveryAttempt),
     plan,
   };
   const commitment = recordHash(core);
@@ -482,6 +510,22 @@ export function prepareHyperliquidRecoverySubmission(
     'a follow-up recovery must be compiled from the latest reconciled evidence');
   requireCondition(lineageRecords.every((record) => plan.recoverySequence > record.recoverySequence),
     'recovery sequence must strictly increase for the package across agent wallets');
+  if (input.parentRecoveryAttempt === undefined) {
+    requireCondition(lineageRecords.length === 0,
+      'an initial recovery cannot continue an existing package lineage');
+  } else {
+    const latest = lineageRecords.reduce<HyperliquidRecoverySubmissionRecord | null>(
+      (selected, record) => selected === null || record.recoverySequence > selected.recoverySequence
+        ? record
+        : selected,
+      null,
+    );
+    requireCondition(latest !== null
+      && latest.status === 'RECONCILED'
+      && latest.reconciledOutcome === 'RECOVERY_REQUIRED'
+      && latest.reconciledAttemptHash === core.parentReconciledAttemptHash,
+    'continuation does not extend the latest reconciled recovery attempt');
+  }
   const record: HyperliquidRecoverySubmissionRecord = Object.freeze({
     ...core,
     recordHash: commitment,

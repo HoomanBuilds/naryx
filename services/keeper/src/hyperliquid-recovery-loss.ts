@@ -92,12 +92,22 @@ function fillTotal(fills: readonly HyperliquidObservedFill[]): bigint {
   return fills.reduce((total, fill) => total + fill.signedBaseAtoms, 0n);
 }
 
+function lineageOrders(attempt: HyperliquidRecoveryAttempt) {
+  return Object.freeze([
+    ...attempt.plan.baseline.priorRecoveryOrders,
+    ...attempt.plan.orders,
+  ]);
+}
+
 function completionLoss(
   attempt: HyperliquidRecoveryAttempt,
   recoveryFills: readonly HyperliquidObservedFill[],
+  remainingByFill: ReadonlyMap<HyperliquidObservedFill, bigint>,
 ): bigint {
   let total = 0n;
-  for (const order of attempt.plan.orders) {
+  for (const order of lineageOrders(attempt).filter(
+    (candidate) => candidate.action === 'COMPLETE_SPOT' || candidate.action === 'COMPLETE_PERP',
+  )) {
     const leg = attempt.sourceAttempt.plan.legs.find((candidate) => candidate.role === order.role);
     requireCondition(leg !== undefined, 'completion leg is missing');
     const reference = decimalRatio(
@@ -108,6 +118,8 @@ function completionLoss(
     for (const fill of recoveryFills.filter(
       (candidate) => candidate.clientOrderId === order.clientOrderId,
     )) {
+      const remaining = remainingByFill.get(fill) ?? 0n;
+      if (remaining === 0n) continue;
       const observed = observedRatio(fill, leg.baseAsset.decimals, leg.quoteAsset.decimals);
       const directionalDifference = fill.signedBaseAtoms > 0n
         ? observed.numerator * reference.denominator
@@ -116,7 +128,7 @@ function completionLoss(
           - observed.numerator * reference.denominator;
       if (directionalDifference > 0n) {
         total += ceilPositive({
-          numerator: absolute(fill.signedBaseAtoms) * directionalDifference,
+          numerator: remaining * directionalDifference,
           denominator: observed.denominator * reference.denominator,
         });
       }
@@ -125,46 +137,67 @@ function completionLoss(
   return total;
 }
 
-function rollbackLoss(
+function lineageLoss(
   attempt: HyperliquidRecoveryAttempt,
   sourceFills: readonly HyperliquidObservedFill[],
   recoveryFills: readonly HyperliquidObservedFill[],
 ): bigint {
   let total = 0n;
-  for (const order of attempt.plan.orders) {
-    const leg = attempt.sourceAttempt.plan.legs.find((candidate) => candidate.role === order.role);
-    requireCondition(leg !== undefined, 'rollback leg is missing');
-    const source = sortedFills(sourceFills.filter(
-      (candidate) => candidate.clientOrderId === leg.clientOrderId,
-    ));
-    const recovery = recoveryFills.filter(
-      (candidate) => candidate.clientOrderId === order.clientOrderId,
-    );
-    const recoveredAtoms = absolute(fillTotal(recovery));
-    let remaining = recoveredAtoms;
-    let roundTrip: Ratio = Object.freeze({ numerator: 0n, denominator: 1n });
-    for (const fill of source) {
-      if (remaining === 0n) break;
-      const quantity = remaining < absolute(fill.signedBaseAtoms)
-        ? remaining
-        : absolute(fill.signedBaseAtoms);
-      const signedQuantity = fill.signedBaseAtoms > 0n ? quantity : -quantity;
-      roundTrip = add(roundTrip, signedNotional(
-        signedQuantity,
-        observedRatio(fill, leg.baseAsset.decimals, leg.quoteAsset.decimals),
-      ));
-      remaining -= quantity;
+  const remainingByCompletionFill = new Map<HyperliquidObservedFill, bigint>();
+  const planned = lineageOrders(attempt);
+  for (const role of ['SPOT', 'PERPETUAL'] as const) {
+    const leg = attempt.sourceAttempt.plan.legs.find((candidate) => candidate.role === role);
+    requireCondition(leg !== undefined, 'recovery leg is missing');
+    const completionIds = new Set(planned.filter((order) => order.role === role
+      && (order.action === 'COMPLETE_SPOT' || order.action === 'COMPLETE_PERP'))
+      .map((order) => order.clientOrderId));
+    const rollbackIds = new Set(planned.filter((order) => order.role === role
+      && (order.action === 'ROLLBACK_SPOT' || order.action === 'ROLLBACK_PERP'))
+      .map((order) => order.clientOrderId));
+    const openings = sortedFills([
+      ...sourceFills.filter((fill) => fill.clientOrderId === leg.clientOrderId),
+      ...recoveryFills.filter((fill) => completionIds.has(fill.clientOrderId)),
+    ]).map((fill) => ({ fill, remaining: absolute(fill.signedBaseAtoms) }));
+    for (const opening of openings) {
+      if (completionIds.has(opening.fill.clientOrderId)) {
+        remainingByCompletionFill.set(opening.fill, opening.remaining);
+      }
     }
-    requireCondition(remaining === 0n, 'rollback fill exceeds the source fill');
-    for (const fill of recovery) {
-      roundTrip = add(roundTrip, signedNotional(
-        fill.signedBaseAtoms,
-        observedRatio(fill, leg.baseAsset.decimals, leg.quoteAsset.decimals),
-      ));
+    const rollbacks = sortedFills(recoveryFills.filter(
+      (fill) => rollbackIds.has(fill.clientOrderId),
+    ));
+    let roundTrip: Ratio = Object.freeze({ numerator: 0n, denominator: 1n });
+    let openingIndex = 0;
+    for (const rollback of rollbacks) {
+      let remaining = absolute(rollback.signedBaseAtoms);
+      while (remaining > 0n) {
+        const opening = openings[openingIndex];
+        requireCondition(opening !== undefined, 'rollback fill exceeds opening fills');
+        if (opening.remaining === 0n) {
+          openingIndex += 1;
+          continue;
+        }
+        requireCondition((opening.fill.signedBaseAtoms > 0n) !== (rollback.signedBaseAtoms > 0n),
+          'rollback fill does not reverse an opening fill');
+        const quantity = remaining < opening.remaining ? remaining : opening.remaining;
+        roundTrip = add(roundTrip, signedNotional(
+          opening.fill.signedBaseAtoms > 0n ? quantity : -quantity,
+          observedRatio(opening.fill, leg.baseAsset.decimals, leg.quoteAsset.decimals),
+        ));
+        roundTrip = add(roundTrip, signedNotional(
+          rollback.signedBaseAtoms > 0n ? quantity : -quantity,
+          observedRatio(rollback, leg.baseAsset.decimals, leg.quoteAsset.decimals),
+        ));
+        opening.remaining -= quantity;
+        remaining -= quantity;
+        if (completionIds.has(opening.fill.clientOrderId)) {
+          remainingByCompletionFill.set(opening.fill, opening.remaining);
+        }
+      }
     }
     total += ceilPositive(roundTrip);
   }
-  return total;
+  return total + completionLoss(attempt, recoveryFills, remainingByCompletionFill);
 }
 
 function validateObservedFills(
@@ -180,7 +213,7 @@ function validateObservedFills(
     [sourceEvidence.spot.clientOrderId, sourceEvidence.spot.filledSignedBaseAtoms],
     [sourceEvidence.perpetual.clientOrderId, sourceEvidence.perpetual.filledSignedBaseAtoms],
   ]);
-  const expectedRecovery = new Map(attempt.plan.orders.map((order) => [
+  const expectedRecovery = new Map(lineageOrders(attempt).map((order) => [
     order.clientOrderId,
     order.signedBaseDeltaAtoms,
   ]));
@@ -235,7 +268,5 @@ export function hyperliquidRecoveryAggregateLossQuoteAtoms(input: Readonly<{
     input.sourceFills,
     input.recoveryFills,
   );
-  return input.attempt.plan.mode === 'COMPLETE_MISSING_LEG'
-    ? completionLoss(input.attempt, input.recoveryFills)
-    : rollbackLoss(input.attempt, input.sourceFills, input.recoveryFills);
+  return lineageLoss(input.attempt, input.sourceFills, input.recoveryFills);
 }

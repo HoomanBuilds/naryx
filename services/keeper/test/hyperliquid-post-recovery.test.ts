@@ -38,6 +38,7 @@ import {
   confirmHyperliquidRecoveryDurableRecord,
   createHyperliquidPackageAttempt,
   createHyperliquidRecoveryAttempt,
+  createHyperliquidRecoveryContinuationAttempt,
   createHyperliquidRecoverySubmissionJournal,
   fenceHyperliquidRecoveryAgent,
   hyperliquidRecoveryContinuationSource,
@@ -321,6 +322,17 @@ function recoveryPlan(
   });
 }
 
+function continuationRecoveryPlan(
+  previousAttempt: ReturnType<typeof recoveryAttempt>,
+): HyperliquidRecoveryExecutionPlan {
+  return new HyperliquidRecoveryCompiler(identity).compileContinuation({
+    previousAttempt,
+    nowMs: previousAttempt.acceptedEvidence!.observedAtMs,
+    projectedRecoveryCosts: [{ asset: quoteAsset, atoms: 10n }],
+    projectedAggregateLoss: { asset: quoteAsset, atoms: 100n },
+  });
+}
+
 function recoveryEvidence(
   source: HyperliquidPackageAttempt,
   compiled: HyperliquidRecoveryExecutionPlan,
@@ -331,8 +343,8 @@ function recoveryEvidence(
     total + (order.role === 'SPOT' ? fills[index]! : 0n), 0n);
   const recoveryPerpetual = compiled.orders.reduce((total, order, index) =>
     total + (order.role === 'PERPETUAL' ? fills[index]! : 0n), 0n);
-  const sourceEvidence = source.acceptedEvidence!;
-  const perpetualPositionDeltaAtoms = sourceEvidence.perpetualPositionDeltaAtoms
+  const baseline = compiled.baseline;
+  const perpetualPositionDeltaAtoms = baseline.perpetualPositionDeltaAtoms
     + recoveryPerpetual;
   return {
     source: HYPERCORE_RECOVERY_RECONCILIATION_SOURCE,
@@ -343,7 +355,7 @@ function recoveryEvidence(
     sourceEvidenceVersion: compiled.sourceEvidenceVersion,
     recoverySequence: compiled.recoverySequence,
     evidenceVersion: compiled.sourceEvidenceVersion + 1n,
-    observedAtMs: nowMs + 10n,
+    observedAtMs: baseline.observedAtMs + 10n,
     recoveryOrders: compiled.orders.map((order, index) => {
       const fill = fills[index]!;
       return {
@@ -355,7 +367,7 @@ function recoveryEvidence(
         filledSignedBaseAtoms: fill,
       };
     }),
-    netSpotBalanceDeltaAtoms: sourceEvidence.netSpotDeltaAtoms + recoverySpot,
+    netSpotBalanceDeltaAtoms: baseline.netSpotDeltaAtoms + recoverySpot,
     perpetualPositionDeltaAtoms,
     observedPerpetualPositionAtoms: source.plan.prePerpetualPositionAtoms
       + perpetualPositionDeltaAtoms,
@@ -365,10 +377,14 @@ function recoveryEvidence(
     costEvidenceComplete: true,
     fees: [{ asset: quoteAsset, amountAtoms: 2n, evidenceStatus: 'CONFIRMED' }],
     actualRecoveryCosts: [{
-      asset: quoteAsset, amountAtoms: 10n, evidenceStatus: 'CONFIRMED',
+      asset: quoteAsset,
+      amountAtoms: baseline.cumulativeRecoveryCosts[0]!.atoms + 10n,
+      evidenceStatus: 'CONFIRMED',
     }],
     actualAggregateLoss: {
-      asset: quoteAsset, amountAtoms: 100n, evidenceStatus: 'CONFIRMED',
+      asset: quoteAsset,
+      amountAtoms: baseline.cumulativeAggregateLoss.atoms + 100n,
+      evidenceStatus: 'CONFIRMED',
     },
     ...overrides,
   };
@@ -492,6 +508,9 @@ test('keeper compiles the recovery plan before handing it to submission', async 
     },
     maximumSourceEvidenceAgeMs: 5_000,
     runtime: {
+      continuationSource: () => {
+        throw new Error('continuation is not used by this test');
+      },
       execute: async (input) => {
         submitted.push(input.plan);
         return {
@@ -520,6 +539,9 @@ test('keeper compiles the recovery plan before handing it to submission', async 
     },
     maximumSourceEvidenceAgeMs: 10,
     runtime: {
+      continuationSource: () => {
+        throw new Error('continuation is not used by this test');
+      },
       execute: async () => {
         throw new Error('stale evidence must not reach submission');
       },
@@ -601,6 +623,36 @@ test('emits another signed recovery obligation only while actions and bounds rem
   ]), [['COMPLETE_PERP', -50n]]);
   assert.equal(result.nextRecoveryObligation!.remainingRecoveryCostCaps[0]!.atoms, 90n);
   assert.equal(result.nextRecoveryObligation!.remainingAggregateLoss.atoms, 900n);
+});
+
+test('continues a partial recovery from cumulative evidence and remaining caps', () => {
+  const source = sourceAttempt(200n, 0n, { quantityAtoms: 200n, intermediateCap: 200n });
+  const firstPlan = recoveryPlan(source);
+  const first = reconcileHyperliquidRecovery(
+    recoveryAttempt(source, firstPlan),
+    recoveryEvidence(source, firstPlan, [-100n]),
+  );
+  assert.equal(first.status, 'RECOVERY_REQUIRED');
+  const secondPlan = continuationRecoveryPlan(first);
+  assert.equal(secondPlan.recoverySequence, 1);
+  assert.equal(secondPlan.sourceEvidenceVersion, first.acceptedEvidence!.evidenceVersion);
+  assert.deepEqual(secondPlan.baseline.priorRecoveryOrders, firstPlan.orders);
+  assert.equal(secondPlan.baseline.cumulativeRecoveryCosts[0]!.atoms, 10n);
+  assert.equal(secondPlan.baseline.cumulativeAggregateLoss.atoms, 100n);
+  assert.notEqual(secondPlan.orders[0]!.clientOrderId, firstPlan.orders[0]!.clientOrderId);
+  const secondAttempt = createHyperliquidRecoveryContinuationAttempt(
+    first,
+    secondPlan,
+    identity,
+    first.acceptedEvidence!.observedAtMs,
+  );
+  const completed = reconcileHyperliquidRecovery(
+    secondAttempt,
+    recoveryEvidence(source, secondPlan),
+  );
+  assert.equal(completed.status, 'RECOVERED_COMPLETE');
+  assert.equal(completed.acceptedEvidence!.actualRecoveryCosts[0]!.amountAtoms, 20n);
+  assert.equal(completed.acceptedEvidence!.actualAggregateLoss.amountAtoms, 200n);
 });
 
 test('locks cost, loss, and conservative intermediate residual breaches', async (suite) => {
@@ -859,6 +911,7 @@ test('requires durable write-ahead confirmation and survives restart into reconc
 
 test('enforces CAS, monotonic nonce and sequence fencing, and permanent retirement', () => {
   const source = sourceAttempt(100n, 0n);
+  const secondSource = sourceAttempt(100n, 0n, { planCommitments: secondCommitments });
   const firstPlan = recoveryPlan(source, 0);
   const initial = registeredJournal();
   const first = preparedJournal(initial, source, firstPlan);
@@ -867,8 +920,8 @@ test('enforces CAS, monotonic nonce and sequence fencing, and permanent retireme
     recoveryAttemptId: 'recovery-attempt-2',
     agentWallet: recoveryAgent,
     signerLeaseId: 'recovery-process-1',
-    sourceAttempt: source,
-    plan: recoveryPlan(source, 1),
+    sourceAttempt: secondSource,
+    plan: recoveryPlan(secondSource, 0),
     trustedTimeDecision: trustedTimeDecision('recovery-attempt-2'),
     vaultAddress: account.tradingAccount,
   }), /compare-and-set/);
@@ -911,8 +964,8 @@ test('enforces CAS, monotonic nonce and sequence fencing, and permanent retireme
   }), /already registered, fenced, or retired/);
   assert.throws(() => preparedJournal(
     retired,
-    source,
-    recoveryPlan(source, 1),
+    secondSource,
+    recoveryPlan(secondSource, 0),
     'recovery-attempt-2',
     Number(nowMs + 2n),
   ), /fenced or retired/);
@@ -925,21 +978,21 @@ test('scopes recovery sequence fencing to each package lineage', () => {
   const first = preparedJournal(
     initial,
     firstSource,
-    recoveryPlan(firstSource, 1),
+    recoveryPlan(firstSource, 0),
     'recovery-attempt-lineage-1',
     Number(nowMs + 1n),
   );
   const second = preparedJournal(
     first,
     secondSource,
-    recoveryPlan(secondSource, 1),
+    recoveryPlan(secondSource, 0),
     'recovery-attempt-lineage-2',
     Number(nowMs + 2n),
   );
   assert.equal(second.agents[0]!.recoveryLineages.length, 2);
   assert.deepEqual(second.agents[0]!.recoveryLineages.map(
     (lineage) => lineage.highestReservedRecoverySequence,
-  ), [1, 1]);
+  ), [0, 0]);
 });
 
 test('refuses a restored future nonce instead of resetting the recovery agent', () => {
@@ -948,7 +1001,7 @@ test('refuses a restored future nonce instead of resetting the recovery agent', 
   const first = preparedJournal(
     registeredJournal(),
     firstSource,
-    recoveryPlan(firstSource, 1),
+    recoveryPlan(firstSource, 0),
     'future-recovery-attempt',
     Number(nowMs + 101n),
     100,
@@ -956,7 +1009,7 @@ test('refuses a restored future nonce instead of resetting the recovery agent', 
   assert.throws(() => preparedJournal(
     first,
     secondSource,
-    recoveryPlan(secondSource, 1),
+    recoveryPlan(secondSource, 0),
     'current-recovery-attempt',
     Number(nowMs),
     100,
@@ -993,7 +1046,7 @@ test('refuses recovery submission after trusted time moves behind its durable no
 
 test('refuses a second recovery action while an earlier one for the package is unresolved', () => {
   const secondAgent = `0x${'64'.repeat(20)}` as const;
-  const source = sourceAttempt(100n, 0n);
+  const source = sourceAttempt(200n, 0n, { quantityAtoms: 200n, intermediateCap: 200n });
   const firstPlan = recoveryPlan(source, 0);
   const withSecondAgent = registerHyperliquidRecoveryAgent(registeredJournal(), {
     expectedVersion: 1n,
@@ -1012,29 +1065,37 @@ test('refuses a second recovery action while an earlier one for the package is u
     recoveryAttemptId: 'recovery-attempt-1',
     trustedTimeDecision: trustedTimeDecision('recovery-attempt-1:submit'),
   });
-  const prepareSecond = (journal: HyperliquidRecoverySubmissionJournal, plan: HyperliquidRecoveryExecutionPlan) =>
+  const partial = reconcileHyperliquidRecovery(
+    recoveryAttempt(source, firstPlan),
+    recoveryEvidence(source, firstPlan, [-100n]),
+  );
+  assert.equal(partial.status, 'RECOVERY_REQUIRED');
+  const continuationPlan = continuationRecoveryPlan(partial);
+  const prepareSecond = (
+    journal: HyperliquidRecoverySubmissionJournal,
+    plan: HyperliquidRecoveryExecutionPlan,
+    parentRecoveryAttempt = partial,
+  ) =>
     prepareHyperliquidRecoverySubmission(journal, {
       expectedVersion: journal.version,
       recoveryAttemptId: 'recovery-attempt-2',
       agentWallet: secondAgent,
       signerLeaseId: 'recovery-process-2',
       sourceAttempt: source,
+      parentRecoveryAttempt,
       plan,
       trustedTimeDecision: trustedTimeDecision('recovery-attempt-2'),
       vaultAddress: account.tradingAccount,
     });
 
   // The first response was lost: a second full action on another wallet could double the fill.
-  assert.throws(() => prepareSecond(unknown, recoveryPlan(source, 1)), /not yet reconciled/);
+  assert.throws(() => prepareSecond(unknown, continuationPlan), /not yet reconciled/);
 
   const reconciling = beginHyperliquidRecoverySubmissionReconciliation(unknown, {
     expectedVersion: unknown.version,
     recoveryAttemptId: 'recovery-attempt-1',
   });
-  assert.throws(() => prepareSecond(reconciling, recoveryPlan(source, 1)), /not yet reconciled/);
-
-  const partial = reconcileHyperliquidRecovery(recoveryAttempt(source, firstPlan), recoveryEvidence(source, firstPlan, [-50n]));
-  assert.equal(partial.status, 'RECOVERY_REQUIRED');
+  assert.throws(() => prepareSecond(reconciling, continuationPlan), /not yet reconciled/);
   const reconciled = completeHyperliquidRecoverySubmissionReconciliation(reconciling, {
     expectedVersion: reconciling.version,
     recoveryAttemptId: 'recovery-attempt-1',
@@ -1054,8 +1115,10 @@ test('refuses a second recovery action while an earlier one for the package is u
     reconciledAttempt: partial,
   }), reconciled);
 
-  // A follow-up compiled from evidence older than the reconciled recovery is refused.
-  assert.throws(() => prepareSecond(reconciled, recoveryPlan(source, 1)), /latest reconciled evidence/);
+  const continued = prepareSecond(reconciled, continuationPlan);
+  assert.equal(continued.agents[1]!.attempts[0]!.recoverySequence, 1);
+  assert.equal(continued.agents[1]!.attempts[0]!.parentReconciledAttemptHash,
+    reconciled.agents[0]!.attempts[0]!.reconciledAttemptHash);
 
   const complete = reconcileHyperliquidRecovery(recoveryAttempt(source, firstPlan), recoveryEvidence(source, firstPlan));
   const terminal = completeHyperliquidRecoverySubmissionReconciliation(reconciling, {
@@ -1068,7 +1131,7 @@ test('refuses a second recovery action while an earlier one for the package is u
     terminal,
     'recovery-attempt-1',
   ), /no trusted continuation obligation/);
-  assert.throws(() => prepareSecond(terminal, recoveryPlan(source, 1)), /terminal or manual outcome/);
+  assert.throws(() => prepareSecond(terminal, continuationPlan), /terminal or manual outcome/);
 });
 
 test('persists a recovery action before one exact Hyperliquid Testnet submission', async (suite) => {

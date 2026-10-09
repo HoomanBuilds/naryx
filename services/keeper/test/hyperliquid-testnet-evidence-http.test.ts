@@ -7,6 +7,7 @@ import {
   KEEPER_DEPENDENCY_INCIDENT_STATUS_PATH,
   KEEPER_TESTNET_NETTING_RESIDUAL_RECONCILE_PATH,
   KEEPER_TESTNET_PREPARE_PATH,
+  KEEPER_TESTNET_RECOVERY_CONTINUE_PATH,
   KEEPER_TESTNET_RECOVERY_EXECUTE_PATH,
   KEEPER_TESTNET_RECOVERY_RECONCILE_PATH,
   KEEPER_TESTNET_RECONCILE_PATH,
@@ -380,6 +381,9 @@ test('recovery execution is loopback-only, explicit, and protocol-JSON encoded',
       reconcile: async () => { throw new Error('must not be called'); },
     },
     recovery: {
+      continueAndExecute: async () => {
+        throw new Error('must not be called');
+      },
       compileAndExecute: async (input) => {
         seenAttempt = input.recoveryAttemptId;
         return {
@@ -415,6 +419,65 @@ test('recovery execution is loopback-only, explicit, and protocol-JSON encoded',
     assert.equal(body.plan.mode, 'COMPLETE_MISSING_LEG');
     assert.equal(body.submission.status, 'RECONCILIATION_REQUIRED');
     assert.deepEqual(body.submission.handoff.nonce, { $naryxType: 'bigint', value: '1001' });
+  } finally {
+    await close(server);
+  }
+});
+
+test('recovery continuation accepts only a prior durable attempt identity and remaining bounds', async () => {
+  let seenInput: Record<string, unknown> | null = null;
+  const server = createHyperliquidTestnetEvidenceServer({
+    runtime: {
+      prepare: async () => { throw new Error('must not be called'); },
+      reconcile: async () => { throw new Error('must not be called'); },
+    },
+    recovery: {
+      compileAndExecute: async () => {
+        throw new Error('must not be called');
+      },
+      continueAndExecute: async (input) => {
+        seenInput = input as unknown as Record<string, unknown>;
+        return {
+          plan: { recoverySequence: 1 },
+          submission: {
+            status: 'RECONCILIATION_REQUIRED',
+            handoff: {
+              recoveryAttemptId: input.recoveryAttemptId,
+              recoverySequence: input.recoverySequence,
+            },
+            errorCommitment: null,
+          },
+        } as never;
+      },
+    },
+  });
+  const url = await listen(server);
+  try {
+    const response = await fetch(`${url}${KEEPER_TESTNET_RECOVERY_CONTINUE_PATH}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: stringifyProtocolJson({
+        recoveryAttemptId: 'recovery-attempt-2',
+        previousRecoveryAttemptId: 'recovery-attempt-1',
+        recoverySequence: 1,
+        projectedRecoveryCosts: [{ asset: { assetId: 'usdc' }, atoms: 7n }],
+        projectedAggregateLoss: { asset: { assetId: 'usdc' }, atoms: 80n },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const captured = seenInput as Record<string, unknown> | null;
+    assert.deepEqual(Object.keys(captured ?? {}).sort(), [
+      'previousRecoveryAttemptId', 'projectedAggregateLoss', 'projectedRecoveryCosts',
+      'recoveryAttemptId', 'recoverySequence',
+    ]);
+    assert.equal(captured?.previousRecoveryAttemptId, 'recovery-attempt-1');
+    assert.equal(captured?.recoverySequence, 1);
+    const body = await response.json() as {
+      plan: { recoverySequence: number };
+      submission: { handoff: { recoveryAttemptId: string } };
+    };
+    assert.equal(body.plan.recoverySequence, 1);
+    assert.equal(body.submission.handoff.recoveryAttemptId, 'recovery-attempt-2');
   } finally {
     await close(server);
   }

@@ -505,10 +505,11 @@ function sourceWireOrders(attempt: HyperliquidPackageAttempt):
 function expectedRecoveryOrders(
   attempt: HyperliquidRecoveryAttempt,
   markets: ResolvedMarkets,
+  plannedOrders: HyperliquidRecoveryAttempt['plan']['orders'] = attempt.plan.orders,
 ): readonly ExpectedOrder[] {
   const baseDecimals = attempt.sourceAttempt.plan.legs[0].baseAsset.decimals;
   const sourceLegs = new Map(attempt.sourceAttempt.plan.legs.map((leg) => [leg.role, leg]));
-  return Object.freeze(attempt.plan.orders.map((order) => Object.freeze({
+  return Object.freeze(plannedOrders.map((order) => Object.freeze({
     role: order.role,
     cloid: order.clientOrderId.toLowerCase() as `0x${string}`,
     coin: order.role === 'SPOT' ? markets.spotCoin : markets.perpetualCoin,
@@ -1143,12 +1144,18 @@ export class HyperliquidAuthoritativeEvidenceCollector {
       attempt.sourceAttempt.plan.legs[0].quoteAsset, reasons);
     if (markets === null) return incomplete(reasons, [], allEnvelopes(accountData));
     const sourceOrders = expectedPackageOrders(attempt.sourceAttempt, markets);
+    const priorRecoveryOrders = expectedRecoveryOrders(
+      attempt,
+      markets,
+      attempt.plan.baseline.priorRecoveryOrders,
+    );
     const recoveryOrders = expectedRecoveryOrders(attempt, markets);
-    const orders = Object.freeze([...sourceOrders, ...recoveryOrders]);
+    const allRecoveryOrders = Object.freeze([...priorRecoveryOrders, ...recoveryOrders]);
+    const orders = Object.freeze([...sourceOrders, ...allRecoveryOrders]);
     if (new Set(orders.map((order) => order.cloid)).size !== orders.length) {
       addReason(reasons, 'AMBIGUOUS_CLOID');
     }
-    if (recoveryOrders.some((order) => order.wireAsset !== (order.role === 'SPOT'
+    if (allRecoveryOrders.some((order) => order.wireAsset !== (order.role === 'SPOT'
       ? 10_000 + binding.spotUniverseIndex : binding.perpetualAssetIndex))) {
       addReason(reasons, 'UNKNOWN_ASSET_OR_MARKET');
     }
@@ -1162,6 +1169,11 @@ export class HyperliquidAuthoritativeEvidenceCollector {
     verifySnapshotSkew(envelopes, window, reasons);
     const reducedSource = reduceOrders(
       sourceOrders, orderData, attempt.sourceAttempt.plan.legs[0].quoteAsset,
+      markets.feeToken, attempt.sourceAttempt.plan.legs[0].baseAsset, markets.spotBalanceCoin,
+      window, reasons,
+    );
+    const reducedAllRecovery = reduceOrders(
+      allRecoveryOrders, orderData, attempt.sourceAttempt.plan.legs[0].quoteAsset,
       markets.feeToken, attempt.sourceAttempt.plan.legs[0].baseAsset, markets.spotBalanceCoin,
       window, reasons,
     );
@@ -1187,9 +1199,9 @@ export class HyperliquidAuthoritativeEvidenceCollector {
       aggregateLoss = hyperliquidRecoveryAggregateLossQuoteAtoms({
         attempt,
         sourceOrders: reducedSource.orderInputs,
-        recoveryOrders: reducedRecovery.orderInputs,
+        recoveryOrders: reducedAllRecovery.orderInputs,
         sourceFills: reducedSource.observedFills,
-        recoveryFills: reducedRecovery.observedFills,
+        recoveryFills: reducedAllRecovery.observedFills,
       });
     } catch {
       addReason(reasons, 'AGGREGATE_RECOVERY_LOSS_UNAVAILABLE');
@@ -1211,19 +1223,20 @@ export class HyperliquidAuthoritativeEvidenceCollector {
     });
     const observedFills = Object.freeze([
       ...reducedSource.observedFills,
-      ...reducedRecovery.observedFills,
+      ...reducedAllRecovery.observedFills,
     ]);
     if (reasons.length > 0 || sourceEvidence === null) {
       return incomplete(reasons, observedFills, envelopes, accountObservation);
     }
     const observedAtMs = Math.max(...envelopes.map((value) => value.receivedAtMs));
     const recoveryPolicy = attempt.sourceAttempt.plan.recoveryPolicy;
-    const actualRecoveryCosts = Object.freeze(recoveryPolicy.maxRecoveryCostCaps.map((cap) => {
+    const actualRecoveryCosts = Object.freeze(recoveryPolicy.maxRecoveryCostCaps.map((cap, index) => {
+      const baseline = attempt.plan.baseline.cumulativeRecoveryCosts[index];
       const amountAtoms = recoveryFees.filter((fee) => sameAsset(fee.asset, cap.asset))
         .reduce((total, fee) => total + fee.amountAtoms, 0n);
       return Object.freeze({
         asset: cap.asset,
-        amountAtoms: amountAtoms > 0n ? amountAtoms : 0n,
+        amountAtoms: (baseline?.atoms ?? 0n) + (amountAtoms > 0n ? amountAtoms : 0n),
         evidenceStatus: 'CONFIRMED' as const,
       });
     }));

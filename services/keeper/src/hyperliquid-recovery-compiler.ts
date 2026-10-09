@@ -25,6 +25,7 @@ import type {
   HyperliquidPackageAttempt,
   HyperliquidReconciliationSnapshot,
 } from './index.js';
+import type { HyperliquidRecoveryAttempt } from './hyperliquid-recovery-reconciliation.js';
 import { hyperliquidBaseFeeAtoms } from './hyperliquid-base-fee.js';
 
 const RECOVERY_CLOID_DOMAIN = 'naryx/hypercore/recovery-cloid/v1';
@@ -54,6 +55,13 @@ export interface HyperliquidRecoveryCompileInput {
   readonly projectedAggregateLoss: HyperliquidRecoveryBoundInput;
 }
 
+export interface HyperliquidRecoveryContinuationCompileInput {
+  readonly previousAttempt: HyperliquidRecoveryAttempt;
+  readonly nowMs: bigint;
+  readonly projectedRecoveryCosts: readonly HyperliquidRecoveryBoundInput[];
+  readonly projectedAggregateLoss: HyperliquidRecoveryBoundInput;
+}
+
 export interface HypercoreRecoveryOrderAction {
   readonly type: 'order';
   readonly orders: readonly HypercoreOrderWire[];
@@ -69,6 +77,17 @@ export interface HyperliquidRecoveryPlannedOrder {
   readonly order: HypercoreOrderWire;
 }
 
+export interface HyperliquidRecoveryBaseline {
+  readonly evidenceVersion: bigint;
+  readonly observedAtMs: bigint;
+  readonly netSpotDeltaAtoms: bigint;
+  readonly perpetualPositionDeltaAtoms: bigint;
+  readonly observedPerpetualPositionAtoms: bigint;
+  readonly cumulativeRecoveryCosts: readonly HyperliquidRecoveryBoundInput[];
+  readonly cumulativeAggregateLoss: HyperliquidRecoveryBoundInput;
+  readonly priorRecoveryOrders: readonly HyperliquidRecoveryPlannedOrder[];
+}
+
 export interface HyperliquidRecoveryExecutionPlan {
   readonly version: 1;
   readonly guarantee: typeof NARYX_UNSIGNED_HYPERCORE_RECOVERY;
@@ -78,6 +97,7 @@ export interface HyperliquidRecoveryExecutionPlan {
   readonly account: HyperliquidAccountIdentity;
   readonly recoverySequence: number;
   readonly sourceEvidenceVersion: bigint;
+  readonly baseline: HyperliquidRecoveryBaseline;
   readonly reconciledStateSchemaHash: ManifestHash;
   readonly controllerId: ProtocolId;
   readonly controllerCodeHash: ManifestHash;
@@ -108,6 +128,17 @@ interface RecoveryIntent {
   readonly action: Exclude<RecoveryAction, 'CANCEL_OPEN_ORDERS'>;
   readonly role: 'SPOT' | 'PERPETUAL';
   readonly signedBaseDeltaAtoms: bigint;
+}
+
+interface RecoveryCompilationState {
+  readonly evidenceVersion: bigint;
+  readonly observedAtMs: bigint;
+  readonly netSpotDeltaAtoms: bigint;
+  readonly perpetualPositionDeltaAtoms: bigint;
+  readonly observedPerpetualPositionAtoms: bigint;
+  readonly cumulativeRecoveryCosts: readonly HyperliquidRecoveryBoundInput[];
+  readonly cumulativeAggregateLoss: HyperliquidRecoveryBoundInput;
+  readonly priorRecoveryOrders: readonly HyperliquidRecoveryPlannedOrder[];
 }
 
 function requireCondition(condition: boolean, message: string): asserts condition {
@@ -429,7 +460,7 @@ function requirePerpetualPositionSafety(
 
 function compileOrder(
   attempt: HyperliquidPackageAttempt,
-  evidence: HyperliquidReconciliationSnapshot,
+  state: Pick<RecoveryCompilationState, 'evidenceVersion' | 'observedPerpetualPositionAtoms'>,
   intent: RecoveryIntent,
   slot: RecoveryActionSlot,
   leg: HyperliquidPlannedLeg,
@@ -454,7 +485,7 @@ function compileOrder(
       : attempt.plan.prePerpetualPositionAtoms;
     requirePerpetualPositionSafety(
       slot,
-      evidence.observedPerpetualPositionAtoms,
+      state.observedPerpetualPositionAtoms,
       intent.signedBaseDeltaAtoms,
       expectedFinalPosition,
     );
@@ -472,7 +503,7 @@ function compileOrder(
   const clientOrderId = recoveryClientOrderId(
     attempt.plan.domain,
     attempt.plan.commitments,
-    evidence.evidenceVersion,
+    state.evidenceVersion,
     recoverySequence,
     slot.sequence,
     intent.role,
@@ -503,6 +534,140 @@ function quoteResidualAtoms(baseResidualAtoms: bigint, attempt: HyperliquidPacka
   const numerator = baseResidualAtoms * policy.residualValuationReferencePrice.quoteAtoms;
   const denominator = policy.residualValuationReferencePrice.baseAtoms;
   return numerator / denominator + (numerator % denominator === 0n ? 0n : 1n);
+}
+
+function compileRecoveryPlan(input: Readonly<{
+  attempt: HyperliquidPackageAttempt;
+  state: RecoveryCompilationState;
+  intents: readonly RecoveryIntent[];
+  recoverySequence: number;
+  projectedRecoveryCosts: readonly HyperliquidRecoveryBoundInput[];
+  projectedAggregateLoss: HyperliquidRecoveryBoundInput;
+  costCaps: HyperliquidPackageAttempt['plan']['recoveryPolicy']['maxRecoveryCostCaps'];
+  aggregateLossCap: HyperliquidRecoveryBoundInput;
+}>): HyperliquidRecoveryExecutionPlan {
+  const { attempt, state } = input;
+  const policy = attempt.plan.recoveryPolicy;
+  const spot = attempt.plan.legs.find((leg) => leg.role === 'SPOT');
+  const perpetual = attempt.plan.legs.find((leg) => leg.role === 'PERPETUAL');
+  requireCondition(spot !== undefined && perpetual !== undefined,
+    'exact spot and perpetual legs are required');
+  requireCondition(sameAsset(spot.baseAsset, perpetual.baseAsset)
+    && sameAsset(spot.quoteAsset, perpetual.quoteAsset),
+  'recovery leg assets mismatch');
+  requireCondition(sameAsset(policy.maxIntermediateResidual.asset, spot.baseAsset)
+    && sameAsset(policy.maxTerminalResidual.asset, spot.baseAsset),
+  'recovery residual cap asset mismatch');
+  requireCondition(input.intents.length > 0, 'recovery has no permitted action');
+  requireCondition(input.intents.every((intent) => intent.mode === input.intents[0]!.mode),
+    'recovery actions mix incompatible modes');
+
+  const costs = validateCosts(input.projectedRecoveryCosts, input.costCaps);
+  const projectedLoss = normalizedBound(input.projectedAggregateLoss, 'projectedAggregateLoss');
+  requireCondition(sameAsset(projectedLoss.asset, input.aggregateLossCap.asset),
+    'projected recovery loss asset mismatch');
+  requireCondition(projectedLoss.atoms <= input.aggregateLossCap.atoms,
+    'projected aggregate recovery loss exceeds the available cap');
+
+  const ordered = [...input.intents].sort((left, right) => {
+    const leftLeg = left.role === 'SPOT' ? spot : perpetual;
+    const rightLeg = right.role === 'SPOT' ? spot : perpetual;
+    return matchingSlot(attempt, left.action, leftLeg)!.sequence
+      - matchingSlot(attempt, right.action, rightLeg)!.sequence;
+  });
+  const orders = Object.freeze(ordered.map((intent, ordinal) => {
+    const leg = intent.role === 'SPOT' ? spot : perpetual;
+    const slot = matchingSlot(attempt, intent.action, leg);
+    requireCondition(slot !== undefined, `${intent.action} recovery action is unavailable`);
+    return compileOrder(attempt, state, intent, slot, leg, input.recoverySequence, ordinal);
+  }));
+  const cloids = [...state.priorRecoveryOrders, ...orders]
+    .map((order) => order.clientOrderId.toLowerCase());
+  requireCondition(new Set(cloids).size === cloids.length,
+    'recovery lineage client order IDs must be unique');
+
+  let netSpotDeltaAtoms = state.netSpotDeltaAtoms;
+  let perpetualDeltaAtoms = state.perpetualPositionDeltaAtoms;
+  const initialResidualBaseAtoms = absolute(netSpotDeltaAtoms + perpetualDeltaAtoms);
+  requireCondition(initialResidualBaseAtoms <= policy.maxIntermediateResidual.atoms,
+    'initial recovery residual exceeds signed intermediate cap');
+  for (const order of orders) {
+    if (order.role === 'SPOT') netSpotDeltaAtoms += order.signedBaseDeltaAtoms;
+    else perpetualDeltaAtoms += order.signedBaseDeltaAtoms;
+    requireCondition(absolute(netSpotDeltaAtoms + perpetualDeltaAtoms)
+      <= policy.maxIntermediateResidual.atoms,
+    'recovery action exceeds signed intermediate residual cap');
+  }
+  const terminalResidualBaseAtoms = absolute(netSpotDeltaAtoms + perpetualDeltaAtoms);
+  requireCondition(terminalResidualBaseAtoms <= policy.maxTerminalResidual.atoms,
+    'recovery result exceeds signed terminal residual cap');
+  const terminalPolicy = attempt.plan.terminalResidualPolicy;
+  const mode = input.intents[0]!.mode;
+  if (mode === 'PAIRED_ROLLBACK') {
+    requireCondition(netSpotDeltaAtoms === 0n && perpetualDeltaAtoms === 0n,
+      'rollback recovery does not flatten package effects');
+  } else if (terminalPolicy.kind === 'EXACT_NET') {
+    requireCondition(netSpotDeltaAtoms === terminalPolicy.netSpotDeltaAtoms
+      && terminalResidualBaseAtoms === 0n,
+    'recovery result violates exact terminal policy');
+  } else {
+    requireCondition(netSpotDeltaAtoms >= terminalPolicy.minNetSpotDeltaAtoms
+      && netSpotDeltaAtoms <= terminalPolicy.maxNetSpotDeltaAtoms,
+    'recovery result violates signed spot interval');
+    requireCondition(terminalResidualBaseAtoms <= terminalPolicy.maxTerminalResidualBaseAtoms
+      && quoteResidualAtoms(terminalResidualBaseAtoms, attempt)
+        <= terminalPolicy.maxTerminalResidualQuoteAtoms,
+    'recovery result violates signed terminal valuation caps');
+  }
+
+  const baseline: HyperliquidRecoveryBaseline = Object.freeze({
+    evidenceVersion: state.evidenceVersion,
+    observedAtMs: state.observedAtMs,
+    netSpotDeltaAtoms: state.netSpotDeltaAtoms,
+    perpetualPositionDeltaAtoms: state.perpetualPositionDeltaAtoms,
+    observedPerpetualPositionAtoms: state.observedPerpetualPositionAtoms,
+    cumulativeRecoveryCosts: Object.freeze(state.cumulativeRecoveryCosts.map(
+      (bound, index) => normalizedBound(bound, `baseline.cumulativeRecoveryCosts[${index}]`),
+    )),
+    cumulativeAggregateLoss: normalizedBound(
+      state.cumulativeAggregateLoss,
+      'baseline.cumulativeAggregateLoss',
+    ),
+    priorRecoveryOrders: Object.freeze(state.priorRecoveryOrders.map((order) =>
+      structuredClone(order))),
+  });
+  const action: HypercoreRecoveryOrderAction = Object.freeze({
+    type: 'order',
+    orders: Object.freeze(orders.map((order) => order.order)),
+    grouping: 'na',
+  });
+  return Object.freeze({
+    version: 1,
+    guarantee: NARYX_UNSIGNED_HYPERCORE_RECOVERY,
+    mode,
+    domain: attempt.plan.domain,
+    commitments: attempt.plan.commitments,
+    account: attempt.account,
+    recoverySequence: input.recoverySequence,
+    sourceEvidenceVersion: state.evidenceVersion,
+    baseline,
+    reconciledStateSchemaHash: policy.reconciledStateSchemaHash,
+    controllerId: policy.controllerId,
+    controllerCodeHash: policy.controllerCodeHash,
+    authorityModeId: policy.authorityModeId,
+    actionBuilderCodeHash: policy.actionBuilderCodeHash,
+    actionExpiryMs: policy.maxActionExpiryValue,
+    recoveryDeadlineMs: policy.deadlineValue,
+    projectedRecoveryCosts: costs,
+    projectedAggregateLoss: projectedLoss,
+    initialResidualBaseAtoms,
+    terminalResidualBaseAtoms,
+    orders,
+    unsignedRequestFields: Object.freeze({
+      action,
+      expiresAfter: Number(policy.maxActionExpiryValue),
+    }),
+  });
 }
 
 export class HyperliquidRecoveryCompiler {
@@ -541,113 +706,150 @@ export class HyperliquidRecoveryCompiler {
       && policy.authorityModeId === this.#identity.authorityModeId
       && bytesEqual(policy.actionBuilderCodeHash, this.#identity.actionBuilderCodeHash),
     'recovery controller or action-builder identity mismatch');
-    requireCondition(Number.isInteger(input.recoverySequence)
-      && input.recoverySequence >= 0 && input.recoverySequence <= 0xffff_ffff,
-    'recoverySequence must fit u32');
+    requireCondition(input.recoverySequence === 0,
+      'initial recoverySequence must be zero');
 
     const evidence = requireFreshTerminalEvidence(attempt, input.nowMs);
     requireCondition(evidence.evidenceVersion <= U64_MAX, 'recovery evidence version exceeds u64');
     validateRecoveryObligation(attempt, evidence);
     const spot = attempt.plan.legs.find((leg) => leg.role === 'SPOT');
     const perpetual = attempt.plan.legs.find((leg) => leg.role === 'PERPETUAL');
-    requireCondition(spot !== undefined && perpetual !== undefined, 'exact spot and perpetual legs are required');
-    requireCondition(sameAsset(spot.baseAsset, perpetual.baseAsset)
-      && sameAsset(spot.quoteAsset, perpetual.quoteAsset),
-    'recovery leg assets mismatch');
-    requireCondition(sameAsset(policy.maxIntermediateResidual.asset, spot.baseAsset)
-      && sameAsset(policy.maxTerminalResidual.asset, spot.baseAsset),
-    'recovery residual cap asset mismatch');
-
-    const costs = validateCosts(input.projectedRecoveryCosts, policy.maxRecoveryCostCaps);
-    const projectedLoss = normalizedBound(input.projectedAggregateLoss, 'projectedAggregateLoss');
-    requireCondition(sameAsset(projectedLoss.asset, policy.maxAggregateRecoveryLoss.asset),
-      'projected recovery loss asset mismatch');
-    requireCondition(projectedLoss.atoms <= policy.maxAggregateRecoveryLoss.atoms,
-      'projected aggregate recovery loss exceeds signed cap');
-
+    requireCondition(spot !== undefined && perpetual !== undefined,
+      'exact spot and perpetual legs are required');
     const completion = completionIntent(attempt, evidence, spot, perpetual);
     const intents = completion === null
       ? rollbackIntents(attempt, evidence, spot, perpetual)
       : [completion];
-    const ordered = [...intents].sort((left, right) => {
-      const leftLeg = left.role === 'SPOT' ? spot : perpetual;
-      const rightLeg = right.role === 'SPOT' ? spot : perpetual;
-      return matchingSlot(attempt, left.action, leftLeg)!.sequence
-        - matchingSlot(attempt, right.action, rightLeg)!.sequence;
-    });
-    const orders = Object.freeze(ordered.map((intent, ordinal) => {
-      const leg = intent.role === 'SPOT' ? spot : perpetual;
-      const slot = matchingSlot(attempt, intent.action, leg);
-      requireCondition(slot !== undefined, `${intent.action} recovery action is unavailable`);
-      return compileOrder(attempt, evidence, intent, slot, leg, input.recoverySequence, ordinal);
-    }));
-
-    let netSpotDeltaAtoms = evidence.netSpotDeltaAtoms;
-    let perpetualDeltaAtoms = evidence.perpetualPositionDeltaAtoms;
-    const initialResidualBaseAtoms = absolute(netSpotDeltaAtoms + perpetualDeltaAtoms);
-    requireCondition(initialResidualBaseAtoms <= policy.maxIntermediateResidual.atoms,
-      'initial recovery residual exceeds signed intermediate cap');
-    for (const order of orders) {
-      if (order.role === 'SPOT') netSpotDeltaAtoms += order.signedBaseDeltaAtoms;
-      else perpetualDeltaAtoms += order.signedBaseDeltaAtoms;
-      requireCondition(absolute(netSpotDeltaAtoms + perpetualDeltaAtoms)
-        <= policy.maxIntermediateResidual.atoms,
-      'recovery action exceeds signed intermediate residual cap');
-    }
-    const terminalResidualBaseAtoms = absolute(netSpotDeltaAtoms + perpetualDeltaAtoms);
-    requireCondition(terminalResidualBaseAtoms <= policy.maxTerminalResidual.atoms,
-      'recovery result exceeds signed terminal residual cap');
-    const terminalPolicy = attempt.plan.terminalResidualPolicy;
-    const mode = orders[0]!.action.startsWith('COMPLETE_')
-      ? 'COMPLETE_MISSING_LEG'
-      : 'PAIRED_ROLLBACK';
-    if (mode === 'PAIRED_ROLLBACK') {
-      requireCondition(netSpotDeltaAtoms === 0n && perpetualDeltaAtoms === 0n,
-        'rollback recovery does not flatten package effects');
-    } else if (terminalPolicy.kind === 'EXACT_NET') {
-      requireCondition(netSpotDeltaAtoms === terminalPolicy.netSpotDeltaAtoms
-        && terminalResidualBaseAtoms === 0n,
-      'recovery result violates exact terminal policy');
-    } else {
-      requireCondition(netSpotDeltaAtoms >= terminalPolicy.minNetSpotDeltaAtoms
-        && netSpotDeltaAtoms <= terminalPolicy.maxNetSpotDeltaAtoms,
-      'recovery result violates signed spot interval');
-      requireCondition(terminalResidualBaseAtoms <= terminalPolicy.maxTerminalResidualBaseAtoms
-        && quoteResidualAtoms(terminalResidualBaseAtoms, attempt)
-          <= terminalPolicy.maxTerminalResidualQuoteAtoms,
-      'recovery result violates signed terminal valuation caps');
-    }
-
-    const action: HypercoreRecoveryOrderAction = Object.freeze({
-      type: 'order',
-      orders: Object.freeze(orders.map((order) => order.order)),
-      grouping: 'na',
-    });
-    return Object.freeze({
-      version: 1,
-      guarantee: NARYX_UNSIGNED_HYPERCORE_RECOVERY,
-      mode,
-      domain: attempt.plan.domain,
-      commitments: attempt.plan.commitments,
-      account: attempt.account,
-      recoverySequence: input.recoverySequence,
-      sourceEvidenceVersion: evidence.evidenceVersion,
-      reconciledStateSchemaHash: policy.reconciledStateSchemaHash,
-      controllerId: policy.controllerId,
-      controllerCodeHash: policy.controllerCodeHash,
-      authorityModeId: policy.authorityModeId,
-      actionBuilderCodeHash: policy.actionBuilderCodeHash,
-      actionExpiryMs: policy.maxActionExpiryValue,
-      recoveryDeadlineMs: policy.deadlineValue,
-      projectedRecoveryCosts: costs,
-      projectedAggregateLoss: projectedLoss,
-      initialResidualBaseAtoms,
-      terminalResidualBaseAtoms,
-      orders,
-      unsignedRequestFields: Object.freeze({
-        action,
-        expiresAfter: Number(policy.maxActionExpiryValue),
+    return compileRecoveryPlan({
+      attempt,
+      state: Object.freeze({
+        evidenceVersion: evidence.evidenceVersion,
+        observedAtMs: evidence.observedAtMs,
+        netSpotDeltaAtoms: evidence.netSpotDeltaAtoms,
+        perpetualPositionDeltaAtoms: evidence.perpetualPositionDeltaAtoms,
+        observedPerpetualPositionAtoms: evidence.observedPerpetualPositionAtoms,
+        cumulativeRecoveryCosts: Object.freeze(policy.maxRecoveryCostCaps.map((cap) =>
+          Object.freeze({ asset: cap.asset, atoms: 0n }))),
+        cumulativeAggregateLoss: Object.freeze({
+          asset: policy.maxAggregateRecoveryLoss.asset,
+          atoms: 0n,
+        }),
+        priorRecoveryOrders: Object.freeze([]),
       }),
+      intents,
+      recoverySequence: input.recoverySequence,
+      projectedRecoveryCosts: input.projectedRecoveryCosts,
+      projectedAggregateLoss: input.projectedAggregateLoss,
+      costCaps: policy.maxRecoveryCostCaps,
+      aggregateLossCap: policy.maxAggregateRecoveryLoss,
+    });
+  }
+
+  compileContinuation(
+    input: HyperliquidRecoveryContinuationCompileInput,
+  ): HyperliquidRecoveryExecutionPlan {
+    const previous = input.previousAttempt;
+    const evidence = previous.acceptedEvidence;
+    const obligation = previous.nextRecoveryObligation;
+    requireCondition(previous.status === 'RECOVERY_REQUIRED'
+      && previous.lockEvidence === null
+      && evidence !== null
+      && obligation !== null,
+    'continuation requires a reconciled recovery obligation');
+    const attempt = previous.sourceAttempt;
+    const policy = attempt.plan.recoveryPolicy;
+    requireCondition(attempt.plan.domain.domainId === 'hypercore:testnet',
+      'only the exact HyperCore testnet domain is supported');
+    requireCondition(policy.recoveryExpiryUnit === 'HYPERLIQUID_UNIX_MILLISECONDS'
+      && policy.deadlineValue === attempt.plan.recoveryDeadlineMs
+      && obligation.actionExpiryMs === policy.maxActionExpiryValue
+      && obligation.recoveryDeadlineMs === policy.deadlineValue,
+    'continuation recovery timing binding mismatch');
+    requireCondition(input.nowMs === evidence.observedAtMs
+      && input.nowMs > 0n
+      && input.nowMs < policy.maxActionExpiryValue
+      && input.nowMs < policy.deadlineValue,
+    'continuation recovery evidence is stale');
+    requireCondition(policy.maxActionExpiryValue <= MAX_SAFE_INTEGER
+      && policy.maxActionExpiryValue + policy.minRecoveryWindowMs <= policy.deadlineValue,
+    'signed recovery timing is unsupported');
+    requireCondition(policy.controllerId === this.#identity.controllerId
+      && bytesEqual(policy.controllerCodeHash, this.#identity.controllerCodeHash)
+      && policy.authorityModeId === this.#identity.authorityModeId
+      && bytesEqual(policy.actionBuilderCodeHash, this.#identity.actionBuilderCodeHash),
+    'recovery controller or action-builder identity mismatch');
+    requireCondition(evidence.evidenceVersion > previous.plan.sourceEvidenceVersion
+      && evidence.evidenceVersion <= U64_MAX
+      && obligation.sourceEvidenceVersion === evidence.evidenceVersion
+      && obligation.recoverySequence === previous.plan.recoverySequence + 1
+      && obligation.recoverySequence <= 0xffff_ffff,
+    'continuation recovery sequence or evidence binding mismatch');
+    requireCondition(sameDomain(obligation.domain, previous.plan.domain)
+      && sameCommitments(obligation.commitments, previous.plan.commitments)
+      && sameAccount(obligation.account, previous.plan.account),
+    'continuation recovery identity mismatch');
+    requireCondition(obligation.actions.length > 0
+      && obligation.actions.every((action) => action.signedBaseDeltaAtoms !== 0n),
+    'continuation recovery actions are empty');
+
+    requireCondition(obligation.remainingRecoveryCostCaps.length
+      === policy.maxRecoveryCostCaps.length
+      && evidence.actualRecoveryCosts.length === policy.maxRecoveryCostCaps.length,
+    'continuation recovery cost state is incomplete');
+    const cumulativeRecoveryCosts = Object.freeze(policy.maxRecoveryCostCaps.map((cap) => {
+      const actual = evidence.actualRecoveryCosts.find((item) => sameAsset(item.asset, cap.asset));
+      const remaining = obligation.remainingRecoveryCostCaps.find(
+        (item) => sameAsset(item.asset, cap.asset),
+      );
+      requireCondition(actual !== undefined && remaining !== undefined
+        && actual.evidenceStatus === 'CONFIRMED'
+        && actual.amountAtoms >= 0n
+        && actual.amountAtoms <= cap.maxAtoms
+        && remaining.atoms === cap.maxAtoms - actual.amountAtoms,
+      'continuation recovery cost state differs from the signed cap');
+      return Object.freeze({ asset: cap.asset, atoms: actual.amountAtoms });
+    }));
+    const aggregateLoss = policy.maxAggregateRecoveryLoss;
+    requireCondition(evidence.actualAggregateLoss.evidenceStatus === 'CONFIRMED'
+      && sameAsset(evidence.actualAggregateLoss.asset, aggregateLoss.asset)
+      && evidence.actualAggregateLoss.amountAtoms >= 0n
+      && evidence.actualAggregateLoss.amountAtoms <= aggregateLoss.atoms
+      && sameAsset(obligation.remainingAggregateLoss.asset, aggregateLoss.asset)
+      && obligation.remainingAggregateLoss.atoms
+        === aggregateLoss.atoms - evidence.actualAggregateLoss.amountAtoms,
+    'continuation aggregate loss state differs from the signed cap');
+
+    const intents = Object.freeze(obligation.actions.map((action) => Object.freeze({
+      mode: obligation.mode,
+      action: action.action,
+      role: action.role,
+      signedBaseDeltaAtoms: action.signedBaseDeltaAtoms,
+    })));
+    return compileRecoveryPlan({
+      attempt,
+      state: Object.freeze({
+        evidenceVersion: evidence.evidenceVersion,
+        observedAtMs: evidence.observedAtMs,
+        netSpotDeltaAtoms: evidence.netSpotBalanceDeltaAtoms,
+        perpetualPositionDeltaAtoms: evidence.perpetualPositionDeltaAtoms,
+        observedPerpetualPositionAtoms: evidence.observedPerpetualPositionAtoms,
+        cumulativeRecoveryCosts,
+        cumulativeAggregateLoss: Object.freeze({
+          asset: aggregateLoss.asset,
+          atoms: evidence.actualAggregateLoss.amountAtoms,
+        }),
+        priorRecoveryOrders: Object.freeze([
+          ...previous.plan.baseline.priorRecoveryOrders.map((order) => structuredClone(order)),
+          ...previous.plan.orders.map((order) => structuredClone(order)),
+        ]),
+      }),
+      intents,
+      recoverySequence: obligation.recoverySequence,
+      projectedRecoveryCosts: input.projectedRecoveryCosts,
+      projectedAggregateLoss: input.projectedAggregateLoss,
+      costCaps: Object.freeze(obligation.remainingRecoveryCostCaps.map((cap) =>
+        Object.freeze({ asset: cap.asset, maxAtoms: cap.atoms }))),
+      aggregateLossCap: obligation.remainingAggregateLoss,
     });
   }
 }

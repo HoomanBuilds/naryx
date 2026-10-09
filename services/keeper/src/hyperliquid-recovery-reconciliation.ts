@@ -24,6 +24,7 @@ import {
   sameAsset,
   sameCommitments,
   sameDomain,
+  validateHyperliquidRecoveryContinuationExecutionPlan,
   validateHyperliquidRecoveryExecutionPlan,
   type HyperliquidRecoveryVerifierIdentity,
 } from './hyperliquid-recovery-validation.js';
@@ -611,6 +612,21 @@ export function createHyperliquidRecoveryAttempt(
   return recoveryAttempt(sourceAttempt, plan);
 }
 
+export function createHyperliquidRecoveryContinuationAttempt(
+  previousAttempt: HyperliquidRecoveryAttempt,
+  plan: HyperliquidRecoveryExecutionPlan,
+  identity: HyperliquidRecoveryVerifierIdentity,
+  nowMs: bigint,
+): HyperliquidRecoveryAttempt {
+  validateHyperliquidRecoveryContinuationExecutionPlan(
+    previousAttempt,
+    plan,
+    identity,
+    nowMs,
+  );
+  return recoveryAttempt(previousAttempt.sourceAttempt, plan);
+}
+
 function terminalOutcome(
   attempt: HyperliquidRecoveryAttempt,
   evidence: HyperliquidRecoveryReconciliationSnapshot,
@@ -665,9 +681,8 @@ export function reconcileHyperliquidRecovery(
       || evidence.observedAtMs <= attempt.acceptedEvidence.observedAtMs)) {
     return manual(attempt, 'STALE_EVIDENCE', evidence);
   }
-  const sourceEvidence = attempt.sourceAttempt.acceptedEvidence!;
   if (evidence.evidenceVersion <= attempt.plan.sourceEvidenceVersion
-    || evidence.observedAtMs <= sourceEvidence.observedAtMs) {
+    || evidence.observedAtMs <= attempt.plan.baseline.observedAtMs) {
     return manual(attempt, 'STALE_EVIDENCE', evidence);
   }
   if (!sameDomain(evidence.domain, attempt.plan.domain)
@@ -699,9 +714,9 @@ export function reconcileHyperliquidRecovery(
   const recoveryBaseFee = evidence.fees.filter((fee) => sameAsset(fee.asset, baseAsset))
     .reduce((total, fee) => total + fee.amountAtoms, 0n);
   if (evidence.netSpotBalanceDeltaAtoms
-      !== sourceEvidence.netSpotDeltaAtoms + recoverySpotFill - recoveryBaseFee
+      !== attempt.plan.baseline.netSpotDeltaAtoms + recoverySpotFill - recoveryBaseFee
     || evidence.perpetualPositionDeltaAtoms
-      !== sourceEvidence.perpetualPositionDeltaAtoms + recoveryPerpetualFill
+      !== attempt.plan.baseline.perpetualPositionDeltaAtoms + recoveryPerpetualFill
     || evidence.observedPerpetualPositionAtoms
       !== attempt.sourceAttempt.plan.prePerpetualPositionAtoms
         + evidence.perpetualPositionDeltaAtoms
@@ -738,8 +753,8 @@ export function reconcileHyperliquidRecovery(
     return manual(attempt, 'AGGREGATE_LOSS_CAP_BREACH', evidence);
   }
   if (maximumIntermediateResidual(
-    sourceEvidence.netSpotDeltaAtoms,
-    sourceEvidence.perpetualPositionDeltaAtoms,
+    attempt.plan.baseline.netSpotDeltaAtoms,
+    attempt.plan.baseline.perpetualPositionDeltaAtoms,
     orders,
   ) > attempt.sourceAttempt.plan.recoveryPolicy.maxIntermediateResidual.atoms) {
     return manual(attempt, 'INTERMEDIATE_RESIDUAL_BREACH', evidence);
