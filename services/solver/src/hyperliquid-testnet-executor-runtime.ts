@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { getWalletAddress } from '@nktkas/hyperliquid/signing';
 import {
   HyperliquidExecutionPlanner,
@@ -9,6 +10,7 @@ import {
 } from '@naryx/adapter-hyperliquid';
 import {
   adapterRef,
+  assetRef,
   parseProtocolJson,
   stringifyProtocolJson,
   versionedManifestRef,
@@ -28,7 +30,10 @@ import {
   HyperliquidRecoveryTestnetHttpReconciliation,
   HyperliquidTestnetHttpStructuralEvidence,
   HyperliquidStrategyTestnetHttpEvidence,
+  type HyperliquidRecoveryExecuteInput,
   type HyperliquidRecoveryExecuteResult,
+  type HyperliquidRecoveryReconcileInput,
+  type HyperliquidRecoveryReconcileResult,
   type HyperliquidTestnetEvidenceHttpOptions,
 } from './hyperliquid-testnet-evidence-http.js';
 import { HyperliquidStrategySqliteDurableJournal } from './hyperliquid-strategy-sqlite-journal.js';
@@ -40,6 +45,7 @@ import {
   hyperliquidReconciledExecutorResult,
   HyperliquidTestnetRecoveryError,
   type HyperliquidTestnetAccountInventory,
+  type HyperliquidTestnetExecutorResult,
   type HyperliquidTestnetExecutorRuntimeFactory,
   type HyperliquidTestnetAttemptHandoff,
   type HyperliquidTestnetLaneReleaseRequest,
@@ -121,6 +127,19 @@ export interface HyperliquidTestnetExecutorRuntimeDependencies {
   readonly authorityReader?: HyperliquidTestnetAuthorityReadPort;
   readonly authorityClearance?: HyperliquidAuthorityClearancePort;
   readonly trustedTime?: HyperliquidTrustedTimePort;
+  readonly laneReconcileIntervalMs?: number;
+  readonly recoveryObservation?: (
+    stored: HyperliquidTestnetExecutorResult,
+  ) => Promise<Readonly<{
+    reconciliation: Readonly<Record<string, unknown>>;
+    result: HyperliquidTestnetExecutorResult;
+  }> | undefined>;
+  readonly recoveryExecution?: Readonly<{
+    execute(input: HyperliquidRecoveryExecuteInput): Promise<HyperliquidRecoveryExecuteResult>;
+  }>;
+  readonly recoveryReconciliation?: Readonly<{
+    reconcile(input: HyperliquidRecoveryReconcileInput): Promise<HyperliquidRecoveryReconcileResult>;
+  }>;
 }
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
@@ -657,6 +676,79 @@ function qualifyStrategyShape(
 /** How often a blocked shared lane is re-reconciled for automatic release. */
 const LANE_RECONCILE_INTERVAL_MS = 30_000;
 
+function automaticRecoveryAttemptId(sourceAttemptId: string, recoverySequence: number): string {
+  const digest = createHash('sha256')
+    .update('naryx/hypercore/automatic-recovery/v1', 'ascii')
+    .update('\0', 'ascii')
+    .update(sourceAttemptId, 'utf8')
+    .update('\0', 'ascii')
+    .update(recoverySequence.toString(), 'ascii')
+    .digest('hex');
+  return `recovery_${digest.slice(0, 32)}`;
+}
+
+function automaticRecoveryBounds(sourceAttempt: Readonly<Record<string, unknown>>): Readonly<{
+  projectedRecoveryCosts: readonly Readonly<{
+    asset: ReturnType<typeof assetRef>;
+    atoms: bigint;
+  }>[];
+  projectedAggregateLoss: Readonly<{
+    asset: ReturnType<typeof assetRef>;
+    atoms: bigint;
+  }>;
+}> {
+  const plan = sourceAttempt.plan;
+  const policy = isRecord(plan) ? plan.recoveryPolicy : undefined;
+  const costCaps = isRecord(policy) ? policy.maxRecoveryCostCaps : undefined;
+  const lossCap = isRecord(policy) ? policy.maxAggregateRecoveryLoss : undefined;
+  if (!Array.isArray(costCaps) || costCaps.length < 1 || costCaps.length > 16
+    || !isRecord(lossCap) || typeof lossCap.atoms !== 'bigint' || lossCap.atoms < 0n) {
+    throw new Error('fresh authoritative recovery bounds are invalid');
+  }
+  const bound = (
+    value: unknown,
+    amountField: 'maxAtoms' | 'atoms',
+    context: string,
+  ) => {
+    const atoms = isRecord(value) ? value[amountField] : undefined;
+    if (!isRecord(value) || !isRecord(value.asset)
+      || typeof atoms !== 'bigint' || atoms < 0n) {
+      throw new Error(`${context} is invalid`);
+    }
+    const rawAsset = value.asset;
+    if (typeof rawAsset.assetId !== 'string'
+      || (typeof rawAsset.assetManifestHash !== 'string'
+        && !(rawAsset.assetManifestHash instanceof Uint8Array))
+      || typeof rawAsset.decimals !== 'number') {
+      throw new Error(`${context}.asset is invalid`);
+    }
+    return Object.freeze({
+      asset: assetRef(
+        rawAsset.assetId,
+        rawAsset.assetManifestHash,
+        rawAsset.decimals,
+        `${context}.asset`,
+      ),
+      atoms,
+    });
+  };
+  const projectedRecoveryCosts = Object.freeze(costCaps.map((cap, index) =>
+    bound(cap, 'maxAtoms', `sourceAttempt.plan.recoveryPolicy.maxRecoveryCostCaps[${index}]`)));
+  const identities = projectedRecoveryCosts.map((item) =>
+    `${item.asset.assetId}:${Buffer.from(item.asset.assetManifestHash).toString('hex')}:${item.asset.decimals}`);
+  if (new Set(identities).size !== identities.length) {
+    throw new Error('fresh authoritative recovery cost assets are duplicated');
+  }
+  return Object.freeze({
+    projectedRecoveryCosts,
+    projectedAggregateLoss: bound(
+      lossCap,
+      'atoms',
+      'sourceAttempt.plan.recoveryPolicy.maxAggregateRecoveryLoss',
+    ),
+  });
+}
+
 export async function loadHyperliquidTestnetExecutorRuntime(
   environment: NodeJS.ProcessEnv,
   dependencies: HyperliquidTestnetExecutorRuntimeDependencies = {},
@@ -711,8 +803,16 @@ export async function loadHyperliquidTestnetExecutorRuntime(
     ? { keeperOrigin, fetchImplementation: dependencies.fetchImplementation }
     : { keeperOrigin };
   const evidence = new HyperliquidTestnetHttpStructuralEvidence(evidenceOptions);
-  const recoveryExecution = new HyperliquidRecoveryTestnetHttpExecution(evidenceOptions);
-  const recoveryReconciliation = new HyperliquidRecoveryTestnetHttpReconciliation(evidenceOptions);
+  const recoveryExecution = dependencies.recoveryExecution
+    ?? new HyperliquidRecoveryTestnetHttpExecution(evidenceOptions);
+  const recoveryReconciliation = dependencies.recoveryReconciliation
+    ?? new HyperliquidRecoveryTestnetHttpReconciliation(evidenceOptions);
+  const laneReconcileIntervalMs = dependencies.laneReconcileIntervalMs
+    ?? LANE_RECONCILE_INTERVAL_MS;
+  if (!Number.isSafeInteger(laneReconcileIntervalMs)
+    || laneReconcileIntervalMs < 1 || laneReconcileIntervalMs > 300_000) {
+    throw new Error('Hyperliquid lane reconciliation interval must be between 1 and 300000 ms');
+  }
   const signerAddress = (await getWalletAddress(signer)).toLowerCase();
   if (!ADDRESS.test(signerAddress) || signerAddress !== expectedAgent) {
     throw new Error('injected signer does not match the configured Testnet agent address');
@@ -792,7 +892,7 @@ export async function loadHyperliquidTestnetExecutorRuntime(
       recordContext: (attemptId, contextJson) => lanePort.recordReconcileContext(attemptId, contextJson),
     });
     const coordinator = new HyperliquidTestnetRuntimeCoordinator(alignedEvidence, submission);
-    const freshHolderObservation = async (
+    const readFreshHolderObservation = async (
       stored: Parameters<typeof hyperliquidReconciledExecutorResult>[0],
     ) => {
       const context = lanePort.reconcileContext(stored.attemptId);
@@ -801,6 +901,8 @@ export async function loadHyperliquidTestnetExecutorRuntime(
       const result = hyperliquidReconciledExecutorResult(stored, reconciliation);
       return result === undefined ? undefined : Object.freeze({ reconciliation, result });
     };
+    const freshHolderObservation = dependencies.recoveryObservation
+      ?? readFreshHolderObservation;
     // A fresh keeper reconciliation of the holder from its stored inputs, or undefined.
     const freshHolderResult = async (stored: Parameters<typeof hyperliquidReconciledExecutorResult>[0]) => {
       try {
@@ -949,18 +1051,92 @@ export async function loadHyperliquidTestnetExecutorRuntime(
         return strategyRuntime.execute(attempt.attemptId, attempt.strategy.plan);
       },
     });
-    // Automatic reconciliation of a blocked lane, as the operator's FINAL release does it: while the
-    // shared account is blocked by a holder with a stored result, fresh authoritative evidence is
-    // re-read every 30 s, and the lane is released only when that evidence shows the holder's
-    // outcome is final with nothing pending. A holder interrupted before any result, or one that
-    // never reconciles, still waits for the operator.
+    const reconcileRecoveryAttempt = async (
+      holder: NonNullable<ReturnType<typeof lanePort.blockedHolder>>,
+      recoveryAttemptId: string,
+    ) => {
+      const context = lanePort.reconcileContext(holder.attemptId);
+      if (context === undefined || holder.result === null) return undefined;
+      const reconciliation = await recoveryReconciliation.reconcile(
+        recoveryReconcileInput(context, recoveryAttemptId, currentTimeMs),
+      );
+      if (reconciliation.status === 'EVIDENCE_INCOMPLETE') return null;
+      return hyperliquidRecoveryExecutorResult(
+        holder.result,
+        recoveryAttemptId,
+        reconciliation,
+      );
+    };
+    const recoverBlockedHolder = async (
+      holder: NonNullable<ReturnType<typeof lanePort.blockedHolder>>,
+      observation: NonNullable<Awaited<ReturnType<typeof freshHolderObservation>>>,
+    ) => {
+      if (holder.result === null
+        || observation.result.attemptId !== holder.attemptId
+        || observation.result.status !== 'RECONCILED'
+        || observation.result.packageStatus !== 'RECOVERY_REQUIRED'
+        || !isRecord(observation.reconciliation)
+        || observation.reconciliation.status !== 'RECONCILED'
+        || !isRecord(observation.reconciliation.attempt)
+        || observation.reconciliation.attempt.status !== 'RECOVERY_REQUIRED') return;
+      const recoverySequence = 0;
+      const recoveryAttemptId = automaticRecoveryAttemptId(
+        holder.attemptId,
+        recoverySequence,
+      );
+      const bounds = automaticRecoveryBounds(observation.reconciliation.attempt);
+      // Signed maxima are conservative automatic projections. The compiler and reconciliation
+      // still enforce actual costs and loss against the same immutable owner-authorized caps.
+      await recoveryExecution.execute({
+        recoveryAttemptId,
+        sourceAttempt: observation.reconciliation.attempt,
+        recoverySequence,
+        ...bounds,
+      });
+      const result = await reconcileRecoveryAttempt(holder, recoveryAttemptId);
+      if (result !== undefined && result !== null && hyperliquidLaneReleases(result)) {
+        lanePort.release({
+          holderAttemptId: holder.attemptId,
+          disposition: 'FINAL',
+          reason: 'automatic: authoritative recovery reconciliation is terminal',
+          result,
+        });
+        process.stdout.write(
+          `Hyperliquid lane released automatically after ${holder.attemptId} recovered\n`,
+        );
+      }
+    };
+    // The shared account stays serialized until fresh authoritative evidence proves a final source
+    // result or a terminal recovery. Interrupted, incomplete, and manual outcomes stay blocked.
     let reconcileTimer: NodeJS.Timeout | undefined;
     let closed = false;
     const reconcileBlockedLane = async () => {
       try {
         const holder = lanePort.blockedHolder();
         if (holder !== undefined && holder.result !== null) {
-          const result = await freshHolderResult(holder.result);
+          const recoveryAttemptId = automaticRecoveryAttemptId(holder.attemptId, 0);
+          try {
+            const recoveryResult = await reconcileRecoveryAttempt(holder, recoveryAttemptId);
+            if (recoveryResult === null) return;
+            if (recoveryResult !== undefined) {
+              if (hyperliquidLaneReleases(recoveryResult)) {
+                lanePort.release({
+                  holderAttemptId: holder.attemptId,
+                  disposition: 'FINAL',
+                  reason: 'automatic: authoritative recovery reconciliation is terminal',
+                  result: recoveryResult,
+                });
+                process.stdout.write(
+                  `Hyperliquid lane released automatically after ${holder.attemptId} recovered\n`,
+                );
+              }
+              return;
+            }
+          } catch {
+            // No recovery is known yet, so fresh source evidence decides whether to create one.
+          }
+          const observation = await freshHolderObservation(holder.result);
+          const result = observation?.result;
           if (result !== undefined && hyperliquidLaneReleases(result)) {
             lanePort.release({
               holderAttemptId: holder.attemptId,
@@ -969,18 +1145,20 @@ export async function loadHyperliquidTestnetExecutorRuntime(
               result,
             });
             process.stdout.write(`Hyperliquid lane released automatically after ${holder.attemptId} reconciled final\n`);
+          } else if (observation !== undefined) {
+            await recoverBlockedHolder(holder, observation);
           }
         }
       } catch {
         // Not final yet, or evidence is unavailable: the lane stays blocked and is retried.
       } finally {
         if (!closed) {
-          reconcileTimer = setTimeout(() => void reconcileBlockedLane(), LANE_RECONCILE_INTERVAL_MS);
+          reconcileTimer = setTimeout(() => void reconcileBlockedLane(), laneReconcileIntervalMs);
           reconcileTimer.unref();
         }
       }
     };
-    reconcileTimer = setTimeout(() => void reconcileBlockedLane(), LANE_RECONCILE_INTERVAL_MS);
+    reconcileTimer = setTimeout(() => void reconcileBlockedLane(), laneReconcileIntervalMs);
     reconcileTimer.unref();
     return Object.freeze({
       status: Object.freeze({
