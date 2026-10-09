@@ -25,6 +25,7 @@ import {
 } from './index.js';
 import {
   HyperliquidRecoveryTestnetHttpExecution,
+  HyperliquidRecoveryTestnetHttpReconciliation,
   HyperliquidTestnetHttpStructuralEvidence,
   HyperliquidStrategyTestnetHttpEvidence,
   type HyperliquidRecoveryExecuteResult,
@@ -35,6 +36,7 @@ import { HyperliquidStrategyTestnetSubmissionService } from './hyperliquid-strat
 import { HyperliquidStrategyTestnetRuntime } from './hyperliquid-strategy-testnet-runtime.js';
 import {
   hyperliquidLaneNotSubmitted,
+  hyperliquidRecoveryExecutorResult,
   hyperliquidReconciledExecutorResult,
   HyperliquidTestnetRecoveryError,
   type HyperliquidTestnetAccountInventory,
@@ -42,6 +44,8 @@ import {
   type HyperliquidTestnetAttemptHandoff,
   type HyperliquidTestnetLaneReleaseRequest,
   type HyperliquidTestnetRecoveryRequest,
+  type HyperliquidTestnetRecoveryReconcileRequest,
+  type HyperliquidTestnetRecoveryReconcileResponse,
   type HyperliquidTestnetTrustedAttemptProvider,
 } from './hyperliquid-testnet-executor-http.js';
 import {
@@ -102,6 +106,8 @@ export type LoadedHyperliquidTestnetExecutorRuntime = Readonly<{
    */
   releaseLane(request: HyperliquidTestnetLaneReleaseRequest): Promise<HyperliquidLaneRelease>;
   recover(request: HyperliquidTestnetRecoveryRequest): Promise<HyperliquidRecoveryExecuteResult>;
+  reconcileRecovery(request: HyperliquidTestnetRecoveryReconcileRequest):
+    Promise<HyperliquidTestnetRecoveryReconcileResponse>;
   close(): void;
 }>;
 
@@ -380,6 +386,76 @@ export function hyperliquidTestnetAlignedEvidence(
   });
 }
 
+function recoveryReconcileInput(
+  contextJson: string,
+  recoveryAttemptId: string,
+  currentTimeMs: () => number,
+) {
+  const context = parseProtocolJson(contextJson, CONTEXT_JSON);
+  if (!isRecord(context) || !isRecord(context.prepared)
+    || !isRecord(context.binding) || !isRecord(context.window)) {
+    throw new Error('stored recovery evidence context is invalid');
+  }
+  const checkpoint = context.prepared.checkpoint;
+  if (!isRecord(checkpoint)
+    || typeof checkpoint.observedAtMs !== 'number'
+    || !Number.isSafeInteger(checkpoint.observedAtMs)
+    || checkpoint.observedAtMs < 0) {
+    throw new Error('stored recovery checkpoint is invalid');
+  }
+  const binding = context.binding;
+  const bindingFields = [
+    'spotUniverseIndex', 'spotTokenIndex', 'perpetualAssetIndex', 'quoteTokenIndex',
+  ] as const;
+  if (bindingFields.some((field) => typeof binding[field] !== 'number'
+    || !Number.isSafeInteger(binding[field]) || Number(binding[field]) < 0)) {
+    throw new Error('stored recovery market binding is invalid');
+  }
+  const maxEvidenceAgeMs = context.window.maxEvidenceAgeMs;
+  const maxSnapshotSkewMs = context.window.maxSnapshotSkewMs;
+  const maxFillPages = context.window.maxFillPages;
+  if (typeof maxEvidenceAgeMs !== 'number' || !Number.isSafeInteger(maxEvidenceAgeMs)
+    || maxEvidenceAgeMs <= 0
+    || typeof maxSnapshotSkewMs !== 'number' || !Number.isSafeInteger(maxSnapshotSkewMs)
+    || maxSnapshotSkewMs <= 0
+    || (maxFillPages !== undefined
+      && (typeof maxFillPages !== 'number' || !Number.isSafeInteger(maxFillPages)
+        || maxFillPages < 1))) {
+    throw new Error('stored recovery evidence limits are invalid');
+  }
+  const nowMs = currentTimeMs();
+  if (!Number.isSafeInteger(nowMs) || nowMs <= 0) {
+    throw new Error('trusted clock is invalid');
+  }
+  const deadline = nowMs + readBudgetMs({
+    startTimeMs: checkpoint.observedAtMs,
+    endTimeMs: nowMs,
+    nowMs,
+    maxEvidenceAgeMs,
+    maxSnapshotSkewMs,
+    ...(maxFillPages === undefined ? {} : { maxFillPages }),
+  });
+  if (!Number.isSafeInteger(deadline)) throw new Error('trusted clock deadline is invalid');
+  return Object.freeze({
+    recoveryAttemptId,
+    checkpoint,
+    binding: Object.freeze({
+      spotUniverseIndex: binding.spotUniverseIndex as number,
+      spotTokenIndex: binding.spotTokenIndex as number,
+      perpetualAssetIndex: binding.perpetualAssetIndex as number,
+      quoteTokenIndex: binding.quoteTokenIndex as number,
+    }),
+    window: Object.freeze({
+      startTimeMs: checkpoint.observedAtMs,
+      endTimeMs: deadline,
+      nowMs: deadline,
+      maxEvidenceAgeMs,
+      maxSnapshotSkewMs,
+      ...(maxFillPages === undefined ? {} : { maxFillPages }),
+    }),
+  });
+}
+
 type SourceHyperliquidTestnetAttempt = Extract<
   HyperliquidTestnetAttemptHandoff,
   { readonly admission: unknown }
@@ -604,6 +680,9 @@ export async function loadHyperliquidTestnetExecutorRuntime(
       async recover() {
         throw new Error('Hyperliquid Testnet recovery is unavailable');
       },
+      async reconcileRecovery() {
+        throw new Error('Hyperliquid Testnet recovery reconciliation is unavailable');
+      },
       close() {},
     });
   }
@@ -633,6 +712,7 @@ export async function loadHyperliquidTestnetExecutorRuntime(
     : { keeperOrigin };
   const evidence = new HyperliquidTestnetHttpStructuralEvidence(evidenceOptions);
   const recoveryExecution = new HyperliquidRecoveryTestnetHttpExecution(evidenceOptions);
+  const recoveryReconciliation = new HyperliquidRecoveryTestnetHttpReconciliation(evidenceOptions);
   const signerAddress = (await getWalletAddress(signer)).toLowerCase();
   if (!ADDRESS.test(signerAddress) || signerAddress !== expectedAgent) {
     throw new Error('injected signer does not match the configured Testnet agent address');
@@ -989,6 +1069,80 @@ export async function loadHyperliquidTestnetExecutorRuntime(
           recoverySequence: 0,
           projectedRecoveryCosts: request.projectedRecoveryCosts,
           projectedAggregateLoss: request.projectedAggregateLoss,
+        });
+      },
+      async reconcileRecovery(
+        request: HyperliquidTestnetRecoveryReconcileRequest,
+      ): Promise<HyperliquidTestnetRecoveryReconcileResponse> {
+        const holder = lanePort.blockedHolder();
+        if (holder === undefined || holder.attemptId !== request.attemptId) {
+          throw new HyperliquidTestnetLaneError(
+            'LANE_NOT_BLOCKED_BY_ATTEMPT',
+            'Hyperliquid lane is not blocked by that attempt',
+          );
+        }
+        if (holder.result === null || holder.result.status !== 'RECONCILED'
+          || holder.result.packageStatus !== 'RECOVERY_REQUIRED') {
+          throw new HyperliquidTestnetRecoveryError(
+            'RECOVERY_NOT_REQUIRED',
+            'the blocked attempt does not have a recovery-required result',
+          );
+        }
+        const context = lanePort.reconcileContext(holder.attemptId);
+        if (context === undefined) {
+          throw new HyperliquidTestnetRecoveryError(
+            'RECOVERY_EVIDENCE_UNAVAILABLE',
+            'the blocked attempt has no stored reconciliation context',
+          );
+        }
+        let reconciliation;
+        try {
+          reconciliation = await recoveryReconciliation.reconcile(
+            recoveryReconcileInput(context, request.recoveryAttemptId, currentTimeMs),
+          );
+        } catch {
+          throw new HyperliquidTestnetRecoveryError(
+            'RECOVERY_RECONCILIATION_UNAVAILABLE',
+            'authoritative recovery reconciliation is unavailable',
+          );
+        }
+        if (reconciliation.status === 'EVIDENCE_INCOMPLETE') {
+          return Object.freeze({
+            attemptId: holder.attemptId,
+            recoveryAttemptId: request.recoveryAttemptId,
+            status: 'EVIDENCE_INCOMPLETE' as const,
+            reasons: reconciliation.reasons,
+            rawEvidenceCommitments: Object.freeze(
+              reconciliation.rawResponseCommitments.map((entry) => entry.sha256),
+            ),
+            release: null,
+          });
+        }
+        const result = hyperliquidRecoveryExecutorResult(
+          holder.result,
+          request.recoveryAttemptId,
+          reconciliation,
+        );
+        if (result === undefined) {
+          throw new HyperliquidTestnetRecoveryError(
+            'RECOVERY_RECONCILIATION_UNAVAILABLE',
+            'authoritative recovery reconciliation is invalid',
+          );
+        }
+        const release = hyperliquidLaneReleases(result)
+          ? lanePort.release({
+              holderAttemptId: holder.attemptId,
+              disposition: 'FINAL',
+              reason: 'automatic: authoritative recovery reconciliation is terminal',
+              result,
+            })
+          : null;
+        return Object.freeze({
+          attemptId: holder.attemptId,
+          recoveryAttemptId: request.recoveryAttemptId,
+          status: 'RECONCILED' as const,
+          result,
+          release,
         });
       },
       close: () => {

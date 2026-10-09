@@ -4,6 +4,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { stringifyProtocolJson } from '@naryx/protocol-types';
 import {
   HYPERLIQUID_SERVER_SIGNER_SCOPE,
   HYPERLIQUID_TESTNET_EXCHANGE_URL,
@@ -13,6 +14,7 @@ import {
   type HyperliquidTestnetExchangeTransport,
   type HyperliquidTestnetRuntimeCoordinatorInput,
   type HyperliquidTestnetAttemptHandoff,
+  type HyperliquidTestnetExecutorResult,
   type HyperliquidTestnetTrustedAttemptProvider,
 } from '../src/index.js';
 import { trustedTimePort } from './hyperliquid-trusted-time-fixture.js';
@@ -158,6 +160,111 @@ test('composes the pinned transport, durable journal, evidence client, and bound
     assert.ok(resolved && 'admission' in resolved);
     assert.equal((resolved.admission as unknown as { agent: string }).agent, agentWallet);
     assert.equal((resolved.admission as unknown as { trading: string }).trading, tradingAccount);
+  } finally {
+    loaded.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('reconciles a submitted recovery from stored source evidence and releases only a terminal lane', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'naryx-hyperliquid-runtime-recovery-'));
+  const databasePath = join(directory, 'submission.sqlite');
+  const nowMs = 1_000_000;
+  const holder = 'attempt-runtime-0002';
+  const recoveryAttemptId = 'recovery-attempt-0002';
+  const key = 'idem-runtime-000002';
+  const source: HyperliquidTestnetExecutorResult = {
+    attemptId: holder,
+    idempotencyKey: key,
+    domain: 'hypercore:testnet',
+    environment: 'TESTNET',
+    status: 'RECONCILED',
+    submissionStatus: 'ACKNOWLEDGED',
+    packageStatus: 'RECOVERY_REQUIRED',
+    reasons: ['ONE_LEG_FILLED'],
+    actionCommitment: `0x${'44'.repeat(32)}`,
+    requestCommitment: `0x${'45'.repeat(32)}`,
+    rawEvidenceCommitments: [],
+  };
+  const loaded = await loadHyperliquidTestnetExecutorRuntime(enabledEnvironment(databasePath), {
+    attempts: attempts(),
+    signer: signer(),
+    marketReader: marketReader(),
+    trustedTime: trustedTimePort(nowMs),
+    currentTimeMs: () => nowMs,
+    transportFactory: transport,
+    fetchImplementation: async (input, init) => {
+      assert.equal(String(input),
+        'http://127.0.0.1:8791/internal/keeper/hyperliquid-testnet/recovery/reconcile');
+      assert.equal(init?.method, 'POST');
+      return new Response(stringifyProtocolJson({
+        status: 'RECONCILED',
+        attempt: {
+          version: 1,
+          status: 'RECOVERED_FLAT',
+          reasons: [],
+          plan: {
+            version: 1,
+            guarantee: 'NARYX_UNSIGNED_HYPERCORE_RECOVERY_V1',
+            domain: {
+              domainId: 'hypercore:testnet',
+              domainManifestVersion: 1,
+              domainManifestHash: new Uint8Array(32).fill(1),
+            },
+            recoverySequence: 0,
+          },
+          acceptedEvidence: { evidenceVersion: 2n, observedAtMs: BigInt(nowMs) },
+          lockEvidence: null,
+        },
+        accountObservation: { orders: [] },
+        observedFills: [],
+        rawResponseCommitments: [{
+          operation: 'clearinghouseState',
+          request: { operation: 'clearinghouseState', user: tradingAccount },
+          requestedAtMs: nowMs - 10,
+          receivedAtMs: nowMs,
+          sha256: `0x${'46'.repeat(32)}`,
+        }],
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  try {
+    const lane = loaded.runtimeFactory?.().lane;
+    assert.ok(lane);
+    await lane.run(holder, key, async () => source);
+    lane.recordReconcileContext(holder, stringifyProtocolJson({
+      prepared: {
+        attemptId: holder,
+        checkpoint: {
+          version: 1,
+          observedAtMs: nowMs - 100,
+          baseSpotBalanceAtoms: 0n,
+          perpetualPositionAtoms: 0n,
+        },
+      },
+      handoff: {},
+      binding: {
+        spotUniverseIndex: 0,
+        spotTokenIndex: 1,
+        perpetualAssetIndex: 2,
+        quoteTokenIndex: 0,
+      },
+      window: {
+        startTimeMs: nowMs - 100,
+        endTimeMs: nowMs,
+        nowMs,
+        maxEvidenceAgeMs: 5_000,
+        maxSnapshotSkewMs: 500,
+        maxFillPages: 2,
+      },
+    }));
+    const result = await loaded.reconcileRecovery({ attemptId: holder, recoveryAttemptId });
+    assert.equal(result.status, 'RECONCILED');
+    assert.equal(result.release?.resultStatus, 'RECOVERED_FLAT');
+    assert.equal(lane.laneState().state, 'FREE');
   } finally {
     loaded.close();
     rmSync(directory, { recursive: true, force: true });

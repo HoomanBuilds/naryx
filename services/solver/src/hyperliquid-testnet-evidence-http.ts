@@ -37,6 +37,8 @@ export const SOLVER_TESTNET_NETTING_RESIDUAL_EVIDENCE_RECONCILE_PATH =
   '/internal/keeper/hyperliquid-testnet/netting-residual/reconcile';
 export const SOLVER_TESTNET_RECOVERY_EXECUTE_PATH =
   '/internal/keeper/hyperliquid-testnet/recovery/execute';
+export const SOLVER_TESTNET_RECOVERY_RECONCILE_PATH =
+  '/internal/keeper/hyperliquid-testnet/recovery/reconcile';
 
 const MAX_RESPONSE_BYTES = 65_536;
 const DEFAULT_TIMEOUT_MS = 5_000;
@@ -132,6 +134,35 @@ export type HyperliquidRecoveryExecuteResult = Readonly<{
     }>;
     errorCommitment: `0x${string}` | null;
   }>;
+}>;
+
+export type HyperliquidRecoveryReconcileInput = Readonly<{
+  recoveryAttemptId: string;
+  checkpoint: Readonly<Record<string, unknown>>;
+  binding: HyperliquidTestnetRuntimeMarketBinding;
+  window: HyperliquidTestnetRuntimeEvidenceWindow;
+}>;
+
+export type HyperliquidRecoveryOutcome = 'RECONCILING' | 'RECOVERED_COMPLETE'
+  | 'RECOVERED_BOUNDED' | 'RECOVERED_FLAT' | 'RECOVERY_REQUIRED'
+  | 'MANUAL_INTERVENTION';
+
+export type HyperliquidRecoveryReconcileResult = Readonly<{
+  status: 'RECONCILED';
+  attempt: Readonly<Record<string, unknown> & {
+    version: 1;
+    status: Exclude<HyperliquidRecoveryOutcome, 'RECONCILING'>;
+  }>;
+  accountObservation: Readonly<Record<string, unknown>>;
+  observedFills: readonly unknown[];
+  rawResponseCommitments: readonly HyperliquidTestnetRuntimeRawCommitment[];
+}> | Readonly<{
+  status: 'EVIDENCE_INCOMPLETE';
+  attempt: Readonly<Record<string, unknown> & { version: 1; status: 'RECONCILING' }>;
+  reasons: readonly string[];
+  accountObservation: Readonly<Record<string, unknown>> | null;
+  observedFills: readonly unknown[];
+  rawResponseCommitments: readonly HyperliquidTestnetRuntimeRawCommitment[];
 }>;
 
 export type HyperliquidNettingResidualEvidenceResult = Readonly<{
@@ -314,6 +345,72 @@ function decodeRecoveryExecuteResult(
     throw new Error('keeper recovery result is invalid');
   }
   return value as unknown as HyperliquidRecoveryExecuteResult;
+}
+
+function decodeRecoveryReconcileResult(
+  value: unknown,
+): HyperliquidRecoveryReconcileResult {
+  if (!isRecord(value)
+    || (value.status !== 'RECONCILED' && value.status !== 'EVIDENCE_INCOMPLETE')
+    || !isRecord(value.attempt)
+    || value.attempt.version !== 1
+    || !Array.isArray(value.observedFills)
+    || !Array.isArray(value.rawResponseCommitments)
+    || (value.accountObservation !== null && !isRecord(value.accountObservation))) {
+    throw new Error('keeper recovery reconciliation result is invalid');
+  }
+  const attempt = value.attempt;
+  const plan = isRecord(attempt.plan) ? attempt.plan : undefined;
+  const domain = isRecord(plan?.domain) ? plan.domain : undefined;
+  if (plan?.version !== 1 || plan.guarantee !== 'NARYX_UNSIGNED_HYPERCORE_RECOVERY_V1'
+    || !Number.isSafeInteger(plan.recoverySequence) || Number(plan.recoverySequence) < 0
+    || domain?.domainId !== 'hypercore:testnet'
+    || typeof domain.domainManifestVersion !== 'number'
+    || !Number.isSafeInteger(domain.domainManifestVersion) || domain.domainManifestVersion < 1
+    || !(domain.domainManifestHash instanceof Uint8Array)
+    || domain.domainManifestHash.length !== 32) {
+    throw new Error('keeper recovery reconciliation result is invalid');
+  }
+  if (value.rawResponseCommitments.some((commitment) => !isRecord(commitment)
+    || typeof commitment.operation !== 'string'
+    || !isRecord(commitment.request)
+    || typeof commitment.requestedAtMs !== 'number'
+    || !Number.isSafeInteger(commitment.requestedAtMs)
+    || typeof commitment.receivedAtMs !== 'number'
+    || !Number.isSafeInteger(commitment.receivedAtMs)
+    || typeof commitment.sha256 !== 'string'
+    || !/^0x[0-9a-f]{64}$/.test(commitment.sha256))) {
+    throw new Error('keeper recovery reconciliation result is invalid');
+  }
+  if (value.status === 'EVIDENCE_INCOMPLETE') {
+    if (!hasExactKeys(value, [
+      'accountObservation', 'attempt', 'observedFills', 'rawResponseCommitments',
+      'reasons', 'status',
+    ]) || attempt.status !== 'RECONCILING'
+      || !Array.isArray(value.reasons)
+      || value.reasons.some((reason) => typeof reason !== 'string')) {
+      throw new Error('keeper recovery reconciliation result is invalid');
+    }
+    return value as unknown as HyperliquidRecoveryReconcileResult;
+  }
+  if (!hasExactKeys(value, [
+    'accountObservation', 'attempt', 'observedFills', 'rawResponseCommitments', 'status',
+  ]) || value.accountObservation === null
+    || (attempt.status !== 'RECOVERED_COMPLETE'
+      && attempt.status !== 'RECOVERED_BOUNDED'
+      && attempt.status !== 'RECOVERED_FLAT'
+      && attempt.status !== 'RECOVERY_REQUIRED'
+      && attempt.status !== 'MANUAL_INTERVENTION')) {
+    throw new Error('keeper recovery reconciliation result is invalid');
+  }
+  const evidence = isRecord(attempt.acceptedEvidence)
+    ? attempt.acceptedEvidence
+    : isRecord(attempt.lockEvidence) ? attempt.lockEvidence : undefined;
+  if (evidence === undefined || typeof evidence.evidenceVersion !== 'bigint'
+    || typeof evidence.observedAtMs !== 'bigint') {
+    throw new Error('keeper recovery reconciliation result is invalid');
+  }
+  return value as unknown as HyperliquidRecoveryReconcileResult;
 }
 
 function decodeStrategyReconcileResult(value: unknown): HyperliquidStrategyEvidenceResult {
@@ -544,6 +641,36 @@ export class HyperliquidRecoveryTestnetHttpExecution {
       );
     } catch {
       throw new Error('keeper recovery execution failed');
+    }
+  }
+}
+
+export class HyperliquidRecoveryTestnetHttpReconciliation {
+  readonly #origin: string;
+  readonly #fetch: typeof fetch;
+  readonly #timeoutMs: number;
+
+  constructor(options: HyperliquidTestnetEvidenceHttpOptions) {
+    this.#origin = requireLoopbackKeeperOrigin(options.keeperOrigin);
+    this.#fetch = options.fetchImplementation ?? fetch;
+    this.#timeoutMs = checkedTimeout(options.timeoutMs);
+  }
+
+  async reconcile(
+    input: HyperliquidRecoveryReconcileInput,
+  ): Promise<HyperliquidRecoveryReconcileResult> {
+    try {
+      const decoded = await postProtocolJson(
+        this.#origin,
+        SOLVER_TESTNET_RECOVERY_RECONCILE_PATH,
+        input,
+        'solver.recovery.reconcile',
+        this.#timeoutMs,
+        this.#fetch,
+      );
+      return decodeRecoveryReconcileResult(decoded);
+    } catch {
+      throw new Error('keeper recovery reconciliation failed');
     }
   }
 }

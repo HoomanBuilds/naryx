@@ -104,6 +104,11 @@ export function hyperliquidLaneReleases(result: HyperliquidTestnetExecutorResult
     return result.packageStatus === 'COMPLETED' || result.packageStatus === 'NO_EFFECT'
       || result.packageStatus === 'SUBMISSION_FAILED';
   }
+  if (result.status === 'RECOVERY_RECONCILED') {
+    return result.recoveryStatus === 'RECOVERED_COMPLETE'
+      || result.recoveryStatus === 'RECOVERED_BOUNDED'
+      || result.recoveryStatus === 'RECOVERED_FLAT';
+  }
   return result.status === 'RECONCILED' && RELEASING_PACKAGE_STATUSES.has(result.packageStatus);
 }
 
@@ -310,7 +315,9 @@ export class HyperliquidTestnetLane {
           UPDATE hyperliquid_lane_attempts SET state = 'COMPLETED', result_json = ?, updated_at_ms = ?
           WHERE attempt_id = ?
         `).run(JSON.stringify(result), this.#now(), row.attempt_id);
-        resultStatus = result.status === 'RECONCILED' ? result.packageStatus : result.status;
+        resultStatus = result.status === 'RECONCILED'
+          ? result.packageStatus
+          : result.status === 'RECOVERY_RECONCILED' ? result.recoveryStatus : result.status;
       }
       const release: HyperliquidLaneRelease = Object.freeze({
         holderAttemptId: input.holderAttemptId,

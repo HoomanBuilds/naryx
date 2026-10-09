@@ -11,9 +11,11 @@ import { stringifyProtocolJson } from '@naryx/protocol-types';
 import {
   HyperliquidTestnetLane,
   SOLVER_TESTNET_RECOVER_PATH,
+  SOLVER_TESTNET_RECONCILE_RECOVERY_PATH,
   SOLVER_TESTNET_RELEASE_LANE_PATH,
   createHyperliquidTestnetExecutorRequestHandler,
   hyperliquidLaneNotSubmitted,
+  hyperliquidRecoveryExecutorResult,
   hyperliquidTestnetAlignedEvidence,
   type HyperliquidTestnetExecutorResult,
   type HyperliquidTestnetLaneOperator,
@@ -286,6 +288,39 @@ test('releases a blocked lane only as FINAL with a final result or as ABANDONED 
   }
 });
 
+test('releases a recovery-blocked lane only after authoritative terminal recovery evidence', async () => {
+  const subject = lane();
+  const holder = 'attempt-holder-00005';
+  const source = reconciled(holder, 'RECOVERY_REQUIRED');
+  await subject.run(holder, KEY, async () => source);
+  const recovered = hyperliquidRecoveryExecutorResult(
+    source,
+    'recovery-attempt-0005',
+    {
+      status: 'RECONCILED',
+      attempt: {
+        version: 1,
+        status: 'RECOVERED_FLAT',
+        reasons: [],
+        acceptedEvidence: { evidenceVersion: 7n, observedAtMs: 8n },
+      },
+      accountObservation: {},
+      observedFills: [],
+      rawResponseCommitments: [{ sha256: `0x${'bb'.repeat(32)}` }],
+    } as never,
+  );
+  assert.ok(recovered);
+  const release = subject.release({
+    holderAttemptId: holder,
+    disposition: 'FINAL',
+    reason: 'authoritative recovery evidence is terminal',
+    result: recovered,
+  });
+  assert.equal(release.resultStatus, 'RECOVERED_FLAT');
+  assert.equal(subject.laneState().state, 'FREE');
+  subject.close();
+});
+
 function operatorRequest(
   body: unknown,
   headers: Record<string, string> = {},
@@ -407,6 +442,44 @@ test('recovery operator accepts only bounded economics and never a caller-suppli
     suppliedPlan.response);
   assert.equal(suppliedPlan.captured.status, 400);
   assert.match(suppliedPlan.captured.body, /INVALID_REQUEST/);
+});
+
+test('recovery reconciliation operator accepts only source and recovery identities', async () => {
+  let received: unknown;
+  const operator: HyperliquidTestnetLaneOperator = {
+    async recover() {
+      throw new Error('recovery execution is not under test');
+    },
+    async reconcileRecovery(request) {
+      received = request;
+      return {
+        attemptId: request.attemptId,
+        recoveryAttemptId: request.recoveryAttemptId,
+        status: 'EVIDENCE_INCOMPLETE',
+        reasons: ['AGGREGATE_RECOVERY_LOSS_UNAVAILABLE'],
+        rawEvidenceCommitments: [],
+        release: null,
+      };
+    },
+    async releaseLane() {
+      throw new Error('lane release is not under test');
+    },
+  };
+  const handler = createHyperliquidTestnetExecutorRequestHandler(undefined, operator);
+  const body = {
+    attemptId: 'attempt-holder-00006',
+    recoveryAttemptId: 'recovery-attempt-0006',
+  };
+  const accepted = capturedResponse();
+  await handler(operatorRequest(body, {}, '127.0.0.1',
+    SOLVER_TESTNET_RECONCILE_RECOVERY_PATH), accepted.response);
+  assert.equal(accepted.captured.status, 200);
+  assert.deepEqual(received, body);
+
+  const suppliedEvidence = capturedResponse();
+  await handler(operatorRequest({ ...body, evidence: {} }, {}, '127.0.0.1',
+    SOLVER_TESTNET_RECONCILE_RECOVERY_PATH), suppliedEvidence.response);
+  assert.equal(suppliedEvidence.captured.status, 400);
 });
 
 test('aligns keeper windows to the checkpoint read and re-reads incomplete evidence within the age bound', async () => {

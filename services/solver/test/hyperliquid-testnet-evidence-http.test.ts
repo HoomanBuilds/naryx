@@ -6,12 +6,14 @@ import { assetRef, parseProtocolJson, stringifyProtocolJson } from '@naryx/proto
 import {
   HyperliquidNettingResidualTestnetHttpEvidence,
   HyperliquidRecoveryTestnetHttpExecution,
+  HyperliquidRecoveryTestnetHttpReconciliation,
   HyperliquidStrategyTestnetHttpEvidence,
   HyperliquidTestnetHttpStructuralEvidence,
   SOLVER_TESTNET_EVIDENCE_PREPARE_PATH,
   SOLVER_TESTNET_EVIDENCE_RECONCILE_PATH,
   SOLVER_TESTNET_NETTING_RESIDUAL_EVIDENCE_RECONCILE_PATH,
   SOLVER_TESTNET_RECOVERY_EXECUTE_PATH,
+  SOLVER_TESTNET_RECOVERY_RECONCILE_PATH,
   SOLVER_TESTNET_STRATEGY_EVIDENCE_RECONCILE_PATH,
   createHyperliquidTestnetLoopbackCoordinator,
 } from '../src/hyperliquid-testnet-evidence-http.js';
@@ -385,6 +387,73 @@ test('recovery execution forwards a reconciled source attempt and validates the 
     });
     assert.equal(result.plan.recoverySequence, 0);
     assert.equal(result.submission.status, 'ACKNOWLEDGED');
+  } finally {
+    await server.close();
+  }
+});
+
+test('recovery reconciliation forwards only stored evidence coordinates and validates the outcome', async () => {
+  const checkpoint = {
+    version: 1,
+    attemptCommitment: `0x${'aa'.repeat(32)}`,
+    account,
+    baseSpotBalanceAtoms: 0n,
+    perpetualPositionAtoms: 0n,
+    observedAtMs: window.startTimeMs,
+    rawResponseCommitments: [],
+  };
+  const server = await startServer((captured, request, response) => {
+    assert.equal(request.method, 'POST');
+    assert.equal(request.url, SOLVER_TESTNET_RECOVERY_RECONCILE_PATH);
+    const decoded = parseProtocolJson(captured.rawBody,
+      'test.recovery.reconcile.request') as Record<string, unknown>;
+    assert.deepEqual(Object.keys(decoded).sort(), [
+      'binding', 'checkpoint', 'recoveryAttemptId', 'window',
+    ]);
+    assert.deepEqual(decoded.checkpoint, checkpoint);
+    jsonResponse(response, 200, stringifyProtocolJson({
+      status: 'RECONCILED',
+      attempt: {
+        version: 1,
+        status: 'RECOVERED_FLAT',
+        reasons: [],
+        plan: {
+          version: 1,
+          guarantee: 'NARYX_UNSIGNED_HYPERCORE_RECOVERY_V1',
+          domain: {
+            domainId: 'hypercore:testnet',
+            domainManifestVersion: 1,
+            domainManifestHash: new Uint8Array(32).fill(1),
+          },
+          recoverySequence: 0,
+        },
+        acceptedEvidence: { evidenceVersion: 11n, observedAtMs: 1_000_000n },
+        lockEvidence: null,
+      },
+      accountObservation: { orders: [] },
+      observedFills: [],
+      rawResponseCommitments: [{
+        operation: 'clearinghouseState',
+        request: { operation: 'clearinghouseState', user: tradingAccount },
+        requestedAtMs: 999_900,
+        receivedAtMs: 1_000_000,
+        sha256: `0x${'bb'.repeat(32)}`,
+      }],
+    }, 'test.recovery.reconcile.response'));
+  });
+  try {
+    const client = new HyperliquidRecoveryTestnetHttpReconciliation({
+      keeperOrigin: server.origin,
+    });
+    const result = await client.reconcile({
+      recoveryAttemptId: 'recovery-attempt-0001',
+      checkpoint,
+      binding,
+      window,
+    });
+    assert.equal(result.status, 'RECONCILED');
+    assert.equal(result.attempt.status, 'RECOVERED_FLAT');
+    assert.equal(result.rawResponseCommitments[0]!.sha256, `0x${'bb'.repeat(32)}`);
   } finally {
     await server.close();
   }

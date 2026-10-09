@@ -22,6 +22,8 @@ import type {
 import type {
   HyperliquidRecoveryBound,
   HyperliquidRecoveryExecuteResult,
+  HyperliquidRecoveryOutcome,
+  HyperliquidRecoveryReconcileResult,
 } from './hyperliquid-testnet-evidence-http.js';
 import {
   HYPERLIQUID_LANE_RELEASE_REASON,
@@ -39,6 +41,9 @@ export const SOLVER_TESTNET_ATTEMPT_STATUS_PATH = '/internal/solver/hyperliquid-
 export const SOLVER_TESTNET_RELEASE_LANE_PATH = '/internal/solver/hyperliquid-testnet/release-lane';
 /** Operator-only: compiles recovery from a fresh authoritative source attempt. */
 export const SOLVER_TESTNET_RECOVER_PATH = '/internal/solver/hyperliquid-testnet/recover';
+/** Operator-only: reconciles one submitted recovery from authoritative keeper evidence. */
+export const SOLVER_TESTNET_RECONCILE_RECOVERY_PATH =
+  '/internal/solver/hyperliquid-testnet/reconcile-recovery';
 
 const MAX_BODY_BYTES = 4_096;
 const ID = /^[A-Za-z0-9_-]{16,64}$/;
@@ -70,6 +75,11 @@ export type HyperliquidTestnetRecoveryRequest = Readonly<{
   recoveryAttemptId: string;
   projectedRecoveryCosts: readonly HyperliquidRecoveryBound[];
   projectedAggregateLoss: HyperliquidRecoveryBound;
+}>;
+
+export type HyperliquidTestnetRecoveryReconcileRequest = Readonly<{
+  attemptId: string;
+  recoveryAttemptId: string;
 }>;
 
 export type HyperliquidTestnetLegExecutionEvidence = Readonly<{
@@ -132,6 +142,8 @@ export type HyperliquidTestnetStrategyStageEvidence = Readonly<{
 export interface HyperliquidTestnetLaneOperator {
   releaseLane(request: HyperliquidTestnetLaneReleaseRequest): Promise<HyperliquidLaneRelease>;
   recover(request: HyperliquidTestnetRecoveryRequest): Promise<HyperliquidRecoveryExecuteResult>;
+  reconcileRecovery?(request: HyperliquidTestnetRecoveryReconcileRequest):
+    Promise<HyperliquidTestnetRecoveryReconcileResponse>;
 }
 
 export type HyperliquidTestnetAttemptStatusResponse = Readonly<{
@@ -234,7 +246,38 @@ export type HyperliquidTestnetExecutorResult =
       packageStatus: HyperliquidStrategyRuntimeResult['status'];
       completedStages: readonly number[];
       stages: readonly HyperliquidTestnetStrategyStageEvidence[];
+    }>
+  | Readonly<{
+      attemptId: string;
+      idempotencyKey: string;
+      domain: 'hypercore:testnet';
+      environment: 'TESTNET';
+      status: 'RECOVERY_RECONCILED';
+      recoveryAttemptId: string;
+      recoveryStatus: Exclude<HyperliquidRecoveryOutcome, 'RECONCILING'>;
+      reasons: readonly string[];
+      evidenceVersion: string;
+      observedAtMs: string;
+      rawEvidenceCommitments: readonly string[];
+      sourceSubmissionStatus: SubmissionStatus;
+      sourceActionCommitment: string;
+      sourceRequestCommitment: string;
     }>;
+
+export type HyperliquidTestnetRecoveryReconcileResponse = Readonly<{
+  attemptId: string;
+  recoveryAttemptId: string;
+  status: 'EVIDENCE_INCOMPLETE';
+  reasons: readonly string[];
+  rawEvidenceCommitments: readonly string[];
+  release: null;
+}> | Readonly<{
+  attemptId: string;
+  recoveryAttemptId: string;
+  status: 'RECONCILED';
+  result: Extract<HyperliquidTestnetExecutorResult, { status: 'RECOVERY_RECONCILED' }>;
+  release: HyperliquidLaneRelease | null;
+}>;
 
 type SubmissionStatus = 'ACKNOWLEDGED' | 'REJECTED' | 'AMBIGUOUS';
 type FinalPackageStatus = 'NO_EFFECT' | 'COMPLETED_EXACT' | 'COMPLETED_BOUNDED' |
@@ -320,7 +363,8 @@ export class HyperliquidTestnetExecutorError extends Error {
 }
 
 export class HyperliquidTestnetRecoveryError extends Error {
-  readonly code: 'RECOVERY_EVIDENCE_UNAVAILABLE' | 'RECOVERY_NOT_REQUIRED';
+  readonly code: 'RECOVERY_EVIDENCE_UNAVAILABLE' | 'RECOVERY_NOT_REQUIRED'
+    | 'RECOVERY_RECONCILIATION_UNAVAILABLE';
 
   constructor(code: HyperliquidTestnetRecoveryError['code'], message: string) {
     super(message);
@@ -428,6 +472,23 @@ export function parseHyperliquidTestnetRecoveryRequest(value: unknown): Hyperliq
     recoveryAttemptId: value.recoveryAttemptId,
     projectedRecoveryCosts: Object.freeze(projectedRecoveryCosts),
     projectedAggregateLoss: recoveryBound(value.projectedAggregateLoss, 'projectedAggregateLoss'),
+  });
+}
+
+export function parseHyperliquidTestnetRecoveryReconcileRequest(
+  value: unknown,
+): HyperliquidTestnetRecoveryReconcileRequest {
+  requireCondition(isRecord(value), 'INVALID_REQUEST', 'request must be an object');
+  requireCondition(hasExactKeys(value, ['attemptId', 'recoveryAttemptId']), 'INVALID_REQUEST',
+    'recovery reconciliation request fields are invalid');
+  requireCondition(typeof value.attemptId === 'string' && ID.test(value.attemptId),
+    'INVALID_REQUEST', 'attemptId is invalid');
+  requireCondition(typeof value.recoveryAttemptId === 'string' && ID.test(value.recoveryAttemptId)
+    && value.recoveryAttemptId !== value.attemptId,
+  'INVALID_REQUEST', 'recoveryAttemptId is invalid');
+  return Object.freeze({
+    attemptId: value.attemptId,
+    recoveryAttemptId: value.recoveryAttemptId,
   });
 }
 
@@ -558,6 +619,50 @@ function evidenceCommitments(value: unknown): readonly string[] {
     requireCondition(isRecord(entry), 'INVALID_RESULT', `evidence[${index}] is invalid`);
     return commitment(entry.sha256, `evidence[${index}].sha256`);
   }));
+}
+
+export function hyperliquidRecoveryExecutorResult(
+  stored: HyperliquidTestnetExecutorResult,
+  recoveryAttemptId: string,
+  reconciliation: HyperliquidRecoveryReconcileResult,
+): Extract<HyperliquidTestnetExecutorResult, { status: 'RECOVERY_RECONCILED' }> | undefined {
+  if (reconciliation.status === 'EVIDENCE_INCOMPLETE') return undefined;
+  requireCondition(stored.status === 'RECONCILED'
+    && stored.packageStatus === 'RECOVERY_REQUIRED', 'INVALID_RESULT',
+  'recovery source result is invalid');
+  requireCondition(ID.test(recoveryAttemptId) && recoveryAttemptId !== stored.attemptId,
+    'INVALID_RESULT', 'recovery attempt identity is invalid');
+  const attempt = reconciliation.attempt;
+  const recoveryStatus = attempt.status;
+  requireCondition(recoveryStatus === 'RECOVERED_COMPLETE'
+    || recoveryStatus === 'RECOVERED_BOUNDED'
+    || recoveryStatus === 'RECOVERED_FLAT'
+    || recoveryStatus === 'RECOVERY_REQUIRED'
+    || recoveryStatus === 'MANUAL_INTERVENTION', 'INVALID_RESULT',
+  'recovery outcome is invalid');
+  const evidence = isRecord(attempt.acceptedEvidence)
+    ? attempt.acceptedEvidence
+    : isRecord(attempt.lockEvidence) ? attempt.lockEvidence : undefined;
+  requireCondition(evidence !== undefined
+    && typeof evidence.evidenceVersion === 'bigint' && evidence.evidenceVersion > 0n
+    && typeof evidence.observedAtMs === 'bigint' && evidence.observedAtMs >= 0n,
+  'INVALID_RESULT', 'recovery evidence is invalid');
+  return Object.freeze({
+    attemptId: stored.attemptId,
+    idempotencyKey: stored.idempotencyKey,
+    domain: 'hypercore:testnet' as const,
+    environment: 'TESTNET' as const,
+    status: 'RECOVERY_RECONCILED' as const,
+    recoveryAttemptId,
+    recoveryStatus,
+    reasons: reasons(attempt.reasons, true),
+    evidenceVersion: evidence.evidenceVersion.toString(),
+    observedAtMs: evidence.observedAtMs.toString(),
+    rawEvidenceCommitments: evidenceCommitments(reconciliation.rawResponseCommitments),
+    sourceSubmissionStatus: stored.submissionStatus,
+    sourceActionCommitment: stored.actionCommitment,
+    sourceRequestCommitment: stored.requestCommitment,
+  });
 }
 
 function submissionStatus(submission: HyperliquidPackageSubmissionResult): SubmissionStatus {
@@ -1298,6 +1403,39 @@ async function recover(
   }
 }
 
+async function reconcileRecovery(
+  request: IncomingMessage,
+  response: ServerResponse,
+  operator: HyperliquidTestnetLaneOperator | undefined,
+): Promise<void> {
+  if (!directLoopbackRequest(request)) {
+    reject(response, 403, 'DIRECT_LOOPBACK_REQUIRED',
+      'recovery reconciliation is a direct loopback operator action');
+    return;
+  }
+  if (operator?.reconcileRecovery === undefined) {
+    reject(response, 503, 'EXECUTION_UNAVAILABLE',
+      'Hyperliquid Testnet recovery reconciliation is unavailable');
+    return;
+  }
+  try {
+    const body = parseHyperliquidTestnetRecoveryReconcileRequest(await readRequest(request));
+    sendJson(response, 200, await operator.reconcileRecovery(body));
+  } catch (error) {
+    if (error instanceof HyperliquidTestnetExecutorError) {
+      reject(response, 400, error.code, error.message);
+    } else if (error instanceof HyperliquidTestnetLaneError) {
+      reject(response, RELEASE_ERROR_STATUS[error.code], error.code, error.message);
+    } else if (error instanceof HyperliquidTestnetRecoveryError) {
+      reject(response, error.code === 'RECOVERY_NOT_REQUIRED' ? 409 : 502,
+        error.code, error.message);
+    } else {
+      reject(response, 502, 'RECOVERY_RECONCILIATION_FAILED',
+        'Hyperliquid recovery reconciliation failed closed');
+    }
+  }
+}
+
 export function createHyperliquidTestnetExecutorRequestHandler(
   executor?: HyperliquidTestnetExecutorPort,
   operator?: HyperliquidTestnetLaneOperator,
@@ -1311,7 +1449,8 @@ export function createHyperliquidTestnetExecutorRequestHandler(
     if ((url.pathname !== SOLVER_TESTNET_EXECUTE_PATH
       && url.pathname !== SOLVER_TESTNET_ATTEMPT_STATUS_PATH
       && url.pathname !== SOLVER_TESTNET_RELEASE_LANE_PATH
-      && url.pathname !== SOLVER_TESTNET_RECOVER_PATH) || url.search !== '') {
+      && url.pathname !== SOLVER_TESTNET_RECOVER_PATH
+      && url.pathname !== SOLVER_TESTNET_RECONCILE_RECOVERY_PATH) || url.search !== '') {
       reject(response, 404, 'NOT_FOUND', 'internal route was not found');
       return;
     }
@@ -1326,6 +1465,10 @@ export function createHyperliquidTestnetExecutorRequestHandler(
     }
     if (url.pathname === SOLVER_TESTNET_RECOVER_PATH) {
       await recover(request, response, operator);
+      return;
+    }
+    if (url.pathname === SOLVER_TESTNET_RECONCILE_RECOVERY_PATH) {
+      await reconcileRecovery(request, response, operator);
       return;
     }
     if (executor === undefined) {
