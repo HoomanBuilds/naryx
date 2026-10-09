@@ -358,7 +358,7 @@ describe('public API client', () => {
     );
   });
 
-  test('prepares, reads, and executes independently verified netting batches', async () => {
+  test('reads and executes independently verified netting batches', async () => {
     const obligations = [
       nettingObligation(1, 'alice', 10n),
       nettingObligation(2, 'bob', -10n),
@@ -389,15 +389,10 @@ describe('public API client', () => {
       recordedAtMs: 1_000,
     };
     const sdk = client({
-      'POST /v1/netting/batches': { body: { batch, replayed: false } },
       [`/v1/netting/batches/${proofHash}`]: { body: batch },
       [`/v1/netting/packages/${packages[0]!.packageOrderIdHex}`]: { body: batch },
       [`POST /v1/netting/batches/${proofHash}/execute`]: { body: { batch, executedIntentHashes: [] } },
     });
-    const prepared = await sdk.prepareNettingBatch(packages.map((entry) => entry.packageOrderIdHex), NETTING_POLICY);
-    assert.equal(prepared.replayed, false);
-    assert.equal(prepared.batch.proofHash, proofHash);
-    assert.equal(prepared.batch.finalAllocationReceipt?.allocations.length, 2);
     assert.equal((await sdk.getNettingBatch(proofHash)).settlementStatus, 'AWAITING_SETTLEMENT');
     assert.equal((await sdk.getNettingBatchForPackage(packages[0]!.packageOrderIdHex)).proofHash, proofHash);
     assert.deepEqual((await sdk.executeNettingBatch(proofHash)).executedIntentHashes, []);

@@ -132,10 +132,6 @@ import {
   type StrategyOrderIntakePort,
 } from "./strategy-order-intake.js";
 import {
-  AuthoritativeNettingError,
-  prepareAuthoritativeNettingBatch,
-} from "./authoritative-netting.js";
-import {
   HyperliquidNettingResidualExecutionClientError,
 } from "./hyperliquid-netting-residual-execution-client.js";
 import { BaseSepoliaNettingResidualExecutionClientError } from "./base-sepolia-netting-residual-execution-client.js";
@@ -1616,7 +1612,6 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/portfolio/optimize",
       "/v1/clearing/simulate",
       "/v1/netting/simulate",
-      "/v1/netting/batches",
       "/v1/package-book/orders/prepare",
       "/v1/package-book/orders",
       "/v1/package-book/orders/authorization",
@@ -2278,27 +2273,6 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         ),
       };
     }
-    if (path === "/v1/netting/batches") {
-      const packageOrderIds = body.packageOrderIds;
-      const policy = body.policy;
-      if (
-        !Array.isArray(packageOrderIds)
-        || packageOrderIds.length === 0
-        || packageOrderIds.some((value) => typeof value !== "string" || !HASH_HEX.test(value))
-        || typeof policy !== "object"
-        || policy === null
-      ) {
-        throw new RequestError(400, "INVALID_REQUEST", "packageOrderIds must be nonempty 32-byte hashes and policy must be an object.");
-      }
-      const strategyStore = requireStrategyPackages();
-      if (strategyStore.order === undefined) {
-        throw new RequestError(503, "NETTING_UNAVAILABLE", "Stored strategy order lookup is unavailable.");
-      }
-      return prepareAuthoritativeNettingBatch(exchange, strategyStore as { order: SqliteStrategyPackageStore["order"] }, {
-        packageOrderIds: packageOrderIds as string[],
-        policy: policy as NettingPolicyManifestInput,
-      });
-    }
     if (path === "/v1/rfqs/private") {
       const relay = requireDelivery();
       if (pinnedSuiteIds.length === 0) {
@@ -2608,11 +2582,6 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         }
         if (error instanceof StrategyOrderIntakeError) {
           return fail(response, error.status, error.code, error.message);
-        }
-        if (error instanceof AuthoritativeNettingError) {
-          const status = error.code.endsWith("NOT_FOUND") ? 404
-            : error.code === "INVALID_BATCH" ? 400 : 409;
-          return fail(response, status, error.code, error.message);
         }
         return fail(response, 500, "INTERNAL_ERROR", "Public request failed.");
       });

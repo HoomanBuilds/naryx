@@ -765,11 +765,6 @@ export interface VerifiedPreparedNettingBatch {
   readonly recordedAtMs: number;
 }
 
-export interface PreparedNettingBatchResult {
-  readonly batch: VerifiedPreparedNettingBatch;
-  readonly replayed: boolean;
-}
-
 export interface ExecutedNettingBatchResult {
   readonly batch: VerifiedPreparedNettingBatch;
   readonly executedIntentHashes: readonly string[];
@@ -4548,33 +4543,6 @@ export class NaryxClient {
       throw new NaryxEvidenceError('prepared netting batch does not contain the requested package order');
     }
     return batch;
-  }
-
-  /** Derives and persists a batch from durable package settlement evidence, then verifies the complete returned evidence chain. */
-  async prepareNettingBatch(
-    packageOrderIds: readonly string[],
-    policyInput: NettingPolicyManifestInput,
-  ): Promise<PreparedNettingBatchResult> {
-    if (!Array.isArray(packageOrderIds) || packageOrderIds.length === 0) {
-      throw new TypeError('packageOrderIds must be nonempty');
-    }
-    const normalizedIds = packageOrderIds.map((packageOrderId, index) => hashHex(packageOrderId, `packageOrderIds[${index}]`));
-    if (new Set(normalizedIds).size !== normalizedIds.length) throw new TypeError('packageOrderIds must be unique');
-    let policy: NettingPolicyManifest;
-    try {
-      policy = nettingPolicyManifest(policyInput);
-    } catch (error) {
-      throw new TypeError(`netting policy is invalid: ${(error as Error).message}`);
-    }
-    const body = record(
-      await this.#request('POST', '/v1/netting/batches', { packageOrderIds: normalizedIds, policy }),
-      'prepared netting response',
-    );
-    if (typeof body.replayed !== 'boolean') throw new NaryxEvidenceError('prepared netting response has an invalid replay flag');
-    return Object.freeze({
-      batch: await this.#verifiedPreparedNettingBatch(body.batch),
-      replayed: body.replayed,
-    });
   }
 
   /** Executes every still-direct external residual and verifies the returned batch after execution. */

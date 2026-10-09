@@ -51,6 +51,12 @@ test('public API triggers only an existing authorized netting batch', async () =
     },
   );
   try {
+    const publicPreparation = await fetch(`http://127.0.0.1:${port}/v1/netting/batches`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(publicPreparation.status, 404);
     const discovered = await fetch(`http://127.0.0.1:${port}/v1/netting/packages/${proofHash}`);
     assert.equal(discovered.status, 200);
     assert.equal((fromProtocolJson(await discovered.json()) as { proofHashHex: string }).proofHashHex, proofHash);

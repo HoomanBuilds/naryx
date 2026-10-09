@@ -30,6 +30,10 @@ export {
   type NettingAllocationAdminOptions,
 } from './netting-allocation-admin.js';
 export {
+  createNettingBatchAdminHandler,
+  type NettingBatchAdminOptions,
+} from './netting-batch-admin.js';
+export {
   createStrategyPackageInternalHandler,
   SqliteStrategyPackageStore,
   StrategyPackageStoreError,

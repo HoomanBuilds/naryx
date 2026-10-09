@@ -28,7 +28,6 @@ export {
   type VerifiedNettingExternalExecution,
   type VerifiedCrossBatchClearing,
   type VerifiedPreparedNettingBatch,
-  type PreparedNettingBatchResult,
   type ExecutedNettingBatchResult,
   type StrategyProgramLegRole,
   type StrategyProgramAction,
