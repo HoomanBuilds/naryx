@@ -651,10 +651,11 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
 
     function _assertCallbackCaller() private view {
         _assertDeployment();
-        if (
-            msg.sender != orderHandler || msg.sender.codehash != orderHandlerCodeHash
-                || !IGmxV2RoleStore(roleStore).hasRole(msg.sender, CONTROLLER_ROLE)
-        ) revert UnauthorizedCaller();
+        // GMX can operate multiple OrderHandler versions concurrently. RoleStore and exact order data
+        // authenticate the callback without coupling execution to the router's creation handler.
+        if (msg.sender.code.length == 0 || !IGmxV2RoleStore(roleStore).hasRole(msg.sender, CONTROLLER_ROLE)) {
+            revert UnauthorizedCaller();
+        }
     }
 
     function _assertDeployment() private view {

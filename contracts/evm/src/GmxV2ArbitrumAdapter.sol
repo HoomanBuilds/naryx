@@ -687,10 +687,11 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
 
     function _assertCallbackCaller() private view {
         _assertDeployment();
-        if (
-            msg.sender != orderHandler || msg.sender.codehash != orderHandlerCodeHash
-                || !IGmxV2RoleStore(roleStore).hasRole(msg.sender, CONTROLLER_ROLE)
-        ) revert UnauthorizedCaller();
+        // GMX can operate multiple OrderHandler versions concurrently. RoleStore and exact order data
+        // authenticate the callback without coupling execution to the router's creation handler.
+        if (msg.sender.code.length == 0 || !IGmxV2RoleStore(roleStore).hasRole(msg.sender, CONTROLLER_ROLE)) {
+            revert UnauthorizedCaller();
+        }
     }
 
     /// @notice Pins this adapter's own dependencies by code hash, then has the factory's reviewed account

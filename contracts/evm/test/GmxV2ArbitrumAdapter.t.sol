@@ -663,6 +663,25 @@ contract GmxV2ArbitrumAdapterTest is GmxV2FactoryRoute {
         assertEq(uint8(_status(key)), uint8(GmxV2ArbitrumAdapter.Status.CONFLICT));
     }
 
+    function testAcceptsAlternateGmxControllerCallbackAndRejectsControllerEoa() public {
+        bytes32 key = _fundAndCreate(_request());
+        GmxTestOrderHandler alternate = new GmxTestOrderHandler();
+        roleStore.setRole(address(alternate), CONTROLLER_ROLE, true);
+        dataStore.setContains(adapter.ORDER_LIST(), key, false);
+        bytes32 positionKey = keccak256(abi.encode(address(account), address(market), address(token), false));
+        dataStore.setUint(keccak256(abi.encode(positionKey, adapter.SIZE_IN_USD())), SIZE);
+        alternate.executeOrder(adapter, key, exchangeRouter.orderData());
+        assertEq(uint8(_status(key)), uint8(GmxV2ArbitrumAdapter.Status.EXECUTED));
+
+        address controllerEoa = address(0xBEEF);
+        roleStore.setRole(controllerEoa, CONTROLLER_ROLE, true);
+        GmxV2.EventLogData memory orderData = exchangeRouter.orderData();
+        GmxV2.EventLogData memory eventData;
+        vm.prank(controllerEoa);
+        vm.expectRevert(GmxV2ArbitrumAdapter.UnauthorizedCaller.selector);
+        adapter.afterOrderExecution(key, orderData, eventData);
+    }
+
     function testPinsDeploymentCodeIdentity() public {
         GmxV2.Deployment memory invalid = deployment;
         invalid.dataStoreCodeHash = bytes32(uint256(1));
@@ -1511,6 +1530,20 @@ contract GmxV2ExitControllerTest is GmxV2FactoryRoute {
         (GmxV2ExitController.Status status,,,,) = exitController.exitEvidence(exitRequestKey);
         assertEq(uint8(status), uint8(GmxV2ExitController.Status.CONFLICT));
         assertEq(adapter.activePackageOf(address(account)), PACKAGE_ID);
+    }
+
+    function testExitAcceptsAlternateGmxControllerCallback() public {
+        GmxV2ExitController.ExitAuthorization memory authorization = _authorization();
+        bytes32 exitRequestKey = _submit(authorization);
+        GmxTestOrderHandler alternate = new GmxTestOrderHandler();
+        roleStore.setRole(address(alternate), CONTROLLER_ROLE, true);
+        _setPositionSize(0);
+        dataStore.setContains(exitController.ORDER_LIST(), exitRequestKey, false);
+        alternate.executeOrder(exitController, exitRequestKey, exchangeRouter.orderData());
+
+        (GmxV2ExitController.Status status,,,, bool released) = exitController.exitEvidence(exitRequestKey);
+        assertEq(uint8(status), uint8(GmxV2ExitController.Status.EXECUTED));
+        assertTrue(released);
     }
 
     function testPartialDecreaseCallbackNeverLabelsFullClose() public {
