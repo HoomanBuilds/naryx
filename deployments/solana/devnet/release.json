@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "network": "solana-devnet",
   "genesisHash": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
-  "releaseCommit": "84953be2a4ff4353520b4ccb1bfd72da23430a99",
+  "releaseCommit": "28ecfaf336820e3a3c4721afe1cb4443185dc098",
   "toolchain": {
     "anchor": "1.0.0",
     "solanaCli": "3.1.13",
@@ -46,10 +46,10 @@
     "testPerp": {
       "programId": "CHDFYrJTwg7rxB8uDC6d8DCjaiFsSbGtbTEgRUZ6nJLD",
       "programDataAddress": "HzDeXcfbsSLHfXJ3TLHZEDmQUZNvRCiXjWC6ZUMdehHc",
-      "deploymentSlot": 507413266,
-      "deploymentSignature": "49FjesWUjcFK9WFVkQNthZFHPALsysiUN9zeNTkS1VWNdYZxCzJv1D2dFexBZQeYvfqg7HJ4V3WzoC6KXLtiFwTp",
-      "programDataHeaderIdentity": "f2d5b3a77fd190e2936fc42e02c50fb84477515e04a125183291b773d886b63b",
-      "programElfSha256": "676389f3f792c49086189cece2f5c9ae14cb9ac95d5a881c9a126aa06d613014"
+      "deploymentSlot": 509197656,
+      "deploymentSignature": "2yfQyuxdE5Vc63AEXqH41SHpbr2bE31qwon9nZzhTBQZKyNqF5LigwywJxgPK4Tn13UoF6o28NV3yqEFaw5srTzf",
+      "programDataHeaderIdentity": "efd229ddb2da79d05cad33e03883523567e1572bc2fffefac01665ec5f7527bc",
+      "programElfSha256": "f583942ca3dbc4c011299a15c5f25676532436dc0ea456a68bec57896305ebf0"
     },
     "testPerpAdapter": {
       "programId": "9WNFkLhjjBoqJoKVrykF41HLQtFro7bg3L6shjjHjUT1",
@@ -121,7 +121,7 @@
     "initialMarginBps": 1000,
     "maintenanceMarginBps": 500,
     "liquidationPenaltyBps": 100,
-    "maxPriceAgeSeconds": 60,
+    "maxPriceAgeSeconds": 300,
     "maxConfidenceBps": 50,
     "maxPositionLots": "1000000"
   },
@@ -144,6 +144,8 @@
     "freezeSignature": "75x6x7CMTig1EiGMdBEcLbVyU2djzcRRxZA5odmzyhyJnNwAimYtSSZtvBiawN6TC4y4TwqS8EPrYPRFhjBHVyA"
   },
   "activationTransactions": {
+    "upgradeTestPerp": "2yfQyuxdE5Vc63AEXqH41SHpbr2bE31qwon9nZzhTBQZKyNqF5LigwywJxgPK4Tn13UoF6o28NV3yqEFaw5srTzf",
+    "updateTestPerpOracleRiskControls": "YPjUr78t4oANYw24L5FtHc46UFZVtvwBZUogJGk3QkqQaW9Sh1KKk7c1pPTfrd8r21ZNemkE7bVCtDYTdLHTEUZ",
     "initializeCore": "31TZjzu21WHj3rRcWrBgPdB4yvGEqHQ99hTpQbKe5YUYgqZAqdwV9y4KrEhhKcUQxGzPMB5RKejwSBzL7yRHAo63",
     "proposeSolver": "2jatLGCkmkQJcwEr9F5udj9e6DeK1UAKfk3MkbnbQ7kAjFpAfEeukH4tuTurzDKPVMtjqF3qjCAadbVbySLg9wf9",
     "scheduleUnpause": "58tqr1NBCJ3kq7NyxpvpnGXyy2u8VG5EuKU4imonRuys8ErL54yeSZgPYwTVU4EBNpYn8APS58bowuNdSHimqfwG",
