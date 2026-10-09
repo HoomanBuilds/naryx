@@ -73,6 +73,9 @@ import {
   SolanaNettingAllocationAuthorizationService,
   createSolanaNettingAllocationAuthorizationInternalHandler,
   HttpNettingAllocationAdminClient,
+  HttpNettingBatchPreparationClient,
+  NettingBatchParticipant,
+  loadNettingBatchPolicies,
   NettingAllocationLifecycleService,
   createNettingAllocationLifecycleInternalHandler,
   EvmStrategyExecutionObservationService,
@@ -536,6 +539,13 @@ if (config.privateRfqs.kind === 'ENABLED') {
     quotes: generalizedStrategyQuoteService,
   });
 }
+const nettingBatchParticipant = config.nettingBatches.kind === 'DISABLED'
+  ? undefined
+  : new NettingBatchParticipant({
+      policies: loadNettingBatchPolicies(config.nettingBatches.policyPaths),
+      preparation: new HttpNettingBatchPreparationClient(apiOrigin),
+    });
+let stopNettingBatches: (() => void) | undefined;
 const evmPreparationLanes = Object.freeze([
   ...(evmOptionRuntime?.preparationLanes ?? []),
   ...(evmCalendarRuntime?.preparationLanes ?? []),
@@ -814,6 +824,7 @@ function shutdown(): void {
   shuttingDown = true;
   stopSealedAuctions?.();
   stopPrivateRfqs?.();
+  stopNettingBatches?.();
   if (clockRefresh !== undefined) clearInterval(clockRefresh);
   void Promise.allSettled([
     close(quoteServer), close(executorServer), close(arbitrumExecutorServer), baseSolver?.close(),
@@ -863,9 +874,16 @@ try {
       (error) => process.stderr.write(`Private RFQ participant error: ${error instanceof Error ? error.message : 'unknown error'}\n`),
     );
   }
+  if (nettingBatchParticipant !== undefined && config.nettingBatches.kind === 'ENABLED') {
+    stopNettingBatches = nettingBatchParticipant.start(
+      config.nettingBatches.pollIntervalMs,
+      (error) => process.stderr.write(`Netting batch participant error: ${error instanceof Error ? error.message : 'unknown error'}\n`),
+    );
+  }
 } catch (error) {
   stopSealedAuctions?.();
   stopPrivateRfqs?.();
+  stopNettingBatches?.();
   await Promise.allSettled([close(quoteServer), close(executorServer), close(arbitrumExecutorServer)]);
   executorRuntime?.close();
   arbitrumJournal?.close();
@@ -887,12 +905,14 @@ const generalizedHyperliquid = generalizedStrategyLanes.length > 0
   : strategyPreparationHandler === undefined ? 'DISABLED' : 'PREPARATION_ONLY';
 const sealedAuctions = config.sealedAuctions.kind;
 const privateRfqs = config.privateRfqs.kind;
+const nettingBatches = config.nettingBatches.kind;
 const baseResidualExecution = baseResidualRuntime === undefined ? 'DISABLED' : 'BASE_SEPOLIA';
 const solanaResidualExecution = solanaResidualRuntime === undefined ? 'DISABLED' : 'SOLANA_DEVNET';
 process.stdout.write(`Internal solver listening on http://${host}:${listenPort} `
   + `runtime=${config.localRuntime.kind} hyperliquidTestnetQuotes=${hyperliquidQuotes} `
   + `arbitrumSepoliaQuotes=${arbitrumQuotes} hyperliquidStrategies=${generalizedHyperliquid} `
   + `sealedAuctions=${sealedAuctions} privateRfqs=${privateRfqs} `
+  + `nettingBatches=${nettingBatches} `
   + `baseResidualExecution=${baseResidualExecution} solanaResidualExecution=${solanaResidualExecution}\n`);
 if (config.localRuntime.kind === 'LOCAL_FIXTURE') {
   process.stdout.write('LOCAL FIXTURE MODE: local quotes use fixed catalog prices and placeholder '

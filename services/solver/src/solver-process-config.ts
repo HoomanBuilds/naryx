@@ -49,6 +49,13 @@ export interface SolverProcessConfig {
       solverId: string;
       keyId: string;
     }>;
+  readonly nettingBatches:
+    | Readonly<{ kind: 'DISABLED' }>
+    | Readonly<{
+      kind: 'ENABLED';
+      policyPaths: readonly string[];
+      pollIntervalMs: number;
+    }>;
 }
 
 export function explicitBoolean(value: string | undefined, name: string): boolean {
@@ -197,6 +204,40 @@ export function loadSolverProcessConfig(env: NodeJS.ProcessEnv): SolverProcessCo
       keyId: identifier(env.NARYX_MAKER_QUOTE_KEY_ID, 'NARYX_MAKER_QUOTE_KEY_ID'),
     })
     : Object.freeze({ kind: 'DISABLED' as const });
+  const nettingBatchesEnabled = explicitBoolean(
+    env.NARYX_NETTING_BATCH_PARTICIPANT_ENABLED,
+    'NARYX_NETTING_BATCH_PARTICIPANT_ENABLED',
+  );
+  const nettingBatchPollIntervalMs = nettingBatchesEnabled
+    ? positiveInteger(
+      env.NARYX_NETTING_BATCH_POLL_INTERVAL_MS,
+      'NARYX_NETTING_BATCH_POLL_INTERVAL_MS',
+      1_000,
+    )
+    : 1_000;
+  if (nettingBatchesEnabled && nettingBatchPollIntervalMs < 100) {
+    throw new Error('NARYX_NETTING_BATCH_POLL_INTERVAL_MS must be at least 100');
+  }
+  const nettingBatchPolicyPaths = nettingBatchesEnabled
+    ? (env.NARYX_NETTING_BATCH_POLICY_PATHS ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter((value) => value !== '')
+      .map((value) => absolutePath(value, 'NARYX_NETTING_BATCH_POLICY_PATHS'))
+    : [];
+  if (nettingBatchesEnabled && nettingBatchPolicyPaths.length === 0) {
+    throw new Error('NARYX_NETTING_BATCH_POLICY_PATHS is required when netting batch participation is enabled');
+  }
+  if (new Set(nettingBatchPolicyPaths).size !== nettingBatchPolicyPaths.length) {
+    throw new Error('NARYX_NETTING_BATCH_POLICY_PATHS must not repeat paths');
+  }
+  const nettingBatches = nettingBatchesEnabled
+    ? Object.freeze({
+      kind: 'ENABLED' as const,
+      policyPaths: Object.freeze(nettingBatchPolicyPaths),
+      pollIntervalMs: nettingBatchPollIntervalMs,
+    })
+    : Object.freeze({ kind: 'DISABLED' as const });
   return Object.freeze({
     host: loopbackHost(env.NARYX_SOLVER_HOST ?? '127.0.0.1'),
     port: tcpPort(env.NARYX_SOLVER_PORT, 'NARYX_SOLVER_PORT', DEFAULT_SOLVER_PORT),
@@ -207,5 +248,6 @@ export function loadSolverProcessConfig(env: NodeJS.ProcessEnv): SolverProcessCo
     sealedAuctions,
     privateRfqs,
     makerControls,
+    nettingBatches,
   });
 }

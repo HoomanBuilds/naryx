@@ -58,6 +58,14 @@ export {
   type RegisteredNettingAllocationAttempt,
 } from './netting-allocation-admin-client.js';
 export {
+  HttpNettingBatchPreparationClient,
+  NettingBatchParticipant,
+  NettingBatchParticipantError,
+  loadNettingBatchPolicies,
+  type NettingBatchPreparationPort,
+  type NettingBatchPreparationResult,
+} from './netting-batch-participant.js';
+export {
   prepareNettingAllocationExecution,
   type PreparedNettingAllocationExecution,
 } from './netting-allocation-execution-preparer.js';

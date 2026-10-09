@@ -23,6 +23,12 @@ test('composes the fixed local fixture only on explicit opt-in and otherwise req
   assert.equal(durable.sealedAuctions.kind, 'DISABLED');
   assert.equal(durable.privateRfqs.kind, 'DISABLED');
   assert.equal(durable.makerControls.kind, 'DISABLED');
+  assert.equal(durable.nettingBatches.kind, 'DISABLED');
+  assert.equal(loadSolverProcessConfig({
+    ...base,
+    NARYX_SOLVER_QUOTE_DB: '/external/quotes.sqlite',
+    NARYX_NETTING_BATCH_POLICY_PATHS: 'ignored-while-disabled.json',
+  }).nettingBatches.kind, 'DISABLED');
   assert.equal(durable.quoteDbPath, '/external/quotes.sqlite');
   // services/api defaults NARYX_SOLVER_INTERNAL_ORIGIN to this port.
   assert.equal(durable.port, 8_788);
@@ -30,6 +36,28 @@ test('composes the fixed local fixture only on explicit opt-in and otherwise req
   const fixture = loadSolverProcessConfig({ ...base, NARYX_LOCAL_FIXTURE_MODE: 'true' });
   assert.equal(fixture.localRuntime.kind, 'LOCAL_FIXTURE');
   assert.equal(fixture.quoteDbPath, '/tmp/naryx-local/solver-quotes.db');
+});
+
+test('netting batch participation requires reviewed absolute policy paths', () => {
+  const enabled = {
+    ...base,
+    NARYX_SOLVER_QUOTE_DB: '/external/quotes.sqlite',
+    NARYX_NETTING_BATCH_PARTICIPANT_ENABLED: 'true',
+    NARYX_NETTING_BATCH_POLICY_PATHS: '/external/netting-a.json,/external/netting-b.json',
+  };
+  assert.throws(
+    () => loadSolverProcessConfig({ ...enabled, NARYX_NETTING_BATCH_POLICY_PATHS: 'relative.json' }),
+    /must be an absolute path/,
+  );
+  assert.throws(
+    () => loadSolverProcessConfig({ ...enabled, NARYX_NETTING_BATCH_POLL_INTERVAL_MS: '99' }),
+    /at least 100/,
+  );
+  assert.deepEqual(loadSolverProcessConfig(enabled).nettingBatches, {
+    kind: 'ENABLED',
+    policyPaths: ['/external/netting-a.json', '/external/netting-b.json'],
+    pollIntervalMs: 1_000,
+  });
 });
 
 test('maker controls require an explicit solver identity and quote key', () => {
