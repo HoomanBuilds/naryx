@@ -149,7 +149,7 @@ export function loadHyperliquidRecoverySigner(
     }
     const key = record(value, 'key file');
     exactKeys(key, ['environment', 'privateKey', 'version'], 'key file');
-    requireCondition(key.version === 1 && key.environment === 'HYPERLIQUID_TESTNET'
+    requireCondition(key.version === 1 && key.environment === 'TESTNET'
       && typeof key.privateKey === 'string' && PRIVATE_KEY.test(key.privateKey)
       && !/^0x0+$/.test(key.privateKey), 'key file identity is invalid');
     const account = privateKeyToAccount(key.privateKey as `0x${string}`);

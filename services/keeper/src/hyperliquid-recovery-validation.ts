@@ -175,7 +175,18 @@ function expectedOrders(attempt: HyperliquidPackageAttempt, mode: HyperliquidRec
   requireCondition(spot !== undefined && perpetual !== undefined, 'source attempt legs are incomplete');
   const expected: ExpectedRecoveryOrder[] = [];
   if (mode === 'COMPLETE_MISSING_LEG') {
-    if (evidence.netSpotDeltaAtoms === spot.signedBaseDeltaAtoms
+    const terminal = attempt.plan.terminalResidualPolicy;
+    const completionResidual = absolute(
+      evidence.netSpotDeltaAtoms + attempt.plan.plannedPerpetualDeltaAtoms,
+    );
+    const spotSupportsPerpetualCompletion = terminal.kind === 'EXACT_NET'
+      ? evidence.netSpotDeltaAtoms === terminal.netSpotDeltaAtoms
+      : evidence.netSpotDeltaAtoms >= terminal.minNetSpotDeltaAtoms
+        && evidence.netSpotDeltaAtoms <= terminal.maxNetSpotDeltaAtoms
+        && completionResidual <= terminal.maxTerminalResidualBaseAtoms
+        && quoteResidualAtoms(completionResidual, attempt)
+          <= terminal.maxTerminalResidualQuoteAtoms;
+    if (spotSupportsPerpetualCompletion
       && evidence.perpetualPositionDeltaAtoms !== attempt.plan.plannedPerpetualDeltaAtoms) {
       expected.push({
         action: 'COMPLETE_PERP', role: 'PERPETUAL',

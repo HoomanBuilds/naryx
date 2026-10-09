@@ -467,7 +467,8 @@ export function createHyperliquidTestnetEvidenceRequestHandler(
       try {
         const result = await ports.recovery.compileAndExecute(parseRecoveryExecuteRequest(raw));
         sendJson(response, 200, toProtocolJson(result, 'keeper.recovery.execute.result'));
-      } catch {
+      } catch (error) {
+        process.stderr.write(`Recovery execution failed closed: ${error instanceof Error ? error.message : 'unknown error'}\n`);
         reject(response, 400, 'INVALID_REQUEST', 'Recovery execution request failed closed.');
       }
       return;

@@ -24,6 +24,7 @@ import {
   createHyperliquidPackageAttempt,
   markHyperliquidSubmissionUnknown,
   reconcileHyperliquidPackageAttempt,
+  validateHyperliquidRecoveryExecutionPlan,
   type HyperliquidPackageAttempt,
   type HyperliquidReconciliationSnapshotInput,
 } from '../src/index.js';
@@ -262,6 +263,54 @@ test('compiles the signed missing perpetual action and deterministic recovery cl
   assert.equal(first.terminalResidualBaseAtoms, 0n);
   assert.equal(first.unsignedRequestFields.expiresAfter, 1_500);
   assert.match(first.orders[0]!.clientOrderId, /^0x[0-9a-f]{32}$/);
+});
+
+test('completes the missing perpetual when base fees remain inside signed residual bounds', () => {
+  const source = plan();
+  const bounded = Object.freeze({
+    ...source,
+    terminalResidualPolicy: Object.freeze({
+      kind: 'BOUNDED_NET' as const,
+      minNetSpotDeltaAtoms: 99n,
+      maxNetSpotDeltaAtoms: 100n,
+      maxTerminalResidualBaseAtoms: 1n,
+      residualValuationSchemaVersion: 1,
+      residualValuationReferencePrice: price(),
+      maxTerminalResidualQuoteAtoms: 600n,
+    }),
+    recoveryPolicy: Object.freeze({
+      ...source.recoveryPolicy,
+      maxTerminalResidual: Object.freeze({ asset: baseAsset, atoms: 1n }),
+    }),
+  });
+  const evidence = Object.freeze({
+    ...snapshot(100n, 0n),
+    netSpotDeltaAtoms: 99n,
+    fees: Object.freeze([Object.freeze({
+      assetId: baseAsset.assetId,
+      assetDecimals: baseAsset.decimals,
+      amountAtoms: 1n,
+      evidenceStatus: 'CONFIRMED' as const,
+    })]),
+  });
+  const attempt = reconcileHyperliquidPackageAttempt(
+    beginHyperliquidReconciliation(createHyperliquidPackageAttempt(bounded, account)),
+    evidence,
+  );
+  assert.equal(attempt.status, 'RECOVERY_REQUIRED');
+  const compiled = compiler().compile(compileInput(attempt));
+  validateHyperliquidRecoveryExecutionPlan(attempt, compiled, {
+    environment: 'testnet',
+    controllerId: 'hypercore-recovery-controller-v1',
+    controllerCodeHash,
+    authorityModeId: 'agent-wallet-v1',
+    actionBuilderCodeHash,
+  }, nowMs);
+  assert.equal(compiled.mode, 'COMPLETE_MISSING_LEG');
+  assert.deepEqual(compiled.orders.map((order) => [order.role, order.signedBaseDeltaAtoms]), [
+    ['PERPETUAL', -100n],
+  ]);
+  assert.equal(compiled.terminalResidualBaseAtoms, 1n);
 });
 
 test('compiles direction-aware paired rollback when completion is not permitted', () => {

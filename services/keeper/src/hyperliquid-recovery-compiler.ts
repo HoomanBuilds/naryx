@@ -401,7 +401,17 @@ function completionIntent(
   const spotMissing = spot.signedBaseDeltaAtoms - evidence.netSpotDeltaAtoms;
   const perpetualMissing = attempt.plan.plannedPerpetualDeltaAtoms
     - evidence.perpetualPositionDeltaAtoms;
-  if (evidence.netSpotDeltaAtoms === spot.signedBaseDeltaAtoms && perpetualMissing !== 0n) {
+  const terminal = attempt.plan.terminalResidualPolicy;
+  const completionResidual = absolute(
+    evidence.netSpotDeltaAtoms + attempt.plan.plannedPerpetualDeltaAtoms,
+  );
+  const spotSupportsPerpetualCompletion = terminal.kind === 'EXACT_NET'
+    ? evidence.netSpotDeltaAtoms === terminal.netSpotDeltaAtoms
+    : evidence.netSpotDeltaAtoms >= terminal.minNetSpotDeltaAtoms
+      && evidence.netSpotDeltaAtoms <= terminal.maxNetSpotDeltaAtoms
+      && completionResidual <= terminal.maxTerminalResidualBaseAtoms
+      && quoteResidualAtoms(completionResidual, attempt) <= terminal.maxTerminalResidualQuoteAtoms;
+  if (spotSupportsPerpetualCompletion && perpetualMissing !== 0n) {
     if (matchingSlot(attempt, 'COMPLETE_PERP', perpetual) === undefined) return null;
     return { mode: 'COMPLETE_MISSING_LEG', action: 'COMPLETE_PERP', role: 'PERPETUAL',
       signedBaseDeltaAtoms: perpetualMissing };

@@ -20,7 +20,7 @@ test('loads only an external Testnet recovery config and matching scoped key', a
   const keyPath = join(directory, 'agent-key.json');
   writeFileSync(keyPath, JSON.stringify({
     version: 1,
-    environment: 'HYPERLIQUID_TESTNET',
+    environment: 'TESTNET',
     privateKey,
   }), { mode: 0o600 });
   chmodSync(keyPath, 0o600);
