@@ -26,7 +26,7 @@ contract GmxV2ExitController is EIP712, IGmxV2OrderCallbackReceiver, ReentrancyG
     );
     bytes32 public constant EVIDENCE_DOMAIN = keccak256("NARYX_GMX_V2_EXIT_EVIDENCE_V1");
     bytes32 public constant FINAL_RECEIPT_DOMAIN = keccak256("NARYX_GMX_V2_FINAL_PACKAGE_RECEIPT_V1");
-    bytes32 public constant CONTROLLER_ROLE = keccak256(abi.encode("CONTROLLER"));
+    bytes32 private constant CONTROLLER_ROLE = keccak256(abi.encode("CONTROLLER"));
     bytes32 public constant ORDER_LIST = keccak256(abi.encode("ORDER_LIST"));
     bytes32 public constant REQUEST_EXPIRATION_TIME = keccak256(abi.encode("REQUEST_EXPIRATION_TIME"));
 

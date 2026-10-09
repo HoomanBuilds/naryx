@@ -24,7 +24,7 @@ contract GmxV2ArbitrumAdapter is IAsyncVenueAdapter, IGmxV2OrderCallbackReceiver
     using SafeERC20 for IERC20;
 
     bytes32 public constant EVIDENCE_DOMAIN = keccak256("NARYX_GMX_V2_CALLBACK_EVIDENCE_V1");
-    bytes32 public constant CONTROLLER_ROLE = keccak256(abi.encode("CONTROLLER"));
+    bytes32 private constant CONTROLLER_ROLE = keccak256(abi.encode("CONTROLLER"));
     bytes32 public constant ORDER_LIST = keccak256(abi.encode("ORDER_LIST"));
     bytes32 public constant SIZE_IN_USD = keccak256(abi.encode("SIZE_IN_USD"));
     bytes32 public constant REQUEST_EXPIRATION_TIME = keccak256(abi.encode("REQUEST_EXPIRATION_TIME"));
