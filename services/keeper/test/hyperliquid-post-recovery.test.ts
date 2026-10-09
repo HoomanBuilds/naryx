@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import {
   HYPERCORE_EXECUTION_GUARANTEE,
@@ -23,6 +26,9 @@ import {
   HYPERCORE_RECONCILIATION_SOURCE,
   HYPERCORE_RECOVERY_RECONCILIATION_SOURCE,
   HyperliquidRecoveryCompiler,
+  HyperliquidRecoverySqliteStore,
+  HyperliquidRecoveryTestnetRuntime,
+  HYPERLIQUID_RECOVERY_TESTNET_EXCHANGE_URL,
   acknowledgeHyperliquidRecoverySubmission,
   beginHyperliquidReconciliation,
   beginHyperliquidRecoverySubmissionReconciliation,
@@ -33,6 +39,7 @@ import {
   createHyperliquidRecoverySubmissionJournal,
   fenceHyperliquidRecoveryAgent,
   hyperliquidRecoveryReconciliationHandoff,
+  initializeHyperliquidRecoveryJournal,
   markHyperliquidRecoverySubmittedUnknown,
   markHyperliquidSubmissionUnknown,
   prepareHyperliquidRecoverySubmission,
@@ -892,4 +899,168 @@ test('refuses a second recovery action while an earlier one for the package is u
   });
   assert.equal(terminal.agents[0]!.attempts[0]!.reconciledOutcome, 'RECOVERED_COMPLETE');
   assert.throws(() => prepareSecond(terminal, recoveryPlan(source, 1)), /terminal or manual outcome/);
+});
+
+test('persists a recovery action before one exact Hyperliquid Testnet submission', async (suite) => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-hyperliquid-recovery-'));
+  suite.after(() => rmSync(directory, { recursive: true, force: true }));
+  const databasePath = join(directory, 'recovery.sqlite');
+  const store = new HyperliquidRecoverySqliteStore({ databasePath });
+  initializeHyperliquidRecoveryJournal({
+    store,
+    verifierIdentity: identity,
+    agentWallet: recoveryAgent,
+    signerLeaseId: 'recovery-process-1',
+  });
+  const source = sourceAttempt(100n, 0n);
+  const compiled = recoveryPlan(source);
+  const submissions: unknown[] = [];
+  const runtime = new HyperliquidRecoveryTestnetRuntime({
+    store,
+    trustedTime: { decide: async (scope) => trustedTimeDecision(scope) },
+    submitter: {
+      environment: 'testnet',
+      apiUrl: HYPERLIQUID_RECOVERY_TESTNET_EXCHANGE_URL,
+      signerAddress: async () => recoveryAgent,
+      submit: async (submission) => {
+        submissions.push(structuredClone(submission));
+        return { acknowledgementId: 'recovery-acknowledgement-1' };
+      },
+    },
+    agentWallet: recoveryAgent,
+    signerLeaseId: 'recovery-process-1',
+    vaultAddress: account.tradingAccount,
+  });
+  const completed = await runtime.execute({
+    recoveryAttemptId: 'runtime-recovery-attempt-1',
+    sourceAttempt: source,
+    plan: compiled,
+  });
+  assert.equal(completed.status, 'ACKNOWLEDGED');
+  assert.equal(submissions.length, 1);
+  assert.deepEqual(submissions[0], {
+    action: compiled.unsignedRequestFields.action,
+    nonce: nowMs,
+    expiresAfterMs: compiled.actionExpiryMs,
+    vaultAddress: account.tradingAccount,
+  });
+  store.close();
+
+  const restartedStore = new HyperliquidRecoverySqliteStore({ databasePath });
+  const restarted = new HyperliquidRecoveryTestnetRuntime({
+    store: restartedStore,
+    trustedTime: { decide: async (scope) => trustedTimeDecision(scope) },
+    submitter: {
+      environment: 'testnet',
+      apiUrl: HYPERLIQUID_RECOVERY_TESTNET_EXCHANGE_URL,
+      signerAddress: async () => recoveryAgent,
+      submit: async (submission) => {
+        submissions.push(structuredClone(submission));
+        return { acknowledgementId: 'unexpected-replay' };
+      },
+    },
+    agentWallet: recoveryAgent,
+    signerLeaseId: 'recovery-process-1',
+    vaultAddress: account.tradingAccount,
+  });
+  const resumed = await restarted.execute({
+    recoveryAttemptId: 'runtime-recovery-attempt-1',
+    sourceAttempt: source,
+    plan: compiled,
+  });
+  assert.equal(resumed.status, 'RECONCILIATION_REQUIRED');
+  assert.equal(submissions.length, 1);
+  restartedStore.close();
+});
+
+test('keeps an ambiguous recovery submission durable and never blindly retries it', async (suite) => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-hyperliquid-recovery-'));
+  suite.after(() => rmSync(directory, { recursive: true, force: true }));
+  const databasePath = join(directory, 'recovery.sqlite');
+  const store = new HyperliquidRecoverySqliteStore({ databasePath });
+  initializeHyperliquidRecoveryJournal({
+    store,
+    verifierIdentity: identity,
+    agentWallet: recoveryAgent,
+    signerLeaseId: 'recovery-process-1',
+  });
+  const source = sourceAttempt(100n, 0n);
+  const compiled = recoveryPlan(source);
+  let submissionCount = 0;
+  const submitter = {
+    environment: 'testnet' as const,
+    apiUrl: HYPERLIQUID_RECOVERY_TESTNET_EXCHANGE_URL,
+    signerAddress: async () => recoveryAgent,
+    submit: async () => {
+      submissionCount += 1;
+      throw new Error('response lost after submission');
+    },
+  };
+  const runtime = new HyperliquidRecoveryTestnetRuntime({
+    store,
+    trustedTime: { decide: async (scope) => trustedTimeDecision(scope) },
+    submitter,
+    agentWallet: recoveryAgent,
+    signerLeaseId: 'recovery-process-1',
+    vaultAddress: account.tradingAccount,
+  });
+  const first = await runtime.execute({
+    recoveryAttemptId: 'runtime-recovery-attempt-2',
+    sourceAttempt: source,
+    plan: compiled,
+  });
+  assert.equal(first.status, 'SUBMISSION_AMBIGUOUS');
+  assert.match(first.errorCommitment!, /^0x[0-9a-f]{64}$/);
+  assert.equal(store.read()!.journal.agents[0]!.attempts[0]!.status, 'SUBMITTED_UNKNOWN');
+  store.close();
+
+  const restartedStore = new HyperliquidRecoverySqliteStore({ databasePath });
+  const restarted = new HyperliquidRecoveryTestnetRuntime({
+    store: restartedStore,
+    trustedTime: { decide: async (scope) => trustedTimeDecision(scope) },
+    submitter,
+    agentWallet: recoveryAgent,
+    signerLeaseId: 'recovery-process-1',
+    vaultAddress: account.tradingAccount,
+  });
+  const second = await restarted.execute({
+    recoveryAttemptId: 'runtime-recovery-attempt-2',
+    sourceAttempt: source,
+    plan: compiled,
+  });
+  assert.equal(second.status, 'RECONCILIATION_REQUIRED');
+  assert.equal(submissionCount, 1);
+  restartedStore.close();
+});
+
+test('serializes recovery journal writers with an append-only SQLite CAS', (suite) => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-hyperliquid-recovery-'));
+  suite.after(() => rmSync(directory, { recursive: true, force: true }));
+  const databasePath = join(directory, 'recovery.sqlite');
+  const firstStore = new HyperliquidRecoverySqliteStore({ databasePath });
+  initializeHyperliquidRecoveryJournal({
+    store: firstStore,
+    verifierIdentity: identity,
+    agentWallet: recoveryAgent,
+    signerLeaseId: 'recovery-process-1',
+  });
+  const secondStore = new HyperliquidRecoverySqliteStore({ databasePath });
+  const firstSnapshot = firstStore.read()!;
+  const staleSnapshot = secondStore.read()!;
+  const firstUpdate = registerHyperliquidRecoveryAgent(firstSnapshot.journal, {
+    expectedVersion: firstSnapshot.journal.version,
+    agentWallet: `0x${'64'.repeat(20)}`,
+    signerLeaseId: 'recovery-process-2',
+  });
+  const staleUpdate = registerHyperliquidRecoveryAgent(staleSnapshot.journal, {
+    expectedVersion: staleSnapshot.journal.version,
+    agentWallet: `0x${'65'.repeat(20)}`,
+    signerLeaseId: 'recovery-process-3',
+  });
+  firstStore.persist(firstSnapshot.revision, firstUpdate);
+  assert.throws(() => secondStore.persist(staleSnapshot.revision, staleUpdate),
+    /compare-and-set revision differs/);
+  assert.equal(firstStore.read()!.journal.agents.length, 2);
+  secondStore.close();
+  firstStore.close();
 });
