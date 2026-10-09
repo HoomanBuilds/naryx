@@ -28,6 +28,7 @@ import {
   HyperliquidRecoveryCompiler,
   HyperliquidRecoverySqliteStore,
   HyperliquidRecoveryTestnetController,
+  HyperliquidRecoveryTestnetReconciler,
   HyperliquidRecoveryTestnetRuntime,
   HYPERLIQUID_RECOVERY_TESTNET_EXCHANGE_URL,
   acknowledgeHyperliquidRecoverySubmission,
@@ -1002,6 +1003,82 @@ test('persists a recovery action before one exact Hyperliquid Testnet submission
   assert.equal(resumed.status, 'RECONCILIATION_REQUIRED');
   assert.equal(submissions.length, 1);
   restartedStore.close();
+});
+
+test('persists the recovery reconciliation lock before returning incomplete evidence', async (suite) => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-hyperliquid-recovery-'));
+  suite.after(() => rmSync(directory, { recursive: true, force: true }));
+  const store = new HyperliquidRecoverySqliteStore({
+    databasePath: join(directory, 'recovery.sqlite'),
+  });
+  initializeHyperliquidRecoveryJournal({
+    store,
+    verifierIdentity: identity,
+    agentWallet: recoveryAgent,
+    signerLeaseId: 'recovery-process-1',
+  });
+  const source = sourceAttempt(100n, 0n);
+  const compiled = recoveryPlan(source);
+  const runtime = new HyperliquidRecoveryTestnetRuntime({
+    store,
+    trustedTime: { decide: async (scope) => trustedTimeDecision(scope) },
+    submitter: {
+      environment: 'testnet',
+      apiUrl: HYPERLIQUID_RECOVERY_TESTNET_EXCHANGE_URL,
+      signerAddress: async () => recoveryAgent,
+      submit: async () => ({ acknowledgementId: 'recovery-acknowledgement-2' }),
+    },
+    agentWallet: recoveryAgent,
+    signerLeaseId: 'recovery-process-1',
+    vaultAddress: account.tradingAccount,
+  });
+  await runtime.execute({
+    recoveryAttemptId: 'runtime-recovery-attempt-3',
+    sourceAttempt: source,
+    plan: compiled,
+  });
+  const reconciler = new HyperliquidRecoveryTestnetReconciler({
+    store,
+    collector: {
+      collectRecovery: async () => Object.freeze({
+        status: 'INCOMPLETE' as const,
+        input: null,
+        accountObservation: null,
+        reasons: Object.freeze(['AGGREGATE_RECOVERY_LOSS_UNAVAILABLE' as const]),
+        observedFills: Object.freeze([]),
+        rawResponseCommitments: Object.freeze([]),
+      }),
+    },
+  });
+  const result = await reconciler.reconcile({
+    recoveryAttemptId: 'runtime-recovery-attempt-3',
+    checkpoint: {
+      version: 1,
+      attemptCommitment: `0x${'91'.repeat(32)}`,
+      account,
+      baseSpotBalanceAtoms: 0n,
+      perpetualPositionAtoms: 0n,
+      observedAtMs: Number(nowMs),
+      rawResponseCommitments: [],
+    },
+    binding: {
+      spotUniverseIndex: 0,
+      spotTokenIndex: 1,
+      perpetualAssetIndex: 0,
+      quoteTokenIndex: 0,
+    },
+    window: {
+      startTimeMs: Number(nowMs),
+      endTimeMs: Number(nowMs) + 100,
+      nowMs: Number(nowMs) + 100,
+      maxEvidenceAgeMs: 1_000,
+      maxSnapshotSkewMs: 100,
+    },
+  });
+  assert.equal(result.status, 'EVIDENCE_INCOMPLETE');
+  assert.deepEqual(result.reasons, ['AGGREGATE_RECOVERY_LOSS_UNAVAILABLE']);
+  assert.equal(store.read()!.journal.agents[0]!.attempts[0]!.status, 'RECONCILING');
+  store.close();
 });
 
 test('keeps an ambiguous recovery submission durable and never blindly retries it', async (suite) => {

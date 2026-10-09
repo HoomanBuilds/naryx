@@ -6,6 +6,16 @@ import type {
   HyperliquidTrustedTimeDecision,
 } from '@naryx/adapter-hyperliquid';
 import type { HyperliquidPackageAttempt } from './index.js';
+import type {
+  HyperliquidAuthoritativeEvidenceCollector,
+  HyperliquidCollectedStateObservation,
+  HyperliquidEvidenceCheckpoint,
+  HyperliquidEvidenceIncompleteReason,
+  HyperliquidEvidenceMarketBinding,
+  HyperliquidEvidenceWindow,
+  HyperliquidObservedFill,
+  HyperliquidRawResponseCommitment,
+} from './hyperliquid-evidence-collector.js';
 import {
   HyperliquidRecoveryCompiler,
   type HyperliquidRecoveryBoundInput,
@@ -13,6 +23,8 @@ import {
 } from './hyperliquid-recovery-compiler.js';
 import {
   acknowledgeHyperliquidRecoverySubmission,
+  beginHyperliquidRecoverySubmissionReconciliation,
+  completeHyperliquidRecoverySubmissionReconciliation,
   confirmHyperliquidRecoveryDurableRecord,
   createHyperliquidRecoverySubmissionJournal,
   hyperliquidRecoveryReconciliationHandoff,
@@ -24,6 +36,10 @@ import {
   type HyperliquidRecoverySubmissionJournal,
   type HyperliquidRecoverySubmissionRecord,
 } from './hyperliquid-recovery-submission-journal.js';
+import {
+  reconcileHyperliquidRecovery,
+  type HyperliquidRecoveryAttempt,
+} from './hyperliquid-recovery-reconciliation.js';
 import {
   HyperliquidRecoverySqliteStore,
   type HyperliquidRecoveryJournalSnapshot,
@@ -69,6 +85,28 @@ export interface HyperliquidRecoveryCompileAndExecuteInput {
 export type HyperliquidRecoveryCompileAndExecuteResult = Readonly<{
   readonly plan: HyperliquidRecoveryExecutionPlan;
   readonly submission: HyperliquidRecoveryRuntimeResult;
+}>;
+
+export interface HyperliquidRecoveryReconcileInput {
+  readonly recoveryAttemptId: string;
+  readonly checkpoint: HyperliquidEvidenceCheckpoint;
+  readonly binding: HyperliquidEvidenceMarketBinding;
+  readonly window: HyperliquidEvidenceWindow;
+}
+
+export type HyperliquidRecoveryReconcileResult = Readonly<{
+  status: 'RECONCILED';
+  attempt: HyperliquidRecoveryAttempt;
+  accountObservation: HyperliquidCollectedStateObservation;
+  observedFills: readonly HyperliquidObservedFill[];
+  rawResponseCommitments: readonly HyperliquidRawResponseCommitment[];
+}> | Readonly<{
+  status: 'EVIDENCE_INCOMPLETE';
+  attempt: HyperliquidRecoveryAttempt;
+  reasons: readonly HyperliquidEvidenceIncompleteReason[];
+  accountObservation: HyperliquidCollectedStateObservation | null;
+  observedFills: readonly HyperliquidObservedFill[];
+  rawResponseCommitments: readonly HyperliquidRawResponseCommitment[];
 }>;
 
 function requireCondition(condition: boolean, message: string): asserts condition {
@@ -326,5 +364,87 @@ export class HyperliquidRecoveryTestnetController {
       plan,
     });
     return Object.freeze({ plan, submission });
+  }
+}
+
+export class HyperliquidRecoveryTestnetReconciler {
+  readonly #store: HyperliquidRecoverySqliteStore;
+  readonly #collector: Pick<HyperliquidAuthoritativeEvidenceCollector, 'collectRecovery'>;
+  readonly #pending = new Map<string, Promise<HyperliquidRecoveryReconcileResult>>();
+
+  constructor(input: Readonly<{
+    store: HyperliquidRecoverySqliteStore;
+    collector: Pick<HyperliquidAuthoritativeEvidenceCollector, 'collectRecovery'>;
+  }>) {
+    requireCondition(input.store instanceof HyperliquidRecoverySqliteStore,
+      'recovery store is required');
+    requireCondition(typeof input.collector?.collectRecovery === 'function',
+      'recovery evidence collector is required');
+    this.#store = input.store;
+    this.#collector = input.collector;
+  }
+
+  reconcile(input: HyperliquidRecoveryReconcileInput): Promise<HyperliquidRecoveryReconcileResult> {
+    requireCondition(typeof input.recoveryAttemptId === 'string'
+      && IDENTIFIER.test(input.recoveryAttemptId), 'recovery attempt identity is invalid');
+    const current = this.#pending.get(input.recoveryAttemptId);
+    if (current !== undefined) return current;
+    const running = this.#reconcile(input).finally(() => {
+      if (this.#pending.get(input.recoveryAttemptId) === running) {
+        this.#pending.delete(input.recoveryAttemptId);
+      }
+    });
+    this.#pending.set(input.recoveryAttemptId, running);
+    return running;
+  }
+
+  async #reconcile(
+    input: HyperliquidRecoveryReconcileInput,
+  ): Promise<HyperliquidRecoveryReconcileResult> {
+    let snapshot = this.#store.read();
+    requireCondition(snapshot !== null, 'recovery journal is not initialized');
+    const submission = record(snapshot.journal, input.recoveryAttemptId);
+    requireCondition(submission !== undefined, 'recovery attempt is not registered');
+    if (submission.status !== 'RECONCILING' && submission.status !== 'RECONCILED') {
+      const reconciling = beginHyperliquidRecoverySubmissionReconciliation(snapshot.journal, {
+        expectedVersion: snapshot.journal.version,
+        recoveryAttemptId: input.recoveryAttemptId,
+      });
+      snapshot = persist(this.#store, snapshot, reconciling);
+    }
+    const handoff = hyperliquidRecoveryReconciliationHandoff(
+      snapshot.journal,
+      input.recoveryAttemptId,
+    );
+    const evidence = await this.#collector.collectRecovery(
+      handoff.attempt,
+      input.checkpoint,
+      input.binding,
+      input.window,
+    );
+    if (evidence.status === 'INCOMPLETE') {
+      return Object.freeze({
+        status: 'EVIDENCE_INCOMPLETE' as const,
+        attempt: handoff.attempt,
+        reasons: evidence.reasons,
+        accountObservation: evidence.accountObservation,
+        observedFills: evidence.observedFills,
+        rawResponseCommitments: evidence.rawResponseCommitments,
+      });
+    }
+    const attempt = reconcileHyperliquidRecovery(handoff.attempt, evidence.input);
+    const completed = completeHyperliquidRecoverySubmissionReconciliation(snapshot.journal, {
+      expectedVersion: snapshot.journal.version,
+      recoveryAttemptId: input.recoveryAttemptId,
+      reconciledAttempt: attempt,
+    });
+    if (completed !== snapshot.journal) persist(this.#store, snapshot, completed);
+    return Object.freeze({
+      status: 'RECONCILED' as const,
+      attempt,
+      accountObservation: evidence.accountObservation,
+      observedFills: evidence.observedFills,
+      rawResponseCommitments: evidence.rawResponseCommitments,
+    });
   }
 }

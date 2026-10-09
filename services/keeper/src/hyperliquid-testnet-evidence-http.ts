@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { parseProtocolJson, toProtocolJson } from '@naryx/protocol-types';
 import type {
+  HyperliquidEvidenceCheckpoint,
   HyperliquidEvidenceMarketBinding,
   HyperliquidEvidenceWindow,
 } from './hyperliquid-evidence-collector.js';
@@ -23,7 +24,9 @@ import type { HyperliquidPackageAttempt } from './index.js';
 import type { HyperliquidRecoveryBoundInput } from './hyperliquid-recovery-compiler.js';
 import type {
   HyperliquidRecoveryCompileAndExecuteInput,
+  HyperliquidRecoveryReconcileInput,
   HyperliquidRecoveryTestnetController,
+  HyperliquidRecoveryTestnetReconciler,
 } from './hyperliquid-recovery-testnet-runtime.js';
 
 export const KEEPER_TESTNET_PREPARE_PATH = '/internal/keeper/hyperliquid-testnet/prepare';
@@ -34,6 +37,8 @@ export const KEEPER_TESTNET_NETTING_RESIDUAL_RECONCILE_PATH =
   '/internal/keeper/hyperliquid-testnet/netting-residual/reconcile';
 export const KEEPER_TESTNET_RECOVERY_EXECUTE_PATH =
   '/internal/keeper/hyperliquid-testnet/recovery/execute';
+export const KEEPER_TESTNET_RECOVERY_RECONCILE_PATH =
+  '/internal/keeper/hyperliquid-testnet/recovery/reconcile';
 export const KEEPER_DEPENDENCY_INCIDENT_STATUS_PATH = '/internal/keeper/dependency-incidents';
 
 const MAX_BODY_BYTES = 65_536;
@@ -48,6 +53,7 @@ export interface HyperliquidTestnetEvidenceHttpPorts {
   readonly strategy?: Pick<HyperliquidStrategyAuthoritativeEvidenceCollector, 'collect'>;
   readonly nettingResidual?: Pick<HyperliquidNettingResidualAuthoritativeEvidenceCollector, 'collect'>;
   readonly recovery?: Pick<HyperliquidRecoveryTestnetController, 'compileAndExecute'>;
+  readonly recoveryReconciliation?: Pick<HyperliquidRecoveryTestnetReconciler, 'reconcile'>;
   readonly dependencyIncidents?: Pick<DependencyIncidentStatusReader, 'current'>;
 }
 
@@ -226,6 +232,26 @@ function parseRecoveryExecuteRequest(value: unknown): HyperliquidRecoveryCompile
     recoverySequence: number;
     projectedRecoveryCosts: readonly HyperliquidRecoveryBoundInput[];
     projectedAggregateLoss: HyperliquidRecoveryBoundInput;
+  }>;
+}
+
+function parseRecoveryReconcileRequest(value: unknown): HyperliquidRecoveryReconcileInput {
+  if (!isRecord(value)
+    || !hasExactKeys(value, ['binding', 'checkpoint', 'recoveryAttemptId', 'window'])
+    || typeof value.recoveryAttemptId !== 'string'
+    || !isRecord(value.checkpoint)
+    || !isRecord(value.binding)
+    || !isRecord(value.window)) {
+    throw new KeeperRequestError(
+      'INVALID_REQUEST',
+      'Recovery reconcile request fields are invalid.',
+    );
+  }
+  return value as unknown as Readonly<{
+    recoveryAttemptId: string;
+    checkpoint: HyperliquidEvidenceCheckpoint;
+    binding: HyperliquidEvidenceMarketBinding;
+    window: HyperliquidEvidenceWindow;
   }>;
 }
 
@@ -417,6 +443,39 @@ export function createHyperliquidTestnetEvidenceRequestHandler(
         sendJson(response, 200, toProtocolJson(result, 'keeper.recovery.execute.result'));
       } catch {
         reject(response, 400, 'INVALID_REQUEST', 'Recovery execution request failed closed.');
+      }
+      return;
+    }
+    if (url.pathname === KEEPER_TESTNET_RECOVERY_RECONCILE_PATH) {
+      if (request.method !== 'POST') {
+        response.setHeader('Allow', 'POST');
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
+        return;
+      }
+      if (ports.recoveryReconciliation === undefined) {
+        reject(response, 503, 'RECOVERY_RECONCILIATION_DISABLED',
+          'Hyperliquid Testnet recovery reconciliation is unavailable.');
+        return;
+      }
+      let raw: unknown;
+      try {
+        raw = await readProtocolJson(request, 'keeper.recovery.reconcile.request');
+      } catch (error) {
+        if (error instanceof KeeperRequestError) {
+          reject(response, 400, error.code, error.message);
+          return;
+        }
+        reject(response, 400, 'INVALID_JSON', 'Request body must be strict protocol JSON.');
+        return;
+      }
+      try {
+        const result = await ports.recoveryReconciliation.reconcile(
+          parseRecoveryReconcileRequest(raw),
+        );
+        sendJson(response, 200, toProtocolJson(result, 'keeper.recovery.reconcile.result'));
+      } catch {
+        reject(response, 400, 'INVALID_REQUEST',
+          'Recovery reconciliation request failed closed.');
       }
       return;
     }

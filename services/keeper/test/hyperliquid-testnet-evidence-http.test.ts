@@ -8,6 +8,7 @@ import {
   KEEPER_TESTNET_NETTING_RESIDUAL_RECONCILE_PATH,
   KEEPER_TESTNET_PREPARE_PATH,
   KEEPER_TESTNET_RECOVERY_EXECUTE_PATH,
+  KEEPER_TESTNET_RECOVERY_RECONCILE_PATH,
   KEEPER_TESTNET_RECONCILE_PATH,
   KEEPER_TESTNET_STRATEGY_RECONCILE_PATH,
   type HyperliquidTestnetPrepareResult,
@@ -414,6 +415,73 @@ test('recovery execution is loopback-only, explicit, and protocol-JSON encoded',
     assert.equal(body.plan.mode, 'COMPLETE_MISSING_LEG');
     assert.equal(body.submission.status, 'RECONCILIATION_REQUIRED');
     assert.deepEqual(body.submission.handoff.nonce, { $naryxType: 'bigint', value: '1001' });
+  } finally {
+    await close(server);
+  }
+});
+
+test('recovery reconciliation accepts only evidence coordinates and encodes its result', async () => {
+  let seenAttempt = '';
+  const server = createHyperliquidTestnetEvidenceServer({
+    runtime: {
+      prepare: async () => { throw new Error('must not be called'); },
+      reconcile: async () => { throw new Error('must not be called'); },
+    },
+    recoveryReconciliation: {
+      reconcile: async (input) => {
+        seenAttempt = input.recoveryAttemptId;
+        return {
+          status: 'EVIDENCE_INCOMPLETE',
+          attempt: { status: 'RECONCILING' },
+          reasons: ['AGGREGATE_RECOVERY_LOSS_UNAVAILABLE'],
+          accountObservation: null,
+          observedFills: [],
+          rawResponseCommitments: [{ receivedAtMs: 1_100 }],
+        } as never;
+      },
+    },
+  });
+  const url = await listen(server);
+  try {
+    const response = await fetch(`${url}${KEEPER_TESTNET_RECOVERY_RECONCILE_PATH}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: stringifyProtocolJson({
+        recoveryAttemptId: 'recovery-attempt-1',
+        checkpoint: {
+          version: 1,
+          attemptCommitment: `0x${'aa'.repeat(32)}`,
+          account,
+          baseSpotBalanceAtoms: 0n,
+          perpetualPositionAtoms: 0n,
+          observedAtMs: 900,
+          rawResponseCommitments: [],
+        },
+        binding,
+        window,
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(seenAttempt, 'recovery-attempt-1');
+    const body = await response.json() as {
+      status: string;
+      reasons: string[];
+    };
+    assert.equal(body.status, 'EVIDENCE_INCOMPLETE');
+    assert.deepEqual(body.reasons, ['AGGREGATE_RECOVERY_LOSS_UNAVAILABLE']);
+
+    const rejected = await fetch(`${url}${KEEPER_TESTNET_RECOVERY_RECONCILE_PATH}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: stringifyProtocolJson({
+        recoveryAttemptId: 'recovery-attempt-1',
+        checkpoint: {},
+        binding,
+        window,
+        plan: {},
+      }),
+    });
+    assert.equal(rejected.status, 400);
   } finally {
     await close(server);
   }

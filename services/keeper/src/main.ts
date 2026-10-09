@@ -27,7 +27,7 @@ import { httpKeeperPorts, KeeperActionJournal, keeperClock, loadKeeperAutomation
 import { loadHyperliquidRecoverySigner, loadHyperliquidRecoveryTestnetConfig } from './hyperliquid-recovery-testnet-config.js';
 import { HyperliquidRecoverySqliteStore } from './hyperliquid-recovery-store.js';
 import { HyperliquidRecoveryCompiler } from './hyperliquid-recovery-compiler.js';
-import { HyperliquidRecoveryTestnetController, HyperliquidRecoveryTestnetRuntime, initializeHyperliquidRecoveryJournal } from './hyperliquid-recovery-testnet-runtime.js';
+import { HyperliquidRecoveryTestnetController, HyperliquidRecoveryTestnetReconciler, HyperliquidRecoveryTestnetRuntime, initializeHyperliquidRecoveryJournal } from './hyperliquid-recovery-testnet-runtime.js';
 import { createHyperliquidRecoveryTrustedTimeSources, HyperliquidRecoveryTrustedClock, HyperliquidSdkRecoveryClockReader, HyperliquidSdkRecoveryTestnetSubmitter } from './hyperliquid-recovery-testnet-ports.js';
 
 // Keeper automation dispatches only owner-authorized, kernel-approved actions to a loopback
@@ -66,6 +66,7 @@ const nettingResidual = new HyperliquidNettingResidualAuthoritativeEvidenceColle
 const recoveryConfig = loadHyperliquidRecoveryTestnetConfig();
 let recoveryStore: HyperliquidRecoverySqliteStore | undefined;
 let recovery: HyperliquidRecoveryTestnetController | undefined;
+let recoveryReconciliation: HyperliquidRecoveryTestnetReconciler | undefined;
 if (recoveryConfig !== undefined) {
   recoveryStore = new HyperliquidRecoverySqliteStore({
     databasePath: recoveryConfig.databasePath,
@@ -98,6 +99,10 @@ if (recoveryConfig !== undefined) {
       trustedTime,
       runtime: recoveryRuntime,
     });
+    recoveryReconciliation = new HyperliquidRecoveryTestnetReconciler({
+      store: recoveryStore,
+      collector,
+    });
   } catch (error) {
     recoveryStore.close();
     throw error;
@@ -119,6 +124,7 @@ const server = createHyperliquidTestnetEvidenceServer({
   strategy,
   nettingResidual,
   ...(recovery === undefined ? {} : { recovery }),
+  ...(recoveryReconciliation === undefined ? {} : { recoveryReconciliation }),
   ...(dependencyIncidents === undefined ? {} : { dependencyIncidents }),
 });
 let monitorTimer: ReturnType<typeof setInterval> | undefined;
