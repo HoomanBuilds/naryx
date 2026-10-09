@@ -3,8 +3,10 @@ import test from 'node:test';
 import {
   HYPERCORE_EXECUTION_GUARANTEE,
   formatHypercoreSize,
+  hyperliquidTrustedTimeDecisionHash,
   type HypercoreOrderWire,
   type HyperliquidExecutionPlan,
+  type HyperliquidTrustedTimeDecision,
 } from '@naryx/adapter-hyperliquid';
 import {
   adapterRef,
@@ -588,12 +590,43 @@ function registeredJournal(): HyperliquidRecoverySubmissionJournal {
   });
 }
 
+function trustedTimeDecision(
+  scope: string,
+  selectedTimeMs = Number(nowMs),
+  maximumFutureNonceLeadMs = 10_000,
+): HyperliquidTrustedTimeDecision {
+  const unsigned = {
+    version: 1 as const,
+    scope,
+    observedAtMs: selectedTimeMs,
+    selectedTimeMs,
+    sourceSpreadMs: 2,
+    localClockSkewMs: 0,
+    policy: {
+      ntpHosts: ['time.google.com', 'time.cloudflare.com'] as const,
+      ntpTimeoutMs: 2_000,
+      maximumNtpRoundTripMs: 500,
+      maximumSourceSpreadMs: 10_000,
+      maximumLocalClockSkewMs: 2_000,
+      maximumFutureNonceLeadMs,
+      hyperliquidClockMarket: 'HYPE',
+    },
+    samples: [
+      { sourceKind: 'NTP' as const, sourceId: 'time.google.com', remoteTimeMs: selectedTimeMs - 1, roundTripMs: 10 },
+      { sourceKind: 'NTP' as const, sourceId: 'time.cloudflare.com', remoteTimeMs: selectedTimeMs, roundTripMs: 11 },
+      { sourceKind: 'HYPERLIQUID_L2_BOOK' as const, sourceId: 'HYPE', remoteTimeMs: selectedTimeMs + 1, roundTripMs: 12 },
+    ] as const,
+  };
+  return Object.freeze({ ...unsigned, decisionHash: hyperliquidTrustedTimeDecisionHash(unsigned) });
+}
+
 function preparedJournal(
   journal: HyperliquidRecoverySubmissionJournal,
   source: HyperliquidPackageAttempt,
   compiled: HyperliquidRecoveryExecutionPlan,
   recoveryAttemptId = 'recovery-attempt-1',
-  nonce = nowMs + 1n,
+  selectedTimeMs = Number(nowMs),
+  maximumFutureNonceLeadMs = 10_000,
 ) {
   return prepareHyperliquidRecoverySubmission(journal, {
     expectedVersion: journal.version,
@@ -602,8 +635,11 @@ function preparedJournal(
     signerLeaseId: 'recovery-process-1',
     sourceAttempt: source,
     plan: compiled,
-    nonce,
-    nowMs,
+    trustedTimeDecision: trustedTimeDecision(
+      recoveryAttemptId,
+      selectedTimeMs,
+      maximumFutureNonceLeadMs,
+    ),
     vaultAddress: account.tradingAccount,
   });
 }
@@ -613,10 +649,13 @@ test('requires durable write-ahead confirmation and survives restart into reconc
   const compiled = recoveryPlan(source);
   const prepared = preparedJournal(registeredJournal(), source, compiled);
   const record = prepared.agents[0]!.attempts[0]!;
+  assert.equal(record.nonce, nowMs);
+  assert.equal(record.trustedTimeDecision.scope, record.recoveryAttemptId);
+  assert.equal(record.submissionTimeDecision, null);
   assert.throws(() => markHyperliquidRecoverySubmittedUnknown(prepared, {
     expectedVersion: prepared.version,
     recoveryAttemptId: record.recoveryAttemptId,
-    nowMs,
+    trustedTimeDecision: trustedTimeDecision(`${record.recoveryAttemptId}:submit`),
   }), /cannot follow/);
   assert.throws(() => hyperliquidRecoveryReconciliationHandoff(
     prepared,
@@ -634,13 +673,20 @@ test('requires durable write-ahead confirmation and survives restart into reconc
     record.recoveryAttemptId,
   );
   assert.equal(handoff.attempt.status, 'RECONCILING');
+  assert.equal(handoff.trustedTimeDecisionHash, record.trustedTimeDecision.decisionHash);
+  assert.equal(handoff.submissionTimeDecisionHash, null);
   assert.deepEqual(handoff.clientOrderIds, compiled.orders.map((order) => order.clientOrderId));
   const submitted = markHyperliquidRecoverySubmittedUnknown(restarted, {
     expectedVersion: restarted.version,
     recoveryAttemptId: record.recoveryAttemptId,
-    nowMs,
+    trustedTimeDecision: trustedTimeDecision(`${record.recoveryAttemptId}:submit`),
   });
   assert.equal(submitted.agents[0]!.attempts[0]!.status, 'SUBMITTED_UNKNOWN');
+  assert.equal(hyperliquidRecoveryReconciliationHandoff(
+    submitted,
+    record.recoveryAttemptId,
+  ).submissionTimeDecisionHash, submitted.agents[0]!.attempts[0]!
+    .submissionTimeDecision!.decisionHash);
 });
 
 test('enforces CAS, monotonic nonce and sequence fencing, and permanent retirement', () => {
@@ -655,17 +701,9 @@ test('enforces CAS, monotonic nonce and sequence fencing, and permanent retireme
     signerLeaseId: 'recovery-process-1',
     sourceAttempt: source,
     plan: recoveryPlan(source, 1),
-    nonce: nowMs + 2n,
-    nowMs,
+    trustedTimeDecision: trustedTimeDecision('recovery-attempt-2'),
     vaultAddress: account.tradingAccount,
   }), /compare-and-set/);
-  assert.throws(() => preparedJournal(
-    first,
-    source,
-    recoveryPlan(source, 1),
-    'recovery-attempt-2',
-    nowMs + 1n,
-  ), /nonce must strictly increase/);
   const durable = confirmHyperliquidRecoveryDurableRecord(first, {
     expectedVersion: first.version,
     recoveryAttemptId: 'recovery-attempt-1',
@@ -675,7 +713,7 @@ test('enforces CAS, monotonic nonce and sequence fencing, and permanent retireme
   const submitted = markHyperliquidRecoverySubmittedUnknown(durable, {
     expectedVersion: durable.version,
     recoveryAttemptId: 'recovery-attempt-1',
-    nowMs,
+    trustedTimeDecision: trustedTimeDecision('recovery-attempt-1:submit'),
   });
   const acknowledged = acknowledgeHyperliquidRecoverySubmission(submitted, {
     expectedVersion: submitted.version,
@@ -708,7 +746,7 @@ test('enforces CAS, monotonic nonce and sequence fencing, and permanent retireme
     source,
     recoveryPlan(source, 1),
     'recovery-attempt-2',
-    nowMs + 2n,
+    Number(nowMs + 2n),
   ), /fenced or retired/);
 });
 
@@ -721,19 +759,68 @@ test('scopes recovery sequence fencing to each package lineage', () => {
     firstSource,
     recoveryPlan(firstSource, 1),
     'recovery-attempt-lineage-1',
-    nowMs + 1n,
+    Number(nowMs + 1n),
   );
   const second = preparedJournal(
     first,
     secondSource,
     recoveryPlan(secondSource, 1),
     'recovery-attempt-lineage-2',
-    nowMs + 2n,
+    Number(nowMs + 2n),
   );
   assert.equal(second.agents[0]!.recoveryLineages.length, 2);
   assert.deepEqual(second.agents[0]!.recoveryLineages.map(
     (lineage) => lineage.highestReservedRecoverySequence,
   ), [1, 1]);
+});
+
+test('refuses a restored future nonce instead of resetting the recovery agent', () => {
+  const firstSource = sourceAttempt(100n, 0n);
+  const secondSource = sourceAttempt(100n, 0n, { planCommitments: secondCommitments });
+  const first = preparedJournal(
+    registeredJournal(),
+    firstSource,
+    recoveryPlan(firstSource, 1),
+    'future-recovery-attempt',
+    Number(nowMs + 101n),
+    100,
+  );
+  assert.throws(() => preparedJournal(
+    first,
+    secondSource,
+    recoveryPlan(secondSource, 1),
+    'current-recovery-attempt',
+    Number(nowMs),
+    100,
+  ), /fresh agent replacement is required/);
+});
+
+test('refuses recovery submission after trusted time moves behind its durable nonce', () => {
+  const source = sourceAttempt(100n, 0n);
+  const prepared = preparedJournal(
+    registeredJournal(),
+    source,
+    recoveryPlan(source),
+    'clock-skew-recovery',
+    Number(nowMs),
+    100,
+  );
+  const record = prepared.agents[0]!.attempts[0]!;
+  const durable = confirmHyperliquidRecoveryDurableRecord(prepared, {
+    expectedVersion: prepared.version,
+    recoveryAttemptId: record.recoveryAttemptId,
+    recordHash: record.recordHash,
+    durableRevision: 'clock-skew-revision',
+  });
+  assert.throws(() => markHyperliquidRecoverySubmittedUnknown(durable, {
+    expectedVersion: durable.version,
+    recoveryAttemptId: record.recoveryAttemptId,
+    trustedTimeDecision: trustedTimeDecision(
+      `${record.recoveryAttemptId}:submit`,
+      Number(nowMs - 101n),
+      100,
+    ),
+  }), /fresh agent replacement is required/);
 });
 
 test('refuses a second recovery action while an earlier one for the package is unresolved', () => {
@@ -755,7 +842,7 @@ test('refuses a second recovery action while an earlier one for the package is u
   const unknown = markHyperliquidRecoverySubmittedUnknown(durable, {
     expectedVersion: durable.version,
     recoveryAttemptId: 'recovery-attempt-1',
-    nowMs,
+    trustedTimeDecision: trustedTimeDecision('recovery-attempt-1:submit'),
   });
   const prepareSecond = (journal: HyperliquidRecoverySubmissionJournal, plan: HyperliquidRecoveryExecutionPlan) =>
     prepareHyperliquidRecoverySubmission(journal, {
@@ -765,8 +852,7 @@ test('refuses a second recovery action while an earlier one for the package is u
       signerLeaseId: 'recovery-process-2',
       sourceAttempt: source,
       plan,
-      nonce: nowMs + 5n,
-      nowMs,
+      trustedTimeDecision: trustedTimeDecision('recovery-attempt-2'),
       vaultAddress: account.tradingAccount,
     });
 

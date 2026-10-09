@@ -1,4 +1,9 @@
 import { createHash } from 'node:crypto';
+import {
+  allocateHyperliquidTrustedNonce,
+  requireHyperliquidTrustedTimeDecision,
+  type HyperliquidTrustedTimeDecision,
+} from '@naryx/adapter-hyperliquid';
 import { manifestHash, protocolId } from '@naryx/protocol-types';
 import type { HyperliquidPackageAttempt } from './index.js';
 import type {
@@ -42,6 +47,8 @@ export interface HyperliquidRecoverySubmissionRecord {
   readonly agentWallet: `0x${string}`;
   readonly signerLeaseId: string;
   readonly nonce: bigint;
+  readonly trustedTimeDecision: HyperliquidTrustedTimeDecision;
+  readonly submissionTimeDecision: HyperliquidTrustedTimeDecision | null;
   readonly recoverySequence: number;
   readonly expiresAfterMs: bigint;
   readonly vaultAddress: `0x${string}` | null;
@@ -95,8 +102,7 @@ export interface HyperliquidRecoveryPrepareInput {
   readonly signerLeaseId: string;
   readonly sourceAttempt: HyperliquidPackageAttempt;
   readonly plan: HyperliquidRecoveryExecutionPlan;
-  readonly nonce: bigint;
-  readonly nowMs: bigint;
+  readonly trustedTimeDecision: HyperliquidTrustedTimeDecision;
   readonly vaultAddress: `0x${string}` | null;
 }
 
@@ -106,6 +112,8 @@ export interface HyperliquidRecoveryReconciliationHandoff {
   readonly agentWallet: `0x${string}`;
   readonly account: HyperliquidRecoveryExecutionPlan['account'];
   readonly nonce: bigint;
+  readonly trustedTimeDecisionHash: `0x${string}`;
+  readonly submissionTimeDecisionHash: `0x${string}` | null;
   readonly recoverySequence: number;
   readonly expiresAfterMs: bigint;
   readonly vaultAddress: `0x${string}` | null;
@@ -185,7 +193,7 @@ function recoveryLineageKey(plan: HyperliquidRecoveryExecutionPlan): `0x${string
 
 type RecordCore = Omit<HyperliquidRecoverySubmissionRecord,
   | 'status' | 'recordHash' | 'durableRevision' | 'acknowledgementId' | 'rejectionId'
-  | 'reconciledEvidenceVersion' | 'reconciledOutcome'>;
+  | 'submissionTimeDecision' | 'reconciledEvidenceVersion' | 'reconciledOutcome'>;
 
 function immutableRecord(
   record: RecordCore | HyperliquidRecoverySubmissionRecord,
@@ -198,6 +206,7 @@ function immutableRecord(
     agentWallet: record.agentWallet,
     signerLeaseId: record.signerLeaseId,
     nonce: record.nonce,
+    trustedTimeDecision: record.trustedTimeDecision,
     recoverySequence: record.recoverySequence,
     expiresAfterMs: record.expiresAfterMs,
     vaultAddress: record.vaultAddress,
@@ -250,6 +259,12 @@ function locate(
       'journal recovery lineage was modified');
     requireCondition(record.recordHash === recordHash(record),
       'journal recovery record was modified');
+    if (record.submissionTimeDecision !== null) {
+      requireHyperliquidTrustedTimeDecision(
+        record.submissionTimeDecision,
+        `${record.recoveryAttemptId}:submit`,
+      );
+    }
     return Object.freeze({ agentIndex, recordIndex, agent, record });
   }
   throw new Error('recovery attempt ID is unknown');
@@ -344,19 +359,18 @@ export function prepareHyperliquidRecoverySubmission(
   requireCondition(agentIndex >= 0, 'recovery agent wallet is not registered');
   const agent = journal.agents[agentIndex]!;
   requireCondition(agent.signerLeaseId === signerLeaseId, 'recovery signer lease mismatch');
+  const trustedTimeDecision = structuredClone(requireHyperliquidTrustedTimeDecision(
+    input.trustedTimeDecision,
+    recoveryAttemptId,
+  ));
+  const nowMs = BigInt(trustedTimeDecision.selectedTimeMs);
   validateHyperliquidRecoveryExecutionPlan(
     input.sourceAttempt,
     input.plan,
     journal.verifierIdentity,
-    input.nowMs,
+    nowMs,
   );
-  requireCondition(input.nowMs > 0n && input.nonce > 0n,
-    'recovery clock and nonce must be positive');
-  requireCondition(input.nonce >= input.nowMs - TWO_DAYS_MS
-    && input.nonce <= input.nowMs + ONE_DAY_MS,
-  'recovery nonce is outside the HyperCore time window');
-  requireCondition(input.plan.actionExpiryMs > input.nowMs
-    && input.plan.actionExpiryMs > input.nonce,
+  requireCondition(input.plan.actionExpiryMs > nowMs,
   'recovery expiresAfter is stale');
   requireCondition(agentWallet !== input.plan.account.masterAccount
     && agentWallet !== input.plan.account.tradingAccount,
@@ -373,6 +387,16 @@ export function prepareHyperliquidRecoverySubmission(
   const action = structuredClone(plan.unsignedRequestFields.action);
   const key = recoveryKey(plan);
   const lineageKey = recoveryLineageKey(plan);
+  const existing = journal.agents.flatMap((entry) => entry.attempts)
+    .find((record) => record.recoveryAttemptId === recoveryAttemptId);
+  const nonce = existing?.nonce ?? allocateHyperliquidTrustedNonce(
+    nowMs,
+    agent.highestReservedNonce ?? 0n,
+    BigInt(trustedTimeDecision.policy.maximumFutureNonceLeadMs),
+  );
+  requireCondition(nonce >= nowMs - TWO_DAYS_MS && nonce <= nowMs + ONE_DAY_MS,
+    'recovery nonce is outside the HyperCore time window');
+  requireCondition(input.plan.actionExpiryMs > nonce, 'recovery expiresAfter is stale');
   const core: RecordCore = {
     recoveryAttemptId,
     recoveryLineageKey: lineageKey,
@@ -380,7 +404,8 @@ export function prepareHyperliquidRecoverySubmission(
     account: plan.account,
     agentWallet,
     signerLeaseId,
-    nonce: input.nonce,
+    nonce,
+    trustedTimeDecision,
     recoverySequence: plan.recoverySequence,
     expiresAfterMs: plan.actionExpiryMs,
     vaultAddress,
@@ -395,8 +420,6 @@ export function prepareHyperliquidRecoverySubmission(
     plan,
   };
   const commitment = recordHash(core);
-  const existing = journal.agents.flatMap((entry) => entry.attempts)
-    .find((record) => record.recoveryAttemptId === recoveryAttemptId);
   if (existing !== undefined) {
     requireCondition(existing.recordHash === recordHash(existing),
       'journal recovery record was modified');
@@ -409,7 +432,7 @@ export function prepareHyperliquidRecoverySubmission(
   'recovery sequence or client order IDs are already reserved');
   requireCondition(agent.status === 'ACTIVE', 'recovery agent wallet is fenced or retired');
   checkVersion(journal, input.expectedVersion);
-  requireCondition(agent.highestReservedNonce === null || input.nonce > agent.highestReservedNonce,
+  requireCondition(agent.highestReservedNonce === null || nonce > agent.highestReservedNonce,
     'recovery nonce must strictly increase for the agent wallet');
   const lineage = agent.recoveryLineages.find(
     (entry) => entry.recoveryLineageKey === lineageKey,
@@ -442,6 +465,7 @@ export function prepareHyperliquidRecoverySubmission(
     ...core,
     recordHash: commitment,
     status: 'PREPARED',
+    submissionTimeDecision: null,
     durableRevision: null,
     acknowledgementId: null,
     rejectionId: null,
@@ -450,7 +474,7 @@ export function prepareHyperliquidRecoverySubmission(
   });
   return replaceAgent(journal, agentIndex, {
     ...agent,
-    highestReservedNonce: input.nonce,
+    highestReservedNonce: nonce,
     recoveryLineages: Object.freeze([
       ...agent.recoveryLineages.filter((entry) => entry.recoveryLineageKey !== lineageKey),
       Object.freeze({
@@ -506,17 +530,42 @@ function transition(
 
 export function markHyperliquidRecoverySubmittedUnknown(
   journal: HyperliquidRecoverySubmissionJournal,
-  input: Readonly<{ expectedVersion: bigint; recoveryAttemptId: string; nowMs: bigint }>,
+  input: Readonly<{
+    expectedVersion: bigint;
+    recoveryAttemptId: string;
+    trustedTimeDecision: HyperliquidTrustedTimeDecision;
+  }>,
 ): HyperliquidRecoverySubmissionJournal {
-  const { record } = locate(journal, input.recoveryAttemptId);
-  if (record.status !== 'SUBMITTED_UNKNOWN') {
-    requireCondition(input.nowMs > 0n && input.nowMs < record.expiresAfterMs,
-      'recovery expiresAfter is stale before submission');
-    requireCondition(record.nonce >= input.nowMs - TWO_DAYS_MS
-      && record.nonce <= input.nowMs + ONE_DAY_MS,
-    'recovery nonce is outside the HyperCore time window before submission');
+  const located = locate(journal, input.recoveryAttemptId);
+  const decision = structuredClone(requireHyperliquidTrustedTimeDecision(
+    input.trustedTimeDecision,
+    `${located.record.recoveryAttemptId}:submit`,
+  ));
+  if (located.record.status === 'SUBMITTED_UNKNOWN') {
+    requireCondition(located.record.submissionTimeDecision?.decisionHash === decision.decisionHash,
+      'recovery submission replay changed its trusted time decision');
+    return journal;
   }
-  return transition(journal, input, ['DURABLE_RECORD_CONFIRMED'], 'SUBMITTED_UNKNOWN');
+  const nowMs = BigInt(decision.selectedTimeMs);
+  requireCondition(sha256(decision.policy) === sha256(located.record.trustedTimeDecision.policy),
+    'recovery trusted time policy changed before submission');
+  requireCondition(located.record.nonce <= nowMs
+    + BigInt(located.record.trustedTimeDecision.policy.maximumFutureNonceLeadMs),
+  'durable nonce is beyond trusted time policy; fresh agent replacement is required');
+  requireCondition(nowMs < located.record.expiresAfterMs,
+    'recovery expiresAfter is stale before submission');
+  requireCondition(located.record.nonce >= nowMs - TWO_DAYS_MS
+    && located.record.nonce <= nowMs + ONE_DAY_MS,
+  'recovery nonce is outside the HyperCore time window before submission');
+  checkVersion(journal, input.expectedVersion);
+  requireCondition(located.agent.status === 'ACTIVE'
+    && located.record.status === 'DURABLE_RECORD_CONFIRMED',
+  `SUBMITTED_UNKNOWN cannot follow ${located.record.status}`);
+  return replaceRecord(journal, located.agentIndex, located.recordIndex, {
+    ...located.record,
+    status: 'SUBMITTED_UNKNOWN',
+    submissionTimeDecision: decision,
+  });
 }
 
 export function acknowledgeHyperliquidRecoverySubmission(
@@ -654,6 +703,8 @@ export function hyperliquidRecoveryReconciliationHandoff(
     agentWallet: record.agentWallet,
     account: record.account,
     nonce: record.nonce,
+    trustedTimeDecisionHash: record.trustedTimeDecision.decisionHash,
+    submissionTimeDecisionHash: record.submissionTimeDecision?.decisionHash ?? null,
     recoverySequence: record.recoverySequence,
     expiresAfterMs: record.expiresAfterMs,
     vaultAddress: record.vaultAddress,
