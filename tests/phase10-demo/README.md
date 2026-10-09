@@ -7,6 +7,7 @@ The required checks are:
 - the Solana local cash-and-carry entry, atomic rollback, service restart recovery, canonical exit, and private terminal lifecycle;
 - the Base local atomic entry, failed-entry rollback, and receipt-bound exit;
 - the Arbitrum local asynchronous entry, failed-entry rollback, evidence relay, full close, and normalized final receipt.
+- the visibly labeled Hyperliquid local conformance path with batched IOC entry, forced one-leg failure, bounded recovery, and complete exit.
 
 The runner builds the current EVM artifacts first. The Solana scenario uses its existing build command. Every process has a bounded timeout, and the report contains the actual exit code, signal, duration, output hashes, bounded output tails, and Git commit.
 

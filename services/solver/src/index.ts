@@ -903,6 +903,13 @@ export {
   type HyperliquidStrategyTestnetRuntimeOptions,
 } from './hyperliquid-strategy-testnet-runtime.js';
 export {
+  HYPERCORE_LOCAL_CONFORMANCE_EVIDENCE_CLASS,
+  HypercoreLocalConformanceVenue,
+  type HypercoreLocalConformanceRecoveryLeg,
+  type HypercoreLocalConformanceRecoveryReceipt,
+  type HypercoreLocalConformanceSnapshot,
+} from './hypercore-local-conformance.js';
+export {
   AtomicRouteDecisionError,
   planAtomicEntryRoute,
   type AtomicRouteCandidate,

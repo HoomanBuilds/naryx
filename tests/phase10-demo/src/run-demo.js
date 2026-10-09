@@ -37,6 +37,20 @@ const steps = Object.freeze([
     args: ["--prefix", "tests/arbitrum-local", "run", "test:scenario"],
     timeoutMs: 90_000,
   },
+  {
+    id: "hyperliquid-solver-build",
+    title: "Hyperliquid solver and local conformance artifacts",
+    command: "npm",
+    args: ["--prefix", "services/solver", "run", "build"],
+    timeoutMs: 120_000,
+  },
+  {
+    id: "hyperliquid-local-conformance-lifecycle",
+    title: "Hyperliquid local batched IOC, one-leg failure, bounded recovery, and exit",
+    command: "node",
+    args: ["tests/phase10-demo/src/run-hyperliquid-conformance.js"],
+    timeoutMs: 30_000,
+  },
 ]);
 
 const skipped = Object.freeze([
