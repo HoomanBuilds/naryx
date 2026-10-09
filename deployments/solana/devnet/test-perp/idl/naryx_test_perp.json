@@ -719,6 +719,42 @@
       ]
     },
     {
+      "name": "update_oracle_risk_controls",
+      "discriminator": [
+        91,
+        221,
+        141,
+        168,
+        186,
+        129,
+        227,
+        170
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "market"
+          ]
+        },
+        {
+          "name": "market",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "max_price_age_seconds",
+          "type": "u32"
+        },
+        {
+          "name": "max_confidence_bps",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "withdraw",
       "discriminator": [
         183,
@@ -850,6 +886,19 @@
       ]
     },
     {
+      "name": "OracleRiskControlsUpdated",
+      "discriminator": [
+        231,
+        231,
+        90,
+        254,
+        227,
+        212,
+        42,
+        25
+      ]
+    },
+    {
       "name": "OrderFilled",
       "discriminator": [
         120,
@@ -969,61 +1018,66 @@
     },
     {
       "code": 6018,
+      "name": "MarketMustBePaused",
+      "msg": "Market must be paused before oracle risk controls change"
+    },
+    {
+      "code": 6019,
       "name": "PositionLimitExceeded",
       "msg": "Position exceeds the market maximum"
     },
     {
-      "code": 6019,
+      "code": 6020,
       "name": "InsufficientInitialMargin",
       "msg": "Initial margin requirement is not met"
     },
     {
-      "code": 6020,
+      "code": 6021,
       "name": "InsufficientFreeCollateral",
       "msg": "Withdrawal exceeds free collateral"
     },
     {
-      "code": 6021,
+      "code": 6022,
       "name": "InsufficientInsurance",
       "msg": "Insurance vault cannot cover the trader credit"
     },
     {
-      "code": 6022,
+      "code": 6023,
       "name": "NotLiquidatable",
       "msg": "Position is not liquidatable"
     },
     {
-      "code": 6023,
+      "code": 6024,
       "name": "FundingRateOutOfBounds",
       "msg": "Funding rate exceeds the market bound"
     },
     {
-      "code": 6024,
+      "code": 6025,
       "name": "ZeroAmount",
       "msg": "Amount is zero"
     },
     {
-      "code": 6025,
+      "code": 6026,
       "name": "InvalidPositionAccount",
       "msg": "Position account is invalid"
     },
     {
-      "code": 6026,
+      "code": 6027,
       "name": "FaucetLimitExceeded",
       "msg": "Faucet claim exceeds the per-claim or balance limit"
     },
     {
-      "code": 6027,
+      "code": 6028,
       "name": "InvalidFaucetMint",
       "msg": "Mint is not a faucet test collateral mint"
     },
     {
-      "code": 6028,
+      "code": 6029,
       "name": "InvalidResidualIntent",
       "msg": "Netting residual intent hash is zero"
     },
     {
-      "code": 6029,
+      "code": 6030,
       "name": "ResidualFeeExceeded",
       "msg": "Netting residual fee exceeds the signed maximum"
     }
@@ -1268,6 +1322,26 @@
           {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "OracleRiskControlsUpdated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "type": "pubkey"
+          },
+          {
+            "name": "max_price_age_seconds",
+            "type": "u32"
+          },
+          {
+            "name": "max_confidence_bps",
+            "type": "u16"
           }
         ]
       }

@@ -14,10 +14,10 @@ use {
     },
     naryx_test_perp::{
         error::TestPerpError, InitializeMarketArgs, NettingResidualReceipt, OrderSide,
-        PlaceBoundedResidualArgs, PlaceMarketOrderArgs, TestPerpPosition, COLLATERAL_VAULT_SEED,
-        FEE_VAULT_SEED, INSURANCE_VAULT_SEED, MARKET_SEED, NETTING_RESIDUAL_RECEIPT_SEED,
-        POSITION_SEED, PRICE_UPDATE_V2_DISCRIMINATOR, PYTH_RECEIVER_PROGRAM_ID,
-        TEST_COLLATERAL_FAUCET_SEED, TEST_COLLATERAL_MAX_BALANCE_ATOMS,
+        PlaceBoundedResidualArgs, PlaceMarketOrderArgs, TestPerpMarket, TestPerpPosition,
+        COLLATERAL_VAULT_SEED, FEE_VAULT_SEED, INSURANCE_VAULT_SEED, MARKET_SEED,
+        NETTING_RESIDUAL_RECEIPT_SEED, POSITION_SEED, PRICE_UPDATE_V2_DISCRIMINATOR,
+        PYTH_RECEIVER_PROGRAM_ID, TEST_COLLATERAL_FAUCET_SEED, TEST_COLLATERAL_MAX_BALANCE_ATOMS,
         TEST_COLLATERAL_MAX_CLAIM_ATOMS,
     },
     solana_account::Account,
@@ -169,6 +169,11 @@ fn balance(env: &Env, address: Pubkey) -> u64 {
 fn position(env: &Env) -> TestPerpPosition {
     let account = env.svm.get_account(&env.position).unwrap();
     TestPerpPosition::try_deserialize(&mut account.data.as_slice()).unwrap()
+}
+
+fn market(env: &Env) -> TestPerpMarket {
+    let account = env.svm.get_account(&env.market).unwrap();
+    TestPerpMarket::try_deserialize(&mut account.data.as_slice()).unwrap()
 }
 
 fn pda(seeds: &[&[u8]]) -> Pubkey {
@@ -418,6 +423,53 @@ fn set_delegate(env: &mut Env, delegate: Pubkey) {
         naryx_test_perp::instruction::SetDelegate { delegate },
     );
     send(&mut env.svm, &env.trader, &[], &[set]).unwrap();
+}
+
+#[test]
+fn oracle_risk_controls_require_a_paused_market_and_stay_bounded() {
+    let mut env = setup();
+    let update = |env: &Env, max_price_age_seconds, max_confidence_bps| {
+        ix(
+            naryx_test_perp::id(),
+            naryx_test_perp::accounts::UpdateOracleRiskControls {
+                owner: env.owner.pubkey(),
+                market: env.market,
+            },
+            naryx_test_perp::instruction::UpdateOracleRiskControls {
+                max_price_age_seconds,
+                max_confidence_bps,
+            },
+        )
+    };
+    let owner = env.owner.insecure_clone();
+    let update_while_active = update(&env, 300, 50);
+    assert_error(
+        send(&mut env.svm, &owner, &[], &[update_while_active]),
+        TestPerpError::MarketMustBePaused,
+    );
+
+    let pause = ix(
+        naryx_test_perp::id(),
+        naryx_test_perp::accounts::UpdateMarketControls {
+            owner: owner.pubkey(),
+            market: env.market,
+        },
+        naryx_test_perp::instruction::UpdateMarketControls {
+            pause_opens: true,
+            funding_keeper: env.keeper.pubkey(),
+        },
+    );
+    send(&mut env.svm, &owner, &[], &[pause]).unwrap();
+    let update_out_of_bounds = update(&env, 301, 50);
+    assert_error(
+        send(&mut env.svm, &owner, &[], &[update_out_of_bounds]),
+        TestPerpError::InvalidMarketParameters,
+    );
+    let update_valid = update(&env, 300, 50);
+    send(&mut env.svm, &owner, &[], &[update_valid]).unwrap();
+    let market = market(&env);
+    assert_eq!(market.max_price_age_seconds, 300);
+    assert_eq!(market.max_confidence_bps, 50);
 }
 
 #[test]

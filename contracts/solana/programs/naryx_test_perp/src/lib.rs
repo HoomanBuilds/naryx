@@ -79,4 +79,12 @@ pub mod naryx_test_perp {
     ) -> Result<()> {
         admin::update_market_controls_handler(ctx, pause_opens, funding_keeper)
     }
+
+    pub fn update_oracle_risk_controls(
+        ctx: Context<UpdateOracleRiskControls>,
+        max_price_age_seconds: u32,
+        max_confidence_bps: u16,
+    ) -> Result<()> {
+        admin::update_oracle_risk_controls_handler(ctx, max_price_age_seconds, max_confidence_bps)
+    }
 }

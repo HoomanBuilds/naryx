@@ -84,7 +84,7 @@ export const RECOMMENDED_TEST_PERP = Object.freeze({
   initialMarginBps: 1_000,
   maintenanceMarginBps: 500,
   liquidationPenaltyBps: 100,
-  maxPriceAgeSeconds: 60,
+  maxPriceAgeSeconds: 300,
   maxConfidenceBps: 50,
   maxPositionLots: 1_000_000n,
   maxFundingRatePerSecond: 10_000n,

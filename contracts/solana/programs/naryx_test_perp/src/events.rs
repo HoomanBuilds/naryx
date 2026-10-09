@@ -51,3 +51,10 @@ pub struct FundingRateSet {
     pub funding_rate_per_second: i64,
     pub cumulative_funding_index: i128,
 }
+
+#[event]
+pub struct OracleRiskControlsUpdated {
+    pub market: Pubkey,
+    pub max_price_age_seconds: u32,
+    pub max_confidence_bps: u16,
+}

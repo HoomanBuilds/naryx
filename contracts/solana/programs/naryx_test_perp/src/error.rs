@@ -38,6 +38,8 @@ pub enum TestPerpError {
     ReduceOnlyViolation,
     #[msg("Market is paused for opening exposure")]
     OpensPaused,
+    #[msg("Market must be paused before oracle risk controls change")]
+    MarketMustBePaused,
     #[msg("Position exceeds the market maximum")]
     PositionLimitExceeded,
     #[msg("Initial margin requirement is not met")]

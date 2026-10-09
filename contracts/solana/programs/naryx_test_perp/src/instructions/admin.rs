@@ -1,8 +1,12 @@
 use anchor_lang::prelude::*;
 
 use crate::{
-    engine::accrue_funding, error::TestPerpError, events::FundingRateSet,
-    oracle::oracle_price_per_lot, TestPerpMarket,
+    constants::{MAX_CONFIDENCE_BPS, MAX_PRICE_AGE_SECONDS},
+    engine::accrue_funding,
+    error::TestPerpError,
+    events::{FundingRateSet, OracleRiskControlsUpdated},
+    oracle::oracle_price_per_lot,
+    TestPerpMarket,
 };
 
 #[derive(Accounts)]
@@ -56,5 +60,36 @@ pub fn update_market_controls_handler(
     let market = &mut ctx.accounts.market;
     market.pause_opens = pause_opens;
     market.funding_keeper = funding_keeper;
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct UpdateOracleRiskControls<'info> {
+    pub owner: Signer<'info>,
+    #[account(mut, has_one = owner @ TestPerpError::Unauthorized)]
+    pub market: Box<Account<'info, TestPerpMarket>>,
+}
+
+pub fn update_oracle_risk_controls_handler(
+    ctx: Context<UpdateOracleRiskControls>,
+    max_price_age_seconds: u32,
+    max_confidence_bps: u16,
+) -> Result<()> {
+    let market = &mut ctx.accounts.market;
+    require!(market.pause_opens, TestPerpError::MarketMustBePaused);
+    require!(
+        max_price_age_seconds > 0
+            && max_price_age_seconds <= MAX_PRICE_AGE_SECONDS
+            && max_confidence_bps > 0
+            && max_confidence_bps <= MAX_CONFIDENCE_BPS,
+        TestPerpError::InvalidMarketParameters
+    );
+    market.max_price_age_seconds = max_price_age_seconds;
+    market.max_confidence_bps = max_confidence_bps;
+    emit!(OracleRiskControlsUpdated {
+        market: market.key(),
+        max_price_age_seconds,
+        max_confidence_bps,
+    });
     Ok(())
 }
