@@ -394,13 +394,13 @@ export class HyperliquidTestnetAuthorityPreflight {
     try {
       requireCondition(this.#store.state() === 'ACTIVE' || this.#store.state() === 'INITIALIZING',
         'durable authority fence blocks new submissions');
-      const nowMs = this.#currentTimeMs();
-      requireCondition(Number.isSafeInteger(nowMs) && nowMs > 0, 'trusted clock is invalid');
       const snapshot = await this.#reader.read(
         this.#config.account,
         this.#config.approvedAgent,
         this.#config.allowedPerpetualCoins,
       );
+      const nowMs = this.#currentTimeMs();
+      requireCondition(Number.isSafeInteger(nowMs) && nowMs > 0, 'trusted clock is invalid');
       this.#validateSnapshot(snapshot, requiredUntilMs, nowMs);
       requireCondition(this.#store.activate() === 'ACTIVE',
         'durable authority fence is not active');
@@ -497,12 +497,15 @@ export class HyperliquidTestnetAuthorityPreflight {
         === this.#config.account.masterAccount,
     'agent role does not bind to the configured master');
 
-    requireCondition(snapshot.spotState.portfolioMarginEnabled
+    requireCondition((snapshot.spotState.portfolioMarginEnabled === true)
       === this.#config.expectedPortfolioMarginEnabled,
     'portfolio margin mode does not match the configured account mode');
     // V1 runs in Standard mode (abstraction disabled) with spot and perp ledgers funded
     // separately; unified accounts share collateral in ways v1 accounting does not model.
-    requireCondition(snapshot.abstraction === (this.#config.expectedPortfolioMarginEnabled ? 'portfolioMargin' : 'disabled'),
+    const expectedAccountMode = this.#config.expectedPortfolioMarginEnabled
+      ? snapshot.abstraction === 'portfolioMargin'
+      : snapshot.abstraction === 'disabled' || snapshot.abstraction === 'default';
+    requireCondition(expectedAccountMode,
       `account abstraction ${String(snapshot.abstraction)} is not the configured account mode`);
     requireCondition(snapshot.dexAbstraction !== true,
       'legacy HIP-3 DEX abstraction is outside the configured Standard account mode');

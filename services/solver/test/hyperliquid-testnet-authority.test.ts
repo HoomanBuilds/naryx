@@ -178,8 +178,44 @@ test('activates INITIALIZING only for the exact authority inventory', async () =
   });
 });
 
-test('a unified or default abstraction account never qualifies', async () => {
-  for (const abstraction of ['unifiedAccount', 'default', 'portfolioMargin'] as const) {
+test('accepts the Testnet default Standard account label', async () => {
+  await withStore(async (store) => {
+    const standardSnapshot = snapshot();
+    const { portfolioMarginEnabled: _portfolioMarginEnabled, ...spotState } =
+      standardSnapshot.spotState;
+    const preflight = new HyperliquidTestnetAuthorityPreflight(
+      reader({
+        ...standardSnapshot,
+        abstraction: 'default',
+        spotState,
+      }), store, config, () => nowMs,
+    );
+    await preflight.qualify(admission());
+    assert.equal(store.state(), 'ACTIVE');
+  });
+});
+
+test('samples trusted time after the authority inventory read', async () => {
+  await withStore(async (store) => {
+    let currentTime = nowMs - 20;
+    const liveShapedReader: HyperliquidTestnetAuthorityReadPort = {
+      environment: 'testnet',
+      apiUrl: TESTNET_API_URL,
+      async read() {
+        currentTime = nowMs;
+        return snapshot();
+      },
+    };
+    const preflight = new HyperliquidTestnetAuthorityPreflight(
+      liveShapedReader, store, config, () => currentTime,
+    );
+    await preflight.qualify(admission());
+    assert.equal(store.state(), 'ACTIVE');
+  });
+});
+
+test('a unified or portfolio-margin account never qualifies as Standard', async () => {
+  for (const abstraction of ['unifiedAccount', 'portfolioMargin'] as const) {
     await withStore(async (store) => {
       await assert.rejects(
         new HyperliquidTestnetAuthorityPreflight(reader({ ...snapshot(), abstraction }), store, config, () => nowMs).qualify(admission()),
