@@ -1,19 +1,20 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { NettingPolicyManifestInput } from "@naryx/protocol-types";
+import {
+  nettingPolicyManifestHash,
+  toHex,
+  type NettingPolicyManifestInput,
+} from "@naryx/protocol-types";
 import {
   AuthoritativeNettingError,
-  type PrepareAuthoritativeNettingBatchInput,
-  type PrepareAuthoritativeNettingBatchResult,
+  type PrepareNextAuthoritativeNettingBatchResult,
 } from "./authoritative-netting.js";
 import { internalCaller, readInternalBody, sendError, sendJson } from "./internal-http.js";
 import { PackageExchangeStoreError } from "./package-exchange-store.js";
 
-const HASH = /^[0-9a-f]{64}$/;
-
 export interface NettingBatchAdminOptions {
-  readonly prepare: (
-    input: PrepareAuthoritativeNettingBatchInput,
-  ) => Promise<PrepareAuthoritativeNettingBatchResult>;
+  readonly prepareNext: (
+    policy: NettingPolicyManifestInput,
+  ) => Promise<PrepareNextAuthoritativeNettingBatchResult>;
 }
 
 function exactKeys(body: Record<string, unknown>, expected: readonly string[]): boolean {
@@ -47,7 +48,7 @@ export function createNettingBatchAdminHandler(
 ): (request: IncomingMessage, response: ServerResponse) => boolean {
   return (request, response) => {
     const url = new URL(request.url ?? "/", "http://internal.local");
-    if (url.pathname !== "/internal/netting/batches/prepare") return false;
+    if (url.pathname !== "/internal/netting/batches/prepare-next") return false;
     if (!internalCaller(request)) {
       return sendError(response, 403, "FORBIDDEN", "Netting batch preparation answers loopback callers only.");
     }
@@ -57,18 +58,22 @@ export function createNettingBatchAdminHandler(
       return sendError(response, 415, "INVALID_CONTENT_TYPE", "Content-Type must be application/json.");
     }
     readInternalBody(request, response, (body) => {
-      if (!exactKeys(body, ["packageOrderIds", "policy"])
-        || !Array.isArray(body.packageOrderIds) || body.packageOrderIds.length === 0
-        || body.packageOrderIds.some((value) => typeof value !== "string" || !HASH.test(value))
+      if (!exactKeys(body, ["policy"])
         || typeof body.policy !== "object" || body.policy === null || Array.isArray(body.policy)) {
-        sendError(response, 400, "INVALID_REQUEST", "Preparation requires package order ids and one netting policy.");
+        sendError(response, 400, "INVALID_REQUEST", "Preparation requires one netting policy.");
         return;
       }
-      void options.prepare({
-        packageOrderIds: body.packageOrderIds as string[],
-        policy: body.policy as NettingPolicyManifestInput,
-      }).then(
-        (result) => sendJson(response, 200, { version: 1, ...result }),
+      void options.prepareNext(body.policy as NettingPolicyManifestInput).then(
+        (result) => result.status === "IDLE"
+          ? sendJson(response, 200, { version: 1, status: "IDLE" })
+          : sendJson(response, 200, {
+              version: 1,
+              status: "PREPARED",
+              proofHashHex: result.batch.proofHashHex,
+              policyHashHex: toHex(nettingPolicyManifestHash(result.batch.policy)),
+              packageOrderIds: result.batch.packages.map((entry) => entry.packageOrderIdHex),
+              replayed: result.replayed,
+            }),
         (error: unknown) => rejected(response, error),
       );
     });

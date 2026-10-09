@@ -287,6 +287,7 @@ export {
   type PackageSettlementAuthorizationScheme,
   type PackageSettlementAuthorizationEvidenceInput,
   type PackageSettlementAuthorizationEvidence,
+  type AuthorizedNettingCandidate,
   type PreparedNettingBatchPackage,
   type PreparedNettingBatch,
   type PreparedNettingBatchRecordInput,
@@ -299,10 +300,12 @@ export {
 export {
   AuthoritativeNettingError,
   prepareAuthoritativeNettingBatch,
+  prepareNextAuthoritativeNettingBatch,
   type AuthoritativeNettingExchangePort,
   type AuthoritativeNettingStrategyPort,
   type PrepareAuthoritativeNettingBatchInput,
   type PrepareAuthoritativeNettingBatchResult,
+  type PrepareNextAuthoritativeNettingBatchResult,
 } from "./authoritative-netting.js";
 export {
   createPackageReopeningAdminHandler,

@@ -21,6 +21,7 @@ import {
   verifyEvmPackageSettlementAuthorization,
 } from "./package-book-authorization.js";
 import type {
+  AuthorizedNettingCandidate,
   PackageSettlementAuthorizationEvidence,
   PreparedNettingBatch,
   SqlitePackageExchangeStore,
@@ -42,6 +43,7 @@ export interface AuthoritativeNettingExchangePort extends Pick<
   | "settlementCommitment"
   | "settlementAuthorization"
   | "settlementProgress"
+  | "authorizedNettingCandidates"
   | "recordPreparedNettingBatch"
   | "nettingBatch"
 > {}
@@ -58,6 +60,14 @@ export interface PrepareAuthoritativeNettingBatchResult {
   readonly replayed: boolean;
 }
 
+export type PrepareNextAuthoritativeNettingBatchResult =
+  | Readonly<{ status: "IDLE" }>
+  | Readonly<{
+      status: "PREPARED";
+      batch: PreparedNettingBatch;
+      replayed: boolean;
+    }>;
+
 function fail(code: string, message: string): never {
   throw new AuthoritativeNettingError(code, message);
 }
@@ -66,6 +76,87 @@ function sameAsset(left: AssetRef, right: AssetRef): boolean {
   return left.assetId === right.assetId
     && left.decimals === right.decimals
     && bytesEqual(left.assetManifestHash, right.assetManifestHash);
+}
+
+function candidateGraph(
+  candidate: AuthorizedNettingCandidate,
+  strategies: AuthoritativeNettingStrategyPort,
+  policy: ReturnType<typeof nettingPolicyManifest>,
+  policyHash: Uint8Array,
+): ReturnType<typeof packageGraph> | undefined {
+  const stored = strategies.order(candidate.strategyOrderHashHex);
+  if (stored === undefined) return undefined;
+  const graph = packageGraph(stored.graph, `authoritativeNetting.candidate.${candidate.packageOrderIdHex}`);
+  const order = stored.order;
+  if (
+    order.environment !== policy.environment
+    || order.executionClassId !== policy.executionClassId
+    || order.executionClassVersion !== policy.executionClassVersion
+    || !bytesEqual(order.executionClassManifestHash, policy.executionClassManifestHash)
+    || order.settlementClass !== policy.settlementClass
+    || graph.environment !== policy.environment
+    || graph.executionClassId !== policy.executionClassId
+    || graph.executionClassVersion !== policy.executionClassVersion
+    || !bytesEqual(graph.executionClassManifestHash, policy.executionClassManifestHash)
+    || graph.settlementClass !== policy.settlementClass
+    || !bytesEqual(graph.policyHashes.netting, policyHash)
+  ) return undefined;
+  return graph;
+}
+
+/**
+ * Closes the oldest deterministic policy cohort only after its signed window has elapsed or its
+ * obligation capacity is full. The selected package ids are then revalidated by the authoritative
+ * preparation path before any durable batch assignment is recorded.
+ */
+export async function prepareNextAuthoritativeNettingBatch(
+  exchange: AuthoritativeNettingExchangePort,
+  strategies: AuthoritativeNettingStrategyPort,
+  policyInput: NettingPolicyManifestInput,
+  nowMs: number,
+): Promise<PrepareNextAuthoritativeNettingBatchResult> {
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) fail("INVALID_CLOCK", "Netting batch clock is invalid.");
+  const policy = nettingPolicyManifest(policyInput, "authoritativeNetting.policy");
+  const policyHash = nettingPolicyManifestHash(policy);
+  const selected: AuthorizedNettingCandidate[] = [];
+  let obligations = 0;
+  let capacityReached = false;
+  let earliestAuthorization: number | undefined;
+
+  for (const candidate of exchange.authorizedNettingCandidates(policy.executionClassId)) {
+    const graph = candidateGraph(candidate, strategies, policy, policyHash);
+    if (graph === undefined) continue;
+    const progress = exchange.settlementProgress(candidate.packageOrderIdHex);
+    if (progress?.readiness.status !== "READY_FOR_OWNER_AUTHORIZATION" || progress.obligations.length === 0) {
+      continue;
+    }
+    const candidateObligations = graph.legs.filter((leg) => leg.side !== "NONE").length;
+    if (candidateObligations === 0) continue;
+    if (candidateObligations > policy.maximumObligations) {
+      fail("PACKAGE_EXCEEDS_POLICY", `Package ${candidate.packageOrderIdHex} exceeds the netting policy capacity.`);
+    }
+    if (earliestAuthorization === undefined) earliestAuthorization = candidate.authorizedAtMs;
+    if (BigInt(candidate.authorizedAtMs - earliestAuthorization) > policy.maximumBatchWindowMilliseconds) break;
+    if (obligations + candidateObligations > policy.maximumObligations) {
+      capacityReached = true;
+      break;
+    }
+    selected.push(candidate);
+    obligations += candidateObligations;
+    if (obligations === policy.maximumObligations) {
+      capacityReached = true;
+      break;
+    }
+  }
+
+  if (selected.length === 0 || earliestAuthorization === undefined) return Object.freeze({ status: "IDLE" });
+  const windowClosed = BigInt(nowMs) >= BigInt(earliestAuthorization) + policy.maximumBatchWindowMilliseconds;
+  if (!capacityReached && !windowClosed) return Object.freeze({ status: "IDLE" });
+  const prepared = await prepareAuthoritativeNettingBatch(exchange, strategies, {
+    packageOrderIds: selected.map((candidate) => candidate.packageOrderIdHex),
+    policy,
+  });
+  return Object.freeze({ status: "PREPARED", ...prepared });
 }
 
 function priceTicks(

@@ -231,6 +231,12 @@ export interface PackageSettlementAuthorizationEvidence extends PackageSettlemen
   readonly authorizedAtMs: number;
 }
 
+export interface AuthorizedNettingCandidate {
+  readonly packageOrderIdHex: string;
+  readonly strategyOrderHashHex: string;
+  readonly authorizedAtMs: number;
+}
+
 export interface PreparedNettingBatchPackage {
   readonly packageOrderIdHex: string;
   readonly strategyOrderHashHex: string;
@@ -1842,6 +1848,34 @@ export class SqlitePackageExchangeStore {
       ...evidence,
       authorizedAtMs,
     });
+  }
+
+  authorizedNettingCandidates(executionClassId: string): readonly AuthorizedNettingCandidate[] {
+    const rows = this.db.prepare(`
+      SELECT c.package_order_id, c.strategy_order_hash, a.authorized_at_ms
+      FROM package_book_settlement_commitments c
+      JOIN package_book_settlement_authorizations a
+        ON a.package_order_id = c.package_order_id
+      LEFT JOIN netting_batch_packages n
+        ON n.package_order_id = c.package_order_id
+      WHERE c.execution_class_id = ? AND n.package_order_id IS NULL
+      ORDER BY a.authorized_at_ms, c.package_order_id
+    `).all(executionClassId) as {
+      package_order_id: unknown;
+      strategy_order_hash: unknown;
+      authorized_at_ms: unknown;
+    }[];
+    return Object.freeze(rows.map((row) => {
+      const authorizedAtMs = row.authorized_at_ms;
+      if (typeof authorizedAtMs !== "number" || !Number.isSafeInteger(authorizedAtMs) || authorizedAtMs < 0) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored settlement authorization time is invalid.");
+      }
+      return Object.freeze({
+        packageOrderIdHex: toHex(hashBytes(row.package_order_id, "package_order_id")),
+        strategyOrderHashHex: toHex(hashBytes(row.strategy_order_hash, "strategy_order_hash")),
+        authorizedAtMs,
+      });
+    }));
   }
 
   recordPreparedNettingBatch(input: PreparedNettingBatchRecordInput): { readonly batch: PreparedNettingBatch; readonly replayed: boolean } {

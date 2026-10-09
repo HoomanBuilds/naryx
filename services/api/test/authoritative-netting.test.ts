@@ -25,6 +25,7 @@ import {
 } from "@naryx/protocol-types";
 import {
   prepareAuthoritativeNettingBatch,
+  prepareNextAuthoritativeNettingBatch,
   type AuthoritativeNettingExchangePort,
   type AuthoritativeNettingStrategyPort,
   type PackageSettlementAuthorizationEvidence,
@@ -260,6 +261,11 @@ test("authoritative netting derives opposite package legs from signed durable st
   const byOrder = new Map(records.map((record) => [toHex(record.orderHash), record]));
   let recorded = false;
   const exchange: AuthoritativeNettingExchangePort = {
+    authorizedNettingCandidates: () => records.map((record) => ({
+      packageOrderIdHex: record.packageOrderId,
+      strategyOrderHashHex: toHex(record.orderHash),
+      authorizedAtMs: record.authorization.authorizedAtMs,
+    })),
     settlementCommitment: (packageOrderId) => byPackage.get(toHex(commitmentHash(packageOrderId)))?.commitment,
     settlementAuthorization: (packageOrderId) => byPackage.get(toHex(commitmentHash(packageOrderId)))?.authorization,
     settlementProgress: (packageOrderId) => byPackage.get(toHex(commitmentHash(packageOrderId)))?.progress,
@@ -309,4 +315,11 @@ test("authoritative netting derives opposite package legs from signed durable st
     prepared.batch.result.underlyings.map((entry) => [entry.instrumentId, entry.internalClearingPriceTicks, entry.internalQuoteAtoms]),
     [["sol-perp", 10n, 10n], ["sol-spot", 10n, 10n]],
   );
+  assert.deepEqual(
+    await prepareNextAuthoritativeNettingBatch(exchange, strategies, policyInput, 1_999),
+    { status: "IDLE" },
+  );
+  const next = await prepareNextAuthoritativeNettingBatch(exchange, strategies, policyInput, 2_000);
+  assert.equal(next.status, "PREPARED");
+  if (next.status === "PREPARED") assert.equal(next.batch.packages.length, 2);
 });

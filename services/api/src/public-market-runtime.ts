@@ -55,7 +55,7 @@ import {
 } from "./netting-allocation-settlement-coordinator.js";
 import { createNettingAllocationAdminHandler } from "./netting-allocation-admin.js";
 import { createNettingBatchAdminHandler } from "./netting-batch-admin.js";
-import { prepareAuthoritativeNettingBatch } from "./authoritative-netting.js";
+import { prepareNextAuthoritativeNettingBatch } from "./authoritative-netting.js";
 import {
   createViemBaseSepoliaReadClient,
   loadBaseSepoliaRuntimeManifest,
@@ -686,7 +686,12 @@ export function loadPublicMarketRuntime(
     const internalHandlers = [
       createPackageReopeningAdminHandler({ exchange: store, nowValue }),
       ...(strategyPackages === undefined ? [] : [createNettingBatchAdminHandler({
-        prepare: (input) => prepareAuthoritativeNettingBatch(store, strategyPackages, input),
+        prepareNext: (policy) => prepareNextAuthoritativeNettingBatch(
+          store,
+          strategyPackages,
+          policy,
+          clockMs(),
+        ),
       })]),
       createCrossBatchClearingAdminHandler({
         exchange: store,
