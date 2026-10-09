@@ -14,6 +14,7 @@ import {
   stressPortfolio,
   packageGraphHash,
   simulatePackageGraphFailures,
+  optimizePortfolio,
   positionSnapshotRecord,
   positionSnapshotRecordHash,
   marketCatalogueHash,
@@ -62,6 +63,8 @@ import {
   type PackageGraphInput,
   type PackageReceiptInput,
   type PrivateRfqEnvelopeInput,
+  type PortfolioOptimizationCandidateInput,
+  type PortfolioOptimizationPolicyInput,
   type QualificationRecordInput,
   type RoutePayloadInput,
   type SolverCapabilityManifestInput,
@@ -710,13 +713,23 @@ describe('order intake and terminal evidence', () => {
     };
     const signed = { ...unsigned, signature: new Uint8Array(sign(null, positionSnapshotRecordHash(unsigned), privateKey)) };
     const normalized = positionSnapshotRecord(signed);
-    const positionsBody = (record = signed) => ({
-      strategyAccount: 'strategy-1',
-      label: 'OBSERVED',
-      sources: [{ sourceId: record.sourceId, recordHash: toHex(positionSnapshotRecordHash(record)), observedAtMs: record.observedAtMs, ageMs: 500n, positionCount: 1, unmappedInstruments: [] }],
-      records: [record],
-      positions: record.positions.map((entry) => ({ sourceId: record.sourceId, position: entry })),
-    });
+    const positionsBody = (record = signed) => {
+      const normalizedRecord = positionSnapshotRecord(record);
+      return {
+        strategyAccount: 'strategy-1',
+        label: 'OBSERVED',
+        sources: [{
+          sourceId: normalizedRecord.sourceId,
+          recordHash: toHex(positionSnapshotRecordHash(normalizedRecord)),
+          observedAtMs: normalizedRecord.observedAtMs,
+          ageMs: 500n,
+          positionCount: normalizedRecord.positions.length,
+          unmappedInstruments: normalizedRecord.unmappedInstruments,
+        }],
+        records: [normalizedRecord],
+        positions: normalizedRecord.positions.map((entry) => ({ sourceId: normalizedRecord.sourceId, position: entry })),
+      };
+    };
     const scenarios = [
       { scenarioId: 'uniform-down-10pct', priceShocksBps: [{ underlyingId: 'btc', shockBps: -1_000n }], closeCostMultiplierBps: 15_000n, failedDependencyIds: [] },
       { scenarioId: 'uniform-up-10pct', priceShocksBps: [{ underlyingId: 'btc', shockBps: 1_000n }], closeCostMultiplierBps: 15_000n, failedDependencyIds: [] },
@@ -735,13 +748,221 @@ describe('order intake and terminal evidence', () => {
     await assert.rejects(reader(positionsBody()).getPositions('strategy-1', { trustedAuthorities: new Map([['position-key-1', new Uint8Array(32).fill(9)]]) }), /does not verify/);
     // A position altered after signing no longer matches its served hash.
     const altered = positionsBody();
-    altered.records = [{ ...signed, positions: [{ ...position, quantityBaseAtoms: -1n }] }];
+    altered.records = [{ ...normalized, positions: [{ ...normalized.positions[0]!, quantityBaseAtoms: -1n }] }];
     await assert.rejects(reader(altered).getPositions('strategy-1'), /does not describe its record/);
     const risk = await reader(positionsBody()).getRisk('strategy-1', { trustedAuthorities: trust });
     assert.equal(risk.byAccountingAsset.length, 1);
+    const riskDomainBody = (positionsInDomain = 1) => ({
+      riskDomainId: 'btc-carry',
+      label: 'OBSERVED',
+      accounts: [{
+        strategyAccount: 'strategy-1',
+        sourceId: signed.sourceId,
+        recordHash: toHex(positionSnapshotRecordHash(signed)),
+        observedAtMs: signed.observedAtMs,
+        ageMs: 500n,
+        positionCount: signed.positions.length,
+        unmappedInstruments: [],
+        positionsInDomain,
+      }],
+      methodology: 'uniform shocks',
+      byAccountingAsset: riskBody().byAccountingAsset,
+    });
+    const riskDomainClient = (body: unknown) => client({
+      'GET /v1/risk-domains/btc-carry': { body },
+      'GET /v1/positions/strategy-1': { body: positionsBody() },
+    });
+    const riskDomain = await riskDomainClient(riskDomainBody()).getRiskDomain('btc-carry', { trustedAuthorities: trust });
+    assert.equal(riskDomain.accounts[0]?.source.signatureVerified, true);
+    assert.equal(riskDomain.byAccountingAsset.length, 1);
+    await assert.rejects(riskDomainClient(riskDomainBody(0)).getRiskDomain('btc-carry'), /domain position count is inconsistent/);
     const inflated = { ...buildExposureGraph(normalized.positions, usdc), byUnderlying: [] };
     await assert.rejects(reader(positionsBody(), riskBody(inflated)).getRisk('strategy-1'), /differs from the local computation/);
     await assert.rejects(reader(positionsBody(), riskBody(undefined, [{ ...stress[0], lossQuoteAtoms: 0n }, stress[1]])).getRisk('strategy-1'), /stress differs from the local computation/);
+  });
+
+  test('portfolio optimization is replayed over current signed position and collateral snapshots', async () => {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const trustedKey = new Uint8Array((publicKey.export({ format: 'der', type: 'spki' }) as Buffer).subarray(-32));
+    const btc = assetRef('btc', '44'.repeat(32), 8);
+    const closeRoute = (routeId: string, dependencyId: string) => ({
+      routeId,
+      executableQuantityAtoms: 50_000_000n,
+      expectedCostQuoteAtoms: 15_000_000n,
+      settlementDelayMs: 1_000n,
+      authorityHeld: true,
+      atomicGroupId: 'carry-unwind',
+      requiredDependencyIds: [dependencyId],
+    });
+    const position = (input: { snapshotId: string; venueId: string; marketId: string; positionType: 'SPOT' | 'PERPETUAL'; quantityBaseAtoms: bigint; dependencyId: string }) => ({
+      adapterVersion: 1,
+      snapshotId: input.snapshotId,
+      domain,
+      observedAtMs: 1_000n,
+      owner: 'strategy-1',
+      venueId: input.venueId,
+      marketId: input.marketId,
+      underlyingId: 'btc',
+      positionType: input.positionType,
+      quantityBaseAtoms: input.quantityBaseAtoms,
+      markPrice: { baseAsset: btc, quoteAsset: usdc, quoteAtoms: 600n, baseAtoms: 1n, roundingDirection: 'AWAY_FROM_ZERO' as const },
+      collateralQuoteAtoms: 3_000_000_000n,
+      maintenanceRequirementQuoteAtoms: 750_000_000n,
+      dependencyIds: [input.dependencyId],
+      riskDomainId: 'btc-carry',
+      closeRoutes: [closeRoute(`close-${input.snapshotId}`, input.dependencyId)],
+    });
+    const positionUnsigned = {
+      recordVersion: 1,
+      environment: 'testnet',
+      strategyAccount: 'strategy-1',
+      sourceId: 'carry-sources',
+      observedAtMs: 1_500n,
+      positions: [
+        position({ snapshotId: 'spot-btc', venueId: 'spot-venue', marketId: 'btc-usdc', positionType: 'SPOT', quantityBaseAtoms: 50_000_000n, dependencyId: 'venue:spot' }),
+        position({ snapshotId: 'perp-btc', venueId: 'perp-venue', marketId: 'btc-perp', positionType: 'PERPETUAL', quantityBaseAtoms: -50_000_000n, dependencyId: 'venue:perp' }),
+      ],
+      unmappedInstruments: [],
+      sourceEvidenceHash: '45'.repeat(32),
+      authority: 'snapshot-key-1',
+      signature: new Uint8Array(0),
+    };
+    const positionSigned = {
+      ...positionUnsigned,
+      signature: new Uint8Array(sign(null, positionSnapshotRecordHash(positionUnsigned), privateKey)),
+    };
+    const positionHash = toHex(positionSnapshotRecordHash(positionSigned));
+    const collateralUnsigned = {
+      version: 2,
+      environment: 'testnet',
+      snapshotId: 'collateral-1',
+      sourceId: 'collateral-source',
+      strategyAccount: 'strategy-1',
+      owner: 'trader',
+      authority: 'snapshot-key-1',
+      observedAtMs: 1_600n,
+      asset: usdc,
+      riskDomainId: 'btc-carry',
+      mode: 'ISOLATED' as const,
+      ownAvailableQuoteAtoms: 20_000_000_000n,
+      borrowAvailableQuoteAtoms: 0n,
+      requestedBorrowQuoteAtoms: 0n,
+      borrowCostQuoteAtoms: 0n,
+      haircutBps: 0n,
+      withdrawalDelayMs: 0n,
+      inventoryEligible: true,
+      withdrawalAllowed: true,
+      sourceEvidenceHash: '46'.repeat(32),
+      signature: new Uint8Array([1]),
+    };
+    const collateralSigned = {
+      ...collateralUnsigned,
+      signature: new Uint8Array(sign(null, collateralSnapshotHash(collateralUnsigned), privateKey)),
+    };
+    const collateralHash = toHex(collateralSnapshotHash(collateralSigned));
+    const policy: PortfolioOptimizationPolicyInput = {
+      version: 1,
+      policyId: 'carry-policy',
+      policyVersion: 1,
+      environment: 'testnet',
+      owner: 'trader',
+      accountingAsset: usdc,
+      allowedSnapshotAuthorities: ['snapshot-key-1'],
+      allowedCollateralAssetIds: [usdc.assetId],
+      allowedCollateralModes: ['ISOLATED'],
+      allowedRiskDomainIds: ['btc-carry'],
+      objectivePriority: ['MAXIMIZE_NET_OUTCOME', 'MINIMIZE_REQUIRED_COLLATERAL', 'MINIMIZE_STRESS_LOSS', 'MINIMIZE_TIME_TO_UNWIND', 'MINIMIZE_TOTAL_COST'],
+      maximumStateAgeMs: 5_000n,
+      maximumSourceSkewMs: 5_000n,
+      maximumWithdrawalDelayMs: 5_000n,
+      maximumTimeToUnwindMs: 5_000n,
+      maximumStressLossQuoteAtoms: 100_000_000_000n,
+      maximumRequiredCollateralQuoteAtoms: 100_000_000_000n,
+      maximumTotalCostQuoteAtoms: 100_000_000_000n,
+      maximumBorrowQuoteAtoms: 0n,
+      maximumBorrowCostQuoteAtoms: 0n,
+      maximumSolverConcentrationBps: 5_000n,
+      minimumRecoveryReserveQuoteAtoms: 1_000n,
+      allowBorrow: false,
+    };
+    const proposal = {
+      candidateId: 'carry-a',
+      positionSnapshotHash: positionHash,
+      collateralSnapshotHash: collateralHash,
+      routeHash: '50'.repeat(32),
+      executionGraphHash: '51'.repeat(32),
+      unwindRouteHash: '52'.repeat(32),
+      solverId: 'solver-a',
+      solverConcentrationBps: 1_000n,
+      expectedGrossOutcomeQuoteAtoms: 100_000_000n,
+      expectedFeesQuoteAtoms: 5_000_000n,
+      expectedGasQuoteAtoms: 1_000_000n,
+      expectedFundingCostQuoteAtoms: 5_000_000n,
+      expectedRebatesQuoteAtoms: 0n,
+      marginOffsetPolicy: {
+        riskDomainId: 'btc-carry',
+        offsetRateBps: 5_000n,
+        haircutsBps: { basis: 0n, liquidity: 0n, latency: 0n, oracle: 0n, venue: 0n, bridge: 0n, issuer: 0n, recovery: 0n },
+        maximumStalenessMs: 5_000n,
+        maximumTimeToUnwindMs: 5_000n,
+        riskDomainGrossCapQuoteAtoms: 100_000_000_000n,
+        requiredRecoveryReserveQuoteAtoms: 1_000n,
+        absoluteFloorQuoteAtoms: 100_000_000n,
+      },
+      marginOffsetContext: { reservedRecoveryQuoteAtoms: 1_000n, fundedCreditAvailable: true, failedDependencyIds: [] },
+      stressScenarios: [
+        { scenarioId: 'down-10pct', priceShocksBps: [{ underlyingId: 'btc', shockBps: -1_000n }], closeCostMultiplierBps: 15_000n, failedDependencyIds: [] },
+        { scenarioId: 'up-10pct', priceShocksBps: [{ underlyingId: 'btc', shockBps: 1_000n }], closeCostMultiplierBps: 15_000n, failedDependencyIds: [] },
+      ],
+    };
+    const decisionAtMs = 2_000n;
+    const optimizerInput: PortfolioOptimizationCandidateInput = {
+      ...proposal,
+      active: true,
+      authorityVerified: true,
+      positionSnapshot: positionSigned,
+      collateralSnapshot: collateralSigned,
+      marginOffsetContext: { ...proposal.marginOffsetContext, nowMs: decisionAtMs },
+    };
+    const decision = optimizePortfolio(policy, decisionAtMs, [optimizerInput]);
+    const selectedCandidate = decision.candidates[0];
+    assert.equal(selectedCandidate?.eligible, true);
+    const normalizedPositionRecord = positionSnapshotRecord(positionSigned);
+    const positionsBody = {
+      strategyAccount: 'strategy-1',
+      label: 'OBSERVED',
+      sources: [{
+        sourceId: normalizedPositionRecord.sourceId,
+        recordHash: positionHash,
+        observedAtMs: normalizedPositionRecord.observedAtMs,
+        ageMs: 500n,
+        positionCount: normalizedPositionRecord.positions.length,
+        unmappedInstruments: normalizedPositionRecord.unmappedInstruments,
+      }],
+      records: [normalizedPositionRecord],
+      positions: normalizedPositionRecord.positions.map((entry) => ({ sourceId: normalizedPositionRecord.sourceId, position: entry })),
+    };
+    const collateralBody = {
+      strategyAccount: 'strategy-1',
+      label: 'OBSERVED',
+      sources: [{ recordHash: collateralHash, ageMs: 400n, record: collateralSigned }],
+    };
+    const routes = (servedDecision: unknown = decision) => ({
+      'POST /v1/portfolio/optimize': { body: { decision: servedDecision, selectedCandidate } },
+      'GET /v1/positions/strategy-1': { body: positionsBody },
+      'GET /v1/collateral/strategy-1': { body: collateralBody },
+    });
+    const verified = await client(routes()).optimizePortfolio(
+      { strategyAccount: 'strategy-1', policy, candidates: [proposal] },
+      { trustedAuthorities: new Map([['snapshot-key-1', trustedKey]]) },
+    );
+    assert.equal(verified.selectedCandidate.candidateId, 'carry-a');
+    assert.equal(verified.allPositionSignaturesVerified, true);
+    assert.equal(verified.allCollateralSignaturesVerified, true);
+    await assert.rejects(
+      client(routes({ ...decision, decisionHash: 'ab'.repeat(32) })).optimizePortfolio({ strategyAccount: 'strategy-1', policy, candidates: [proposal] }),
+      /differs from the local replay/,
+    );
   });
 
   test('graph simulations must match the local failure-point walk and graph hash', async () => {

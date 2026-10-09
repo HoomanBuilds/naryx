@@ -55,6 +55,7 @@ import {
   packageGraph,
   packageGraphHash,
   simulatePackageGraphFailures,
+  optimizePortfolio as replayPortfolioOptimization,
   packageReceipt,
   packageReceiptHash,
   positionSnapshotRecord,
@@ -87,6 +88,8 @@ import {
   type MarketCatalogueEntry,
   type MarketCatalogueInput,
   type MarketCatalogueQuery,
+  type MarginOffsetContext,
+  type MarginOffsetPolicy,
   privateRfqEnvelopeHash,
   ProtocolError,
   QUALIFICATION_OBJECT_TYPE,
@@ -155,6 +158,10 @@ import {
   type NettingResult,
   type PositionSnapshotRecord,
   type PositionSnapshotRecordInput,
+  type PortfolioCandidateDecision,
+  type PortfolioOptimizationCandidateInput,
+  type PortfolioOptimizationDecision,
+  type PortfolioOptimizationPolicyInput,
   type PackageCloseCostIndex,
   type PrivateRfqEnvelopeInput,
   type QualificationObjectType,
@@ -178,6 +185,7 @@ import {
   type TerminalOutcomeRecord,
   type TerminalState,
   type StressResult,
+  type StressScenario,
   type StrategyPackageOrder,
   type StrategyPackageOrderInput,
   type StrategyPackageQuote,
@@ -667,6 +675,52 @@ export interface VerifiedRisk {
   readonly positions: VerifiedPositions;
   readonly methodology: string;
   readonly byAccountingAsset: readonly VerifiedRiskGroup[];
+}
+
+export interface VerifiedRiskDomainAccount {
+  readonly strategyAccount: string;
+  readonly source: VerifiedPositionSource;
+  readonly positionsInDomain: number;
+}
+
+export interface VerifiedRiskDomain {
+  readonly riskDomainId: string;
+  readonly label: 'OBSERVED';
+  readonly accounts: readonly VerifiedRiskDomainAccount[];
+  readonly methodology: string;
+  readonly byAccountingAsset: readonly VerifiedRiskGroup[];
+}
+
+export interface PortfolioOptimizationCandidateProposal {
+  readonly candidateId: string;
+  readonly positionSnapshotHash: string;
+  readonly collateralSnapshotHash: string;
+  readonly routeHash: Uint8Array | string;
+  readonly executionGraphHash: Uint8Array | string;
+  readonly unwindRouteHash: Uint8Array | string;
+  readonly solverId: string;
+  readonly solverConcentrationBps: bigint;
+  readonly expectedGrossOutcomeQuoteAtoms: bigint;
+  readonly expectedFeesQuoteAtoms: bigint;
+  readonly expectedGasQuoteAtoms: bigint;
+  readonly expectedFundingCostQuoteAtoms: bigint;
+  readonly expectedRebatesQuoteAtoms: bigint;
+  readonly marginOffsetPolicy: MarginOffsetPolicy;
+  readonly marginOffsetContext: Omit<MarginOffsetContext, 'nowMs'>;
+  readonly stressScenarios: readonly StressScenario[];
+}
+
+export interface PortfolioOptimizationRequest {
+  readonly strategyAccount: string;
+  readonly policy: PortfolioOptimizationPolicyInput;
+  readonly candidates: readonly PortfolioOptimizationCandidateProposal[];
+}
+
+export interface VerifiedPortfolioOptimization {
+  readonly decision: PortfolioOptimizationDecision;
+  readonly selectedCandidate: PortfolioCandidateDecision;
+  readonly allPositionSignaturesVerified: boolean;
+  readonly allCollateralSignaturesVerified: boolean;
 }
 
 export interface VerifiedStrategyQuoteProof {
@@ -1285,6 +1339,56 @@ function verifiedQualification(value: unknown, hash: unknown, objectType: string
   if (hash !== recordHash) throw new NaryxEvidenceError(`${context} does not hash to its served hash`);
   if (record.objectType !== objectType || record.objectId !== objectId) throw new NaryxEvidenceError(`${context} is for another object`);
   return Object.freeze({ record, recordHash });
+}
+
+function verifiedRiskGroups(value: unknown, positions: readonly NormalizedPosition[], context: string): readonly VerifiedRiskGroup[] {
+  const seenAssets = new Set<string>();
+  const groups = list(value, context).map((entry, index) => {
+    const rowContext = `${context}[${index}]`;
+    const served = record(entry, rowContext);
+    const asset = served.accountingAsset as NormalizedPosition['markPrice']['quoteAsset'];
+    let assetKey: string;
+    try {
+      assetKey = `${asset.assetId}/${asset.decimals}/${toHex(asset.assetManifestHash)}`;
+    } catch {
+      throw new NaryxEvidenceError(`${rowContext}.accountingAsset is malformed`);
+    }
+    if (seenAssets.has(assetKey)) throw new NaryxEvidenceError(`${rowContext} repeats an accounting asset`);
+    seenAssets.add(assetKey);
+    const grouped = positions.filter((position) => sameAssetRef(position.markPrice.quoteAsset, asset));
+    const exposure = served.exposure as ExposureGraph;
+    const closeCost = served.closeCost as PackageCloseCostIndex;
+    if (!sameProtocolValue(buildExposureGraph(grouped, asset), exposure)
+      || !sameProtocolValue(packageCloseCostIndex(grouped), closeCost)) {
+      throw new NaryxEvidenceError(`${rowContext} exposure or close cost differs from the local computation`);
+    }
+    const stress = record(served.stress, `${rowContext}.stress`);
+    if (stress.label !== 'MODELED') throw new NaryxEvidenceError(`${rowContext}.stress must be labeled MODELED`);
+    const stressResults = list(stress.results, `${rowContext}.stress.results`) as unknown as readonly StressResult[];
+    const underlyings = [...new Set(grouped.map((position) => position.underlyingId))].sort();
+    const scenario = (scenarioId: string, shockBps: bigint) => ({
+      scenarioId,
+      priceShocksBps: underlyings.map((underlyingId) => ({ underlyingId, shockBps })),
+      closeCostMultiplierBps: 15_000n,
+      failedDependencyIds: [],
+    });
+    const expectedStress = [
+      stressPortfolio(grouped, scenario('uniform-down-10pct', -1_000n), asset),
+      stressPortfolio(grouped, scenario('uniform-up-10pct', 1_000n), asset),
+    ];
+    if (!sameProtocolValue(expectedStress, stressResults)) {
+      throw new NaryxEvidenceError(`${rowContext}.stress differs from the local computation`);
+    }
+    return Object.freeze({
+      accountingAsset: asset,
+      exposure,
+      closeCost,
+      stress: Object.freeze({ label: 'MODELED' as const, results: stressResults }),
+    });
+  });
+  const covered = groups.reduce((sum, group) => sum + positions.filter((position) => sameAssetRef(position.markPrice.quoteAsset, group.accountingAsset)).length, 0);
+  if (covered !== positions.length) throw new NaryxEvidenceError(`${context} leaves out positions it was built from`);
+  return Object.freeze(groups);
 }
 
 /** Verifies an Ed25519 signature with Web Crypto; undefined when the runtime lacks Ed25519. */
@@ -2898,7 +3002,13 @@ export class NaryxClient {
       if (served.recordHash !== hash || served.sourceId !== snapshot.sourceId || served.observedAtMs !== snapshot.observedAtMs) {
         throw new NaryxEvidenceError(`sources[${index}] does not describe its record`);
       }
+      if (count(served.positionCount, `sources[${index}].positionCount`) !== snapshot.positions.length
+        || !sameProtocolValue(served.unmappedInstruments, snapshot.unmappedInstruments)) {
+        throw new NaryxEvidenceError(`sources[${index}] metadata differs from its record`);
+      }
       if (snapshot.strategyAccount !== account) throw new NaryxEvidenceError(`records[${index}] belongs to another account`);
+      const ageMs = big(served.ageMs, `sources[${index}].ageMs`);
+      if (ageMs < 0n) throw new NaryxEvidenceError(`sources[${index}].ageMs is negative`);
       let signatureVerified = false;
       const trusted = options.trustedAuthorities?.get(snapshot.authority);
       if (trusted !== undefined) {
@@ -2910,7 +3020,7 @@ export class NaryxClient {
         sourceId: snapshot.sourceId,
         recordHash: hash,
         observedAtMs: snapshot.observedAtMs,
-        ageMs: big(served.ageMs, 'ageMs'),
+        ageMs,
         unmappedInstruments: snapshot.unmappedInstruments,
         record: snapshot,
         signatureVerified,
@@ -2918,14 +3028,15 @@ export class NaryxClient {
     }
     const positions = sources.flatMap((source) => source.record.positions);
     const servedPositions = list(body.positions, 'positions');
-    if (servedPositions.length !== positions.length) throw new NaryxEvidenceError('served positions differ from their records');
+    const expectedPositions = sources.flatMap((source) => source.record.positions.map((position) => ({ sourceId: source.sourceId, position })));
+    if (!sameProtocolValue(servedPositions, expectedPositions)) throw new NaryxEvidenceError('served positions differ from their records');
     return Object.freeze({ strategyAccount: account, label: 'OBSERVED' as const, sources: Object.freeze(sources), positions: Object.freeze(positions) });
   }
 
   /**
    * Risk for a strategy account. Positions come from `getPositions` and are verified the same way;
    * exposure and close cost are recomputed here from those positions and must equal the served
-   * figures exactly. The stress rows are a server model labeled MODELED and are passed through.
+   * figures exactly. The standard stress rows are also recomputed locally.
    */
   async getRisk(
     strategyAccount: string,
@@ -2934,48 +3045,157 @@ export class NaryxClient {
     const positions = await this.getPositions(strategyAccount, options);
     const body = record(await this.#request('GET', `/v1/risk/${positions.strategyAccount}`), 'risk');
     if (body.strategyAccount !== positions.strategyAccount || typeof body.methodology !== 'string') throw new NaryxEvidenceError('risk is for another account or has no methodology');
-    const seenAssets = new Set<string>();
-    const groups = list(body.byAccountingAsset, 'byAccountingAsset').map((entry, index) => {
-      const served = record(entry, `byAccountingAsset[${index}]`);
-      const asset = served.accountingAsset as NormalizedPosition['markPrice']['quoteAsset'];
-      // Each accounting asset appears once, so a repeated group can never stand in for a missing one.
-      const assetKey = `${String(asset?.assetId)}/${asset?.assetManifestHash instanceof Uint8Array ? toHex(asset.assetManifestHash) : String(asset?.assetManifestHash)}`;
-      if (seenAssets.has(assetKey)) throw new NaryxEvidenceError(`byAccountingAsset[${index}] repeats an accounting asset`);
-      seenAssets.add(assetKey);
-      const grouped = positions.positions.filter((position) => bytesEqual(position.markPrice.quoteAsset.assetManifestHash, asset.assetManifestHash) && position.markPrice.quoteAsset.assetId === asset.assetId);
-      const same = (left: unknown, right: unknown) => JSON.stringify(toProtocolJson(left)) === JSON.stringify(toProtocolJson(right));
-      const exposure = served.exposure as ExposureGraph;
-      const closeCost = served.closeCost as PackageCloseCostIndex;
-      if (!same(buildExposureGraph(grouped, asset), exposure) || !same(packageCloseCostIndex(grouped), closeCost)) {
-        throw new NaryxEvidenceError(`byAccountingAsset[${index}] exposure or close cost differs from the local computation`);
-      }
-      const stress = record(served.stress, `byAccountingAsset[${index}].stress`);
-      if (stress.label !== 'MODELED') throw new NaryxEvidenceError('stress rows must be labeled MODELED');
-      const stressResults = list(stress.results, `byAccountingAsset[${index}].stress.results`) as unknown as readonly StressResult[];
-      const underlyings = [...new Set(grouped.map((position) => position.underlyingId))].sort();
-      const scenario = (scenarioId: string, shockBps: bigint) => ({
-        scenarioId,
-        priceShocksBps: underlyings.map((underlyingId) => ({ underlyingId, shockBps })),
-        closeCostMultiplierBps: 15_000n,
-        failedDependencyIds: [],
-      });
-      const expectedStress = [
-        stressPortfolio(grouped, scenario('uniform-down-10pct', -1_000n), asset),
-        stressPortfolio(grouped, scenario('uniform-up-10pct', 1_000n), asset),
-      ];
-      if (!same(expectedStress, stressResults)) {
-        throw new NaryxEvidenceError(`byAccountingAsset[${index}] stress differs from the local computation`);
-      }
+    const groups = verifiedRiskGroups(body.byAccountingAsset, positions.positions, 'byAccountingAsset');
+    return Object.freeze({ positions, methodology: body.methodology, byAccountingAsset: groups });
+  }
+
+  /**
+   * Current position sources that participate in one risk domain. Exact source records are fetched
+   * per account, re-hashed, and used to recompute every aggregate in the domain response.
+   */
+  async getRiskDomain(
+    riskDomainId: string,
+    options: { readonly trustedAuthorities?: ReadonlyMap<string, Uint8Array> } = {},
+  ): Promise<VerifiedRiskDomain> {
+    const riskDomain = checkId(riskDomainId, 'risk domain');
+    const body = record(await this.#request('GET', `/v1/risk-domains/${riskDomain}`), 'risk domain');
+    if (body.riskDomainId !== riskDomain || body.label !== 'OBSERVED' || typeof body.methodology !== 'string') {
+      throw new NaryxEvidenceError('risk domain response is for another domain or is mislabeled');
+    }
+    const servedAccounts = list(body.accounts, 'accounts').map((entry, index) => {
+      const context = `accounts[${index}]`;
+      const served = record(entry, context);
+      const strategyAccount = servedId(served.strategyAccount, `${context}.strategyAccount`);
+      const sourceId = servedId(served.sourceId, `${context}.sourceId`);
+      const ageMs = big(served.ageMs, `${context}.ageMs`);
+      if (ageMs < 0n) throw new NaryxEvidenceError(`${context}.ageMs is negative`);
+      const unmappedInstruments = list(served.unmappedInstruments, `${context}.unmappedInstruments`).map((value, itemIndex) => servedId(value, `${context}.unmappedInstruments[${itemIndex}]`));
       return Object.freeze({
-        accountingAsset: asset,
-        exposure,
-        closeCost,
-        stress: Object.freeze({ label: 'MODELED' as const, results: stressResults }),
+        strategyAccount,
+        sourceId,
+        recordHash: hashHex(served.recordHash, `${context}.recordHash`),
+        observedAtMs: big(served.observedAtMs, `${context}.observedAtMs`),
+        positionCount: count(served.positionCount, `${context}.positionCount`),
+        positionsInDomain: count(served.positionsInDomain, `${context}.positionsInDomain`),
+        unmappedInstruments: Object.freeze(unmappedInstruments),
       });
     });
-    const covered = groups.reduce((sum, group) => sum + positions.positions.filter((position) => position.markPrice.quoteAsset.assetId === group.accountingAsset.assetId && bytesEqual(position.markPrice.quoteAsset.assetManifestHash, group.accountingAsset.assetManifestHash)).length, 0);
-    if (covered !== positions.positions.length) throw new NaryxEvidenceError('risk leaves out positions it was built from');
-    return Object.freeze({ positions, methodology: body.methodology, byAccountingAsset: Object.freeze(groups) });
+    const sourceKeys = servedAccounts.map((account) => `${account.strategyAccount}\0${account.sourceId}`);
+    if (new Set(sourceKeys).size !== sourceKeys.length) throw new NaryxEvidenceError('risk domain repeats an account source');
+    const uniqueAccounts = [...new Set(servedAccounts.map((account) => account.strategyAccount))];
+    const accountViews = await Promise.all(uniqueAccounts.map(async (account) => [
+      account,
+      await this.getPositions(account, options),
+    ] as const));
+    const views = new Map(accountViews);
+    const domainPositions: NormalizedPosition[] = [];
+    const accounts = servedAccounts.map((served, index) => {
+      const positions = views.get(served.strategyAccount);
+      const source = positions?.sources.find((candidate) => candidate.sourceId === served.sourceId);
+      if (source === undefined || source.recordHash !== served.recordHash || source.observedAtMs !== served.observedAtMs) {
+        throw new NaryxEvidenceError(`accounts[${index}] no longer matches the account's current source record`);
+      }
+      if (source.record.positions.length !== served.positionCount
+        || !sameProtocolValue(source.unmappedInstruments, served.unmappedInstruments)) {
+        throw new NaryxEvidenceError(`accounts[${index}] source metadata differs from its record`);
+      }
+      const inDomain = source.record.positions.filter((position) => position.riskDomainId === riskDomain);
+      if (inDomain.length !== served.positionsInDomain) throw new NaryxEvidenceError(`accounts[${index}] domain position count is inconsistent`);
+      domainPositions.push(...inDomain);
+      return Object.freeze({ strategyAccount: served.strategyAccount, source, positionsInDomain: inDomain.length });
+    });
+    const groups = verifiedRiskGroups(body.byAccountingAsset, domainPositions, 'byAccountingAsset');
+    return Object.freeze({
+      riskDomainId: riskDomain,
+      label: 'OBSERVED' as const,
+      accounts: Object.freeze(accounts),
+      methodology: body.methodology,
+      byAccountingAsset: groups,
+    });
+  }
+
+  /**
+   * Requests an optimization over current signed snapshots, then reconstructs every authoritative
+   * candidate and replays the deterministic optimizer locally before returning the decision.
+   */
+  async optimizePortfolio(
+    request: PortfolioOptimizationRequest,
+    options: { readonly trustedAuthorities?: ReadonlyMap<string, Uint8Array> } = {},
+  ): Promise<VerifiedPortfolioOptimization> {
+    if (typeof request !== 'object' || request === null) throw new TypeError('portfolio optimization request is required');
+    const strategyAccount = checkId(request.strategyAccount, 'strategy account');
+    if (!Array.isArray(request.candidates) || request.candidates.length < 1 || request.candidates.length > 64) {
+      throw new TypeError('portfolio optimization requires 1 to 64 candidates');
+    }
+    const candidates = request.candidates.map((candidate, index) => Object.freeze({
+      ...candidate,
+      positionSnapshotHash: hashHex(candidate.positionSnapshotHash, `candidates[${index}].positionSnapshotHash`),
+      collateralSnapshotHash: hashHex(candidate.collateralSnapshotHash, `candidates[${index}].collateralSnapshotHash`),
+    }));
+    const body = record(await this.#request('POST', '/v1/portfolio/optimize', {
+      strategyAccount,
+      policy: request.policy,
+      candidates,
+    }), 'portfolio optimization');
+    const servedDecision = record(body.decision, 'portfolio optimization.decision');
+    const decisionAtMs = big(servedDecision.decisionAtMs, 'portfolio optimization.decision.decisionAtMs');
+    const [positions, collateral] = await Promise.all([
+      this.getPositions(strategyAccount, options),
+      this.getCollateral(strategyAccount, options),
+    ]);
+    const positionSources = new Map(positions.sources.map((source) => [source.recordHash, source]));
+    const collateralSources = new Map(collateral.sources.map((source) => [source.recordHash, source]));
+    const usedPositionSources: VerifiedPositionSource[] = [];
+    const usedCollateralSources: VerifiedCollateralSource[] = [];
+    const inputs: PortfolioOptimizationCandidateInput[] = candidates.map((candidate, index) => {
+      const positionSource = positionSources.get(candidate.positionSnapshotHash);
+      if (positionSource === undefined) throw new NaryxEvidenceError(`candidates[${index}] does not name a current position snapshot`);
+      const collateralSource = collateralSources.get(candidate.collateralSnapshotHash);
+      if (collateralSource === undefined) throw new NaryxEvidenceError(`candidates[${index}] does not name a current collateral snapshot`);
+      usedPositionSources.push(positionSource);
+      usedCollateralSources.push(collateralSource);
+      return Object.freeze({
+        candidateId: candidate.candidateId,
+        active: true,
+        authorityVerified: true,
+        positionSnapshot: positionSource.record,
+        collateralSnapshot: collateralSource.record,
+        routeHash: candidate.routeHash,
+        executionGraphHash: candidate.executionGraphHash,
+        unwindRouteHash: candidate.unwindRouteHash,
+        solverId: candidate.solverId,
+        solverConcentrationBps: candidate.solverConcentrationBps,
+        expectedGrossOutcomeQuoteAtoms: candidate.expectedGrossOutcomeQuoteAtoms,
+        expectedFeesQuoteAtoms: candidate.expectedFeesQuoteAtoms,
+        expectedGasQuoteAtoms: candidate.expectedGasQuoteAtoms,
+        expectedFundingCostQuoteAtoms: candidate.expectedFundingCostQuoteAtoms,
+        expectedRebatesQuoteAtoms: candidate.expectedRebatesQuoteAtoms,
+        marginOffsetPolicy: candidate.marginOffsetPolicy,
+        marginOffsetContext: Object.freeze({ ...candidate.marginOffsetContext, nowMs: decisionAtMs }),
+        stressScenarios: candidate.stressScenarios,
+      });
+    });
+    let decision: PortfolioOptimizationDecision;
+    try {
+      decision = replayPortfolioOptimization(request.policy, decisionAtMs, inputs);
+    } catch (error) {
+      throw new NaryxEvidenceError(`portfolio optimization cannot be replayed: ${(error as Error).message}`);
+    }
+    const selectedCandidate = decision.selectedCandidateId === undefined
+      ? undefined
+      : decision.candidates.find((candidate) => candidate.candidateId === decision.selectedCandidateId);
+    if (selectedCandidate === undefined || !selectedCandidate.eligible) {
+      throw new NaryxEvidenceError('portfolio optimization returned success without an eligible candidate');
+    }
+    if (!sameProtocolValue(body.decision, decision) || !sameProtocolValue(body.selectedCandidate, selectedCandidate)) {
+      throw new NaryxEvidenceError('portfolio optimization response differs from the local replay');
+    }
+    return Object.freeze({
+      decision,
+      selectedCandidate,
+      allPositionSignaturesVerified: usedPositionSources.every((source) => source.signatureVerified),
+      allCollateralSignaturesVerified: usedCollateralSources.every((source) => source.signatureVerified),
+    });
   }
 
   /**
