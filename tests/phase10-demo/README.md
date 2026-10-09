@@ -24,3 +24,19 @@ npm --prefix tests/phase10-demo run demo -- --output /absolute/path/evidence.jso
 ```
 
 The child environment contains no RPC URL, API token, signer, mnemonic, or private key inherited from the caller. All required scenarios launch private loopback validators and create temporary valueless accounts. Public Devnet, testnet, fork, shadow, and mainnet checks are not run. Credential-dependent checks are recorded as `SKIPPED`, never as `PASSED`.
+
+## Hyperliquid Testnet package lifecycle
+
+The opt-in public Testnet runner uses the reviewed external executor environment and key. It fails
+closed unless the account starts without a tradable package position, submits spot and perpetual
+orders as separate IOC stages, reconciles authoritative evidence after each stage, exits both legs,
+and verifies that no perpetual position or tradable spot lot remains.
+
+```bash
+NARYX_DEMO_NETWORK_POLICY=TESTNET_WRITES_EXPLICITLY_ENABLED \
+node --env-file=/absolute/path/to/hyperliquid-executor.env \
+  tests/phase10-demo/src/run-hyperliquid-testnet.js --execute
+```
+
+The runner is Testnet-only. Hyperliquid does not accept spot and perpetual orders in one action, so
+the evidence truthfully reports ordered settlement with bounded recovery rather than atomicity.

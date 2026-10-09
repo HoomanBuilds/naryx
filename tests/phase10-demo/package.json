@@ -5,6 +5,7 @@
   "main": "src/run-demo.js",
   "scripts": {
     "demo": "node src/run-demo.js",
+    "demo:hyperliquid-testnet": "node src/run-hyperliquid-testnet.js",
     "test": "node --test test/*.test.js"
   },
   "keywords": [],
