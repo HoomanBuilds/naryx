@@ -536,6 +536,18 @@ type AuthorizedEvmExecution = Readonly<{
 type NettingAllocationSelection = Readonly<{
   proofHash: string;
   allocationReceiptHashes: readonly string[];
+  pooledClearings: readonly Readonly<{
+    planHash: string;
+    status: "PENDING" | "EXACT_FILLED" | "RECOVERY_REQUIRED";
+    marketId: string;
+    sourceBatchCount: number;
+    sourceIntentCount: number;
+    internalMatchedQuantityAtoms: bigint;
+    externalResidualQuantityAtoms: bigint;
+    externalSide: "BUY" | "SELL" | null;
+    quantityAssetId: string;
+    quantityAssetDecimals: number;
+  }>[];
 }>;
 
 type EvmNettingAllocationChallenge = Readonly<{
@@ -2109,9 +2121,24 @@ function nettingAllocationSelection(
   if (allocationReceiptHashes.length === 0 || new Set(allocationReceiptHashes).size !== allocationReceiptHashes.length) {
     throw new Error("Netting batch has no unique final allocations for the selected package.");
   }
+  const pooledClearings = batch.crossBatchClearings
+    .filter((clearing) => clearing.plan.domain.domainId === expectedDomainId)
+    .map((clearing) => Object.freeze({
+      planHash: toHex(clearing.plan.planHash),
+      status: clearing.status,
+      marketId: clearing.plan.market.subjectId,
+      sourceBatchCount: new Set(clearing.sourceIntents.map((intent) => toHex(intent.nettingProofHash))).size,
+      sourceIntentCount: clearing.sourceIntents.length,
+      internalMatchedQuantityAtoms: clearing.plan.internalMatchedQuantityAtoms,
+      externalResidualQuantityAtoms: clearing.plan.externalQuantityAtoms,
+      externalSide: clearing.plan.externalSide ?? null,
+      quantityAssetId: clearing.plan.quantityAsset.assetId,
+      quantityAssetDecimals: clearing.plan.quantityAsset.decimals,
+    }));
   return Object.freeze({
     proofHash: expectedProofHash,
     allocationReceiptHashes: Object.freeze(allocationReceiptHashes),
+    pooledClearings: Object.freeze(pooledClearings),
   });
 }
 
@@ -6442,6 +6469,34 @@ export function GeneralizedStrategyPreparationPanel({
               <div className={styles.reviewGrid}>
                 <span>Domain allocations</span><strong>{nettingSelection.allocationReceiptHashes.length}</strong>
                 <span>Pending in this domain</span><strong>{pendingNettingAllocationHashes.length}</strong>
+                <span>Execution source</span>
+                <strong>{nettingSelection.pooledClearings.length === 0 ? "Single batch" : "Cross-batch pool"}</strong>
+                {nettingSelection.pooledClearings.map((clearing) => (
+                  <Fragment key={clearing.planHash}>
+                    <span>Pooled market</span>
+                    <strong title={clearing.planHash}>
+                      {clearing.marketId} / {clearing.status.replaceAll("_", " ")}
+                    </strong>
+                    <span>Internal crossing</span>
+                    <strong>
+                      {formatAtomicAmount(
+                        clearing.internalMatchedQuantityAtoms,
+                        clearing.quantityAssetDecimals,
+                        clearing.quantityAssetId,
+                      )} from {clearing.sourceIntentCount} intents in {clearing.sourceBatchCount} batches
+                    </strong>
+                    <span>External residual</span>
+                    <strong>
+                      {clearing.externalResidualQuantityAtoms === BigInt(0)
+                        ? "None"
+                        : `${clearing.externalSide} ${formatAtomicAmount(
+                            clearing.externalResidualQuantityAtoms,
+                            clearing.quantityAssetDecimals,
+                            clearing.quantityAssetId,
+                          )}`}
+                    </strong>
+                  </Fragment>
+                ))}
                 <span>Current allocation</span>
                 <strong title={nettingCurrentAllocationHash || pendingNettingAllocationHashes[0]}>
                   {compact(nettingCurrentAllocationHash || pendingNettingAllocationHashes[0] || "none")}
