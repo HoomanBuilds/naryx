@@ -1937,7 +1937,7 @@ function verifyPreparedNettingBatchCore(
 
 function verifyCrossBatchClearingEvidence(
   value: unknown,
-  expectedPlanHash: string,
+  expectedPlanHash?: string,
 ): VerifiedCrossBatchClearing {
   const body = record(value, 'cross-batch clearing');
   let policy: CrossBatchClearingPolicy;
@@ -1951,7 +1951,8 @@ function verifyCrossBatchClearingEvidence(
     sourceIntents = list(body.sourceIntents, 'cross-batch clearing.sourceIntents') as readonly NettingExternalExecutionIntent[];
     plan = body.plan as CrossBatchClearingPlan;
     verifyCrossBatchClearingPlan(plan, sourceIntents, policy);
-    if (toHex(plan.planHash) !== hashHex(expectedPlanHash, 'cross-batch clearing plan hash')) {
+    if (expectedPlanHash !== undefined
+      && toHex(plan.planHash) !== hashHex(expectedPlanHash, 'cross-batch clearing plan hash')) {
       throw new Error('plan does not match the requested hash');
     }
     intent = body.intent as CrossBatchExternalExecutionIntent | undefined;
@@ -4543,6 +4544,27 @@ export class NaryxClient {
       throw new NaryxEvidenceError('prepared netting batch does not contain the requested package order');
     }
     return batch;
+  }
+
+  /** Lists recent cross-batch clearings after independently verifying every plan and receipt. */
+  async listRecentCrossBatchClearings(limit = 20): Promise<readonly VerifiedCrossBatchClearing[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+      throw new TypeError('limit must be an integer between 1 and 50');
+    }
+    const body = record(
+      await this.#request('GET', `/v1/netting/cross-batch?limit=${limit}`),
+      'recent cross-batch clearings',
+    );
+    if (body.version !== 1) throw new NaryxEvidenceError('recent cross-batch clearing version is unsupported');
+    const clearings = list(body.clearings, 'recent cross-batch clearings.clearings').map((entry) => (
+      verifyCrossBatchClearingEvidence(entry)
+    ));
+    for (let index = 1; index < clearings.length; index += 1) {
+      if (clearings[index - 1]!.recordedAtMs < clearings[index]!.recordedAtMs) {
+        throw new NaryxEvidenceError('recent cross-batch clearings are not newest first');
+      }
+    }
+    return Object.freeze(clearings);
   }
 
   /** Executes every still-direct external residual and verifies the returned batch after execution. */

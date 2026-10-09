@@ -484,6 +484,10 @@ test("cross-batch clearing durably settles source batches without direct double 
     assert.equal(store.recordVerifiedCrossBatchExternalExecutionEvidence(evidence).replayed, true);
     const clearing = store.crossBatchClearing(created.clearing.plan.planHash)!;
     assert.equal(clearing.status, "EXACT_FILLED");
+    const recentClearings = store.recentCrossBatchClearings(1);
+    assert.equal(recentClearings.length, 1);
+    assert.equal(toHex(recentClearings[0]!.plan.planHash), toHex(clearing.plan.planHash));
+    assert.throws(() => store.recentCrossBatchClearings(0), { code: "INVALID_INPUT" });
     for (const { batch } of prepared) {
       const settled = store.nettingBatch(batch.result.proofHash)!;
       assert.equal(settled.externalExecutionStatus, "EXACT_FILLED");

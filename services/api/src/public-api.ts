@@ -232,6 +232,7 @@ export type PublicExchangeStore = Pick<
   | "nettingBatch"
   | "nettingBatchForPackage"
   | "crossBatchClearing"
+  | "recentCrossBatchClearings"
   | "amendEntry"
   | "cancelEntry"
 >;
@@ -1524,6 +1525,17 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const batch = exchange.nettingBatchForPackage(match[1] as string);
       if (batch === undefined) throw new RequestError(404, "NETTING_BATCH_NOT_FOUND", "No prepared netting batch exists for this package order.");
       return batch;
+    }
+    if (path === "/v1/netting/cross-batch") {
+      onlyParams(url, ["limit"]);
+      const rawLimit = url.searchParams.get("limit") ?? "20";
+      if (!/^(?:[1-9]|[1-4][0-9]|50)$/.test(rawLimit)) {
+        throw new RequestError(400, "INVALID_REQUEST", "limit must be an integer between 1 and 50.");
+      }
+      return {
+        version: 1,
+        clearings: exchange.recentCrossBatchClearings(Number(rawLimit)),
+      };
     }
     if ((match = /^\/v1\/netting\/cross-batch\/([0-9a-f]{64})$/.exec(path)) !== null) {
       onlyParams(url, []);

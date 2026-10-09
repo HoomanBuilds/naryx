@@ -2542,6 +2542,25 @@ export class SqlitePackageExchangeStore {
     });
   }
 
+  recentCrossBatchClearings(limit = 20): readonly PreparedCrossBatchClearing[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+      throw new PackageExchangeStoreError("INVALID_INPUT", "Cross-batch clearing limit must be from 1 to 50.");
+    }
+    const rows = this.db.prepare(`
+      SELECT plan_hash
+      FROM cross_batch_clearing_plans
+      ORDER BY recorded_at_ms DESC, plan_hash DESC
+      LIMIT ?
+    `).all(limit) as { plan_hash: unknown }[];
+    return Object.freeze(rows.map((row) => {
+      const clearing = this.crossBatchClearing(hashBytes(row.plan_hash, "plan_hash"));
+      if (clearing === undefined) {
+        throw new PackageExchangeStoreError("CORRUPT_ROW", "Listed cross-batch clearing disappeared.");
+      }
+      return clearing;
+    }));
+  }
+
   crossBatchClearingForSourceIntent(
     sourceIntentHashInput: Uint8Array | string,
   ): PreparedCrossBatchClearing | undefined {

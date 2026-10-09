@@ -475,11 +475,21 @@ describe('public API client', () => {
       [`/v1/netting/cross-batch/${planHash}`]: {
         body: { status: 'EXACT_FILLED', policy: clearingPolicy, sourceIntents, plan, receipt, recordedAtMs: 1_001 },
       },
+      '/v1/netting/cross-batch?limit=2': {
+        body: {
+          version: 1,
+          clearings: [{ status: 'EXACT_FILLED', policy: clearingPolicy, sourceIntents, plan, receipt, recordedAtMs: 1_001 }],
+        },
+      },
     };
     const verified = await client(routes).getNettingBatch(buyBatch.proofHashHex);
     assert.equal(verified.crossBatchClearings.length, 1);
     assert.equal(verified.crossBatchResolutions.length, 1);
     assert.equal(verified.externalExecutionStatus, 'EXACT_FILLED');
+    const recent = await client(routes).listRecentCrossBatchClearings(2);
+    assert.equal(recent.length, 1);
+    assert.equal(toHex(recent[0]!.plan.planHash), planHash);
+    await assert.rejects(async () => client(routes).listRecentCrossBatchClearings(0), /limit/);
 
     await assert.rejects(
       client({

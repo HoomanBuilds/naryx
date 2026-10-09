@@ -22,6 +22,9 @@ test('public API triggers only an existing authorized netting batch', async () =
       crossBatchClearing: (value: Uint8Array | string) => value === crossBatchPlanHash
         ? { status: 'PENDING', plan: { planHash: crossBatchPlanHash } }
         : undefined,
+      recentCrossBatchClearings: (limit: number) => limit === 2
+        ? [{ status: 'PENDING', plan: { planHash: crossBatchPlanHash } }]
+        : [],
     } as never,
     nettingExecution: {
       async execute(value) {
@@ -63,6 +66,10 @@ test('public API triggers only an existing authorized netting batch', async () =
     const clearing = await fetch(`http://127.0.0.1:${port}/v1/netting/cross-batch/${crossBatchPlanHash}`);
     assert.equal(clearing.status, 200);
     assert.equal((fromProtocolJson(await clearing.json()) as { status: string }).status, 'PENDING');
+    const recent = await fetch(`http://127.0.0.1:${port}/v1/netting/cross-batch?limit=2`);
+    assert.equal(recent.status, 200);
+    assert.equal((fromProtocolJson(await recent.json()) as { clearings: readonly unknown[] }).clearings.length, 1);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/v1/netting/cross-batch?limit=0`)).status, 400);
     const completed = await execute();
     assert.equal(completed.status, 200);
     const body = fromProtocolJson(await completed.json()) as {
