@@ -9,6 +9,7 @@ import {
   packageGraph,
   packageGraphHash,
   packageTemplateManifestHash,
+  sliceStrategyPackageGraph,
   simulatePackageGraphFailures,
   STRATEGY_QUOTE_CONVENTION_ID,
   STRATEGY_RISK_CLASS_ID,
@@ -159,6 +160,36 @@ const context = (overrides: Partial<PackageGraphCompileContext> = {}): PackageGr
 });
 
 describe('package graph structure', () => {
+  test('an activation slice preserves exact leg ratios and binds derived policies to its parent', () => {
+    const parent = graph({
+      legs: [
+        leg('spot', { preconditionHashes: [], postconditionHashes: [] }),
+        perpLeg({ preconditionHashes: [], postconditionHashes: [] }),
+      ],
+    });
+    const sliced = sliceStrategyPackageGraph({
+      parentGraph: parent,
+      parentOrderHash: hash('2'),
+      activationAttemptId: hash('3'),
+      parentEconomicQuantity: 1_000_000_000n,
+      childEconomicQuantity: 250_000_000n,
+      graphNonce: 9n,
+    });
+    assert.deepEqual(sliced.graph.legs.map((value) => value.quantityAtoms), [250_000_000n, 250_000_000n]);
+    assert.deepEqual(sliced.graph.legs.map((value) => value.maximumFeeQuoteAtoms), [2_500n, 2_500n]);
+    assert.equal(sliced.policies.NETTING.childEconomicQuantity, 250_000_000n);
+    assert.equal(toHex(sliced.policies.NETTING.parentGraphHash), toHex(packageGraphHash(parent)));
+    assert.equal(toHex(sliced.graph.policyHashes.netting), toHex(packageGraph(parent).policyHashes.netting));
+    assert.throws(() => sliceStrategyPackageGraph({
+      parentGraph: parent,
+      parentOrderHash: hash('2'),
+      activationAttemptId: hash('4'),
+      parentEconomicQuantity: 3n,
+      childEconomicQuantity: 1n,
+      graphNonce: 10n,
+    }), /cannot be sliced/);
+  });
+
   test('a graph is ordered canonically and its hash ignores input order', () => {
     const reordered = graph({ legs: [perpLeg(), leg('spot')], executionGroups: [{ groupId: 'atomic', kind: 'ALL_OR_NONE', legIds: ['perp', 'spot'] }] });
     assert.equal(toHex(packageGraphHash(reordered)), toHex(packageGraphHash(graph())));

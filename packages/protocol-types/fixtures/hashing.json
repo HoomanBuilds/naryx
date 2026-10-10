@@ -113,6 +113,7 @@
     { "name": "fee-promotion-cohort-shared-payload", "domain": "CON/v1/fee-promotion-cohort", "payloadHex": "deadbeef", "digestHex": "532e0ac887fa1b0a0dd2e5f823e5f7c23012023b1cec0c367b4a26c327b02c58" },
     { "name": "position-snapshot-shared-payload", "domain": "CON/v1/position-snapshot", "payloadHex": "deadbeef", "digestHex": "41b1862e5cd9cc6edccf798bb7895a5c4731d6744df17df3246d7441c71c30ba" },
     { "name": "package-graph-shared-payload", "domain": "CON/v1/package-graph", "payloadHex": "deadbeef", "digestHex": "ab281503eb43bac5800f9c11f41aef658664a7476ea588368d8614bd60850453" },
+    { "name": "strategy-slice-policy-shared-payload", "domain": "CON/v1/strategy-slice-policy", "payloadHex": "deadbeef", "digestHex": "56ebc8d2ce9f731bdef85ec7712bf7ff0ccc35aa5baf7446245daa9255c3c330" },
     { "name": "strategy-order-shared-payload", "domain": "CON/v1/strategy-order", "payloadHex": "deadbeef", "digestHex": "2786fbf1742084efe01c60db47c59837902f39c38ac0341dc3e1bb869c494506" },
     { "name": "strategy-quote-shared-payload", "domain": "CON/v1/strategy-quote", "payloadHex": "deadbeef", "digestHex": "787b94950c11af33f66505189cac2515d7df73437d101602cec4339c5f656f53" },
     { "name": "strategy-route-shared-payload", "domain": "CON/v1/strategy-route", "payloadHex": "deadbeef", "digestHex": "56caa4c366d28b8ae7ef7520f255e285eefe1d941972b19be7ed30333486b13c" },

@@ -180,6 +180,7 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/fee-promotion-cohort',
         'CON/v1/position-snapshot',
         'CON/v1/package-graph',
+        'CON/v1/strategy-slice-policy',
         'CON/v1/strategy-order',
         'CON/v1/strategy-quote',
         'CON/v1/strategy-route',

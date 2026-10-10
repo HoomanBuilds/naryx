@@ -126,6 +126,7 @@ export const HASH_DOMAIN = Object.freeze({
   FEE_PROMOTION_COHORT: 'CON/v1/fee-promotion-cohort',
   POSITION_SNAPSHOT: 'CON/v1/position-snapshot',
   PACKAGE_GRAPH: 'CON/v1/package-graph',
+  STRATEGY_SLICE_POLICY: 'CON/v1/strategy-slice-policy',
   STRATEGY_ORDER: 'CON/v1/strategy-order',
   STRATEGY_QUOTE: 'CON/v1/strategy-quote',
   STRATEGY_ROUTE: 'CON/v1/strategy-route',

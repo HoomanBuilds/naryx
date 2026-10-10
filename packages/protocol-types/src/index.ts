@@ -1600,6 +1600,18 @@ export {
   type CompiledPackageGraph,
 } from './package-graph.js';
 export {
+  STRATEGY_SLICE_POLICY_VERSION,
+  STRATEGY_SLICE_POLICY_CATEGORY,
+  strategySlicePolicy,
+  strategySlicePolicyBytes,
+  strategySlicePolicyHash,
+  sliceStrategyPackageGraph,
+  type StrategySlicePolicyCategory,
+  type StrategySlicePolicyInput,
+  type StrategySlicePolicy,
+  type StrategySliceResult,
+} from './strategy-slice.js';
+export {
   STRATEGY_TEMPLATE_PROGRAM_VERSION,
   STRATEGY_TEMPLATE_ID,
   STRATEGY_QUOTE_CONVENTION_ID,
