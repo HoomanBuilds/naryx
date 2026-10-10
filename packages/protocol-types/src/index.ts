@@ -707,6 +707,28 @@ export {
 } from './native-clearing-authorization.js';
 
 export {
+  NATIVE_CLEARING_COLLATERAL_AUTHORIZATION_VERSION,
+  NATIVE_CLEARING_MARK_OBSERVATION_VERSION,
+  NATIVE_CLEARING_DEFAULT_AUCTION_VERSION,
+  NATIVE_CLEARING_DEFAULT_BID_VERSION,
+  nativeClearingCollateralAuthorization,
+  verifyNativeClearingCollateralAuthorization,
+  nativeClearingMarkObservation,
+  nativeClearingDefaultAuction,
+  nativeClearingDefaultAuctionHash,
+  nativeClearingDefaultBid,
+  nativeClearingDefaultBidHash,
+  selectNativeClearingDefaultBid,
+  type NativeClearingCollateralAuthorizationInput,
+  type NativeClearingCollateralAuthorization,
+  type NativeClearingMarkObservationInput,
+  type NativeClearingMarkObservation,
+  type NativeClearingDefaultAuction,
+  type NativeClearingDefaultBidInput,
+  type NativeClearingDefaultBid,
+} from './native-clearing-controls.js';
+
+export {
   NETTING_ALLOCATION_SETTLEMENT_EVIDENCE_VERSION,
   NETTING_SETTLEMENT_COMPLETION_RECEIPT_VERSION,
   NETTING_SETTLEMENT_STATE_KIND,

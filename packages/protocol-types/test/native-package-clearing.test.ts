@@ -26,6 +26,8 @@ function policyInput(overrides: Partial<NativeClearingPolicyInput> = {}): Native
     matchingPolicyHash: id(3),
     strategySeries: versionedManifestRef('sol-carry', 1, id(1)),
     riskDomainId: 'sol-carry-isolated-risk',
+    markSource: versionedManifestRef('sol-carry-mark', 1, id(4)),
+    markAuthorityId: 'mark-authority',
     accountingAsset: assetRef('usdc', id(2), 6),
     packageQuantityIncrementAtoms: 10n,
     priceTickQuoteAtoms: 1n,

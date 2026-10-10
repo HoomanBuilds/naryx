@@ -53,6 +53,8 @@ export interface NativeClearingPolicyInput {
   readonly matchingPolicyHash: Uint8Array | string;
   readonly strategySeries: VersionedManifestRef;
   readonly riskDomainId: string;
+  readonly markSource: VersionedManifestRef;
+  readonly markAuthorityId: string;
   readonly accountingAsset: AssetRef;
   readonly packageQuantityIncrementAtoms: bigint;
   readonly priceTickQuoteAtoms: bigint;
@@ -73,6 +75,8 @@ export interface NativeClearingPolicy extends Omit<
   | 'matchingPolicyHash'
   | 'strategySeries'
   | 'riskDomainId'
+  | 'markSource'
+  | 'markAuthorityId'
   | 'accountingAsset'
 > {
   readonly version: 1;
@@ -82,6 +86,8 @@ export interface NativeClearingPolicy extends Omit<
   readonly matchingPolicyHash: ManifestHash;
   readonly strategySeries: VersionedManifestRef;
   readonly riskDomainId: ProtocolId;
+  readonly markSource: VersionedManifestRef;
+  readonly markAuthorityId: ProtocolId;
   readonly accountingAsset: AssetRef;
   readonly policyHash: CommitmentHash;
 }
@@ -241,6 +247,13 @@ function policyPayload(input: NativeClearingPolicyInput | NativeClearingPolicy):
       'nativeClearingPolicy.strategySeries',
     ),
     riskDomainId: protocolId(input.riskDomainId, 'nativeClearingPolicy.riskDomainId'),
+    markSource: versionedManifestRef(
+      input.markSource.subjectId,
+      input.markSource.manifestVersion,
+      input.markSource.manifestHash,
+      'nativeClearingPolicy.markSource',
+    ),
+    markAuthorityId: protocolId(input.markAuthorityId, 'nativeClearingPolicy.markAuthorityId'),
     accountingAsset: assetRef(
       input.accountingAsset.assetId,
       input.accountingAsset.assetManifestHash,
@@ -267,6 +280,8 @@ function policyBytes(input: Omit<NativeClearingPolicy, 'policyHash'>): Uint8Arra
     encodeManifestHash(writer, input.matchingPolicyHash, 'matchingPolicyHash');
     encodeVersionedManifestRef(writer, input.strategySeries);
     encodeProtocolId(writer, input.riskDomainId, 'riskDomainId');
+    encodeVersionedManifestRef(writer, input.markSource);
+    encodeProtocolId(writer, input.markAuthorityId, 'markAuthorityId');
     encodeAssetRef(writer, input.accountingAsset);
     writer.writeU128(input.packageQuantityIncrementAtoms, 'packageQuantityIncrementAtoms');
     writer.writeU128(input.priceTickQuoteAtoms, 'priceTickQuoteAtoms');
@@ -689,8 +704,7 @@ export function resolveNativeClearingDefault(input: Readonly<{
   const discount = policy.maximumDefaultTransferDiscountBps;
   const minimumLongPrice = mulDiv(mark, BPS - discount, BPS, ROUNDING.CEIL, 'resolveNativeClearingDefault.minimumLongPrice');
   const maximumShortPrice = mulDiv(mark, BPS + discount, BPS, ROUNDING.FLOOR, 'resolveNativeClearingDefault.maximumShortPrice');
-  if ((defaulterBefore.positionAtoms > 0n && transferPrice < minimumLongPrice)
-    || (defaulterBefore.positionAtoms < 0n && transferPrice > maximumShortPrice)) {
+  if (transferPrice < minimumLongPrice || transferPrice > maximumShortPrice) {
     throw new MalformedInputError('resolveNativeClearingDefault.transferPriceTicks', 'default transfer price exceeds its bound');
   }
   const transferValue = quoteValue(policy, defaulterBefore.positionAtoms, transferPrice, 'resolveNativeClearingDefault.transferValue');
