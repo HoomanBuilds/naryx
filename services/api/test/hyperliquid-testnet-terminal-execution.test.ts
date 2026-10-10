@@ -369,3 +369,39 @@ test("the reconcile sweep pages past attempts that never finalize, survives a co
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+test("a final result whose owner-ledger settle failed after it was stored is settled by the next execute or sweep", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-terminal-settle-"));
+  const second = { attemptId: "attempt-settle-000002", idempotencyKey: "idem-settle-00000002" };
+  const failing = new Set([REQUEST.attemptId, second.attemptId]);
+  const settled: string[] = [];
+  let executions = 0;
+  const port = new DurableHyperliquidTestnetTerminalExecutionPort(join(scratch, "execution.db"), {
+    executeAttempt: async (request) => {
+      executions += 1;
+      return result(request);
+    },
+  }, {
+    requireOwnerAuthorization: () => {},
+    admit: () => {},
+    settle: (request) => {
+      if (failing.delete(request.attemptId)) throw new Error("ledger busy");
+      settled.push(request.attemptId);
+    },
+  });
+  try {
+    await assert.rejects(port.execute(REQUEST), /ledger busy/);
+    await assert.rejects(port.execute(second), /ledger busy/);
+    assert.deepEqual(await port.execute(REQUEST), result(REQUEST));
+    assert.deepEqual(await port.execute(REQUEST), result(REQUEST));
+    assert.deepEqual(settled, [REQUEST.attemptId]);
+    assert.equal(await port.reconcileUnresolved(), 0);
+    assert.deepEqual(settled, [REQUEST.attemptId, second.attemptId]);
+    await port.reconcileUnresolved();
+    assert.deepEqual(settled, [REQUEST.attemptId, second.attemptId]);
+    assert.equal(executions, 2);
+  } finally {
+    port.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});

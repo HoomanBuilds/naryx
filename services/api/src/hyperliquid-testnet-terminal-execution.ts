@@ -19,6 +19,14 @@ const MAX_RESPONSE_BYTES = 65_536;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 300_000;
 const STATUS_TIMEOUT_MS = 5_000;
+/** SQL form of hyperliquidTerminalResultIsFinal over a stored result_json. */
+const FINAL_RESULT_SQL = `CASE WHEN json_valid(result_json) THEN (
+  json_extract(result_json, '$.status') IN ('NOT_SUBMITTED', 'CHECKPOINT_INCOMPLETE', 'CHECKPOINT_FAILED')
+  OR (json_extract(result_json, '$.status') = 'RECONCILED'
+    AND json_extract(result_json, '$.packageStatus') IN ('NO_EFFECT', 'COMPLETED_EXACT', 'COMPLETED_BOUNDED'))
+  OR (json_extract(result_json, '$.status') = 'STRATEGY_EXECUTION'
+    AND json_extract(result_json, '$.packageStatus') IN ('NO_EFFECT', 'COMPLETED')))
+  ELSE 0 END`;
 let cachedRepositoryRoot: string | undefined;
 
 type StoredExecutionRow = Readonly<{
@@ -292,6 +300,9 @@ implements HyperliquidTestnetTerminalExecutionPort {
   readonly #resolveUncertain: Database.Statement;
   readonly #replaceUnresolved: Database.Statement;
   readonly #selectUnresolved: Database.Statement;
+  readonly #markSettled: Database.Statement;
+  readonly #selectSettled: Database.Statement;
+  readonly #selectUnsettled: Database.Statement;
   readonly #guard: HyperliquidTestnetExecutionGuard | undefined;
 
   constructor(
@@ -321,6 +332,9 @@ implements HyperliquidTestnetTerminalExecutionPort {
         status TEXT NOT NULL CHECK (status IN ('PENDING', 'COMPLETED', 'UNCERTAIN')),
         result_json TEXT,
         CHECK ((status = 'COMPLETED') = (result_json IS NOT NULL))
+      ) STRICT;
+      CREATE TABLE IF NOT EXISTS hyperliquid_terminal_settlements (
+        idempotency_key TEXT PRIMARY KEY REFERENCES hyperliquid_terminal_executions(idempotency_key)
       ) STRICT;
     `);
     const version = this.#db.prepare(
@@ -360,14 +374,20 @@ implements HyperliquidTestnetTerminalExecutionPort {
     `);
     this.#selectUnresolved = this.#db.prepare(`
       SELECT idempotency_key, attempt_id, result_json FROM hyperliquid_terminal_executions
-      WHERE status = 'COMPLETED' AND CASE WHEN json_valid(result_json) THEN NOT (
-        json_extract(result_json, '$.status') IN ('NOT_SUBMITTED', 'CHECKPOINT_INCOMPLETE', 'CHECKPOINT_FAILED')
-        OR (json_extract(result_json, '$.status') = 'RECONCILED'
-          AND json_extract(result_json, '$.packageStatus') IN ('NO_EFFECT', 'COMPLETED_EXACT', 'COMPLETED_BOUNDED'))
-        OR (json_extract(result_json, '$.status') = 'STRATEGY_EXECUTION'
-          AND json_extract(result_json, '$.packageStatus') IN ('NO_EFFECT', 'COMPLETED')))
-        ELSE 0 END
+      WHERE status = 'COMPLETED' AND json_valid(result_json) AND NOT ${FINAL_RESULT_SQL}
       ORDER BY rowid LIMIT ? OFFSET ?
+    `);
+    this.#markSettled = this.#db.prepare(
+      "INSERT OR IGNORE INTO hyperliquid_terminal_settlements (idempotency_key) VALUES (?)",
+    );
+    this.#selectSettled = this.#db.prepare("SELECT 1 FROM hyperliquid_terminal_settlements WHERE idempotency_key = ?");
+    // A final result whose owner-ledger settle never succeeded, for example because it threw after
+    // the result was stored. Rows recorded before settlements were tracked are settled again once.
+    this.#selectUnsettled = this.#db.prepare(`
+      SELECT e.idempotency_key, e.attempt_id FROM hyperliquid_terminal_executions e
+      LEFT JOIN hyperliquid_terminal_settlements s ON s.idempotency_key = e.idempotency_key
+      WHERE s.idempotency_key IS NULL AND e.status = 'COMPLETED' AND ${FINAL_RESULT_SQL}
+      ORDER BY e.rowid LIMIT ? OFFSET ?
     `);
     this.#resolveUncertain = this.#db.prepare(`
       UPDATE hyperliquid_terminal_executions
@@ -413,33 +433,53 @@ implements HyperliquidTestnetTerminalExecutionPort {
     }
   }
 
+  /** Settles the owner ledger; a final result is recorded as settled so a failed settle is retried. */
+  #settle(
+    request: HyperliquidTestnetTerminalExecutionRequest,
+    result: HyperliquidTestnetTerminalExecutionResult,
+  ): void {
+    if (this.#guard === undefined) return;
+    this.#guard.settle(request, result);
+    if (hyperliquidTerminalResultIsFinal(result)) this.#markSettled.run(request.idempotencyKey);
+  }
+
+  #settleIfUnsettled(
+    request: HyperliquidTestnetTerminalExecutionRequest,
+    result: HyperliquidTestnetTerminalExecutionResult,
+  ): HyperliquidTestnetTerminalExecutionResult {
+    if (this.#guard !== undefined && hyperliquidTerminalResultIsFinal(result)
+      && this.#selectSettled.get(request.idempotencyKey) === undefined) {
+      this.#settle(request, result);
+    }
+    return result;
+  }
+
   async #execute(
     request: HyperliquidTestnetTerminalExecutionRequest,
   ): Promise<HyperliquidTestnetTerminalExecutionResult> {
     const stored = this.#stored(request);
-    if (stored !== undefined) return stored;
+    if (stored !== undefined) return this.#settleIfUnsettled(request, stored);
     this.#guard?.admit(request);
     try {
       this.#insertPending.run(request.idempotencyKey, request.attemptId);
     } catch {
       const raced = this.#stored(request);
-      if (raced !== undefined) return raced;
+      if (raced !== undefined) return this.#settleIfUnsettled(request, raced);
       throw new HyperliquidTestnetTerminalExecutionStateError(
         "IDEMPOTENCY_CONFLICT",
         "Hyperliquid attempt is already bound to a different idempotency key.",
       );
     }
 
+    let result: HyperliquidTestnetTerminalExecutionResult;
     try {
-      const result = validateHyperliquidTestnetTerminalExecutionResult(
+      result = validateHyperliquidTestnetTerminalExecutionResult(
         await this.#executor.executeAttempt(request),
         request,
       );
       const serialized = JSON.stringify(result);
       const update = this.#complete.run(serialized, request.idempotencyKey, request.attemptId);
       if (update.changes !== 1) throw uncertain();
-      this.#guard?.settle(request, result);
-      return result;
     } catch (error) {
       try {
         this.#markUncertain.run(request.idempotencyKey, request.attemptId);
@@ -448,6 +488,9 @@ implements HyperliquidTestnetTerminalExecutionPort {
       }
       throw error;
     }
+    // The result is stored; a settle that throws here is retried by the next execute or sweep.
+    this.#settle(request, result);
+    return result;
   }
 
   /** The stored result, or the executor's later final result for a stored non-final one. */
@@ -474,17 +517,21 @@ implements HyperliquidTestnetTerminalExecutionPort {
     // The owner ledger is settled first: if this process stops, or settling fails, before the stored
     // result is replaced, the attempt stays non-final and the next read or sweep settles it again
     // (settling is idempotent). The other order could leave a final result with an unsettled ledger.
-    this.#guard?.settle(request, fresh);
+    this.#settle(request, fresh);
     const update = this.#replaceUnresolved.run(JSON.stringify(fresh), request.idempotencyKey, request.attemptId, storedJson);
     return update.changes === 1 ? fresh : this.#stored(request)!;
   }
 
   /**
    * Server-side reconciliation: re-reads up to `limit` stored non-final attempts from the executor
-   * and records any that became final, so owners' packages leave UNRESOLVED without anyone polling.
+   * and records any that became final, so owners' packages leave UNRESOLVED without anyone polling,
+   * then retries the owner-ledger settle of up to `limit` final attempts never settled.
    * Returns how many were resolved.
    */
-  async reconcileUnresolved(limit = 20, cursor: { offset: number } = { offset: 0 }): Promise<number> {
+  async reconcileUnresolved(
+    limit = 20,
+    cursor: { offset: number; settleOffset?: number } = { offset: 0 },
+  ): Promise<number> {
     type Row = { idempotency_key: string; attempt_id: string; result_json: string };
     // Pages through every non-final attempt across sweeps, so attempts that never become final
     // (abandoned holders, unknown outcomes) cannot starve newer ones.
@@ -503,6 +550,24 @@ implements HyperliquidTestnetTerminalExecutionPort {
         if (result !== stored) resolved += 1;
       } catch {
         // One unreadable attempt never stops the sweep.
+      }
+    }
+    if (this.#guard !== undefined) {
+      type Unsettled = { idempotency_key: string; attempt_id: string };
+      let offset = cursor.settleOffset ?? 0;
+      let unsettled = this.#selectUnsettled.all(limit, offset) as Unsettled[];
+      if (unsettled.length === 0 && offset > 0) {
+        offset = 0;
+        unsettled = this.#selectUnsettled.all(limit, 0) as Unsettled[];
+      }
+      cursor.settleOffset = unsettled.length < limit ? 0 : offset + limit;
+      for (const row of unsettled) {
+        const request = { attemptId: row.attempt_id, idempotencyKey: row.idempotency_key } as HyperliquidTestnetTerminalExecutionRequest;
+        try {
+          this.#settleIfUnsettled(request, this.#stored(request)!);
+        } catch {
+          // A settle that keeps failing stays unsettled and is retried by a later sweep.
+        }
       }
     }
     return resolved;
@@ -549,7 +614,7 @@ implements HyperliquidTestnetTerminalExecutionPort {
     }
     if (row.status === "COMPLETED") {
       const result = await this.#latest(request, this.#stored(request)!, row.result_json as string);
-      this.#guard?.settle(request, result);
+      this.#settle(request, result);
       return Object.freeze({ state: "COMPLETED" as const, result });
     }
     if (this.#executor.attemptStatus === undefined) {
@@ -560,7 +625,7 @@ implements HyperliquidTestnetTerminalExecutionPort {
     if (status.state === "COMPLETED" && status.result !== null) {
       if (!inFlight) {
         const update = this.#resolveUncertain.run(JSON.stringify(status.result), request.idempotencyKey, request.attemptId);
-        if (update.changes === 1) this.#guard?.settle(request, status.result);
+        if (update.changes === 1) this.#settle(request, status.result);
       }
       return Object.freeze({ state: "COMPLETED" as const, result: status.result });
     }
