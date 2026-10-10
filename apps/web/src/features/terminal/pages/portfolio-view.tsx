@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense } from "react";
+import { parseUnits } from "viem";
 import { AssetIcon, ChainIcon } from "@/features/brand/chain-icons";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
@@ -67,17 +68,15 @@ function amountText(amount: Amount, balance: ChainBalance, connected: boolean, q
   return <>{amount.value} <span className={styles.dim}>{amount.symbol}</span></>;
 }
 
+/** Sums each lane's full-precision balance as integer atoms; the total is truncated toward zero to cents. */
 function sumUsdc(amounts: readonly Amount[]): string | null {
-  let total = 0;
-  let any = false;
-  for (const amount of amounts) {
-    if (!amount) continue;
-    const value = Number(amount.value);
-    if (!Number.isFinite(value)) continue;
-    total += value;
-    any = true;
-  }
-  return any ? total.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : null;
+  const exact = amounts.flatMap((amount) => amount?.exact === undefined ? [] : [amount.exact]);
+  if (exact.length === 0) return null;
+  const scale = Math.max(2, ...exact.map((value) => value.split(".")[1]?.length ?? 0));
+  const total = exact.reduce((sum, value) => sum + parseUnits(value, scale), BigInt(0));
+  const cents = total / BigInt(10) ** BigInt(scale - 2);
+  const absolute = cents < BigInt(0) ? -cents : cents;
+  return `${cents < BigInt(0) ? "-" : ""}${(absolute / BigInt(100)).toLocaleString("en-US")}.${(absolute % BigInt(100)).toString().padStart(2, "0")}`;
 }
 
 function shortId(value: string): string {
@@ -121,18 +120,16 @@ function StrategyManagement({
         />
       ) : null}
       {strategies.length > 0 ? (
-        <>
-          <StrategyLifecycleManager
-            key={`lifecycle-${validReceipt}-${validState}`}
-            baseUrl={baseUrl}
-            strategies={strategies}
-            refresh={refresh}
-            initialReceiptHash={validState === "" ? "" : validReceipt}
-            initialStateHash={validState}
-          />
-          <StrategyNovation baseUrl={baseUrl} strategies={strategies} refresh={refresh} />
-        </>
+        <StrategyLifecycleManager
+          key={`lifecycle-${validReceipt}-${validState}`}
+          baseUrl={baseUrl}
+          strategies={strategies}
+          refresh={refresh}
+          initialReceiptHash={validState === "" ? "" : validReceipt}
+          initialStateHash={validState}
+        />
       ) : null}
+      {connected ? <StrategyNovation baseUrl={baseUrl} strategies={strategies} refresh={refresh} /> : null}
     </>
   );
 }
@@ -162,6 +159,11 @@ export function PortfolioView() {
     balances.hyperliquid.usdc,
     balances.hyperliquid.perpEquity ?? null,
   ]);
+  const usdcPartial = DOMAIN_ORDER.some((domain) => {
+    const balance = balances[domain];
+    return accountFor(domain) !== null && (balance.loading || balance.failed || balance.perpEquity === null
+      || (!balance.quoteUnconfigured && balance.usdc === null));
+  });
   const connectedCount = (solanaAddress ? 1 : 0) + (evmAddress ? 1 : 0);
   const faucets = useTestUsdcFaucets();
   const faucetNotices = DOMAIN_ORDER.flatMap((domain) => {
@@ -183,7 +185,7 @@ export function PortfolioView() {
         <div>
           <span>Testnet USDC</span>
           <strong>{usdcTotal !== null ? `$${usdcTotal}` : "-"}</strong>
-          <small>Across connected accounts</small>
+          <small>{usdcPartial ? "Partial: some balances not read" : "Across connected accounts"}</small>
         </div>
         <div>
           <span>Open packages</span>

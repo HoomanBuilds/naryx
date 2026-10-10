@@ -161,7 +161,8 @@ export function NetworkView() {
         {DOMAIN_ORDER.map((domain) => {
           const meta = DOMAIN_META[domain];
           const health = domainHealth(domain, runtimeHealth);
-          const status = statusOf(healthState, health, domainGateUp(domain, runtimeHealth));
+          const cardGateUp = domainGateUp(domain, runtimeHealth);
+          const status = statusOf(healthState, health, cardGateUp);
           const selected = domain === selectedDomain;
           return (
             <button
@@ -181,7 +182,7 @@ export function NetworkView() {
                 </span>
                 <span className={pillFor(status)}>{status}</span>
               </span>
-              <p>{blockerOf(healthState, health, domain, gateUp)}</p>
+              <p>{blockerOf(healthState, health, domain, cardGateUp)}</p>
               <dl className={styles.facts}>
                 <dt>Runtime</dt><dd>{meta.runtime}</dd>
                 <dt>Settlement</dt><dd title={meta.settlementClass}>{meta.settlement}</dd>

@@ -12,6 +12,7 @@ import {
   type SignedStrategyCommandAuthorization,
   type StrategyCommandAuthorizationSigner,
   type StrategyCommandInput,
+  type StrategyState,
 } from "@naryx/sdk";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
@@ -79,6 +80,7 @@ export function StrategyNovation({
   const [evidence, setEvidence] = useState<Readonly<Record<string, string>>>({});
   const [proposalText, setProposalText] = useState("");
   const [reviewed, setReviewed] = useState<Proposal | null>(null);
+  const [takeover, setTakeover] = useState<StrategyState | null>(null);
   const [busy, setBusy] = useState<"idle" | "signing" | "submitting">("idle");
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const selected = strategies.find((strategy) => strategy.strategyId === selectedId) ?? strategies[0] ?? null;
@@ -101,9 +103,11 @@ export function StrategyNovation({
     if (selected === null) return;
     setBusy("signing");
     setNotice(null);
+    setTakeover(null);
     try {
       if (!transferable) throw new Error("This strategy is not transferable. Exit and re-enter under the new owner.");
-      if ((!EVM_OWNER.test(newOwnerId) && !solanaOwner(newOwnerId)) || newOwnerId === selected.state.ownerId) {
+      const newOwner = /^0x/i.test(newOwnerId) ? newOwnerId.toLowerCase() : newOwnerId;
+      if ((!EVM_OWNER.test(newOwner) && !solanaOwner(newOwner)) || newOwner === selected.state.ownerId) {
         throw new Error("Enter a different canonical EVM or Solana owner address.");
       }
       const venueConfirmations = venues.map((venueId) => {
@@ -119,7 +123,7 @@ export function StrategyNovation({
         expectedStateVersion: selected.state.stateVersion,
         expectedStateHash: selected.stateHash,
         atValue: BigInt(clockMs()),
-        parameters: { kind: "NOVATE", newOwnerId, venueConfirmations },
+        parameters: { kind: "NOVATE", newOwnerId: newOwner, venueConfirmations },
       };
       const authorization = await authorizeStrategyCommand(command, signerFor(command.actorId));
       const proposal: Proposal = Object.freeze({ version: 1, command, commandHash: authorization.commandHash, authorization });
@@ -135,14 +139,24 @@ export function StrategyNovation({
     }
   };
 
-  const reviewProposal = () => {
+  const reviewProposal = async () => {
     setNotice(null);
+    setTakeover(null);
     try {
       const proposal = parseProposal(proposalText);
       const age = clockMs() - Number(proposal.command.atValue);
       if (!Number.isSafeInteger(age) || age < -300_000 || age > 300_000) throw new Error("Proposal is outside the strategy book's five-minute command window.");
+      const current = await new NaryxClient({ baseUrl }).getStrategy(proposal.command.strategyId);
+      if (current.state.ownerId !== proposal.command.actorId || current.state.stateVersion !== proposal.command.expectedStateVersion
+        || current.stateHash !== proposal.command.expectedStateHash) {
+        throw new Error("Proposal does not match the strategy's current owner, version, and state hash.");
+      }
       setReviewed(proposal);
-      setNotice({ kind: "ok", text: `Verified ${proposal.commandHash.slice(0, 12)}... locally. Connect the incoming owner to consent.` });
+      setTakeover(current.state);
+      setNotice({
+        kind: "ok",
+        text: `Command ${proposal.commandHash.slice(0, 12)}... is hash-bound to the strategy's current state. The current owner's signature is not checked here; the service verifies it on submit. Connect the incoming owner to consent.`,
+      });
     } catch (error) {
       setReviewed(null);
       setNotice({ kind: "error", text: error instanceof Error ? error.message : "Proposal review failed." });
@@ -172,7 +186,6 @@ export function StrategyNovation({
     }
   };
 
-  if (selected === null) return null;
   const reviewedNewOwner = reviewed?.command.parameters.kind === "NOVATE" ? reviewed.command.parameters.newOwnerId : null;
 
   return (
@@ -182,10 +195,10 @@ export function StrategyNovation({
           <h2 id="novation-title">Two-party strategy novation</h2>
           <p>Transfer a complete strategy only after both owners sign the same state-bound command and every venue confirms its position transfer.</p>
         </div>
-        <span className={transferable ? styles.pillOk : styles.pillWarn}>{transferable ? "Transferable state" : "Exit and re-enter"}</span>
+        {selected ? <span className={transferable ? styles.pillOk : styles.pillWarn}>{transferable ? "Transferable state" : "Exit and re-enter"}</span> : null}
       </div>
       <div className={`${styles.cardBody} ${styles.novationGrid}`}>
-        <div className={styles.novationPane}>
+        {selected ? <div className={styles.novationPane}>
           <h3>1. Current owner creates proposal</h3>
           <label className={styles.field}>
             <span>Strategy</span>
@@ -201,15 +214,15 @@ export function StrategyNovation({
             </label>
           ))}
           <button type="button" className={styles.connect} disabled={busy !== "idle" || !transferable} onClick={() => void createProposal()}>{busy === "signing" ? "Awaiting owner signature..." : "Sign novation proposal"}</button>
-        </div>
+        </div> : null}
         <div className={styles.novationPane}>
-          <h3>2. Incoming owner verifies and consents</h3>
+          <h3>2. Incoming owner reviews and consents</h3>
           <label className={styles.field}>
             <span>Portable signed proposal</span>
-            <textarea className={styles.novationPayload} value={proposalText} onChange={(event) => { setProposalText(event.target.value); setReviewed(null); setNotice(null); }} placeholder="Paste protocol JSON from the current owner" spellCheck={false} />
+            <textarea className={styles.novationPayload} value={proposalText} onChange={(event) => { setProposalText(event.target.value); setReviewed(null); setTakeover(null); setNotice(null); }} placeholder="Paste protocol JSON from the current owner" spellCheck={false} />
           </label>
           <div className={styles.lifecycleActions}>
-            <button type="button" className={styles.ghost} disabled={proposalText.trim() === "" || busy !== "idle"} onClick={reviewProposal}>Verify proposal</button>
+            <button type="button" className={styles.ghost} disabled={proposalText.trim() === "" || busy !== "idle"} onClick={() => void reviewProposal()}>Check proposal</button>
             <button type="button" className={styles.connect} disabled={reviewedNewOwner === null || busy !== "idle"} onClick={() => void consentAndSubmit()}>{busy === "submitting" ? "Signing and submitting..." : "Consent and submit"}</button>
           </div>
           {reviewed ? (
@@ -218,6 +231,13 @@ export function StrategyNovation({
               <div><dt>From</dt><dd>{short(reviewed.command.actorId)}</dd></div>
               <div><dt>To</dt><dd>{short(reviewedNewOwner ?? "")}</dd></div>
               <div><dt>Command</dt><dd>{reviewed.commandHash.slice(0, 16)}...</dd></div>
+              {takeover ? (
+                <>
+                  <div><dt>State version</dt><dd>{takeover.stateVersion.toString()}</dd></div>
+                  <div><dt>Legs</dt><dd>{takeover.legs.map((leg) => `${leg.instrumentId} ${leg.signedQuantityAtoms.toString()} atoms`).join("; ") || "None"}</dd></div>
+                  <div><dt>Liabilities</dt><dd>{takeover.liabilities.map((liability) => `${liability.kind} ${liability.atoms.toString()} ${liability.assetId} atoms`).join("; ") || "None"}</dd></div>
+                </>
+              ) : null}
             </dl>
           ) : null}
         </div>

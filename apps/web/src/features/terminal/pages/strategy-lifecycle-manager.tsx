@@ -209,10 +209,12 @@ export function StrategyLifecycleManager({
     }
     if (action === "DELEGATE") {
       const hours = Number(delegationHours);
-      if (!ID.test(delegateId)) throw new Error("Delegate id is malformed.");
+      // Delegates act under their lowercase EVM address, so a pasted checksummed address must match it.
+      const delegate = /^0x/i.test(delegateId) ? delegateId.toLowerCase() : delegateId;
+      if (!ID.test(delegate)) throw new Error("Delegate id is malformed.");
       if (authorities.length === 0) throw new Error("Select at least one risk-reducing authority.");
       if (!Number.isSafeInteger(hours) || hours < 1 || hours > 720) throw new Error("Delegation duration must be 1 to 720 hours.");
-      return { kind: action, delegateId, authorities, expiresAtValue: BigInt(Date.now() + hours * 3_600_000) };
+      return { kind: action, delegateId: delegate, authorities, expiresAtValue: BigInt(Date.now() + hours * 3_600_000) };
     }
     if (action === "REVOKE_DELEGATION") {
       if (!ID.test(revokeId)) throw new Error("Select a current delegate.");

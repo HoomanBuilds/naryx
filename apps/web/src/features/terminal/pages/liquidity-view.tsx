@@ -2,15 +2,16 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useTerminal } from "../shell/terminal-context";
-import type {
-  MakerOperationsSnapshot,
-  MakerShardView,
+import {
+  MakerOperationsUnconfiguredError,
+  type MakerOperationsSnapshot,
+  type MakerShardView,
 } from "../private-http-terminal-provider";
 import { MakerControlPanel } from "./maker-control-panel";
 import styles from "./pages.module.css";
 
 type LoadState = Readonly<{
-  status: "idle" | "loading" | "ready" | "error";
+  status: "idle" | "loading" | "ready" | "error" | "unconfigured";
   snapshot: MakerOperationsSnapshot | null;
 }>;
 
@@ -50,8 +51,10 @@ export function LiquidityView() {
     const controller = new AbortController();
     privateProvider.getMakerOperations(controller.signal)
       .then((snapshot) => setLoad({ status: "ready", snapshot }))
-      .catch(() => {
-        if (!controller.signal.aborted) setLoad((current) => ({ status: "error", snapshot: current.snapshot }));
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        const status = error instanceof MakerOperationsUnconfiguredError ? "unconfigured" : "error";
+        setLoad((current) => ({ status, snapshot: current.snapshot }));
       });
     return () => controller.abort();
   }, [privateProvider, request]);
@@ -59,7 +62,7 @@ export function LiquidityView() {
   const snapshot = load.snapshot;
   const levels = snapshot?.shards.flatMap((shard) => shard.quoteLevels.map((level) => ({ shard, level }))) ?? [];
   const loading = load.status === "idle" || load.status === "loading";
-  const unavailable = privateProvider === null || load.status === "error";
+  const unconfigured = privateProvider === null || load.status === "unconfigured";
 
   return (
     <main className={styles.page}>
@@ -84,11 +87,24 @@ export function LiquidityView() {
         </section>
       ) : null}
 
-      {unavailable && !snapshot ? (
+      {snapshot && (load.status === "error" || load.status === "unconfigured") ? (
+        <p className={styles.notice} role="status">The latest refresh failed. Showing the snapshot as of {snapshot.asOfValue.toString()}, which may be stale.</p>
+      ) : null}
+
+      {!snapshot && unconfigured ? (
         <section className={styles.card}>
           <div className={styles.empty}>
             <strong>Maker operations are not configured</strong>
             <p>Enable the solver API and bind NARYX_MAKER_SOLVER_ID in the private service. No signing key is exposed to this browser.</p>
+          </div>
+        </section>
+      ) : null}
+
+      {!snapshot && load.status === "error" ? (
+        <section className={styles.card}>
+          <div className={styles.empty}>
+            <strong>Maker operations are unavailable</strong>
+            <p>The private service could not return maker operations. Refresh to try again.</p>
           </div>
         </section>
       ) : null}

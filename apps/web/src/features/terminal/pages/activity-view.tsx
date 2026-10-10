@@ -7,7 +7,7 @@ import { useMemo, useState } from "react";
 import { ChainIcon } from "@/features/brand/chain-icons";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
-import type { OwnerPackageEntry, PackageLifecycleResponse } from "../private-http-terminal-provider";
+import type { OwnerPackageEntry, PackageLifecycleResponse, PackageLifecycleState } from "../private-http-terminal-provider";
 import { DOMAIN_META, useTerminal } from "../shell/terminal-context";
 import { attemptsOf, type RecordedAttempt } from "../shell/attempt-index";
 import styles from "./pages.module.css";
@@ -25,6 +25,8 @@ const EXPLORER_TX: Readonly<Partial<Record<RecordedAttempt["domain"], string>>> 
   base: "https://sepolia.basescan.org/tx/",
   arbitrum: "https://sepolia.arbiscan.io/tx/",
 };
+
+const TERMINAL_LIFECYCLE_STATES: ReadonlySet<PackageLifecycleState> = new Set(["CLOSED", "FAILED", "EXPIRED", "CANCELLED"]);
 
 function compact(value: string, leading = 10, trailing = 6) {
   return value.length > leading + trailing + 3 ? `${value.slice(0, leading)}...${value.slice(-trailing)}` : value;
@@ -336,7 +338,7 @@ export function ActivityView() {
   const strategyReceipts = [...new Map(
     strategyReceiptQueries.flatMap((query) => query.data ?? []).map((receipt) => [receipt.receiptHash, receipt]),
   ).values()].sort((left, right) => right.recordedAtMs - left.recordedAtMs);
-  const strategyReceiptsLoading = strategyReceiptQueries.some((query) => query.isPending);
+  const strategyReceiptsLoading = strategyReceiptQueries.some((query) => query.isLoading);
   const strategyReceiptsUnavailable = strategyReceiptQueries.some((query) => query.isError);
   const proofReceipt = strategyReceipts.find((receipt) => receipt.receiptHash === proofReceiptHash) ?? null;
   const strategyProof = useQuery({
@@ -381,7 +383,8 @@ export function ActivityView() {
     queries: attempts.map((attempt) => ({
       queryKey: ["lifecycle", attempt.attemptId],
       enabled: privateProvider !== null && readable(attempt),
-      refetchInterval: 15_000,
+      refetchInterval: (query: { state: { data?: PackageLifecycleResponse } }) =>
+        query.state.data !== undefined && TERMINAL_LIFECYCLE_STATES.has(query.state.data.attempt.state) ? false : 15_000,
       queryFn: ({ signal }: { signal: AbortSignal }): Promise<PackageLifecycleResponse> => {
         if (!privateProvider) throw new Error("Private service not configured.");
         return privateProvider.getPackageLifecycle(attempt.attemptId, signal);
@@ -402,8 +405,13 @@ export function ActivityView() {
         </div>
         {attempts.length > 0 ? (
           <div className={styles.headActions}>
-            <button type="button" className={styles.ghost} onClick={() => { setOpenId(null); setProofReceiptHash(null); clearAttempts(owners); }}>
-              Clear list
+            <button
+              type="button"
+              className={styles.ghost}
+              title="Removes this browser's record only; packages the service lists for your wallets stay."
+              onClick={() => { setOpenId(null); setProofReceiptHash(null); clearAttempts(owners); }}
+            >
+              Clear local list
             </button>
           </div>
         ) : null}
@@ -446,13 +454,17 @@ export function ActivityView() {
                     <div className={styles.empty}>
                       <strong>{owners.length === 0
                         ? "Connect a wallet"
-                        : strategyReceiptsLoading
+                        : publicApiBaseUrl === null
+                          ? "Strategy receipts not connected"
+                          : strategyReceiptsLoading
                           ? "Loading strategy receipts"
                           : strategyReceiptsUnavailable
                             ? "Strategy receipts unavailable"
                             : "No strategy receipts yet"}</strong>
                       <p>{owners.length === 0
                         ? "Connect a Solana or EVM wallet to load its canonical strategy receipt history."
+                        : publicApiBaseUrl === null
+                        ? "The public evidence service is not configured for this deployment, so receipt history cannot be read."
                         : strategyReceiptsUnavailable
                         ? "The public evidence service could not return the connected wallet's receipt history."
                         : "A finalized package execution appears here and can be recorded or applied in Portfolio."}</p>

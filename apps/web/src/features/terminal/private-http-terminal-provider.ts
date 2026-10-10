@@ -2992,6 +2992,14 @@ export class TerminalMarketUnavailableError extends Error {
   }
 }
 
+/** The private service does not mount the maker operations route, so no maker solver is bound. */
+export class MakerOperationsUnconfiguredError extends Error {
+  constructor() {
+    super("Maker operations are not configured.");
+    this.name = "MakerOperationsUnconfiguredError";
+  }
+}
+
 /** The service answered and refused the ticket's input, such as a size outside the lane's range. */
 export class TerminalPreviewRejectedError extends Error {
   readonly code: string;
@@ -4031,6 +4039,7 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
       referrerPolicy: "no-referrer",
       signal,
     });
+    if (response.status === 404) throw new MakerOperationsUnconfiguredError();
     if (!response.ok) throw new Error("Maker operations are unavailable.");
     let payload: unknown;
     try {

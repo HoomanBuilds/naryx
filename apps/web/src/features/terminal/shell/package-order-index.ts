@@ -16,6 +16,7 @@ const EMPTY: readonly RecordedPackageOrder[] = Object.freeze([]);
 const HASH = /^[0-9a-f]{64}$/;
 const PARTICIPANT = /^(?:0x(?!0{40}$)[0-9a-f]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/;
 
+// Set only while browser storage rejects writes, so other tabs' records are otherwise read from storage.
 let memory: string | null = null;
 let cachedRaw: string | null = null;
 let cachedValue: readonly RecordedPackageOrder[] = EMPTY;
@@ -81,11 +82,12 @@ export function usePackageOrderIndex(): [
     if (!valid(entry)) return;
     const next = [entry, ...snapshot().filter((current) => current.packageOrderId !== entry.packageOrderId)].slice(0, LIMIT);
     const encoded = JSON.stringify(next);
-    memory = encoded;
     try {
       window.localStorage.setItem(KEY, encoded);
+      memory = null;
     } catch {
       // The in-memory index still lets this browser session recover the order.
+      memory = encoded;
     }
     window.dispatchEvent(new Event(CHANGE_EVENT));
   }, []);

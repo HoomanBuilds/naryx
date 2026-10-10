@@ -27,6 +27,7 @@ const DOMAINS: readonly string[] = ["solana", "base", "arbitrum", "hyperliquid"]
 const FLOWS: readonly string[] = ["devnet", "conformance", "hyperliquid", "base", "arbitrum"];
 const OWNER = /^(?:0x[0-9a-fA-F]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/;
 
+// Set only while browser storage rejects writes, so other tabs' records are otherwise read from storage.
 let memory: string | null = null;
 let cachedRaw: string | null = null;
 let cachedValue: readonly RecordedAttempt[] = EMPTY;
@@ -99,11 +100,12 @@ export function useAttemptIndex(): [
     if (!isAttempt(attempt)) return;
     const next = [attempt, ...snapshot().filter((entry) => entry.attemptId !== attempt.attemptId)].slice(0, LIMIT);
     const raw = JSON.stringify(next);
-    memory = raw;
     try {
       window.localStorage.setItem(KEY, raw);
+      memory = null;
     } catch {
       // Storage can be unavailable; the in-memory copy keeps this session's list.
+      memory = raw;
     }
     window.dispatchEvent(new Event(CHANGE_EVENT));
   }, []);
@@ -111,11 +113,12 @@ export function useAttemptIndex(): [
   const clear = useCallback((owners: readonly string[]) => {
     const keys = new Set(owners.map(ownerKey));
     const raw = JSON.stringify(snapshot().filter((entry) => !keys.has(ownerKey(entry.owner))));
-    memory = raw;
     try {
       window.localStorage.setItem(KEY, raw);
+      memory = null;
     } catch {
       // Storage can be unavailable; the in-memory copy keeps this session's list.
+      memory = raw;
     }
     window.dispatchEvent(new Event(CHANGE_EVENT));
   }, []);

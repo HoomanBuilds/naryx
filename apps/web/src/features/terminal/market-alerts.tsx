@@ -6,6 +6,7 @@ import styles from "./pages/pages.module.css";
 
 const STORAGE_KEY = "naryx.terminal.market-alerts.v1";
 const STORAGE_EVENT = "naryx-market-alerts";
+const PERMISSION_EVENT = "naryx-notification-permission";
 const MARKET_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const SIGNED_INTEGER = /^-?(?:0|[1-9][0-9]{0,30})$/;
 const EMPTY_ALERTS: readonly MarketAlert[] = Object.freeze([]);
@@ -65,13 +66,20 @@ function write(alerts: readonly MarketAlert[]) {
   window.dispatchEvent(new Event(STORAGE_EVENT));
 }
 
+function subscribePermission(callback: () => void) {
+  window.addEventListener(PERMISSION_EVENT, callback);
+  return () => window.removeEventListener(PERMISSION_EVENT, callback);
+}
+
+function permissionSnapshot(): NotificationPermission | "unsupported" {
+  return typeof Notification === "undefined" ? "unsupported" : Notification.permission;
+}
+
 export function MarketAlerts({ markets }: { markets: readonly PublicPackageMarket[] }) {
   const alerts = useSyncExternalStore(subscribe, snapshot, () => EMPTY_ALERTS);
   const [marketId, setMarketId] = useState("");
   const [maximumSpreadTicks, setMaximumSpreadTicks] = useState("10");
-  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
-    typeof Notification === "undefined" ? "unsupported" : Notification.permission,
-  );
+  const notificationPermission = useSyncExternalStore(subscribePermission, permissionSnapshot, () => "unsupported" as const);
   const notified = useRef(new Set<string>());
   const marketById = useMemo(() => new Map(markets.map((market) => [market.packageMarketId, market])), [markets]);
   const selectedMarketId = marketById.has(marketId) ? marketId : markets[0]?.packageMarketId ?? "";
@@ -89,10 +97,14 @@ export function MarketAlerts({ markets }: { markets: readonly PublicPackageMarke
       if (notified.current.has(alert.marketId)) continue;
       notified.current.add(alert.marketId);
       const spread = marketById.get(alert.marketId)?.spreadTicks;
-      new Notification("Naryx package spread alert", {
-        body: `${alert.marketId} is executable at ${spread?.toString() ?? "-"} ticks.`,
-        tag: `naryx-market-${alert.marketId}`,
-      });
+      try {
+        new Notification("Naryx package spread alert", {
+          body: `${alert.marketId} is executable at ${spread?.toString() ?? "-"} ticks.`,
+          tag: `naryx-market-${alert.marketId}`,
+        });
+      } catch {
+        // Some mobile browsers expose Notification but only allow it from a service worker; the in-app status still shows.
+      }
     }
   }, [alerts, marketById, notificationPermission, triggered]);
 
@@ -109,7 +121,7 @@ export function MarketAlerts({ markets }: { markets: readonly PublicPackageMarke
           <button
             type="button"
             className={styles.ghost}
-            onClick={() => void Notification.requestPermission().then(setNotificationPermission)}
+            onClick={() => void Notification.requestPermission().then(() => window.dispatchEvent(new Event(PERMISSION_EVENT)))}
           >
             Enable browser alerts
           </button>

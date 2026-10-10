@@ -31,7 +31,8 @@ const SOLANA_DEVNET_QUOTE_MINT = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(process.en
   : null;
 const HYPERLIQUID_TESTNET_INFO = "https://api.hyperliquid-testnet.xyz/info";
 
-export type Amount = Readonly<{ value: string; symbol: string }> | null;
+/** `value` is truncated for display; `exact`, when present, is the full-precision decimal for arithmetic. */
+export type Amount = Readonly<{ value: string; symbol: string; exact?: string }> | null;
 
 export type ChainBalance = Readonly<{
   loading: boolean;
@@ -82,7 +83,11 @@ export function useEvmBalances(account: `0x${string}` | null): Readonly<Record<E
     const balance = usdc.data?.[index];
     const decimals = usdc.data?.[index + 1];
     if (balance?.status !== "success" || decimals?.status !== "success") return null;
-    return { value: decimal(balance.result as bigint, Number(decimals.result)), symbol: "USDC" };
+    return {
+      value: decimal(balance.result as bigint, Number(decimals.result)),
+      symbol: "USDC",
+      exact: formatUnits(balance.result as bigint, Number(decimals.result)),
+    };
   }
 
   if (!enabled) return { base: IDLE, arbitrum: IDLE };
@@ -144,7 +149,9 @@ export function useSolanaBalance(address: string | null): ChainBalance {
       }
       return {
         gas: { value: decimal(BigInt(lamportValue), 9), symbol: "SOL" },
-        usdc: SOLANA_DEVNET_QUOTE_MINT === null ? null : { value: decimal(usdcAtoms, usdcDecimals), symbol: "USDC" },
+        usdc: SOLANA_DEVNET_QUOTE_MINT === null
+          ? null
+          : { value: decimal(usdcAtoms, usdcDecimals), symbol: "USDC", exact: formatUnits(usdcAtoms, usdcDecimals) },
       };
     },
   });
@@ -192,8 +199,8 @@ export function useHyperliquidBalance(account: `0x${string}` | null): ChainBalan
       const equityText = typeof equity === "string" ? trimDecimal(equity) : null;
       const spotText = usdc ? trimDecimal(usdc.total) : "0";
       return {
-        usdc: spotText !== null ? { value: spotText, symbol: "USDC" } : null,
-        perpEquity: equityText !== null ? { value: equityText, symbol: "USDC" } : null,
+        usdc: spotText !== null ? { value: spotText, symbol: "USDC", exact: usdc ? usdc.total : "0" } : null,
+        perpEquity: equityText !== null ? { value: equityText, symbol: "USDC", exact: equity as string } : null,
       };
     },
   });
