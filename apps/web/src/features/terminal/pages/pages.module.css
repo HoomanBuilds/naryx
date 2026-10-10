@@ -283,6 +283,52 @@
   font-size: 14px;
 }
 
+.makerControlGrid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(240px, 1fr) minmax(150px, 0.5fr) auto auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.makerObservedState {
+  min-height: 67px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.makerObservedState span,
+.makerObservedState small {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.makerObservedState strong {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
+}
+
+.dangerButton {
+  min-height: 36px;
+  border: 1px solid color-mix(in srgb, var(--down) 55%, var(--line));
+  border-radius: var(--radius-small);
+  background: color-mix(in srgb, var(--down) 12%, var(--panel));
+  color: var(--down);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+  padding: 0 13px;
+}
+
+.dangerButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .watchFilter {
   display: inline-flex;
   align-items: center;
@@ -906,6 +952,10 @@ a.ghost {
   }
 
   .paperControls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .makerControlGrid {
     grid-template-columns: minmax(0, 1fr);
   }
 

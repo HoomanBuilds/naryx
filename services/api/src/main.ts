@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isAbsolute, resolve } from "node:path";
 import { createPrivateTerminalServer, loadPrivateTerminalServerConfig } from "./http-server.js";
+import { loadMakerControlProxy } from "./maker-control-proxy.js";
 import { loadPublicMarketRuntime } from "./public-market-runtime.js";
 import { SqliteInternalOrderStore } from "./internal-order-store.js";
 import { createLocalAtomicOrderRuntime } from "./local-atomic-order-context.js";
@@ -203,6 +204,7 @@ const orderRuntime = startup.localAtomicRuntimeMode === "PHASE4_FIXTURE"
       manifestRuntime.readSlot,
     );
 const solverOrigin = process.env.NARYX_SOLVER_INTERNAL_ORIGIN ?? "http://127.0.0.1:8788";
+const makerControlProxy = loadMakerControlProxy(process.env, solverOrigin);
 const dependencyIncidentStatus = loadDependencyIncidentStatusClient(process.env);
 const solverClient = new HttpInternalSolverQuoteClient(solverOrigin);
 const generalizedStrategyPreparationSetting = process.env.NARYX_GENERALIZED_STRATEGY_PREPARATION_ENABLED ?? "false";
@@ -1139,6 +1141,7 @@ const server = createPrivateTerminalServer(
   // A dedicated public listener keeps the public API off the private terminal server entirely;
   // keeper executor routes are loopback-only and never ride the public listener.
   privateServerRoutes(
+    makerControlProxy,
     publicMarket?.internalHandler,
     publicMarket?.listener === undefined ? publicMarket?.handler : undefined,
     arbitrumOwnerRoutes,

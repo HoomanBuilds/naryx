@@ -6,6 +6,7 @@ import type {
   MakerOperationsSnapshot,
   MakerShardView,
 } from "../private-http-terminal-provider";
+import { MakerControlPanel } from "./maker-control-panel";
 import styles from "./pages.module.css";
 
 type LoadState = Readonly<{
@@ -173,7 +174,9 @@ export function LiquidityView() {
             </div>
           </section>
 
-          <p className={styles.notice}>This surface is read only. Quote and capacity signatures stay in the solver process, and operational changes continue through the authenticated solver API.</p>
+          {privateProvider ? <MakerControlPanel provider={privateProvider} snapshot={snapshot} refresh={refresh} /> : null}
+
+          <p className={styles.notice}>Quote and capacity signatures stay in the solver process. The terminal exposes only exact-state cancellation and one-way kill-switch activation through the authenticated operator relay.</p>
         </>
       ) : null}
     </main>

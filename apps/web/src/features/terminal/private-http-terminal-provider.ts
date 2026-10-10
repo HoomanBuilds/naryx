@@ -193,6 +193,17 @@ export type MakerOperationsSnapshot = Readonly<{
   capacities: readonly MakerCapacityView[];
 }>;
 
+export type MakerControlResult = Readonly<{
+  version: 1;
+  action: "CANCEL_ALL" | "ACTIVATE_KILL_SWITCH";
+  shardId: string;
+  previousShardHash: string;
+  shardHash: string;
+  previousShardSequence: bigint;
+  shardSequence: bigint;
+  changed: boolean;
+}>;
+
 export type SolanaExecutionObservation =
   | Readonly<{
     lifecycle: "SUBMITTED";
@@ -1933,6 +1944,28 @@ function requireMakerOperations(value: unknown): MakerOperationsSnapshot {
     summary,
     shards,
     capacities,
+  });
+}
+
+function requireMakerControlResult(value: unknown, shardId: string): MakerControlResult {
+  if (!isRecord(value)) throw new Error("Maker control response is invalid.");
+  requireExactKeys(value, [
+    "action", "changed", "previousShardHash", "previousShardSequence", "shardHash", "shardId", "shardSequence", "version",
+  ], "Maker control result");
+  if (value.version !== 1 || value.shardId !== shardId
+    || (value.action !== "CANCEL_ALL" && value.action !== "ACTIVATE_KILL_SWITCH")
+    || typeof value.changed !== "boolean") {
+    throw new Error("Maker control response is invalid.");
+  }
+  return Object.freeze({
+    version: 1,
+    action: value.action,
+    shardId,
+    previousShardHash: requireHex32(value.previousShardHash, "Previous maker shard hash"),
+    shardHash: requireHex32(value.shardHash, "Maker shard hash"),
+    previousShardSequence: requireBigint(value.previousShardSequence, "Previous maker shard sequence"),
+    shardSequence: requireBigint(value.shardSequence, "Maker shard sequence"),
+    changed: value.changed,
   });
 }
 
@@ -4006,6 +4039,48 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
       throw new Error("Maker operations response is invalid.");
     }
     return requireMakerOperations(payload);
+  }
+
+  async applyMakerControl(
+    input: Readonly<{
+      action: "cancel-all" | "kill-switch";
+      shardId: string;
+      expectedShardHash: string;
+      expectedShardSequence: bigint;
+      operatorToken: string;
+    }>,
+    signal?: AbortSignal,
+  ): Promise<MakerControlResult> {
+    if (!/^[A-Za-z0-9._:-]{1,257}$/.test(input.shardId) || !/^[0-9a-f]{64}$/.test(input.expectedShardHash)
+      || input.expectedShardSequence < BigInt(0) || input.operatorToken.length < 32 || input.operatorToken.length > 256) {
+      throw new Error("Maker control request is invalid.");
+    }
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/maker/shards/${input.shardId}/${input.action}`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operatorToken: input.operatorToken,
+        expectedShardHash: input.expectedShardHash,
+        expectedShardSequence: input.expectedShardSequence.toString(),
+      }),
+      signal,
+    });
+    let payload: unknown;
+    try {
+      payload = fromProtocolJson(await response.json() as unknown);
+    } catch {
+      throw new Error("Maker control response is invalid.");
+    }
+    if (!response.ok) {
+      const message = isRecord(payload) && isRecord(payload.error) && typeof payload.error.message === "string"
+        ? payload.error.message
+        : "Maker control was rejected.";
+      throw new Error(message);
+    }
+    return requireMakerControlResult(payload, input.shardId);
   }
 
   async prepareBaseAtomicAuthorization(
