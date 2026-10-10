@@ -1,5 +1,5 @@
 {
-  "address": "Gt9Tqv2QYVADWVhRtJWTPvmVgwtwqfCgAYysjQUjtELg",
+  "address": "Dd7gZZRLVi6FLSnYdoB9mSWb45yGZNWnE47Wa5JWrWrL",
   "metadata": {
     "name": "naryx_core",
     "version": "0.1.0",
@@ -2847,7 +2847,7 @@
         },
         {
           "name": "program",
-          "address": "Gt9Tqv2QYVADWVhRtJWTPvmVgwtwqfCgAYysjQUjtELg"
+          "address": "Dd7gZZRLVi6FLSnYdoB9mSWb45yGZNWnE47Wa5JWrWrL"
         },
         {
           "name": "program_data"

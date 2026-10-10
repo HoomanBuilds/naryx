@@ -14,7 +14,7 @@ pub use instructions::*;
 pub use read::read_position_and_collateral;
 pub use state::*;
 
-declare_id!("CHDFYrJTwg7rxB8uDC6d8DCjaiFsSbGtbTEgRUZ6nJLD");
+declare_id!("CpAqHqcpegSm8NCedsDVvwg85jozNa46Qz1TGNyVyLTr");
 
 #[program]
 pub mod naryx_test_perp {

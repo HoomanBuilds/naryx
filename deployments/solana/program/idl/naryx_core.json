@@ -1,5 +1,5 @@
 {
-  "address": "Gt9Tqv2QYVADWVhRtJWTPvmVgwtwqfCgAYysjQUjtELg",
+  "address": "Dd7gZZRLVi6FLSnYdoB9mSWb45yGZNWnE47Wa5JWrWrL",
   "metadata": {
     "name": "naryx_core",
     "version": "0.1.0",
@@ -3499,7 +3499,7 @@
           "accounts": [
             {
               "name": "reservation_program",
-              "address": "CumWE8RbCAUCfgpEdWPkZQgKQvUHx6VzvErDZb4WzYrt"
+              "address": "6PhTV2dQczEcPnFdda6jcftTqdUpR8KaNucaCJB6iRHz"
             },
             {
               "name": "reservation_program_data"
@@ -4294,7 +4294,7 @@
         },
         {
           "name": "program",
-          "address": "Gt9Tqv2QYVADWVhRtJWTPvmVgwtwqfCgAYysjQUjtELg"
+          "address": "Dd7gZZRLVi6FLSnYdoB9mSWb45yGZNWnE47Wa5JWrWrL"
         },
         {
           "name": "program_data"

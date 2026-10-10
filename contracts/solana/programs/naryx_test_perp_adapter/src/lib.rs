@@ -10,7 +10,7 @@ pub use naryx_test_perp::{
 };
 pub use state::*;
 
-declare_id!("9WNFkLhjjBoqJoKVrykF41HLQtFro7bg3L6shjjHjUT1");
+declare_id!("H6YQpuLPKTWq7gVcqTa7c5sax7WubnpgG5cdohgZvxT1");
 
 pub const TEST_PERP_STRATEGY_SEED: &[u8] = b"test-perp-strategy";
 

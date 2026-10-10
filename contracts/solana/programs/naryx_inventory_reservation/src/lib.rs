@@ -10,7 +10,7 @@ pub use constants::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("CumWE8RbCAUCfgpEdWPkZQgKQvUHx6VzvErDZb4WzYrt");
+declare_id!("6PhTV2dQczEcPnFdda6jcftTqdUpR8KaNucaCJB6iRHz");
 
 #[program]
 pub mod naryx_inventory_reservation {

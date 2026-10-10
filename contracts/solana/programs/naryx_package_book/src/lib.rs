@@ -10,7 +10,7 @@ pub use constants::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("CefHTR5CVCuUpErk9p78f9KsRFUfffdKgAU1xho77DpY");
+declare_id!("C6PZeuHDqwBPHGGVRavY8NvGx9tcVHxQsLru46bNm85H");
 
 #[program]
 pub mod naryx_package_book {
