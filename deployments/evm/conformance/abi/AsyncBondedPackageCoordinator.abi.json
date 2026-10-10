@@ -61,6 +61,13 @@
   },
   {
     "type": "function",
+    "name": "activateExecutionClass",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "admissions",
     "inputs": [
       {
@@ -345,6 +352,31 @@
         "name": "adapter",
         "type": "address",
         "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "cancelExecutionClassProposal",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "cancelReserved",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "expectedVersion",
+        "type": "uint64",
+        "internalType": "uint64"
       }
     ],
     "outputs": [],
@@ -1094,6 +1126,29 @@
   },
   {
     "type": "function",
+    "name": "pendingExecutionClass",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "exists",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "manifestHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "proposeAdmission",
     "inputs": [
       {
@@ -1113,6 +1168,19 @@
       },
       {
         "name": "handlerCodeHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "proposeExecutionClass",
+    "inputs": [
+      {
+        "name": "manifestHash",
         "type": "bytes32",
         "internalType": "bytes32"
       }
@@ -2378,6 +2446,93 @@
   },
   {
     "type": "event",
+    "name": "ExecutionClassActivated",
+    "inputs": [
+      {
+        "name": "actor",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "previousHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "newHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ExecutionClassProposalCancelled",
+    "inputs": [
+      {
+        "name": "actor",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "activeHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "cancelledHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ExecutionClassProposed",
+    "inputs": [
+      {
+        "name": "actor",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "previousHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "proposedHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "PackageReleased",
     "inputs": [
       {
@@ -2490,6 +2645,11 @@
   },
   {
     "type": "error",
+    "name": "ActivationTimestampOverflow",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "AdmissionExists",
     "inputs": []
   },
@@ -2522,6 +2682,43 @@
     "type": "error",
     "name": "DomainMismatch",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ExecutionClassManifestHashUsed",
+    "inputs": [
+      {
+        "name": "manifestHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ExecutionClassManifestHashZero",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ExecutionClassProposalExists",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ExecutionClassProposalMissing",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ExecutionClassProposalNotReady",
+    "inputs": [
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ]
   },
   {
     "type": "error",

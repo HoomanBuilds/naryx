@@ -134,19 +134,6 @@
   },
   {
     "type": "function",
-    "name": "CONTROLLER_ROLE",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "EVIDENCE_DOMAIN",
     "inputs": [],
     "outputs": [
@@ -2488,6 +2475,24 @@
   },
   {
     "type": "function",
+    "name": "releaseCancelledFunding",
+    "inputs": [
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "owner",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "requestAccount",
     "inputs": [
       {
@@ -2630,6 +2635,25 @@
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "event",
+    "name": "CancelledFundingReleased",
+    "inputs": [
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "owner",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
   },
   {
     "type": "event",

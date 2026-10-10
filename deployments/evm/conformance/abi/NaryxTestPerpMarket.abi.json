@@ -112,6 +112,19 @@
   },
   {
     "type": "function",
+    "name": "FOUNDRY_CHAIN_ID",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "LOCAL_CHAIN_ID",
     "inputs": [],
     "outputs": [
@@ -197,6 +210,25 @@
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "boundedExecutionConsumed",
+    "inputs": [
+      {
+        "name": "executionId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "consumed",
+        "type": "bool",
+        "internalType": "bool"
       }
     ],
     "stateMutability": "view"
@@ -666,6 +698,211 @@
   },
   {
     "type": "function",
+    "name": "previewClose",
+    "inputs": [
+      {
+        "name": "trader",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "settlement",
+        "type": "tuple",
+        "internalType": "struct NaryxTestPerpMarket.Settlement",
+        "components": [
+          {
+            "name": "exitNotional",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "realizedPnl",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "funding",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "charged",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "payout",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "badDebt",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "previewDecrease",
+    "inputs": [
+      {
+        "name": "trader",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "sizeDelta",
+        "type": "int128",
+        "internalType": "int128"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "post",
+        "type": "tuple",
+        "internalType": "struct ISynFuturesPositionObserver.Position",
+        "components": [
+          {
+            "name": "balance",
+            "type": "int128",
+            "internalType": "int128"
+          },
+          {
+            "name": "size",
+            "type": "int128",
+            "internalType": "int128"
+          },
+          {
+            "name": "entryNotional",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "entrySocialLossIndex",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "entryFundingIndex",
+            "type": "int128",
+            "internalType": "int128"
+          }
+        ]
+      },
+      {
+        "name": "settlement",
+        "type": "tuple",
+        "internalType": "struct NaryxTestPerpMarket.Settlement",
+        "components": [
+          {
+            "name": "exitNotional",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "realizedPnl",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "funding",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "charged",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "payout",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "badDebt",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "previewIncrease",
+    "inputs": [
+      {
+        "name": "trader",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "sizeDelta",
+        "type": "int128",
+        "internalType": "int128"
+      },
+      {
+        "name": "balanceWad",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "post",
+        "type": "tuple",
+        "internalType": "struct ISynFuturesPositionObserver.Position",
+        "components": [
+          {
+            "name": "balance",
+            "type": "int128",
+            "internalType": "int128"
+          },
+          {
+            "name": "size",
+            "type": "int128",
+            "internalType": "int128"
+          },
+          {
+            "name": "entryNotional",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "entrySocialLossIndex",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "entryFundingIndex",
+            "type": "int128",
+            "internalType": "int128"
+          }
+        ]
+      },
+      {
+        "name": "fillPriceWad",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "feeWad",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "previewOpen",
     "inputs": [
       {
@@ -848,6 +1085,72 @@
   },
   {
     "type": "function",
+    "name": "tradeBounded",
+    "inputs": [
+      {
+        "name": "executionId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "args",
+        "type": "bytes32[2]",
+        "internalType": "bytes32[2]"
+      },
+      {
+        "name": "minimumNotionalWad",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maximumNotionalWad",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maximumFeeWad",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "result",
+        "type": "tuple",
+        "internalType": "struct ISynFuturesInstrument.PositionCache",
+        "components": [
+          {
+            "name": "balance",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "size",
+            "type": "int256",
+            "internalType": "int256"
+          },
+          {
+            "name": "entryNotional",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "entrySocialLossIndex",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "entryFundingIndex",
+            "type": "int256",
+            "internalType": "int256"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "withdraw",
     "inputs": [
       {
@@ -858,6 +1161,49 @@
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "event",
+    "name": "BoundedTradeExecuted",
+    "inputs": [
+      {
+        "name": "executionId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "trader",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "sizeDelta",
+        "type": "int128",
+        "indexed": false,
+        "internalType": "int128"
+      },
+      {
+        "name": "fillPriceWad",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "notionalWad",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "feeWad",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
   },
   {
     "type": "event",
@@ -999,6 +1345,86 @@
   },
   {
     "type": "event",
+    "name": "PositionDecreased",
+    "inputs": [
+      {
+        "name": "trader",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "sizeDelta",
+        "type": "int128",
+        "indexed": false,
+        "internalType": "int128"
+      },
+      {
+        "name": "newSize",
+        "type": "int128",
+        "indexed": false,
+        "internalType": "int128"
+      },
+      {
+        "name": "exitNotional",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "feeWad",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "payoutWad",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PositionIncreased",
+    "inputs": [
+      {
+        "name": "trader",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "sizeDelta",
+        "type": "int128",
+        "indexed": false,
+        "internalType": "int128"
+      },
+      {
+        "name": "newSize",
+        "type": "int128",
+        "indexed": false,
+        "internalType": "int128"
+      },
+      {
+        "name": "fillPriceWad",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "feeWad",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "PositionLiquidated",
     "inputs": [
       {
@@ -1128,6 +1554,11 @@
   },
   {
     "type": "error",
+    "name": "BoundedExecutionConsumed",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "FundingRateTooLarge",
     "inputs": []
   },
@@ -1179,6 +1610,11 @@
   {
     "type": "error",
     "name": "InvalidOraclePrice",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidTradeBounds",
     "inputs": []
   },
   {
