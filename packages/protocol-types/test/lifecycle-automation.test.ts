@@ -10,6 +10,8 @@ import {
   executionScheduleHash,
   isRiskReducing,
   keeperActionAuthorizationHash,
+  metricObservationAttestation,
+  metricObservationAttestationHash,
   nextScheduleSlice,
   STRATEGY_QUOTE_CONVENTION_ID,
   STRATEGY_RISK_CLASS_ID,
@@ -20,6 +22,7 @@ import {
   type ExecutionScheduleInput,
   type KeeperActionAuthorizationInput,
   type KeeperActionRequest,
+  type MetricObservationAttestationInput,
   type StrategyHealthSnapshotInput,
   type StrategyPackageOrderInput,
 } from '../src/index.js';
@@ -32,6 +35,24 @@ const condition = (overrides: Partial<ActivationConditionInput> = {}): Activatio
   threshold: 50n,
   observationUnit: 'EVM_UNIX_SECONDS',
   maximumObservationAge: 30n,
+  ...overrides,
+});
+
+const metricAttestation = (
+  overrides: Partial<MetricObservationAttestationInput> = {},
+): MetricObservationAttestationInput => ({
+  observationVersion: 1,
+  environment: 'testnet',
+  orderHash: '71'.repeat(32),
+  sourceId: 'basis-oracle-1',
+  sourceManifestHash: '72'.repeat(32),
+  metric: 'BASIS',
+  value: 50n,
+  timeUnit: 'EVM_UNIX_SECONDS',
+  observedAtValue: 1_000n,
+  validUntilValue: 1_030n,
+  sequence: 1n,
+  evidenceHash: '73'.repeat(32),
   ...overrides,
 });
 
@@ -178,6 +199,26 @@ describe('activation conditions', () => {
     for (const changed of [{ threshold: 51n }, { comparator: 'AT_OR_BELOW' as const }, { maximumObservationAge: 31n }, { metric: 'FUNDING' as const }]) {
       assert.notEqual(toHex(activationConditionHash(condition(changed))), base);
     }
+  });
+});
+
+describe('metric observation attestations', () => {
+  test('the commitment binds source, order, metric, value, clock, sequence, and evidence', () => {
+    const baseline = metricObservationAttestationHash(metricAttestation());
+    for (const changed of [
+      metricAttestation({ orderHash: '74'.repeat(32) }),
+      metricAttestation({ sourceId: 'basis-oracle-2' }),
+      metricAttestation({ value: 51n }),
+      metricAttestation({ observedAtValue: 1_001n }),
+      metricAttestation({ sequence: 2n }),
+      metricAttestation({ evidenceHash: '75'.repeat(32) }),
+    ]) assert.notEqual(toHex(metricObservationAttestationHash(changed)), toHex(baseline));
+  });
+
+  test('time observations and invalid validity windows fail closed', () => {
+    assert.throws(() => metricObservationAttestation(metricAttestation({ metric: 'TIME' })), /cannot be attested/);
+    assert.throws(() => metricObservationAttestation(metricAttestation({ validUntilValue: 999n })), /before observation time/);
+    assert.throws(() => metricObservationAttestation(metricAttestation({ sequence: 0n })), /positive value/);
   });
 });
 

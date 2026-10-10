@@ -6,7 +6,14 @@ import { DuplicateElementError, MalformedInputError } from './errors.js';
 import { domainHash, HASH_DOMAIN } from './hashing.js';
 import { packageOrder, type PackageOrderInput } from './package-order.js';
 import { commitmentHash, encodeCommitmentHash, type CommitmentHash } from './package-order-primitives.js';
-import { encodeProtocolId, protocolId, type ProtocolId } from './primitives.js';
+import {
+  encodeManifestHash,
+  encodeProtocolId,
+  manifestHash,
+  protocolId,
+  type ManifestHash,
+  type ProtocolId,
+} from './primitives.js';
 import { strategyPackageOrder, type StrategyPackageOrderInput } from './strategy-package-order.js';
 
 const U32_BITS = 32;
@@ -15,6 +22,7 @@ const U128_BITS = 128;
 const I128_BITS = 128;
 
 export const ACTIVATION_CONDITION_VERSION = 1;
+export const METRIC_OBSERVATION_ATTESTATION_VERSION = 1;
 export const EXECUTION_SCHEDULE_VERSION = 1;
 export const STRATEGY_HEALTH_VERSION = 1;
 export const KEEPER_ACTION_VERSION = 1;
@@ -156,6 +164,86 @@ export interface MetricObservation {
   readonly metric: ConditionMetric;
   readonly value: bigint;
   readonly observedAtValue: bigint;
+}
+
+export interface MetricObservationAttestationInput {
+  readonly observationVersion: number;
+  readonly environment: string;
+  readonly orderHash: Uint8Array | string;
+  readonly sourceId: string;
+  readonly sourceManifestHash: Uint8Array | string;
+  readonly metric: ConditionMetric;
+  readonly value: bigint;
+  readonly timeUnit: ExpiryUnit;
+  readonly observedAtValue: bigint;
+  readonly validUntilValue: bigint;
+  readonly sequence: bigint;
+  readonly evidenceHash: Uint8Array | string;
+}
+
+export interface MetricObservationAttestation extends Omit<
+  MetricObservationAttestationInput,
+  'environment' | 'orderHash' | 'sourceId' | 'sourceManifestHash' | 'evidenceHash'
+> {
+  readonly observationVersion: 1;
+  readonly environment: ProtocolId;
+  readonly orderHash: CommitmentHash;
+  readonly sourceId: ProtocolId;
+  readonly sourceManifestHash: ManifestHash;
+  readonly evidenceHash: CommitmentHash;
+}
+
+export function metricObservationAttestation(
+  input: MetricObservationAttestationInput,
+  context = 'metricObservationAttestation',
+): MetricObservationAttestation {
+  object(input, context);
+  const metric = variant(CONDITION_METRIC, input.metric, `${context}.metric`);
+  if (metric === 'TIME') throw new MalformedInputError(`${context}.metric`, 'time activation uses the order clock and cannot be attested');
+  const observedAtValue = unsigned(input.observedAtValue, U64_BITS, `${context}.observedAtValue`);
+  const validUntilValue = positive(input.validUntilValue, U64_BITS, `${context}.validUntilValue`);
+  if (validUntilValue < observedAtValue) {
+    throw new MalformedInputError(`${context}.validUntilValue`, 'validity ends before observation time');
+  }
+  return Object.freeze({
+    observationVersion: version(input.observationVersion, METRIC_OBSERVATION_ATTESTATION_VERSION, `${context}.observationVersion`) as 1,
+    environment: protocolId(input.environment, `${context}.environment`),
+    orderHash: commitmentHash(input.orderHash, `${context}.orderHash`),
+    sourceId: protocolId(input.sourceId, `${context}.sourceId`),
+    sourceManifestHash: manifestHash(input.sourceManifestHash, `${context}.sourceManifestHash`),
+    metric,
+    value: signed(input.value, `${context}.value`),
+    timeUnit: variant(EXPIRY_UNIT, input.timeUnit, `${context}.timeUnit`),
+    observedAtValue,
+    validUntilValue,
+    sequence: positive(input.sequence, U64_BITS, `${context}.sequence`),
+    evidenceHash: commitmentHash(input.evidenceHash, `${context}.evidenceHash`),
+  });
+}
+
+export function metricObservationAttestationBytes(input: MetricObservationAttestationInput): Uint8Array {
+  const observation = metricObservationAttestation(input);
+  return canonicalBytes((writer) => {
+    writer.writeU32(observation.observationVersion, 'observationVersion');
+    encodeProtocolId(writer, observation.environment, 'environment');
+    encodeCommitmentHash(writer, observation.orderHash, 'orderHash');
+    encodeProtocolId(writer, observation.sourceId, 'sourceId');
+    encodeManifestHash(writer, observation.sourceManifestHash, 'sourceManifestHash');
+    writer.writeEnum(CONDITION_METRIC, observation.metric, 'metric');
+    writer.writeI128(observation.value, 'value');
+    writer.writeEnum(EXPIRY_UNIT, observation.timeUnit, 'timeUnit');
+    writer.writeU64(observation.observedAtValue, 'observedAtValue');
+    writer.writeU64(observation.validUntilValue, 'validUntilValue');
+    writer.writeU64(observation.sequence, 'sequence');
+    encodeCommitmentHash(writer, observation.evidenceHash, 'evidenceHash');
+  });
+}
+
+export function metricObservationAttestationHash(input: MetricObservationAttestationInput): CommitmentHash {
+  return commitmentHash(
+    domainHash(HASH_DOMAIN.METRIC_OBSERVATION_ATTESTATION, metricObservationAttestationBytes(input)),
+    'metricObservationAttestationHash',
+  );
 }
 
 export type ConditionRejection = 'METRIC_UNAVAILABLE' | 'STALE_OBSERVATION' | 'OBSERVATION_FROM_FUTURE' | 'NOT_SATISFIED';

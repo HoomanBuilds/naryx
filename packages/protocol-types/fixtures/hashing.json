@@ -105,6 +105,7 @@
     { "name": "solver-request-shared-payload", "domain": "CON/v1/solver-request", "payloadHex": "deadbeef", "digestHex": "2ad28dd81a89697208be544dd23a410172566c53f2787d6ecb73d8569f2c73a5" },
     { "name": "quote-reference-state-shared-payload", "domain": "CON/v1/quote-reference-state", "payloadHex": "deadbeef", "digestHex": "15e2477af79103245262f27fd542b532966dac75c33c546f6dbf5ce6636e04a2" },
     { "name": "activation-condition-shared-payload", "domain": "CON/v1/activation-condition", "payloadHex": "deadbeef", "digestHex": "608ac4f41639486132afa05fc0bb40b151cc42294a097d6982a40311283de841" },
+    { "name": "metric-observation-attestation-shared-payload", "domain": "CON/v1/metric-observation-attestation", "payloadHex": "deadbeef", "digestHex": "6341073859b75130fe459504ee936108bdcfd6d505469067600ebc6aa7b32286" },
     { "name": "execution-schedule-shared-payload", "domain": "CON/v1/execution-schedule", "payloadHex": "deadbeef", "digestHex": "ac4298699b1f5911c299512b97b47475a8b85851bad4b54a12dad92ca2dbf125" },
     { "name": "strategy-health-shared-payload", "domain": "CON/v1/strategy-health", "payloadHex": "deadbeef", "digestHex": "e7c0436512b404f71ce0f2a6542cdab0fc66d4f5f03fe8360497d1855df323b9" },
     { "name": "keeper-action-shared-payload", "domain": "CON/v1/keeper-action", "payloadHex": "deadbeef", "digestHex": "b532de56154e2766a5a8cecc42da4fe57e1d71a6bf212098deef62254d1191d2" },

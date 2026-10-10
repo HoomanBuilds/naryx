@@ -172,6 +172,7 @@ describe('every frozen v1 domain is separated', () => {
         'CON/v1/solver-request',
         'CON/v1/quote-reference-state',
         'CON/v1/activation-condition',
+        'CON/v1/metric-observation-attestation',
         'CON/v1/execution-schedule',
         'CON/v1/strategy-health',
         'CON/v1/keeper-action',

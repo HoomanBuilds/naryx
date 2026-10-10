@@ -118,6 +118,7 @@ export const HASH_DOMAIN = Object.freeze({
   SOLVER_REQUEST: 'CON/v1/solver-request',
   QUOTE_REFERENCE_STATE: 'CON/v1/quote-reference-state',
   ACTIVATION_CONDITION: 'CON/v1/activation-condition',
+  METRIC_OBSERVATION_ATTESTATION: 'CON/v1/metric-observation-attestation',
   EXECUTION_SCHEDULE: 'CON/v1/execution-schedule',
   STRATEGY_HEALTH: 'CON/v1/strategy-health',
   KEEPER_ACTION: 'CON/v1/keeper-action',
