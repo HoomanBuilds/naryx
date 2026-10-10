@@ -1,3 +1,5 @@
+export type StrategyProgramActivation = "EXECUTABLE_BY_QUALIFIED_LANE" | "ADAPTER_ACTIVATION_REQUIRED" | "CAPABILITY_UNAVAILABLE";
+
 export type StrategyProgramAction = Readonly<{
   action: string;
   minimumLegs: number;
@@ -10,7 +12,7 @@ export type StrategyProgramAction = Readonly<{
     minimumCount: number;
     maximumCount: number;
   }>[];
-  activation: "EXECUTABLE_BY_QUALIFIED_LANE" | "ADAPTER_ACTIVATION_REQUIRED";
+  activation: StrategyProgramActivation;
   qualifiedLanes: readonly string[];
 }>;
 
@@ -23,7 +25,7 @@ export type StrategyProgramTemplate = Readonly<{
   lifecycleConventionId: string;
   metricIds: readonly string[];
   actions: readonly StrategyProgramAction[];
-  activation: "EXECUTABLE_BY_QUALIFIED_LANE" | "ADAPTER_ACTIVATION_REQUIRED";
+  activation: StrategyProgramActivation;
   qualifiedLanes: readonly string[];
 }>;
 
@@ -36,22 +38,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseTemplate(value: unknown): StrategyProgramTemplate {
+function parseTemplate(value: unknown, withCapabilities: boolean): StrategyProgramTemplate {
   if (!isRecord(value) || typeof value.templateId !== "string" || typeof value.displayName !== "string" ||
       value.templateVersion !== 1 || typeof value.quoteConventionId !== "string" ||
       typeof value.riskClassId !== "string" || typeof value.lifecycleConventionId !== "string" ||
       !Array.isArray(value.metricIds) || !value.metricIds.every((metric) => typeof metric === "string") ||
-      !Array.isArray(value.actions) ||
-      (value.activation !== "EXECUTABLE_BY_QUALIFIED_LANE" && value.activation !== "ADAPTER_ACTIVATION_REQUIRED")) {
+      !Array.isArray(value.actions) || value.actions.length === 0 || (withCapabilities &&
+      value.activation !== "EXECUTABLE_BY_QUALIFIED_LANE" && value.activation !== "ADAPTER_ACTIVATION_REQUIRED")) {
     throw new Error("Strategy program template is invalid.");
   }
   const actions = value.actions.map((action): StrategyProgramAction => {
     if (!isRecord(action) || typeof action.action !== "string" ||
         typeof action.minimumLegs !== "number" || typeof action.maximumLegs !== "number" ||
+        !Number.isSafeInteger(action.minimumLegs) || !Number.isSafeInteger(action.maximumLegs) ||
+        action.minimumLegs < 1 || action.maximumLegs < action.minimumLegs ||
         !Array.isArray(action.settlementClasses) || !action.settlementClasses.every((item) => typeof item === "string") ||
-        !Array.isArray(action.legRoles) ||
+        !Array.isArray(action.legRoles) || (withCapabilities &&
         (action.activation !== "EXECUTABLE_BY_QUALIFIED_LANE" && action.activation !== "ADAPTER_ACTIVATION_REQUIRED") ||
-        !Array.isArray(action.qualifiedLanes) || !action.qualifiedLanes.every((item) => typeof item === "string")) {
+        !Array.isArray(action.qualifiedLanes) || !action.qualifiedLanes.every((item) => typeof item === "string"))) {
       throw new Error("Strategy program action is invalid.");
     }
     const legRoles = action.legRoles.map((leg) => {
@@ -75,11 +79,11 @@ function parseTemplate(value: unknown): StrategyProgramTemplate {
       maximumLegs: action.maximumLegs,
       settlementClasses: Object.freeze([...action.settlementClasses]),
       legRoles: Object.freeze(legRoles),
-      activation: action.activation,
-      qualifiedLanes: Object.freeze([...action.qualifiedLanes]),
+      activation: withCapabilities ? action.activation as StrategyProgramActivation : "CAPABILITY_UNAVAILABLE",
+      qualifiedLanes: Object.freeze(withCapabilities ? [...action.qualifiedLanes as string[]] : []),
     });
   });
-  if (!Array.isArray(value.qualifiedLanes) || !value.qualifiedLanes.every((item) => typeof item === "string")) {
+  if (withCapabilities && (!Array.isArray(value.qualifiedLanes) || !value.qualifiedLanes.every((item) => typeof item === "string"))) {
     throw new Error("Strategy program qualified lanes are invalid.");
   }
   return Object.freeze({
@@ -91,21 +95,37 @@ function parseTemplate(value: unknown): StrategyProgramTemplate {
     lifecycleConventionId: value.lifecycleConventionId,
     metricIds: Object.freeze([...value.metricIds]),
     actions: Object.freeze(actions),
-    activation: value.activation,
-    qualifiedLanes: Object.freeze([...value.qualifiedLanes]),
+    activation: withCapabilities ? value.activation as StrategyProgramActivation : "CAPABILITY_UNAVAILABLE",
+    qualifiedLanes: Object.freeze(withCapabilities ? [...value.qualifiedLanes as string[]] : []),
   });
 }
 
-export async function fetchStrategyProgram(baseUrl: string, signal?: AbortSignal): Promise<StrategyProgram> {
-  const response = await fetch(`${baseUrl}/internal/terminal/strategy-program`, {
+async function fetchProgram(baseUrl: string, path: string, withCapabilities: boolean, signal?: AbortSignal): Promise<StrategyProgram> {
+  const response = await fetch(`${baseUrl.replace(/\/+$/, "")}${path}`, {
     headers: { Accept: "application/json" },
     cache: "no-store",
     signal,
   });
   if (!response.ok) throw new Error("Strategy program is unavailable.");
   const value: unknown = await response.json();
-  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.templates)) {
+  if (!isRecord(value) || (withCapabilities ? value.version !== 1 : value.programVersion !== 1) || !Array.isArray(value.templates)) {
     throw new Error("Strategy program response is invalid.");
   }
-  return Object.freeze({ version: 1, templates: Object.freeze(value.templates.map(parseTemplate)) });
+  return Object.freeze({ version: 1, templates: Object.freeze(value.templates.map((template) => parseTemplate(template, withCapabilities))) });
+}
+
+export async function fetchStrategyProgram(
+  privateBaseUrl: string | null,
+  publicBaseUrl: string | null,
+  signal?: AbortSignal,
+): Promise<StrategyProgram> {
+  if (privateBaseUrl !== null) {
+    try {
+      return await fetchProgram(privateBaseUrl, "/internal/terminal/strategy-program", true, signal);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+    }
+  }
+  if (publicBaseUrl !== null) return fetchProgram(publicBaseUrl, "/v1/strategy-program", false, signal);
+  throw new Error("Strategy program is unavailable.");
 }

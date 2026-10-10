@@ -93,10 +93,10 @@ const FALLBACK_CASH_TEMPLATE: StrategyProgramTemplate = Object.freeze({
   lifecycleConventionId: "paired-basis-lifecycle-v1",
   metricIds: Object.freeze([]),
   actions: Object.freeze([
-    Object.freeze({ action: "ENTRY", minimumLegs: 2, maximumLegs: 2, settlementClasses: Object.freeze(["ATOMIC_POSTCONDITION"]), legRoles: Object.freeze([]), activation: "ADAPTER_ACTIVATION_REQUIRED", qualifiedLanes: Object.freeze([]) }),
-    Object.freeze({ action: "EXIT", minimumLegs: 2, maximumLegs: 2, settlementClasses: Object.freeze(["ATOMIC_POSTCONDITION"]), legRoles: Object.freeze([]), activation: "ADAPTER_ACTIVATION_REQUIRED", qualifiedLanes: Object.freeze([]) }),
+    Object.freeze({ action: "ENTRY", minimumLegs: 2, maximumLegs: 2, settlementClasses: Object.freeze(["ATOMIC_POSTCONDITION"]), legRoles: Object.freeze([]), activation: "CAPABILITY_UNAVAILABLE", qualifiedLanes: Object.freeze([]) }),
+    Object.freeze({ action: "EXIT", minimumLegs: 2, maximumLegs: 2, settlementClasses: Object.freeze(["ATOMIC_POSTCONDITION"]), legRoles: Object.freeze([]), activation: "CAPABILITY_UNAVAILABLE", qualifiedLanes: Object.freeze([]) }),
   ]),
-  activation: "ADAPTER_ACTIVATION_REQUIRED",
+  activation: "CAPABILITY_UNAVAILABLE",
   qualifiedLanes: Object.freeze([]),
 });
 
@@ -1193,7 +1193,9 @@ function Ticket({
         quantity: "Bound by package",
         limitLabel: "Typed role",
         limit: role.allowedSides.join(" / "),
-        state: "Adapter activation required",
+        state: selectedAction?.activation === "EXECUTABLE_BY_QUALIFIED_LANE"
+          ? "Qualified execution lane"
+          : selectedAction?.activation === "ADAPTER_ACTIVATION_REQUIRED" ? "Adapter activation required" : "Capability check unavailable",
         dependency: "Strategy graph",
       }),
     )) ?? []);
@@ -1221,10 +1223,42 @@ function Ticket({
         </select>
         {selectedTemplate ? (
           <span data-active={selectedAction?.activation === "EXECUTABLE_BY_QUALIFIED_LANE"}>
-            {selectedAction?.activation === "EXECUTABLE_BY_QUALIFIED_LANE" ? "Qualified lane execution" : "Protocol ready, adapter activation required"}
+            {selectedAction?.activation === "EXECUTABLE_BY_QUALIFIED_LANE"
+              ? `${selectedAction.qualifiedLanes.length} qualified execution lane${selectedAction.qualifiedLanes.length === 1 ? "" : "s"}`
+              : selectedAction?.activation === "ADAPTER_ACTIVATION_REQUIRED" ? "Protocol ready, adapter activation required" : "Canonical template, capability service unavailable"}
           </span>
         ) : null}
       </div>
+
+      <details className={styles.strategyCatalogue}>
+        <summary>
+          <span>Strategy catalogue</span>
+          <strong>{strategyTemplates.length} templates</strong>
+        </summary>
+        <div className={styles.strategyCatalogueList}>
+          {strategyTemplates.map((template) => {
+            const minimumLegs = Math.min(...template.actions.map((item) => item.minimumLegs));
+            const maximumLegs = Math.max(...template.actions.map((item) => item.maximumLegs));
+            return (
+              <button
+                key={template.templateId}
+                type="button"
+                aria-pressed={selectedStrategyTemplateId === template.templateId}
+                onClick={() => onStrategyTemplateChange(template.templateId)}
+              >
+                <span>
+                  <strong>{template.displayName}</strong>
+                  <small>{template.actions.map((item) => item.action.replaceAll("_", " ")).join(" / ")}</small>
+                </span>
+                <span>
+                  <strong>{minimumLegs === maximumLegs ? minimumLegs : `${minimumLegs}-${maximumLegs}`} legs</strong>
+                  <small>{template.activation === "EXECUTABLE_BY_QUALIFIED_LANE" ? `${template.qualifiedLanes.length} lanes` : template.activation === "ADAPTER_ACTIVATION_REQUIRED" ? "Needs lane" : "Canonical"}</small>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </details>
 
       {selectedTemplate && selectedTemplate.actions.length > 0 ? (
         <div className={styles.lifecycleSelector} role="group" aria-label="Strategy lifecycle action">
@@ -1361,7 +1395,7 @@ function Ticket({
         ))}
       </ol>
 
-      <div className={styles.actionArea}>
+      {nativeCashFlow ? <div className={styles.actionArea}>
         <button
           className={action.kind === "connect" || action.kind === "switch" ? styles.connectCta : styles.primaryCta}
           type="button"
@@ -1379,7 +1413,7 @@ function Ticket({
             </button>
           ) : null}
         </p>
-      </div>
+      </div> : null}
 
       {executionReview && nativeCashFlow ? (
         <ExecutionReviewPanel
@@ -1721,13 +1755,13 @@ export function TradingTerminal({
   const [selectedStrategyTemplateId, setSelectedStrategyTemplateId] = useState(FALLBACK_CASH_TEMPLATE.templateId);
   const [selectedLifecycleAction, setSelectedLifecycleAction] = useState("ENTRY");
   useEffect(() => {
-    if (!privateApiBaseUrl) return;
+    if (!privateApiBaseUrl && !publicApiBaseUrl) return;
     const controller = new AbortController();
-    void fetchStrategyProgram(privateApiBaseUrl, controller.signal)
+    void fetchStrategyProgram(privateApiBaseUrl, publicApiBaseUrl, controller.signal)
       .then((program) => setStrategyTemplates(program.templates))
       .catch(() => undefined);
     return () => controller.abort();
-  }, [privateApiBaseUrl]);
+  }, [privateApiBaseUrl, publicApiBaseUrl]);
   // The lane whose default size the ticket took; a refresh of the same lane keeps the trader's size.
   const sizedLane = useRef<DomainId | null>(null);
   const [marketTick, setMarketTick] = useState(0);

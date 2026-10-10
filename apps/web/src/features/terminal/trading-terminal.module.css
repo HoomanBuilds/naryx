@@ -356,6 +356,80 @@
   color: var(--up-strong);
 }
 
+.strategyCatalogue {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: color-mix(in srgb, var(--field) 55%, transparent);
+  padding: 8px;
+}
+
+.strategyCatalogue summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.strategyCatalogue summary strong {
+  color: var(--yellow);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.strategyCatalogueList {
+  display: grid;
+  max-height: 260px;
+  gap: 4px;
+  overflow-y: auto;
+  margin-top: 8px;
+}
+
+.strategyCatalogueList button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  padding: 7px 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.strategyCatalogueList button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--yellow) 55%, var(--line));
+  background: color-mix(in srgb, var(--yellow) 7%, transparent);
+}
+
+.strategyCatalogueList button > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.strategyCatalogueList button > span:last-child {
+  align-items: flex-end;
+}
+
+.strategyCatalogueList strong {
+  overflow: hidden;
+  font-size: 10.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strategyCatalogueList small {
+  color: var(--text-dim);
+  font-size: 9px;
+  text-transform: lowercase;
+}
+
 .strategyPresets {
   border: 1px solid var(--line);
   border-radius: var(--radius-small);
