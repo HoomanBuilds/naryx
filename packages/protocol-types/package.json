@@ -14,11 +14,11 @@
   "dependencies": {
     "@hpke/core": "1.9.0",
     "@hpke/dhkem-x25519": "1.8.0",
-    "@noble/hashes": "^2.4.0"
+    "@noble/hashes": "2.4.0"
   },
   "devDependencies": {
-    "@types/node": "^26.6.2",
-    "typescript": "^7.0.2"
+    "@types/node": "26.6.2",
+    "typescript": "7.0.2"
   },
   "exports": {
     ".": {
