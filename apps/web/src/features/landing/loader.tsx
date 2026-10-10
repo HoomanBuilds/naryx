@@ -8,6 +8,7 @@ import styles from "./loader.module.css";
 
 const WORD = "NARYX";
 const MIN_SECONDS = 1.7;
+const MAX_WAIT_MS = 6000;
 const CELL = 36;
 
 /**
@@ -35,16 +36,22 @@ export default function Loader() {
       setSlots([...WORD].map((letter, i) => (frame >= settleAt[i] ? letter : (frame + i * 5) % GLYPHS.length)));
     }, 70);
 
-    const assets = Promise.all([loadGlyphs(), document.fonts.ready]);
+    // A failed or stalled glyph load falls back to the plain fade so the page is never held behind the loader.
+    let timeout = 0;
+    const assets = Promise.race([
+      Promise.all([loadGlyphs(), document.fonts.ready]).then(([glyphs]) => glyphs),
+      new Promise<null>((resolve) => { timeout = window.setTimeout(() => resolve(null), MAX_WAIT_MS); }),
+    ]).catch(() => null);
 
-    assets.then(async ([glyphs]) => {
+    assets.then(async (glyphs) => {
+      window.clearTimeout(timeout);
       const elapsed = (performance.now() - started) / 1000;
       await new Promise((resolve) => setTimeout(resolve, Math.max(0, MIN_SECONDS - elapsed) * 1000));
       window.clearInterval(cycle);
       setSlots([...WORD]);
       if (cancelled) return;
 
-      if (reduced) {
+      if (reduced || !glyphs) {
         setReady();
         gsap.to(root.current, { opacity: 0, duration: 0.5, onComplete: () => setGone(true) });
         return;
@@ -94,6 +101,7 @@ export default function Loader() {
     return () => {
       cancelled = true;
       window.clearInterval(cycle);
+      window.clearTimeout(timeout);
     };
   }, [setReady]);
 

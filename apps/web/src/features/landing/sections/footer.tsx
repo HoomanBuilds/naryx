@@ -189,12 +189,12 @@ export default function Footer() {
         </span>
         <Crosshair />
         <span className={styles.group}>
-          <a className={styles.glow} href="#top">
+          <span className={`${styles.glow} ${styles.unpublished}`} aria-disabled="true" title="Not yet published">
             Privacy policy &amp; legal terms
-          </a>
-          <a className={styles.glow} href="#top">
+          </span>
+          <span className={`${styles.glow} ${styles.unpublished}`} aria-disabled="true" title="Not yet published">
             Credits
-          </a>
+          </span>
           <i className={styles.square} />
         </span>
       </div>

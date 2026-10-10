@@ -170,7 +170,7 @@ export default function Hero() {
               </Button>
             </div>
             <div className={styles.chains}>
-              <span className="mono">Settles on</span>
+              <span className="mono">Settles on test networks</span>
               <ul>
                 {CHAINS.map(({ id, name, Icon }) => (
                   <li key={id}>
