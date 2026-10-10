@@ -132,6 +132,7 @@ contract NativePackageClearingHouseTest is Test {
             shortSequence: clearing.account(LONG_ACCOUNT).sequence,
             quantityAtoms: 1,
             priceTicks: 50,
+            maxFeeBps: 0,
             expiry: uint64(block.timestamp + 300)
         });
         clearing.executeMatch(
@@ -149,6 +150,69 @@ contract NativePackageClearingHouseTest is Test {
         assertEq(clearing.account(LONG_ACCOUNT).collateralQuoteAtoms, 50_000);
     }
 
+    function testRejectsMatchSignedBelowActiveFee() public {
+        clearing.scheduleFeeUpdate(11, address(this));
+        vm.warp(block.timestamp + 30);
+        clearing.activateFeeUpdate();
+        NativePackageClearingHouse.NativeMatch memory match_ = _match(keccak256("authorization-6"));
+        bytes32 digest = clearing.matchDigest(match_);
+
+        vm.expectRevert(NativePackageClearingHouse.InvalidMatch.selector);
+        clearing.executeMatch(match_, _sign(LONG_KEY, digest), _sign(SHORT_KEY, digest));
+    }
+
+    function testLiquidatesSolventAccountBelowMaintenance() public {
+        _openUnderMarginedLong(keccak256("authorization-7"));
+        bytes32 auctionId = keccak256("auction-3");
+        clearing.publishMark(keccak256("mark-at-maintenance"), 85, 2, uint64(block.timestamp + 600));
+        assertEq(clearing.accountStatus(LONG_ACCOUNT), 2);
+        vm.expectRevert(NativePackageClearingHouse.InvalidAuction.selector);
+        clearing.openDefaultAuction(auctionId, LONG_ACCOUNT);
+
+        clearing.publishMark(keccak256("mark-below-maintenance"), 84, 3, uint64(block.timestamp + 600));
+        assertEq(clearing.accountStatus(LONG_ACCOUNT), 3);
+        clearing.openDefaultAuction(auctionId, LONG_ACCOUNT);
+        vm.prank(vm.addr(BACKSTOP_KEY));
+        clearing.bidDefaultAuction(auctionId, BACKSTOP_ACCOUNT, 84, uint64(block.timestamp + 600));
+        vm.warp(block.timestamp + 60);
+        clearing.settleDefaultAuction(auctionId);
+
+        NativePackageClearingHouse.Account memory defaulted = clearing.account(LONG_ACCOUNT);
+        assertEq(defaulted.positionAtoms, 0);
+        assertEq(defaulted.collateralQuoteAtoms, 9_000);
+        assertEq(defaulted.cashBalanceQuoteAtoms, 0);
+        assertEq(clearing.account(BACKSTOP_ACCOUNT).positionAtoms, 1);
+    }
+
+    function testBidMustStayLiveThroughSettlementWindow() public {
+        _openUnderMarginedLong(keccak256("authorization-8"));
+        clearing.publishMark(keccak256("mark-default"), 84, 2, uint64(block.timestamp + 600));
+        bytes32 auctionId = keccak256("auction-4");
+        clearing.openDefaultAuction(auctionId, LONG_ACCOUNT);
+        NativePackageClearingHouse.DefaultAuction memory opened = clearing.auction(auctionId);
+
+        vm.startPrank(vm.addr(BACKSTOP_KEY));
+        vm.expectRevert(NativePackageClearingHouse.InvalidAuction.selector);
+        clearing.bidDefaultAuction(auctionId, BACKSTOP_ACCOUNT, 84, opened.closeAt);
+        vm.expectRevert(NativePackageClearingHouse.InvalidAuction.selector);
+        clearing.bidDefaultAuction(auctionId, BACKSTOP_ACCOUNT, 84, opened.markValidUntil - 1);
+        clearing.bidDefaultAuction(auctionId, BACKSTOP_ACCOUNT, 84, opened.markValidUntil);
+        vm.stopPrank();
+
+        vm.warp(opened.closeAt + 1);
+        clearing.settleDefaultAuction(auctionId);
+        assertTrue(clearing.auction(auctionId).settled);
+    }
+
+    function _openUnderMarginedLong(bytes32 authorizationHash) private {
+        vm.prank(vm.addr(LONG_KEY));
+        clearing.withdraw(LONG_ACCOUNT, 975_000);
+        NativePackageClearingHouse.NativeMatch memory match_ = _match(authorizationHash);
+        clearing.executeMatch(
+            match_, _sign(LONG_KEY, clearing.matchDigest(match_)), _sign(SHORT_KEY, clearing.matchDigest(match_))
+        );
+    }
+
     function _match(bytes32 authorizationHash) private view returns (NativePackageClearingHouse.NativeMatch memory) {
         return NativePackageClearingHouse.NativeMatch({
             authorizationHash: authorizationHash,
@@ -159,6 +223,7 @@ contract NativePackageClearingHouseTest is Test {
             shortSequence: clearing.account(SHORT_ACCOUNT).sequence,
             quantityAtoms: 1,
             priceTicks: 100,
+            maxFeeBps: 10,
             expiry: uint64(block.timestamp + 300)
         });
     }

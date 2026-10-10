@@ -519,6 +519,11 @@
             "internalType": "uint128"
           },
           {
+            "name": "maxFeeBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
             "name": "expiry",
             "type": "uint64",
             "internalType": "uint64"
@@ -704,6 +709,11 @@
             "name": "priceTicks",
             "type": "uint128",
             "internalType": "uint128"
+          },
+          {
+            "name": "maxFeeBps",
+            "type": "uint16",
+            "internalType": "uint16"
           },
           {
             "name": "expiry",

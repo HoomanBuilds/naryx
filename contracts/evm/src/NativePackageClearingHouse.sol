@@ -11,7 +11,7 @@ contract NativePackageClearingHouse is ReentrancyGuard {
 
     uint256 private constant BPS = 10_000;
     bytes32 private constant MATCH_TYPEHASH = keccak256(
-        "NativeMatch(bytes32 policyHash,bytes32 authorizationHash,bytes32 longAccountId,bytes32 shortAccountId,bytes32 feePayerAccountId,uint64 longSequence,uint64 shortSequence,uint128 quantityAtoms,uint128 priceTicks,uint64 expiry)"
+        "NativeMatch(bytes32 policyHash,bytes32 authorizationHash,bytes32 longAccountId,bytes32 shortAccountId,bytes32 feePayerAccountId,uint64 longSequence,uint64 shortSequence,uint128 quantityAtoms,uint128 priceTicks,uint16 maxFeeBps,uint64 expiry)"
     );
 
     struct Account {
@@ -31,6 +31,7 @@ contract NativePackageClearingHouse is ReentrancyGuard {
         uint64 shortSequence;
         uint128 quantityAtoms;
         uint128 priceTicks;
+        uint16 maxFeeBps;
         uint64 expiry;
     }
 
@@ -294,6 +295,7 @@ contract NativePackageClearingHouse is ReentrancyGuard {
                         match_.shortSequence,
                         match_.quantityAtoms,
                         match_.priceTicks,
+                        match_.maxFeeBps,
                         match_.expiry
                     )
                 )
@@ -329,7 +331,7 @@ contract NativePackageClearingHouse is ReentrancyGuard {
             match_.authorizationHash == bytes32(0) || match_.longAccountId == match_.shortAccountId
                 || match_.quantityAtoms == 0 || match_.quantityAtoms > uint128(type(int128).max)
                 || match_.quantityAtoms % packageQuantityIncrementAtoms != 0 || match_.priceTicks == 0
-                || block.timestamp >= match_.expiry
+                || block.timestamp >= match_.expiry || feeBps > match_.maxFeeBps
                 || (match_.feePayerAccountId != match_.longAccountId
                     && match_.feePayerAccountId != match_.shortAccountId)
         ) revert InvalidMatch();
@@ -387,12 +389,9 @@ contract NativePackageClearingHouse is ReentrancyGuard {
         if (auctionId == bytes32(0) || _auctions[auctionId].defaultedAccountId != bytes32(0)) revert InvalidAuction();
         _requireUnlocked(accountId);
         Account storage defaulted = _accounts[accountId];
-        if (
-            defaulted.owner == address(0) || defaulted.positionAtoms == 0
-                || _status(defaulted, currentMark.priceTicks) != 4
-        ) {
-            revert InvalidAuction();
-        }
+        if (defaulted.owner == address(0) || defaulted.positionAtoms == 0) revert InvalidAuction();
+        uint8 status = _status(defaulted, currentMark.priceTicks);
+        if (status != 3 && status != 4) revert InvalidAuction();
         uint64 closeAt = uint64(block.timestamp) + defaultAuctionDurationSeconds;
         if (closeAt > currentMark.validUntil) revert StaleMark();
         uint128 minimumPrice =
@@ -429,7 +428,7 @@ contract NativePackageClearingHouse is ReentrancyGuard {
         Account storage backstop = _ownedAccount(backstopAccountId);
         _requireUnlocked(backstopAccountId);
         if (
-            backstopAccountId == auction_.defaultedAccountId || validUntil < auction_.closeAt
+            backstopAccountId == auction_.defaultedAccountId || validUntil < auction_.markValidUntil
                 || priceTicks < auction_.minimumPriceTicks || priceTicks > auction_.maximumPriceTicks
         ) revert InvalidAuction();
         if (auction_.bestBackstopAccountId != bytes32(0)) {
