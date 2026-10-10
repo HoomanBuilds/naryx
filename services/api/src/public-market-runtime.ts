@@ -327,8 +327,8 @@ function loadCatalogueSigner(environment: NodeJS.ProcessEnv): { authority: strin
 }
 
 /**
- * NARYX_BOND_READER_CONFIG names an absolute JSON file: `rpcUrl`, `vault`, `solvers` (address to
- * solver id), and `assets` (address to asset reference). FIRM_BONDED quotes are refused without it.
+ * NARYX_BOND_READER_CONFIG names an absolute JSON file: `rpcUrl`, `chainId`, `vault`, `solvers`
+ * (address to solver id), and `assets` (address to asset reference). FIRM_BONDED quotes are refused without it.
  */
 function loadBondReader(path: string) {
   let raw: Record<string, unknown>;
@@ -339,9 +339,13 @@ function loadBondReader(path: string) {
   }
   const solvers = object(raw.solvers, "solvers");
   const assets = object(raw.assets, "assets");
-  if (typeof raw.rpcUrl !== "string" || typeof raw.vault !== "string") throw new PublicMarketConfigError("NARYX_BOND_READER_CONFIG needs rpcUrl and vault.");
+  if (typeof raw.rpcUrl !== "string" || typeof raw.vault !== "string"
+    || typeof raw.chainId !== "number" || !Number.isSafeInteger(raw.chainId) || raw.chainId <= 0) {
+    throw new PublicMarketConfigError("NARYX_BOND_READER_CONFIG needs rpcUrl, a positive integer chainId, and vault.");
+  }
   return createEvmBondReader({
     rpcUrl: raw.rpcUrl,
+    chainId: BigInt(raw.chainId),
     vault: raw.vault,
     solverByAddress: new Map(Object.entries(solvers).map(([address, id]) => [address.toLowerCase(), String(id)])),
     assetByAddress: new Map(Object.entries(assets).map(([address, asset]) => [address.toLowerCase(), asset as never])),
@@ -500,6 +504,9 @@ export function loadPublicMarketRuntime(
         clock: clockMs,
       });
     if (metricObservations !== undefined) opened.push(metricObservations);
+    if (orderActivations !== undefined && metricObservations === undefined) {
+      throw new PublicMarketConfigError("NARYX_ORDER_ACTIVATION_DB requires verified metric observations: NARYX_METRIC_OBSERVATION_DB and NARYX_METRIC_OBSERVATION_SOURCES.");
+    }
     const strategyPath = optional(environment.NARYX_STRATEGY_DB);
     if (strategyPath !== undefined && evidence === undefined) {
       throw new PublicMarketConfigError("NARYX_STRATEGY_DB requires NARYX_EVIDENCE_DB, whose settled receipts found strategies.");
@@ -779,10 +786,10 @@ export function loadPublicMarketRuntime(
       }),
       ...(keeper === undefined ? [] : [createKeeperExecutorHandler({ executor: keeper, nowIn: keeperClock(clockMs) })]),
       ...(coordination === undefined ? [] : [createCoordinationInternalHandler(coordination)]),
-      ...(nativeClearing === undefined ? [] : [createNativeClearingAdminHandler({ clearing: nativeClearing })]),
-      ...(orderActivations === undefined ? [] : [createOrderActivationAdminHandler({
+      ...(nativeClearing === undefined ? [] : [createNativeClearingAdminHandler({ clearing: nativeClearing, exchange: store })]),
+      ...(orderActivations === undefined || metricObservations === undefined ? [] : [createOrderActivationAdminHandler({
         activations: orderActivations,
-        ...(metricObservations === undefined ? {} : { observations: metricObservations }),
+        observations: metricObservations,
         ...(advancedOrderReconciliation === undefined ? {} : { reconciliation: advancedOrderReconciliation }),
       })]),
       ...(metricObservations === undefined ? [] : [createMetricObservationAdminHandler({ observations: metricObservations })]),
