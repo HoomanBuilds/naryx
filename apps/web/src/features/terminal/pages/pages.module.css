@@ -81,6 +81,37 @@
   outline-offset: 1px;
 }
 
+.marketTools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.marketTools select {
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--field);
+  color: var(--text-secondary);
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.watchFilter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.watchFilter input {
+  accent-color: var(--yellow);
+}
+
 .card {
   min-width: 0;
   overflow: hidden;
@@ -325,6 +356,17 @@
   opacity: 0.6;
 }
 
+.watching {
+  border: 1px solid color-mix(in srgb, var(--yellow) 60%, var(--line));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--yellow) 12%, transparent);
+  color: var(--yellow);
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
 a.ghost {
   display: inline-block;
   text-decoration: none;
@@ -354,6 +396,8 @@ a.ghost {
 
 .connect:focus-visible,
 .ghost:focus-visible,
+.watching:focus-visible,
+.marketTools select:focus-visible,
 .linkButton:focus-visible,
 .empty a:focus-visible,
 .rowButton:focus-visible {
