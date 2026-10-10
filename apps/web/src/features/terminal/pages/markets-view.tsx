@@ -7,6 +7,7 @@ import { MarketAlerts } from "../market-alerts";
 import { usePublicPackageMarkets, usePublicPackageOpportunities, usePublicSeriesCurve } from "../public-market-feed";
 import { useTerminal } from "../shell/terminal-context";
 import { PaperTradingLab } from "./paper-trading-lab";
+import { StrategyComparison } from "./strategy-comparison";
 import { StrategyGraphStudio } from "./strategy-graph-studio";
 import styles from "./pages.module.css";
 
@@ -88,6 +89,7 @@ export function MarketsView() {
   const [curveSizesInput, setCurveSizesInput] = useState("1,10,100");
   const [curveSizes, setCurveSizes] = useState<readonly bigint[]>([BigInt(1), BigInt(10), BigInt(100)]);
   const [query, setQuery] = useState("");
+  const [comparisonIds, setComparisonIds] = useState<readonly string[]>([]);
   const watchlist = useSyncExternalStore(subscribeWatchlist, watchlistSnapshot, () => EMPTY_WATCHLIST);
   const [watchedOnly, setWatchedOnly] = usePersistedFlag("markets.watchedOnly", false);
   const [sort, setSort] = usePersistedSetting<MarketSort>("markets.sort", "market", ["market", "spread", "ask"]);
@@ -222,6 +224,15 @@ export function MarketsView() {
         )}
       </section>
 
+      <StrategyComparison
+        selectedIds={comparisonIds}
+        markets={markets}
+        opportunities={opportunities}
+        size={scanSize}
+        remove={(marketId) => setComparisonIds((current) => current.filter((id) => id !== marketId))}
+        clear={() => setComparisonIds([])}
+      />
+
       <PaperTradingLab baseUrl={publicApiBaseUrl} opportunities={opportunities} scanSize={scanSize} />
 
       <StrategyGraphStudio baseUrl={publicApiBaseUrl} />
@@ -316,6 +327,18 @@ export function MarketsView() {
                               : [market.packageMarketId, ...watchlist])}
                           >
                             {watched.has(market.packageMarketId) ? "Watching" : "Watch"}
+                          </button>
+                          <button
+                            type="button"
+                            className={comparisonIds.includes(market.packageMarketId) ? styles.watching : styles.ghost}
+                            aria-pressed={comparisonIds.includes(market.packageMarketId)}
+                            disabled={!comparisonIds.includes(market.packageMarketId) && comparisonIds.length >= 4}
+                            title={!comparisonIds.includes(market.packageMarketId) && comparisonIds.length >= 4 ? "Remove a compared market before adding another." : undefined}
+                            onClick={() => setComparisonIds((current) => current.includes(market.packageMarketId)
+                              ? current.filter((id) => id !== market.packageMarketId)
+                              : [...current, market.packageMarketId])}
+                          >
+                            {comparisonIds.includes(market.packageMarketId) ? "Comparing" : "Compare"}
                           </button>
                           <Link
                             className={styles.ghost}
