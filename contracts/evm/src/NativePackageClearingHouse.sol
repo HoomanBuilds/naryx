@@ -240,6 +240,8 @@ contract NativePackageClearingHouse is ReentrancyGuard {
         account_.collateralQuoteAtoms -= amount;
         account_.sequence += 1;
         if (account_.positionAtoms != 0 && _status(account_, currentMark.priceTicks) != 1) revert MarginViolation();
+        // A flat account's realized loss sits in cash; collateral backing it is not withdrawable.
+        if (account_.positionAtoms == 0 && _equity(account_, currentMark.priceTicks) < 0) revert MarginViolation();
         uint256 beforeBalance = collateralToken.balanceOf(address(this));
         collateralToken.safeTransfer(msg.sender, amount);
         if (collateralToken.balanceOf(address(this)) != beforeBalance - amount) revert PostconditionFailed();

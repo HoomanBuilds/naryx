@@ -118,6 +118,37 @@ contract NativePackageClearingHouseTest is Test {
         assertEq(clearing.accountLock(LONG_ACCOUNT), bytes32(0));
     }
 
+    function testFlatAccountCannotWithdrawCollateralBackingRealizedLoss() public {
+        NativePackageClearingHouse.NativeMatch memory open_ = _match(keccak256("authorization-4"));
+        clearing.executeMatch(
+            open_, _sign(LONG_KEY, clearing.matchDigest(open_)), _sign(SHORT_KEY, clearing.matchDigest(open_))
+        );
+        NativePackageClearingHouse.NativeMatch memory close_ = NativePackageClearingHouse.NativeMatch({
+            authorizationHash: keccak256("authorization-5"),
+            longAccountId: SHORT_ACCOUNT,
+            shortAccountId: LONG_ACCOUNT,
+            feePayerAccountId: SHORT_ACCOUNT,
+            longSequence: clearing.account(SHORT_ACCOUNT).sequence,
+            shortSequence: clearing.account(LONG_ACCOUNT).sequence,
+            quantityAtoms: 1,
+            priceTicks: 50,
+            expiry: uint64(block.timestamp + 300)
+        });
+        clearing.executeMatch(
+            close_, _sign(SHORT_KEY, clearing.matchDigest(close_)), _sign(LONG_KEY, clearing.matchDigest(close_))
+        );
+        NativePackageClearingHouse.Account memory long = clearing.account(LONG_ACCOUNT);
+        assertEq(long.positionAtoms, 0);
+        assertEq(long.cashBalanceQuoteAtoms, -50_000);
+
+        vm.startPrank(vm.addr(LONG_KEY));
+        vm.expectRevert(NativePackageClearingHouse.MarginViolation.selector);
+        clearing.withdraw(LONG_ACCOUNT, 950_001);
+        clearing.withdraw(LONG_ACCOUNT, 950_000);
+        vm.stopPrank();
+        assertEq(clearing.account(LONG_ACCOUNT).collateralQuoteAtoms, 50_000);
+    }
+
     function _match(bytes32 authorizationHash) private view returns (NativePackageClearingHouse.NativeMatch memory) {
         return NativePackageClearingHouse.NativeMatch({
             authorizationHash: authorizationHash,
