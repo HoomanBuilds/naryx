@@ -108,6 +108,9 @@ export class AdvancedOrderExecutionFactory {
     if (source.packageOrderType !== "LIMIT" && source.packageOrderType !== "MARKETABLE_LIMIT" && source.packageOrderType !== "POST_ONLY") {
       throw new AdvancedOrderExecutionFactoryError("SOURCE_ORDER_NOT_IMMEDIATE", "The activation source is not an immediate strategy order.");
     }
+    if (source.packageTimeInForce !== "FOK") {
+      throw new AdvancedOrderExecutionFactoryError("SOURCE_ORDER_NOT_FOK", "Advanced orders reconcile only fill-or-kill children, so the source must be FOK.");
+    }
     if (activation === undefined || toHex(strategyPackageOrderHash(activation.order)) !== attempt.orderHashHex
       || source.economicQuantity.atoms !== activation.order.economicQuantity.atoms
       || stored.graphHashHex !== toHex(activation.order.graphHash)) {

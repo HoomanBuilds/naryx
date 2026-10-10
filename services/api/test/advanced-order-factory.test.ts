@@ -107,6 +107,31 @@ test("rejects a schedule whose last slice reaches order expiry", () => {
   assert.throws(() => factory.derive({ sourceOrderHashHex: sourceHash, schedule: schedule({ startValue: 1_900n, sliceInterval: 50n, sliceCount: 3 }) }), { code: "SCHEDULE_OUTLIVES_ORDER" });
 });
 
+test("derives and prepares advanced orders only from FOK sources, the only children reconciliation settles", () => {
+  const source = strategyPackageOrder({ ...sourceOrder(), packageTimeInForce: "IOC" });
+  const sourceHash = toHex(strategyPackageOrderHash(source));
+  const orders = { order: () => ({ orderHashHex: sourceHash, graphHashHex: toHex(source.graphHash), order: source, graph: {} as never, recordedAtMs: 1 }) };
+  const intake = { store: () => assert.fail("a non-FOK source reached intake") };
+  assert.throws(() => new AdvancedOrderFactory({
+    orders,
+    intake,
+    activations: { register: () => assert.fail("a non-FOK source reached registration") },
+  }).derive({ sourceOrderHashHex: sourceHash, schedule: schedule() }), { code: "SOURCE_ORDER_NOT_FOK" });
+  const attemptId = "62".repeat(32);
+  assert.throws(() => new AdvancedOrderExecutionFactory({
+    orders,
+    intake,
+    activations: {
+      attempt: () => ({
+        attemptId, orderHashHex: "63".repeat(32), ordinal: 0, atValue: 1_000n,
+        maximumQuantityAtoms: 25n, side: "BID", limitPriceTicks: 99n, status: "RESERVED", reservedAtMs: 1,
+      }),
+      view: () => ({ sourceOrderHashHex: sourceHash }) as never,
+      bindChild: () => assert.fail("a non-FOK source bound a child"),
+    },
+  }).prepare({ attemptId }), { code: "SOURCE_ORDER_NOT_FOK" });
+});
+
 test("prepares a proportional immediate child for a reserved advanced-order attempt", () => {
   const quote = assetRef("usdc", "32".repeat(32), 6);
   const base = assetRef("sol", "31".repeat(32), 9);

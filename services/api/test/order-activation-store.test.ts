@@ -240,6 +240,15 @@ test("an activation attempt durably binds one exact executable child", () => {
       childGraphHashHex,
       slicePolicies: policies,
     }).replayed, true);
+    // A bound child may still fill, so only its settlement evidence can end the attempt.
+    assert.throws(() => store.complete({
+      attemptId: reservation.attempt.attemptId,
+      outcome: "FAILED",
+      executedQuantityAtoms: 0n,
+      failureReason: "venue unavailable",
+    }), { code: "EVIDENCE_REQUIRED" });
+    assert.equal(store.reserve({ orderHashHex, observations: [], atValue: 1_000n, side: "BID", limitPriceTicks: 100n }).active, true);
+    assert.equal(store.view(orderHashHex)?.attempts.length, 1);
     const completed = store.completeWithEvidence({
       attemptId: reservation.attempt.attemptId,
       outcome: "SUCCEEDED",
@@ -268,6 +277,29 @@ test("an activation attempt durably binds one exact executable child", () => {
       childGraphHashHex,
       slicePolicies: policies,
     }), { code: "CHILD_CONFLICT" });
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("activation time is read from the store clock on the order's own clock and never from a slot clock", () => {
+  const dir = mkdtempSync(join(tmpdir(), "naryx-order-clock-"));
+  const seconds = source(order({ packageOrderType: "SCHEDULED", executionScheduleHash: executionScheduleHash(schedule()) }));
+  const slots = source(order({
+    packageOrderType: "SCHEDULED",
+    expiryUnit: "SOLANA_SLOT",
+    executionScheduleHash: executionScheduleHash(schedule({ timeUnit: "SOLANA_SLOT" })),
+  }));
+  const store = new SqliteOrderActivationStore(join(dir, "activation.sqlite"), {
+    orders: { order: (hash: string) => seconds.orders.order(hash) ?? slots.orders.order(hash) },
+    clock: () => 1_060_999,
+  });
+  try {
+    store.register({ orderHashHex: seconds.orderHashHex, schedule: schedule() });
+    store.register({ orderHashHex: slots.orderHashHex, schedule: schedule({ timeUnit: "SOLANA_SLOT" }) });
+    assert.equal(store.activationClockValue(seconds.orderHashHex), 1_060n);
+    assert.throws(() => store.activationClockValue(slots.orderHashHex), { code: "UNSUPPORTED_CLOCK" });
   } finally {
     store.close();
     rmSync(dir, { recursive: true, force: true });

@@ -66,6 +66,9 @@ export class AdvancedOrderFactory {
     if (sourceOrder.packageOrderType !== "LIMIT" && sourceOrder.packageOrderType !== "MARKETABLE_LIMIT" && sourceOrder.packageOrderType !== "POST_ONLY") {
       throw new AdvancedOrderFactoryError("SOURCE_ORDER_NOT_IMMEDIATE", "The source must be an immediate strategy order.");
     }
+    if (sourceOrder.packageTimeInForce !== "FOK") {
+      throw new AdvancedOrderFactoryError("SOURCE_ORDER_NOT_FOK", "Advanced orders reconcile only fill-or-kill children, so the source must be FOK.");
+    }
     if (sourceOrder.activationConditionHash !== undefined || sourceOrder.executionScheduleHash !== undefined) {
       throw new AdvancedOrderFactoryError("SOURCE_ORDER_ALREADY_BOUND", "The source order already binds activation documents.");
     }

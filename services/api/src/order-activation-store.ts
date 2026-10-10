@@ -311,6 +311,16 @@ export class SqliteOrderActivationStore {
     return { created, view: this.requireView(input.orderHashHex) };
   }
 
+  /** Now on the order's own clock, read from this store's clock; a slot clock has no verified chain read here. */
+  activationClockValue(orderHashHex: string): bigint {
+    const unit = this.requireView(orderHashHex).order.expiryUnit;
+    const nowMs = this.clock();
+    if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new OrderActivationStoreError("INVALID_CLOCK", "The activation clock is invalid.");
+    if (unit === "EVM_UNIX_SECONDS") return BigInt(Math.floor(nowMs / 1_000));
+    if (unit === "HYPERLIQUID_UNIX_MILLISECONDS") return BigInt(nowMs);
+    throw new OrderActivationStoreError("UNSUPPORTED_CLOCK", "Activation has no verified chain read for this order's clock.");
+  }
+
   view(orderHashHex: string): OrderActivationView | undefined {
     const row = this.db.prepare(`
       SELECT a.order_json, a.condition_json, a.schedule_json, a.status, a.registered_at_ms,
@@ -526,9 +536,11 @@ export class SqliteOrderActivationStore {
   }): { readonly replayed: boolean; readonly view: OrderActivationView } {
     return this.transaction(() => {
       const row = this.db.prepare(`
-        SELECT order_hash, maximum_quantity_atoms, side, limit_price_ticks, status,
-               executed_quantity_atoms, execution_price_ticks, failure_reason
-        FROM order_activation_attempts WHERE attempt_id = ?
+        SELECT a.order_hash, a.maximum_quantity_atoms, a.side, a.limit_price_ticks, a.status,
+               a.executed_quantity_atoms, a.execution_price_ticks, a.failure_reason, c.child_order_hash
+        FROM order_activation_attempts a
+        LEFT JOIN order_activation_children c ON c.attempt_id = a.attempt_id
+        WHERE a.attempt_id = ?
       `).get(input.attemptId) as {
         order_hash: Uint8Array;
         maximum_quantity_atoms: string;
@@ -538,6 +550,7 @@ export class SqliteOrderActivationStore {
         executed_quantity_atoms: string | null;
         execution_price_ticks: string | null;
         failure_reason: string | null;
+        child_order_hash: Uint8Array | null;
       } | undefined;
       if (row === undefined) throw new OrderActivationStoreError("ATTEMPT_NOT_FOUND", "No activation attempt has this id.");
       const orderHashHex = toHex(row.order_hash);
@@ -549,6 +562,9 @@ export class SqliteOrderActivationStore {
           && row.failure_reason === (input.failureReason ?? null);
         if (!same) throw new OrderActivationStoreError("ATTEMPT_CONFLICT", "The activation attempt already has another outcome.");
         return { replayed: true, view: this.requireView(orderHashHex) };
+      }
+      if (row.child_order_hash !== null) {
+        throw new OrderActivationStoreError("EVIDENCE_REQUIRED", "An attempt with a bound executable child completes only from its settlement evidence.");
       }
       const view = this.requireView(orderHashHex);
       const maximum = storedBigint(row.maximum_quantity_atoms, "maximum_quantity_atoms");
