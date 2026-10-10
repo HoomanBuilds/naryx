@@ -73,6 +73,27 @@ export interface PublicMarketCatalogueStatus {
   readonly detail: string;
 }
 
+export interface PublicSizeQuote {
+  readonly size: bigint;
+  readonly averagePriceTicks: bigint;
+  readonly fillableQuantity: bigint;
+}
+
+export interface PublicObservedTrade {
+  readonly priceTicks: bigint;
+  readonly quantity: bigint;
+  readonly recordedAtMs: number;
+}
+
+export interface PublicPackageOpportunity {
+  readonly packageMarketId: string;
+  readonly seriesId: string | null;
+  readonly bid: PublicSizeQuote | null;
+  readonly ask: PublicSizeQuote | null;
+  readonly spreadAtSizeTicks: bigint | null;
+  readonly lastTrade: PublicObservedTrade | null;
+}
+
 function requiredText(value: unknown, context: string): string {
   if (typeof value !== "string" || value.length === 0) throw new PublicApiError(`${context} is not a nonempty string`);
   return value;
@@ -203,6 +224,113 @@ export function usePublicPackageMarkets(baseUrl: string | null): {
   }, [baseUrl]);
 
   return { markets, status: baseUrl === null ? null : status };
+}
+
+function executableQuote(value: unknown, size: bigint, context: string): PublicSizeQuote {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new PublicApiError(`${context} is malformed`);
+  const quote = value as Record<string, unknown>;
+  if (quote.label !== "EXECUTABLE") throw new PublicApiError(`${context} is not executable`);
+  const quoteSize = exact(quote.size, `${context}.size`);
+  const fillableQuantity = exact(quote.fillableQuantity, `${context}.fillableQuantity`);
+  const averagePriceTicks = exact(quote.averagePriceTicks, `${context}.averagePriceTicks`);
+  if (quoteSize !== size || fillableQuantity !== size) throw new PublicApiError(`${context} cannot fill the requested size`);
+  return Object.freeze({ size, averagePriceTicks, fillableQuantity });
+}
+
+function observedTrade(value: unknown, context: string): PublicObservedTrade {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new PublicApiError(`${context} is malformed`);
+  const trade = value as Record<string, unknown>;
+  if (trade.label !== "OBSERVED") throw new PublicApiError(`${context} is not observed evidence`);
+  const quantity = exact(trade.quantity, `${context}.quantity`);
+  if (quantity <= BigInt(0) || typeof trade.recordedAtMs !== "number" || !Number.isSafeInteger(trade.recordedAtMs) || trade.recordedAtMs < 0) {
+    throw new PublicApiError(`${context} is malformed`);
+  }
+  return Object.freeze({
+    priceTicks: exact(trade.priceTicks, `${context}.priceTicks`),
+    quantity,
+    recordedAtMs: trade.recordedAtMs,
+  });
+}
+
+function packageOpportunities(body: Record<string, unknown>, size: bigint): readonly PublicPackageOpportunity[] {
+  if (body.label !== "EXECUTABLE" || exact(body.size, "opportunities.size") !== size) {
+    throw new PublicApiError("opportunity feed is not executable at the requested size");
+  }
+  exact(body.asOfValue, "opportunities.asOfValue");
+  if (!Array.isArray(body.opportunities)) throw new PublicApiError("opportunities are malformed");
+  let previousSpread: bigint | null = null;
+  let oneSidedStarted = false;
+  const opportunities = body.opportunities.map((candidate, index): PublicPackageOpportunity => {
+    const context = `opportunities[${index}]`;
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) throw new PublicApiError(`${context} is malformed`);
+    const entry = candidate as Record<string, unknown>;
+    const bid = entry.bid === undefined ? null : executableQuote(entry.bid, size, `${context}.bid`);
+    const ask = entry.ask === undefined ? null : executableQuote(entry.ask, size, `${context}.ask`);
+    if (bid === null && ask === null) throw new PublicApiError(`${context} has no executable side`);
+    const expectedSpread = bid !== null && ask !== null ? ask.averagePriceTicks - bid.averagePriceTicks : null;
+    const spread = entry.spreadAtSizeTicks === undefined ? null : exact(entry.spreadAtSizeTicks, `${context}.spreadAtSizeTicks`);
+    if (spread !== expectedSpread) throw new PublicApiError(`${context} spread does not equal ask minus bid`);
+    if (spread === null) oneSidedStarted = true;
+    else if (oneSidedStarted || (previousSpread !== null && spread < previousSpread)) throw new PublicApiError("opportunities are not ordered by executable spread");
+    if (spread !== null) previousSpread = spread;
+    return Object.freeze({
+      packageMarketId: requiredText(entry.packageMarketId, `${context}.packageMarketId`),
+      seriesId: entry.seriesId === undefined ? null : requiredText(entry.seriesId, `${context}.seriesId`),
+      bid,
+      ask,
+      spreadAtSizeTicks: spread,
+      lastTrade: entry.lastTrade === undefined ? null : observedTrade(entry.lastTrade, `${context}.lastTrade`),
+    });
+  });
+  if (new Set(opportunities.map((entry) => entry.packageMarketId)).size !== opportunities.length) {
+    throw new PublicApiError("opportunity feed repeats a package market");
+  }
+  return Object.freeze(opportunities);
+}
+
+/** Finds books whose direct resting liquidity can fill the full requested package size. */
+export function usePublicPackageOpportunities(baseUrl: string | null, size: bigint | null): {
+  readonly opportunities: readonly PublicPackageOpportunity[];
+  readonly status: PublicMarketCatalogueStatus | null;
+} {
+  const [opportunities, setOpportunities] = useState<readonly PublicPackageOpportunity[]>([]);
+  const [status, setStatus] = useState<PublicMarketCatalogueStatus>({ state: "loading", detail: "Scanning executable depth." });
+  const [resultSize, setResultSize] = useState<bigint | null>(null);
+
+  useEffect(() => {
+    if (baseUrl === null || size === null || size <= BigInt(0)) return;
+    const base = baseUrl.replace(/\/+$/, "");
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const next = packageOpportunities(await read(base, `/v1/opportunities?size=${size.toString()}`, controller.signal), size);
+        setOpportunities(next);
+        setStatus({ state: "live", detail: `${next.length} market${next.length === 1 ? "" : "s"} can fill ${size.toString()} package unit${size === BigInt(1) ? "" : "s"}.` });
+        setResultSize(size);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        const detail = error instanceof Error ? error.message : "request failed";
+        setStatus({ state: "unavailable", detail: `Opportunity scan failed (${detail}); any visible result is the last verified scan.` });
+        setResultSize(size);
+      }
+      if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 10_000);
+    };
+    void poll();
+    return () => {
+      controller.abort();
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [baseUrl, size]);
+
+  if (baseUrl === null || size === null) return { opportunities: Object.freeze([]), status: null };
+  if (resultSize !== size) {
+    return {
+      opportunities: Object.freeze([]),
+      status: { state: "loading", detail: `Scanning direct depth for ${size.toString()} package unit${size === BigInt(1) ? "" : "s"}.` },
+    };
+  }
+  return { opportunities, status };
 }
 
 function exact(value: unknown, context: string): bigint {

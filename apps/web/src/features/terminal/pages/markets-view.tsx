@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import { usePersistedFlag, usePersistedSetting } from "../persisted-setting";
-import { usePublicPackageMarkets } from "../public-market-feed";
+import { usePublicPackageMarkets, usePublicPackageOpportunities } from "../public-market-feed";
 import { useTerminal } from "../shell/terminal-context";
 import styles from "./pages.module.css";
 
@@ -78,6 +78,9 @@ function human(value: string | null): string {
 export function MarketsView() {
   const { publicApiBaseUrl } = useTerminal();
   const { markets, status } = usePublicPackageMarkets(publicApiBaseUrl);
+  const [scanSizeInput, setScanSizeInput] = useState("1");
+  const [scanSize, setScanSize] = useState(BigInt(1));
+  const { opportunities, status: opportunityStatus } = usePublicPackageOpportunities(publicApiBaseUrl, scanSize);
   const [query, setQuery] = useState("");
   const watchlist = useSyncExternalStore(subscribeWatchlist, watchlistSnapshot, () => EMPTY_WATCHLIST);
   const [watchedOnly, setWatchedOnly] = usePersistedFlag("markets.watchedOnly", false);
@@ -123,6 +126,90 @@ export function MarketsView() {
         <div><span>With executable depth</span><strong>{executable}</strong><small>At least one quoted side</small></div>
         <div><span>Strategy templates</span><strong>{templates}</strong><small>Published economic series</small></div>
         <div><span>Execution domains</span><strong>{domains}</strong><small>Across active catalogue entries</small></div>
+      </section>
+
+      <section className={styles.card} aria-labelledby="opportunity-scanner-title">
+        <div className={styles.cardHead}>
+          <div>
+            <h2 id="opportunity-scanner-title">Executable opportunity scanner</h2>
+            <p>{opportunityStatus?.detail ?? "Configure the public market API to scan executable package depth."}</p>
+          </div>
+          <form
+            className={styles.scanControls}
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!/^[1-9][0-9]*$/.test(scanSizeInput)) return;
+              setScanSize(BigInt(scanSizeInput));
+            }}
+          >
+            <label>
+              <span>Package size</span>
+              <input
+                inputMode="numeric"
+                pattern="[1-9][0-9]*"
+                value={scanSizeInput}
+                onChange={(event) => setScanSizeInput(event.target.value)}
+                aria-invalid={!/^[1-9][0-9]*$/.test(scanSizeInput)}
+              />
+            </label>
+            <button type="submit" className={styles.ghost} disabled={!/^[1-9][0-9]*$/.test(scanSizeInput)}>Scan depth</button>
+          </form>
+        </div>
+        <div className={styles.evidenceBar}>
+          <span className={opportunityStatus?.state === "live" ? styles.pillOk : opportunityStatus?.state === "stale" ? styles.pillWarn : styles.pill}>
+            {opportunityStatus?.state === "live" ? "Executable" : opportunityStatus?.state === "stale" ? "Last verified" : "Scanning"}
+          </span>
+          <p>Direct resting liquidity only. Every shown side can fill the full size. Last trade is observed evidence, not a quote.</p>
+        </div>
+        {opportunities.length === 0 ? (
+          <div className={styles.empty}>
+            <strong>No direct book can fill this size</strong>
+            <p>Try a smaller package size or wait for firm liquidity. Partial and implied depth are excluded.</p>
+          </div>
+        ) : (
+          <div className={styles.scroll}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Package market</th>
+                  <th className={styles.num}>Executable bid</th>
+                  <th className={styles.num}>Executable ask</th>
+                  <th className={styles.num}>Spread at size</th>
+                  <th className={styles.num}>Last observed</th>
+                  <th aria-label="Action" />
+                </tr>
+              </thead>
+              <tbody>
+                {opportunities.map((opportunity, index) => (
+                  <tr key={opportunity.packageMarketId}>
+                    <td className={styles.num}>{index + 1}</td>
+                    <td>
+                      <span className={styles.cellStack}>
+                        <strong className={styles.mono}>{opportunity.packageMarketId}</strong>
+                        <small className={styles.cellDetail}>{opportunity.seriesId ?? "Series not published"}</small>
+                      </span>
+                    </td>
+                    <td className={styles.num}>{opportunity.bid?.averagePriceTicks.toString() ?? "-"}</td>
+                    <td className={styles.num}>{opportunity.ask?.averagePriceTicks.toString() ?? "-"}</td>
+                    <td className={styles.num}>{opportunity.spreadAtSizeTicks?.toString() ?? "One-sided"}</td>
+                    <td className={styles.num}>
+                      <span className={styles.cellStack}>
+                        <strong>{opportunity.lastTrade?.priceTicks.toString() ?? "-"}</strong>
+                        <small className={styles.cellDetail}>{opportunity.lastTrade === null ? "No observed trade" : `${opportunity.lastTrade.quantity.toString()} units`}</small>
+                      </span>
+                    </td>
+                    <td>
+                      <Link className={styles.ghost} href={`/trade?market=${encodeURIComponent(opportunity.packageMarketId)}`} prefetch={false}>
+                        Open book
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
 
       <section className={styles.card} aria-labelledby="market-list-title">

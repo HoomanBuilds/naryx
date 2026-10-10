@@ -99,6 +99,52 @@
   font-size: 12px;
 }
 
+.scanControls {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.scanControls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
+.scanControls input {
+  width: 132px;
+  height: 31px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--field);
+  color: var(--text-primary);
+  padding: 0 9px;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
+}
+
+.scanControls input:focus-visible {
+  border-color: var(--line-strong);
+  outline: 1px solid var(--yellow);
+  outline-offset: 1px;
+}
+
+.evidenceBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--line-soft);
+  padding: 8px 16px;
+}
+
+.evidenceBar p {
+  color: var(--text-dim);
+  font-size: 11.5px;
+}
+
 .watchFilter {
   display: inline-flex;
   align-items: center;
