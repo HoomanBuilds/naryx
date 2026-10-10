@@ -116,6 +116,12 @@ export {
   verifySealedAuctionResult,
   verifySelectiveDisclosure,
 } from '@naryx/protocol-types';
+export {
+  stressPortfolio,
+  type AssetRef,
+  type NormalizedPosition,
+  type StressResult,
+} from '@naryx/protocol-types';
 export { createQuoteAutomation, type QuoteAutomation, type QuoteAutomationAction, type QuoteAutomationPolicy } from './maker-automation.js';
 export {
   createImpliedLiquidityAutomation,

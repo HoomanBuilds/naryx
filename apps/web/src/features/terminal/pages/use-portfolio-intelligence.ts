@@ -1,7 +1,14 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { NaryxApiError, NaryxClient, type StrategyState, type VerifiedRisk } from "@naryx/sdk";
+import {
+  NaryxApiError,
+  NaryxClient,
+  type AssetRef,
+  type NormalizedPosition,
+  type StrategyState,
+  type VerifiedRisk,
+} from "@naryx/sdk";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -30,6 +37,13 @@ type SignedRisk = Readonly<{
   upShockLossAtoms: bigint;
 }>;
 
+export type PortfolioScenarioGroup = Readonly<{
+  accountingAsset: AssetRef;
+  positions: readonly NormalizedPosition[];
+  underlyingIds: readonly string[];
+  dependencyIds: readonly string[];
+}>;
+
 export type PortfolioIntelligenceRow = Readonly<{
   strategyId: string;
   environment: string;
@@ -39,6 +53,7 @@ export type PortfolioIntelligenceRow = Readonly<{
   positionCount: number;
   positionAgeMs: bigint | null;
   risk: readonly SignedRisk[];
+  scenarioGroups: readonly PortfolioScenarioGroup[];
   collateral: readonly SignedCollateral[];
 }>;
 
@@ -121,8 +136,12 @@ function parseCollateral(value: Record<string, unknown> | null): readonly Signed
   }));
 }
 
-function summarizeRisk(value: VerifiedRisk | null): Pick<PortfolioIntelligenceRow, "positionSources" | "positionCount" | "positionAgeMs" | "risk"> {
-  if (value === null) return { positionSources: 0, positionCount: 0, positionAgeMs: null, risk: [] };
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length && left.every((byte, index) => byte === right[index]);
+}
+
+function summarizeRisk(value: VerifiedRisk | null): Pick<PortfolioIntelligenceRow, "positionSources" | "positionCount" | "positionAgeMs" | "risk" | "scenarioGroups"> {
+  if (value === null) return { positionSources: 0, positionCount: 0, positionAgeMs: null, risk: [], scenarioGroups: [] };
   return Object.freeze({
     positionSources: value.positions.sources.length,
     positionCount: value.positions.positions.length,
@@ -141,6 +160,22 @@ function summarizeRisk(value: VerifiedRisk | null): Pick<PortfolioIntelligenceRo
         fullyClosable: group.closeCost.complete,
         downShockLossAtoms: down.lossQuoteAtoms,
         upShockLossAtoms: up.lossQuoteAtoms,
+      });
+    })),
+    scenarioGroups: Object.freeze(value.byAccountingAsset.map((group) => {
+      const positions = value.positions.positions.filter((position) => {
+        const asset = position.markPrice.quoteAsset;
+        return asset.assetId === group.accountingAsset.assetId && asset.decimals === group.accountingAsset.decimals
+          && sameBytes(asset.assetManifestHash, group.accountingAsset.assetManifestHash);
+      });
+      return Object.freeze({
+        accountingAsset: group.accountingAsset,
+        positions: Object.freeze(positions),
+        underlyingIds: Object.freeze([...new Set(positions.map((position) => position.underlyingId))].sort()),
+        dependencyIds: Object.freeze([...new Set(positions.flatMap((position) => [
+          ...position.dependencyIds,
+          ...position.closeRoutes.flatMap((route) => route.requiredDependencyIds),
+        ]))].sort()),
       });
     })),
   });
