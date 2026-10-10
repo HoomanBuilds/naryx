@@ -463,6 +463,15 @@ export interface OrderActivationView {
   readonly updatedAtMs: number;
 }
 
+export interface DerivedAdvancedOrderView {
+  readonly sourceOrderHash: string;
+  readonly orderHash: string;
+  readonly graphHash: string;
+  readonly created: boolean;
+  readonly status: 'STORED_FOR_QUOTING';
+  readonly activation: OrderActivationView;
+}
+
 export interface SubmittedOrder {
   readonly orderHash: string;
   /** True when the server already held this exact order and signature. */
@@ -3595,6 +3604,48 @@ export class NaryxClient {
     }), 'order activation registration');
     if (typeof body.created !== 'boolean') throw new NaryxEvidenceError('order activation registration is malformed');
     return Object.freeze({ created: body.created, activation: orderActivationView(body, orderHash) });
+  }
+
+  /** Derives and admits a bound advanced order from an immediate strategy order. */
+  async deriveAdvancedOrder(input: Readonly<{
+    sourceOrderHash: string;
+    condition?: ActivationConditionInput;
+    schedule?: ExecutionScheduleInput;
+    atSlot?: bigint;
+  }>): Promise<DerivedAdvancedOrderView> {
+    const sourceOrderHash = hashHex(input.sourceOrderHash, 'source order hash');
+    const condition = input.condition === undefined ? undefined : activationCondition(input.condition);
+    const schedule = input.schedule === undefined ? undefined : executionSchedule(input.schedule);
+    if (condition === undefined && schedule === undefined) throw new TypeError('a condition or execution schedule is required');
+    if (input.atSlot !== undefined && (typeof input.atSlot !== 'bigint' || input.atSlot <= 0n)) {
+      throw new TypeError('atSlot must be a positive integer');
+    }
+    const body = record(await this.#request('POST', '/v1/order-activations/derive', {
+      sourceOrderHash,
+      ...(condition === undefined ? {} : { condition }),
+      ...(schedule === undefined ? {} : { schedule }),
+      ...(input.atSlot === undefined ? {} : { atSlot: input.atSlot }),
+    }), 'advanced order derivation');
+    if (body.version !== 1 || body.sourceOrderHash !== sourceOrderHash || typeof body.created !== 'boolean'
+      || body.status !== 'STORED_FOR_QUOTING') {
+      throw new NaryxEvidenceError('advanced order derivation response is inconsistent');
+    }
+    const orderHash = hashHex(body.orderHash, 'derived order hash');
+    const graphHash = hashHex(body.graphHash, 'derived graph hash');
+    const activationBody = record(body.activation, 'derived activation');
+    const activation = orderActivationView({ version: 1, ...activationBody }, orderHash);
+    if (toHex(activation.order.graphHash) !== graphHash) throw new NaryxEvidenceError('derived order graph hash is inconsistent');
+    if ((activation.condition === undefined) !== (condition === undefined)
+      || (activation.schedule === undefined) !== (schedule === undefined)) {
+      throw new NaryxEvidenceError('derived order activation documents are inconsistent');
+    }
+    if (condition !== undefined && toHex(activationConditionHash(activation.condition!)) !== toHex(activationConditionHash(condition))) {
+      throw new NaryxEvidenceError('derived order changed the requested activation condition');
+    }
+    if (schedule !== undefined && toHex(executionScheduleHash(activation.schedule!)) !== toHex(executionScheduleHash(schedule))) {
+      throw new NaryxEvidenceError('derived order changed the requested execution schedule');
+    }
+    return Object.freeze({ sourceOrderHash, orderHash, graphHash, created: body.created, status: body.status, activation });
   }
 
   /** Reads and verifies durable conditional, scheduled, or TWAP execution progress. */

@@ -93,3 +93,36 @@ test("registers and verifies a bound advanced order activation", async () => {
     `GET https://api.example/v1/order-activations/${orderHash}`,
   ]);
 });
+
+test("derives an advanced order and verifies its returned activation", async () => {
+  const order = strategyPackageOrder(orderInput);
+  const orderHash = toHex(strategyPackageOrderHash(order));
+  const sourceOrderHash = "91".repeat(32);
+  const fetch: FetchLike = async () => ({
+    status: 200,
+    headers: { get: () => "application/json" },
+    text: async () => JSON.stringify(toProtocolJson({
+      version: 1,
+      sourceOrderHash,
+      orderHash,
+      graphHash: toHex(order.graphHash),
+      created: true,
+      status: "STORED_FOR_QUOTING",
+      activation: {
+        orderHashHex: orderHash,
+        order,
+        condition,
+        status: "WAITING",
+        progress: { attemptedSlices: 0, failedSlices: 0, executedQuantity: 0n, executedNotionalTicks: 0n },
+        attempts: [],
+        registeredAtMs: 1,
+        updatedAtMs: 1,
+      },
+    })),
+  });
+
+  const derived = await new NaryxClient({ baseUrl: "https://api.example", fetch })
+    .deriveAdvancedOrder({ sourceOrderHash, condition });
+  assert.equal(derived.orderHash, orderHash);
+  assert.equal(derived.activation.order.packageOrderType, "CONDITIONAL");
+});
