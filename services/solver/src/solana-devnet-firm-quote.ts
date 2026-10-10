@@ -59,6 +59,7 @@ import {
   instructionDiscriminator,
   priceTestPerpCloseShort,
   priceTestPerpShort,
+  pythObservationAgeMs,
   reservationIdFor,
   sameDomain,
   sha256,
@@ -401,6 +402,7 @@ export type SolanaDevnetLiveQuoteState = Readonly<{
   slot: bigint;
   market: TestPerpMarketState;
   oraclePricePerLot: bigint;
+  oracleObservationAgeMs: bigint;
   reservationClass: ReservationClassState;
   shard: PackageQuoteShardState;
   levels: readonly QuoteLevelState[];
@@ -434,6 +436,7 @@ export async function readSolanaDevnetQuoteState(
   if (market.pauseOpens) fail('test perp market has opens paused');
   if (oracleAccount === null || oracleAccount === undefined) fail('oracle account is absent');
   const oraclePricePerLot = testPerpOraclePricePerLot(market, { address: manifest.testPerp.oracle, ...oracleAccount }, blockTime);
+  const oracleObservationAgeMs = pythObservationAgeMs(oracleAccount, blockTime);
   const reservationClass = decodeReservationClass(owned(classAccount, 'reservation', 'reservation class').data);
   const shard = decodePackageQuoteShard(owned(shardAccount, 'package_book', 'package book shard').data);
   const page = decodeQuoteLevelPage(owned(pageAccount, 'package_book', 'package book level page').data);
@@ -446,7 +449,7 @@ export async function readSolanaDevnetQuoteState(
     || reservationClass.quoteMint !== new PublicKey(config.resources.quoteAsset.subjectAddress).toBase58()) {
     fail('reservation class or package book shard does not match the reviewed series and solver');
   }
-  return Object.freeze({ slot, market, oraclePricePerLot, reservationClass, shard, levels: page.levels });
+  return Object.freeze({ slot, market, oraclePricePerLot, oracleObservationAgeMs, reservationClass, shard, levels: page.levels });
 }
 
 /**
@@ -847,6 +850,10 @@ export function createSolanaDevnetFirmQuotePort(
         let current = await readSolanaDevnetQuoteState(rpc, manifest, config);
         const existing = selectFirmLevel(current, config, units, minimumExpiry, latestExpiry, side);
         if (existing !== undefined) return { state: current, level: existing };
+        // A level write bumps the shard sequence that an in-flight binding's quote lock pins.
+        if (shardSequencesHeld(config.accounts.packageBookShard, current.slot)) {
+          fail('no usable firm level and the package book shard is held by an in-flight binding; retry after it expires');
+        }
         const plan = packageBookLevelInstructions({ manifest, config, state: current, expirySlot: latestExpiry, side });
         await writer.sendAndFinalize(plan.instructions, key.keypair);
         current = await readSolanaDevnetQuoteState(rpc, manifest, config);

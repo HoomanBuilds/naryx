@@ -496,6 +496,17 @@ export function testPerpOraclePricePerLot(
   return perLot;
 }
 
+/**
+ * Upper bound on a PriceUpdateV2 age at `nowUnixSeconds`, in ms. Both clocks are whole seconds, so
+ * the partial second rounds up; a publish time ahead of the chain clock is age zero, not negative.
+ */
+export function pythObservationAgeMs(oracle: Readonly<{ data: Uint8Array }>, nowUnixSeconds: bigint): bigint {
+  const data = Buffer.from(oracle.data);
+  if (data.length < 41 + 92 || !data.subarray(0, 8).equals(PRICE_UPDATE_V2_DISCRIMINATOR)) fail('oracle is not PriceUpdateV2');
+  const seconds = nowUnixSeconds - data.readBigInt64LE(93) + 1n;
+  return seconds > 0n ? seconds * 1_000n : 0n;
+}
+
 export type TestPerpShortPricing = Readonly<{
   baseLots: bigint;
   fillPricePerLot: bigint;

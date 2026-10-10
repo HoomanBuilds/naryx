@@ -55,9 +55,11 @@ import {
   decodeTokenAccount,
   instructionDiscriminator,
   packageFillCommitment,
+  pythObservationAgeMs,
   reservationIdFor,
   sameDomain,
   sha256,
+  testPerpOraclePricePerLot,
   type FirmQuoteLockState,
   type FirmReservationState,
 } from './solana-devnet-wire.js';
@@ -350,7 +352,13 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
       quoteArgs = fromProtocolJson(JSON.parse(record.lockArgsJson), 'lockArgs') as FirmCashCarryQuoteArgs;
     }
 
-    const assemble = (slot: bigint, liveReservation: FirmReservationState, tokens: FirmCashCarryBinding['tokenAccounts'], signature: Uint8Array): FirmCashCarryBinding => {
+    const assemble = (
+      slot: bigint,
+      liveReservation: FirmReservationState,
+      tokens: FirmCashCarryBinding['tokenAccounts'],
+      observationAgeMs: bigint,
+      signature: Uint8Array,
+    ): FirmCashCarryBinding => {
       const deployments = Object.fromEntries((['core', 'reservation', 'packageBook', 'perpAdapter', 'perpVenue'] as const).map((name) => {
         const program = programAddress(manifest, { core: 'core', reservation: 'reservation', packageBook: 'package_book', perpAdapter: 'perp_adapter', perpVenue: 'perp_venue' }[name]);
         return [name, { programId: program.programId, programDataAddress: program.programDataAddress, codeIdentity: program.codeIdentity }];
@@ -459,10 +467,12 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
           riskDomainId: config.riskDomain.riskDomainId,
           riskPolicyVersion: config.riskDomain.policyVersion,
           riskSeriesIndex: 0,
+          // Both legs carry `quantity`, so the package's own net base exposure is zero. Domain-wide net
+          // across open packages has no onchain accumulator to read and is not claimed here.
           riskNetQuoteAtoms: 0n,
           riskMarginQuoteAtoms: riskMargin,
           riskRecoveryReserveQuoteAtoms: config.riskDomain.requiredRecoveryReserveQuoteAtoms,
-          riskObservationAgeMs: config.riskDomain.observationAgeMs,
+          riskObservationAgeMs: observationAgeMs,
           riskTimeToUnwindMs: config.riskDomain.timeToUnwindMs,
           spotSqrtPriceLimit: 1n,
           minimumRiseCollateralQuoteLots: minimumCollateral,
@@ -497,7 +507,7 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
       : compileFirmCashCarryPlan(admission, binding));
     if (lock === undefined) {
       const tokens = await readTokens(state.slot);
-      const plan = compile(assemble(state.slot, reservation, tokens, new Uint8Array(64)));
+      const plan = compile(assemble(state.slot, reservation, tokens, state.oracleObservationAgeMs, new Uint8Array(64)));
       await dependencies.writer!.sendAndFinalize([
         ComputeBudgetProgram.setComputeUnitLimit({ units: WRITE_COMPUTE_UNITS }),
         ...plan.solverLock.instructions,
@@ -507,11 +517,19 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
     // Final evidence: everything re-read at one finalized slot after the last write.
     await requireSolanaDevnet(rpc);
     const slot = await rpc.getFinalizedSlot();
-    const [finalReservationAccount, finalLockAccount, ...registry] = await read([
-      accounts.reservation!, accounts.quoteLock!,
+    const [[finalReservationAccount, finalLockAccount, oracleAccount, ...registry], blockTime] = await Promise.all([read([
+      accounts.reservation!, accounts.quoteLock!, manifest.testPerp.oracle,
       ...SOLANA_DEVNET_RESOURCE_NAMES.map((name) => config.accounts.indexes[name]),
       config.accounts.seriesIndex, config.accounts.riskDomainIndex,
-    ], slot);
+    ], slot), rpc.getBlockTime(slot)]);
+    // The risk observation age is the signed oracle's own age at this slot, not a configured claim.
+    if (oracleAccount === null || oracleAccount === undefined) notReady('oracle account is absent');
+    try {
+      testPerpOraclePricePerLot(state.market, { address: manifest.testPerp.oracle, ...oracleAccount }, blockTime);
+    } catch (error) {
+      notReady(`oracle observation is unusable: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
+    const observationAgeMs = pythObservationAgeMs(oracleAccount, blockTime);
     if (finalReservationAccount === null || finalReservationAccount === undefined || finalReservationAccount.owner !== reservationProgram.programId) notReady('reservation is absent');
     if (finalLockAccount === null || finalLockAccount === undefined || finalLockAccount.owner !== core.programId) notReady('quote lock is absent');
     const finalReservation = decodeFirmReservation(finalReservationAccount.data);
@@ -538,7 +556,7 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
       mismatch('risk domain index does not point at the reviewed active policy');
     }
     const tokens = await readTokens(slot);
-    const unsigned = assemble(slot, finalReservation, tokens, new Uint8Array(64));
+    const unsigned = assemble(slot, finalReservation, tokens, observationAgeMs, new Uint8Array(64));
     const plan = compile(unsigned);
     const signature = key.signDigest(plan.executionDigest);
     return Object.freeze({ ...unsigned, solverSignature: signature });

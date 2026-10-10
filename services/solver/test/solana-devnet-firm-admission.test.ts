@@ -36,9 +36,11 @@ import {
   createSolanaDevnetFirmQuotePort,
   deriveSolanaDevnetFirmAccounts,
   firmRouteBindingId,
+  holdShardSequences,
   priceSolanaDevnetEntry,
   priceSolanaDevnetExit,
 } from '../src/solana-devnet-firm-quote.js';
+import type { SolanaDevnetSolverWritePort } from '../src/solana-devnet-rpc.js';
 import {
   SOLANA_DEVNET_RESOURCE_NAMES,
   loadSolanaDevnetSolverKey,
@@ -236,7 +238,7 @@ function solverConfig(feePolicy: FeePolicyManifestInput): SolanaDevnetSolverConf
     riskDomain: {
       riskDomainId, policyVersion: 1, policyManifestHash: bytes(41), minimumMarginFloorQuoteAtoms: 1_000_000n,
       maximumLeverageBps: 100_000n, requiredRecoveryReserveQuoteAtoms: 1_000_000n,
-      observationAgeMs: 0n, timeToUnwindMs: 60_000n,
+      timeToUnwindMs: 60_000n,
     },
     resourceAdmissionCommitment: bytes(29),
     route: routeCommitments(),
@@ -327,7 +329,7 @@ function packageOrder(action: 'ENTRY' | 'EXIT', trader: PublicKey, maxVenueFeeAt
 }
 
 /** Quotes the order through the solver's own firm signing path against fixed Devnet account state. */
-async function signThroughSolver(order: PackageOrderInput, feePolicy: FeePolicyManifestInput) {
+async function signThroughSolver(order: PackageOrderInput, feePolicy: FeePolicyManifestInput, writer?: SolanaDevnetSolverWritePort) {
   const directory = mkdtempSync(join(tmpdir(), 'naryx-solana-firm-'));
   const keyPath = join(directory, 'solver.json');
   writeFileSync(keyPath, JSON.stringify(Array.from(solver.secretKey)));
@@ -346,6 +348,7 @@ async function signThroughSolver(order: PackageOrderInput, feePolicy: FeePolicyM
         getAccounts: async (addresses) => addresses.map((address) => state.get(address) ?? null),
       },
       orders: () => validated,
+      ...(writer === undefined ? {} : { writer }),
       nonceSource: { next: () => (nonce += 1n) },
       randomNonce: () => bytes(38),
     }, { quote: async () => assert.fail('a Devnet order must not reach the fallback') });
@@ -404,4 +407,17 @@ test('a Solana firm exit quote passes every fee list rule, and the order cap sti
   assert.equal(admitted.quote.expectedNormalizedVenueFeesByAsset.find((fee) => compareBytes(assetKey(fee.asset), assetKey(quote)) === 0)?.atoms, exitFee);
   assert.equal(admitted.quote.expectedNetSpotQuantity.atoms, -QUANTITY);
   await assert.rejects(signThroughSolver(packageOrder('EXIT', trader, templatePolicy(exitFee - 1n).orderCaps), policy.feePolicy), /perp taker fee exceeds the order cap/);
+});
+
+test('an on-demand quote never writes a level while a binding holds the shard sequences', async () => {
+  const policy = templatePolicy(entryFee);
+  // The standing ask expires after this order, so the quote needs a fresh level write.
+  const order = { ...packageOrder('ENTRY', key(), policy.orderCaps), expiryValue: SLOT + 200n };
+  let writes = 0;
+  const writer: SolanaDevnetSolverWritePort = { sendAndFinalize: async () => { writes += 1; throw new Error('write reached the chain'); } };
+  await assert.rejects(signThroughSolver(order, policy.feePolicy, writer), /write reached the chain/);
+  assert.equal(writes, 1);
+  holdShardSequences(solverConfig(policy.feePolicy).accounts.packageBookShard, SLOT + 1n);
+  await assert.rejects(signThroughSolver(order, policy.feePolicy, writer), /held by an in-flight binding/);
+  assert.equal(writes, 1);
 });

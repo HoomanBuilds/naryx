@@ -20,6 +20,7 @@ import {
   accountDiscriminator,
   decodeFirmReservation,
   previewTestPerpShortAdjustment,
+  pythObservationAgeMs,
   reservationIdFor,
   type QuoteLevelState,
   type TestPerpMarketState,
@@ -102,7 +103,7 @@ test('selects only a live firm ask level with the reviewed policy, capacity, and
     remainingCapacity: 10n, active: true, side: 2, quoteMode: 2,
   };
   const state = {
-    slot: 400n, market, oraclePricePerLot: 150_000n,
+    slot: 400n, market, oraclePricePerLot: 150_000n, oracleObservationAgeMs: 0n,
     reservationClass: { policyHash: policy } as never,
     shard: { epoch: 2n, heartbeatExpirySlot: 600n } as never,
     levels: [level],
@@ -125,7 +126,7 @@ test('binds a quote to the usable level with the latest expiry, ties to the lowe
     remainingCapacity: 10n, active: true, side: 2, quoteMode: 2,
   };
   const state = (levels: QuoteLevelState[]) => ({
-    slot: 400n, market, oraclePricePerLot: 150_000n,
+    slot: 400n, market, oraclePricePerLot: 150_000n, oracleObservationAgeMs: 0n,
     reservationClass: { policyHash: policy } as never,
     shard: { epoch: 2n, heartbeatExpirySlot: 600n } as never,
     levels,
@@ -153,7 +154,7 @@ test('keeps a standing level per side that a quote made a lead time from now can
     remainingCapacity: 10n, active: true, side: 2, quoteMode: 2,
   };
   const at = (slot: bigint, levels: QuoteLevelState[]) => ({
-    slot, market, oraclePricePerLot: 150_000n,
+    slot, market, oraclePricePerLot: 150_000n, oracleObservationAgeMs: 0n,
     reservationClass: { policyHash: policy } as never,
     shard: { epoch: 2n, heartbeatExpirySlot: 5_000n } as never,
     levels,
@@ -221,4 +222,14 @@ test('a binding holds the shard sequences until it expires, so standing-level wr
   assert.equal(shardSequencesHeld(shard, 1_449n), true);
   assert.equal(shardSequencesHeld(shard, 1_450n), false);
   assert.equal(shardSequencesHeld('another-shard', 1_000n), false);
+});
+
+test('the risk observation age is the oracle publish age rounded up to the next whole second', () => {
+  const oracle = Buffer.alloc(134);
+  Buffer.from([34, 241, 35, 99, 157, 126, 244, 205]).copy(oracle, 0);
+  oracle.writeBigInt64LE(1_000n, 93);
+  assert.equal(pythObservationAgeMs({ data: oracle }, 1_000n), 1_000n);
+  assert.equal(pythObservationAgeMs({ data: oracle }, 1_004n), 5_000n);
+  assert.equal(pythObservationAgeMs({ data: oracle }, 998n), 0n);
+  assert.throws(() => pythObservationAgeMs({ data: oracle.subarray(0, 100) }, 1_000n), /PriceUpdateV2/);
 });

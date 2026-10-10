@@ -137,7 +137,6 @@ export type SolanaDevnetSolverConfig = Readonly<{
     minimumMarginFloorQuoteAtoms: bigint;
     maximumLeverageBps: bigint;
     requiredRecoveryReserveQuoteAtoms: bigint;
-    observationAgeMs: bigint;
     timeToUnwindMs: bigint;
   }>;
   resourceAdmissionCommitment: Uint8Array;
@@ -198,7 +197,6 @@ export function loadSolanaDevnetSolverConfig(path: string): SolanaDevnetSolverCo
   positive(value.riskDomain.minimumMarginFloorQuoteAtoms, 'riskDomain.minimumMarginFloorQuoteAtoms');
   positive(value.riskDomain.maximumLeverageBps, 'riskDomain.maximumLeverageBps');
   positive(value.riskDomain.requiredRecoveryReserveQuoteAtoms, 'riskDomain.requiredRecoveryReserveQuoteAtoms');
-  if (typeof value.riskDomain.observationAgeMs !== 'bigint' || value.riskDomain.observationAgeMs < 0n) fail('riskDomain.observationAgeMs must be nonnegative');
   positive(value.riskDomain.timeToUnwindMs, 'riskDomain.timeToUnwindMs');
   hash32(value.resourceAdmissionCommitment, 'resourceAdmissionCommitment');
   for (const name of ['config', 'solverRegistry', 'reservationClass', 'seriesIndex', 'seriesRecord', 'riskDomainIndex', 'riskDomainRecord', 'packageBookClass', 'packageBookShard', 'packageBookLevelPage'] as const) {
