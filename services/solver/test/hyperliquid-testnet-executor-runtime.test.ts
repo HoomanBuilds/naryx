@@ -653,3 +653,144 @@ test('does not accept account identity from the API attempt handoff', async () =
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('automatic recovery advances only after a durable continuation and resumes from the keeper journal', async () => {
+  const nowMs = 1_000_000;
+  const recoveryAsset = {
+    assetId: 'hypercore:testnet:USDC',
+    assetManifestHash: new Uint8Array(32).fill(9),
+    decimals: 6,
+  };
+  const required = (recoverySequence: number) => ({
+    status: 'RECONCILED' as const,
+    attempt: {
+      version: 1 as const,
+      status: 'RECOVERY_REQUIRED' as const,
+      reasons: ['INCOMPLETE_RECOVERY'],
+      acceptedEvidence: { evidenceVersion: BigInt(recoverySequence + 2), observedAtMs: BigInt(nowMs) },
+      lockEvidence: null,
+      nextRecoveryObligation: {
+        recoverySequence: recoverySequence + 1,
+        remainingRecoveryCostCaps: [{ asset: recoveryAsset, atoms: 7n }],
+        remainingAggregateLoss: { asset: recoveryAsset, atoms: 800n },
+      },
+    },
+    accountObservation: null,
+    observedFills: [],
+    rawResponseCommitments: [],
+  });
+  const flat = {
+    status: 'RECONCILED' as const,
+    attempt: {
+      version: 1 as const,
+      status: 'RECOVERED_FLAT' as const,
+      reasons: [],
+      acceptedEvidence: { evidenceVersion: 9n, observedAtMs: BigInt(nowMs) },
+      lockEvidence: null,
+      nextRecoveryObligation: null,
+    },
+    accountObservation: null,
+    observedFills: [],
+    rawResponseCommitments: [],
+  };
+  // The keeper journal: the sequence each registered recovery attempt id reconciles as.
+  const journaled = new Map<string, number>();
+  const run = async (holder: string, failFirstContinuation: boolean) => {
+    const directory = await mkdtemp(join(tmpdir(), 'naryx-hyperliquid-runtime-durable-recovery-'));
+    const key = `idem-${holder}`;
+    const source: HyperliquidTestnetExecutorResult = {
+      attemptId: holder,
+      idempotencyKey: key,
+      domain: 'hypercore:testnet',
+      environment: 'TESTNET',
+      status: 'RECONCILED',
+      submissionStatus: 'ACKNOWLEDGED',
+      packageStatus: 'RECOVERY_REQUIRED',
+      reasons: ['ONE_LEG_FILLED'],
+      actionCommitment: `0x${'53'.repeat(32)}`,
+      requestCommitment: `0x${'54'.repeat(32)}`,
+      rawEvidenceCommitments: [],
+    };
+    const executions: Record<string, unknown>[] = [];
+    const continuations: Record<string, unknown>[] = [];
+    const loaded = await loadHyperliquidTestnetExecutorRuntime(enabledEnvironment(join(directory, 'submission.sqlite')), {
+      attempts: attempts(),
+      signer: signer(),
+      marketReader: marketReader(),
+      trustedTime: trustedTimePort(nowMs),
+      currentTimeMs: () => nowMs,
+      transportFactory: transport,
+      laneReconcileIntervalMs: 5,
+      recoveryObservation: async () => ({
+        reconciliation: {
+          status: 'RECONCILED',
+          attempt: {
+            version: 1,
+            status: 'RECOVERY_REQUIRED',
+            plan: {
+              recoveryPolicy: {
+                maxRecoveryCostCaps: [{ asset: recoveryAsset, maxAtoms: 25n }],
+                maxAggregateRecoveryLoss: { asset: recoveryAsset, atoms: 1_000n },
+              },
+            },
+          },
+        },
+        result: source,
+      }),
+      recoveryExecution: {
+        async execute(input) {
+          executions.push(input as unknown as Record<string, unknown>);
+          journaled.set(input.recoveryAttemptId, 0);
+          return { plan: {}, submission: {} } as never;
+        },
+        async continue(input) {
+          continuations.push(input as unknown as Record<string, unknown>);
+          if (failFirstContinuation && continuations.length === 1) throw new Error('keeper unavailable');
+          journaled.set(input.recoveryAttemptId, input.recoverySequence);
+          return { plan: {}, submission: {} } as never;
+        },
+      },
+      recoveryReconciliation: {
+        async reconcile(input) {
+          const recoverySequence = journaled.get(input.recoveryAttemptId);
+          if (recoverySequence === undefined) throw new Error('recovery attempt is not registered');
+          return (recoverySequence < 1 ? required(recoverySequence) : flat) as never;
+        },
+      },
+    });
+    try {
+      const lane = loaded.runtimeFactory?.().lane;
+      assert.ok(lane);
+      await lane.run(holder, key, async () => source);
+      lane.recordReconcileContext(holder, stringifyProtocolJson({
+        prepared: { attemptId: holder, checkpoint: { version: 1, observedAtMs: nowMs - 100 } },
+        handoff: {},
+        binding: { spotUniverseIndex: 0, spotTokenIndex: 1, perpetualAssetIndex: 2, quoteTokenIndex: 0 },
+        window: {
+          startTimeMs: nowMs - 100, endTimeMs: nowMs, nowMs, maxEvidenceAgeMs: 5_000, maxSnapshotSkewMs: 500,
+        },
+      }));
+      for (let poll = 0; poll < 200 && lane.laneState().state !== 'FREE'; poll += 1) {
+        await delay(5);
+      }
+      assert.equal(lane.laneState().state, 'FREE');
+      return { executions, continuations };
+    } finally {
+      loaded.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  };
+
+  // A failed continuation is retried with the same identities rather than skipped.
+  const first = await run('attempt-runtime-durable-0005', true);
+  assert.equal(first.executions.length, 1);
+  assert.equal(first.continuations.length, 2);
+  assert.equal(first.continuations[1]!.recoveryAttemptId, first.continuations[0]!.recoveryAttemptId);
+  assert.equal(first.continuations[1]!.previousRecoveryAttemptId, first.executions[0]!.recoveryAttemptId);
+  assert.equal(first.continuations[1]!.recoverySequence, 1);
+
+  // A restarted solver with no in-memory cursor walks the keeper journal and submits nothing again.
+  const restarted = await run('attempt-runtime-durable-0005', false);
+  assert.equal(restarted.executions.length, 0);
+  assert.equal(restarted.continuations.length, 0);
+});

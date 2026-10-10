@@ -27,7 +27,7 @@ import { httpKeeperPorts, KeeperActionJournal, keeperClock, loadKeeperAutomation
 import { loadHyperliquidRecoverySigner, loadHyperliquidRecoveryTestnetConfig } from './hyperliquid-recovery-testnet-config.js';
 import { HyperliquidRecoverySqliteStore } from './hyperliquid-recovery-store.js';
 import { HyperliquidRecoveryCompiler } from './hyperliquid-recovery-compiler.js';
-import { HyperliquidRecoveryTestnetController, HyperliquidRecoveryTestnetReconciler, HyperliquidRecoveryTestnetRuntime, initializeHyperliquidRecoveryJournal } from './hyperliquid-recovery-testnet-runtime.js';
+import { HyperliquidRecoverySourceRegistry, HyperliquidRecoveryTestnetController, HyperliquidRecoveryTestnetReconciler, HyperliquidRecoveryTestnetRuntime, initializeHyperliquidRecoveryJournal } from './hyperliquid-recovery-testnet-runtime.js';
 import { createHyperliquidRecoveryTrustedTimeSources, HyperliquidRecoveryTrustedClock, HyperliquidSdkRecoveryClockReader, HyperliquidSdkRecoveryTestnetSubmitter } from './hyperliquid-recovery-testnet-ports.js';
 
 // Keeper automation dispatches only owner-authorized, kernel-approved actions to a loopback
@@ -60,7 +60,8 @@ if (automation !== undefined) {
 const config = loadKeeperServerConfig();
 const client = new HyperliquidSdkTestnetReadClient();
 const collector = new HyperliquidAuthoritativeEvidenceCollector(client);
-const runtime = new HyperliquidTestnetEvidenceRuntime(collector);
+const recoverySources = new HyperliquidRecoverySourceRegistry();
+const runtime = new HyperliquidTestnetEvidenceRuntime(collector, recoverySources);
 const strategy = new HyperliquidStrategyAuthoritativeEvidenceCollector(client);
 const nettingResidual = new HyperliquidNettingResidualAuthoritativeEvidenceCollector(client);
 const recoveryConfig = loadHyperliquidRecoveryTestnetConfig();
@@ -98,6 +99,7 @@ if (recoveryConfig !== undefined) {
       compiler: new HyperliquidRecoveryCompiler(recoveryConfig.verifierIdentity),
       trustedTime,
       runtime: recoveryRuntime,
+      sources: recoverySources,
       maximumSourceEvidenceAgeMs: recoveryConfig.maximumSourceEvidenceAgeMs,
     });
     recoveryReconciliation = new HyperliquidRecoveryTestnetReconciler({

@@ -163,7 +163,8 @@ export type HyperliquidRecoveryReconcileResult = Readonly<{
     version: 1;
     status: Exclude<HyperliquidRecoveryOutcome, 'RECONCILING'>;
   }>;
-  accountObservation: Readonly<Record<string, unknown>>;
+  /** Null when the keeper returns an attempt it had already reconciled, as recorded. */
+  accountObservation: Readonly<Record<string, unknown>> | null;
   observedFills: readonly unknown[];
   rawResponseCommitments: readonly HyperliquidTestnetRuntimeRawCommitment[];
 }> | Readonly<{
@@ -405,8 +406,7 @@ function decodeRecoveryReconcileResult(
   }
   if (!hasExactKeys(value, [
     'accountObservation', 'attempt', 'observedFills', 'rawResponseCommitments', 'status',
-  ]) || value.accountObservation === null
-    || (attempt.status !== 'RECOVERED_COMPLETE'
+  ]) || (attempt.status !== 'RECOVERED_COMPLETE'
       && attempt.status !== 'RECOVERED_BOUNDED'
       && attempt.status !== 'RECOVERED_FLAT'
       && attempt.status !== 'RECOVERY_REQUIRED'

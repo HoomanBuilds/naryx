@@ -27,6 +27,7 @@ import {
   HYPERCORE_RECOVERY_RECONCILIATION_SOURCE,
   HyperliquidRecoveryCompiler,
   HyperliquidRecoverySqliteStore,
+  HyperliquidRecoverySourceRegistry,
   HyperliquidRecoveryTestnetController,
   HyperliquidRecoveryTestnetReconciler,
   HyperliquidRecoveryTestnetRuntime,
@@ -501,8 +502,10 @@ test('rejects recovery valuation when fills differ from accepted evidence', () =
 test('keeper compiles the recovery plan before handing it to submission', async () => {
   const source = sourceAttempt(100n, 0n);
   const submitted: HyperliquidRecoveryExecutionPlan[] = [];
+  const sources = new HyperliquidRecoverySourceRegistry();
   const controller = new HyperliquidRecoveryTestnetController({
     compiler: new HyperliquidRecoveryCompiler(identity),
+    sources,
     trustedTime: {
       decide: async (scope) => trustedTimeDecision(scope, Number(nowMs) + 25),
     },
@@ -521,6 +524,20 @@ test('keeper compiles the recovery plan before handing it to submission', async 
       },
     },
   });
+  const input = {
+    recoveryAttemptId: 'controller-recovery-attempt-1',
+    sourceAttempt: source,
+    recoverySequence: 0,
+    projectedRecoveryCosts: [{ asset: quoteAsset, atoms: 10n }],
+    projectedAggregateLoss: { asset: quoteAsset, atoms: 100n },
+  };
+  // A source attempt this keeper did not reconcile itself is never compiled.
+  await assert.rejects(controller.compileAndExecute(input), /not reconciled by this keeper/);
+  assert.equal(submitted.length, 0);
+  sources.record(source);
+  await assert.rejects(controller.compileAndExecute({
+    ...input, sourceAttempt: sourceAttempt(100n, 0n, { intermediateCap: 200n }),
+  }), /not reconciled by this keeper/);
   const result = await controller.compileAndExecute({
     recoveryAttemptId: 'controller-recovery-attempt-1',
     sourceAttempt: source,
@@ -534,6 +551,7 @@ test('keeper compiles the recovery plan before handing it to submission', async 
   assert.equal(result.submission.status, 'RECONCILIATION_REQUIRED');
   const staleController = new HyperliquidRecoveryTestnetController({
     compiler: new HyperliquidRecoveryCompiler(identity),
+    sources,
     trustedTime: {
       decide: async (scope) => trustedTimeDecision(scope, Number(nowMs) + 25),
     },
@@ -1372,4 +1390,72 @@ test('serializes recovery journal writers with an append-only SQLite CAS', (suit
   assert.equal(firstStore.read()!.journal.agents.length, 2);
   secondStore.close();
   firstStore.close();
+});
+
+test('returns a reconciled recovery outcome as recorded instead of re-reconciling later evidence', async (suite) => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-hyperliquid-recovery-'));
+  suite.after(() => rmSync(directory, { recursive: true, force: true }));
+  const store = new HyperliquidRecoverySqliteStore({ databasePath: join(directory, 'recovery.sqlite') });
+  suite.after(() => store.close());
+  initializeHyperliquidRecoveryJournal({
+    store, verifierIdentity: identity, agentWallet: recoveryAgent, signerLeaseId: 'recovery-process-1',
+  });
+  const source = sourceAttempt(100n, 0n);
+  const compiled = recoveryPlan(source);
+  await new HyperliquidRecoveryTestnetRuntime({
+    store,
+    trustedTime: { decide: async (scope) => trustedTimeDecision(scope) },
+    submitter: {
+      environment: 'testnet',
+      apiUrl: HYPERLIQUID_RECOVERY_TESTNET_EXCHANGE_URL,
+      signerAddress: async () => recoveryAgent,
+      submit: async () => ({ acknowledgementId: 'recovery-acknowledgement-4' }),
+    },
+    agentWallet: recoveryAgent,
+    signerLeaseId: 'recovery-process-1',
+    vaultAddress: account.tradingAccount,
+  }).execute({ recoveryAttemptId: 'runtime-recovery-attempt-4', sourceAttempt: source, plan: compiled });
+  const evidence = recoveryEvidence(source, compiled, [-50n]);
+  let collections = 0;
+  const reconciler = new HyperliquidRecoveryTestnetReconciler({
+    store,
+    collector: {
+      collectRecovery: async () => {
+        collections += 1;
+        return Object.freeze({
+          status: 'COMPLETE' as const,
+          // Each read is a newer evidence version than the one before.
+          input: { ...evidence, evidenceVersion: evidence.evidenceVersion + BigInt(collections) },
+          accountObservation: {} as never,
+          observedFills: Object.freeze([]),
+          rawResponseCommitments: Object.freeze([]),
+        });
+      },
+    },
+  });
+  const input = {
+    recoveryAttemptId: 'runtime-recovery-attempt-4',
+    checkpoint: {
+      version: 1 as const,
+      attemptCommitment: `0x${'91'.repeat(32)}` as const,
+      account,
+      baseSpotBalanceAtoms: 0n,
+      perpetualPositionAtoms: 0n,
+      observedAtMs: Number(nowMs),
+      rawResponseCommitments: [],
+    },
+    binding: { spotUniverseIndex: 0, spotTokenIndex: 1, perpetualAssetIndex: 0, quoteTokenIndex: 0 },
+    window: {
+      startTimeMs: Number(nowMs), endTimeMs: Number(nowMs) + 100, nowMs: Number(nowMs) + 100,
+      maxEvidenceAgeMs: 1_000, maxSnapshotSkewMs: 100,
+    },
+  };
+  const first = await reconciler.reconcile(input);
+  assert.equal(first.status, 'RECONCILED');
+  assert.equal(first.attempt.status, 'RECOVERY_REQUIRED');
+  const again = await reconciler.reconcile(input);
+  assert.equal(again.status, 'RECONCILED');
+  assert.deepEqual(again.attempt, first.attempt);
+  assert.equal(again.accountObservation, null);
+  assert.equal(collections, 1);
 });

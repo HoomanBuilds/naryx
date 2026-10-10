@@ -235,12 +235,15 @@ function reconciledAttemptHash(attempt: HyperliquidRecoveryAttempt): `0x${string
   return sha256(['naryx/hypercore/reconciled-recovery-attempt/v1', attempt]);
 }
 
+export function hyperliquidRecoverySourceCommitment(attempt: HyperliquidPackageAttempt): `0x${string}` {
+  return sha256(['naryx/hypercore/recovery-package-source/v1', attempt]);
+}
+
 function isSameRecoverySource(
   left: HyperliquidPackageAttempt,
   right: HyperliquidPackageAttempt,
 ): boolean {
-  return sha256(['naryx/hypercore/recovery-package-source/v1', left])
-    === sha256(['naryx/hypercore/recovery-package-source/v1', right]);
+  return hyperliquidRecoverySourceCommitment(left) === hyperliquidRecoverySourceCommitment(right);
 }
 
 function agentAt(journal: HyperliquidRecoverySubmissionJournal, agentWallet: string): number {

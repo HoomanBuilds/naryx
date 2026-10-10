@@ -1222,20 +1222,32 @@ export async function loadHyperliquidTestnetExecutorRuntime(
               recovery.reconciliation.attempt,
               recoverySequence,
             );
-            const previousRecoveryAttemptId = recoveryAttemptId;
+            const nextRecoveryAttemptId = automaticRecoveryAttemptId(
+              holder.attemptId,
+              continuation.recoverySequence,
+            );
+            // The keeper journal is the durable record: a continuation it already holds is
+            // reconciled, and one it does not is submitted. The keeper never resubmits an attempt
+            // id it has journaled, so an unreadable continuation is safely continued again.
+            let next;
+            try {
+              next = await reconcileRecoveryAttempt(holder, nextRecoveryAttemptId);
+            } catch {
+              await recoveryExecution.continue({
+                recoveryAttemptId: nextRecoveryAttemptId,
+                previousRecoveryAttemptId: recoveryAttemptId,
+                ...continuation,
+              });
+              next = await reconcileRecoveryAttempt(holder, nextRecoveryAttemptId);
+            }
             recoverySequence = continuation.recoverySequence;
-            recoveryAttemptId = automaticRecoveryAttemptId(holder.attemptId, recoverySequence);
+            recoveryAttemptId = nextRecoveryAttemptId;
             automaticRecoveryCursor = Object.freeze({
               holderAttemptId: holder.attemptId,
               recoverySequence,
               recoveryAttemptId,
             });
-            await recoveryExecution.continue({
-              recoveryAttemptId,
-              previousRecoveryAttemptId,
-              ...continuation,
-            });
-            recovery = await reconcileRecoveryAttempt(holder, recoveryAttemptId);
+            recovery = next;
           }
         } else {
           automaticRecoveryCursor = undefined;

@@ -30,6 +30,7 @@ import {
   createHyperliquidRecoverySubmissionJournal,
   hyperliquidRecoveryContinuationSource,
   hyperliquidRecoveryReconciliationHandoff,
+  hyperliquidRecoverySourceCommitment,
   markHyperliquidRecoverySubmittedUnknown,
   prepareHyperliquidRecoverySubmission,
   rejectHyperliquidRecoverySubmission,
@@ -106,7 +107,8 @@ export interface HyperliquidRecoveryReconcileInput {
 export type HyperliquidRecoveryReconcileResult = Readonly<{
   status: 'RECONCILED';
   attempt: HyperliquidRecoveryAttempt;
-  accountObservation: HyperliquidCollectedStateObservation;
+  /** Null when the attempt was already reconciled and its recorded outcome is returned. */
+  accountObservation: HyperliquidCollectedStateObservation | null;
   observedFills: readonly HyperliquidObservedFill[];
   rawResponseCommitments: readonly HyperliquidRawResponseCommitment[];
 }> | Readonly<{
@@ -182,6 +184,31 @@ export function initializeHyperliquidRecoveryJournal(input: Readonly<{
     signerLeaseId: input.signerLeaseId,
   });
   return persist(input.store, current, registered);
+}
+
+const MAX_RECORDED_RECOVERY_SOURCES = 256;
+
+/**
+ * Package attempts this keeper itself reconciled to RECOVERY_REQUIRED. Recovery compiles only from
+ * one of these, never from an attempt a caller assembled. Recovery also requires the source evidence
+ * to be fresh by the keeper's trusted clock, so a source lost on restart is simply re-reconciled.
+ */
+export class HyperliquidRecoverySourceRegistry {
+  readonly #commitments = new Set<string>();
+
+  record(attempt: HyperliquidPackageAttempt): void {
+    if (attempt.status !== 'RECOVERY_REQUIRED') return;
+    const commitment = hyperliquidRecoverySourceCommitment(attempt);
+    this.#commitments.delete(commitment);
+    this.#commitments.add(commitment);
+    if (this.#commitments.size > MAX_RECORDED_RECOVERY_SOURCES) {
+      this.#commitments.delete(this.#commitments.values().next().value!);
+    }
+  }
+
+  has(attempt: HyperliquidPackageAttempt): boolean {
+    return this.#commitments.has(hyperliquidRecoverySourceCommitment(attempt));
+  }
 }
 
 export class HyperliquidRecoveryTestnetRuntime {
@@ -347,12 +374,14 @@ export class HyperliquidRecoveryTestnetController {
   readonly #compiler: HyperliquidRecoveryCompiler;
   readonly #trustedTime: HyperliquidRecoveryTrustedTimePort;
   readonly #runtime: Pick<HyperliquidRecoveryTestnetRuntime, 'execute' | 'continuationSource'>;
+  readonly #sources: Pick<HyperliquidRecoverySourceRegistry, 'has'>;
   readonly #maximumSourceEvidenceAgeMs: bigint;
 
   constructor(input: Readonly<{
     compiler: HyperliquidRecoveryCompiler;
     trustedTime: HyperliquidRecoveryTrustedTimePort;
     runtime: Pick<HyperliquidRecoveryTestnetRuntime, 'execute' | 'continuationSource'>;
+    sources: Pick<HyperliquidRecoverySourceRegistry, 'has'>;
     maximumSourceEvidenceAgeMs: number;
   }>) {
     requireCondition(input.compiler instanceof HyperliquidRecoveryCompiler,
@@ -363,6 +392,8 @@ export class HyperliquidRecoveryTestnetController {
       'recovery runtime is required');
     requireCondition(typeof input.runtime?.continuationSource === 'function',
       'recovery continuation source is required');
+    requireCondition(typeof input.sources?.has === 'function',
+      'keeper-reconciled recovery sources are required');
     requireCondition(Number.isSafeInteger(input.maximumSourceEvidenceAgeMs)
       && input.maximumSourceEvidenceAgeMs >= 1
       && input.maximumSourceEvidenceAgeMs <= 60_000,
@@ -370,6 +401,7 @@ export class HyperliquidRecoveryTestnetController {
     this.#compiler = input.compiler;
     this.#trustedTime = input.trustedTime;
     this.#runtime = input.runtime;
+    this.#sources = input.sources;
     this.#maximumSourceEvidenceAgeMs = BigInt(input.maximumSourceEvidenceAgeMs);
   }
 
@@ -378,6 +410,8 @@ export class HyperliquidRecoveryTestnetController {
   ): Promise<HyperliquidRecoveryCompileAndExecuteResult> {
     requireCondition(typeof input.recoveryAttemptId === 'string'
       && IDENTIFIER.test(input.recoveryAttemptId), 'recovery attempt identity is invalid');
+    requireCondition(this.#sources.has(input.sourceAttempt),
+      'source recovery attempt was not reconciled by this keeper');
     const decision = await this.#trustedTime.decide(`${input.recoveryAttemptId}:compile`);
     requireCondition(Number.isSafeInteger(decision.selectedTimeMs)
       && decision.selectedTimeMs > 0, 'trusted recovery time is invalid');
@@ -484,7 +518,19 @@ export class HyperliquidRecoveryTestnetReconciler {
     requireCondition(snapshot !== null, 'recovery journal is not initialized');
     const submission = record(snapshot.journal, input.recoveryAttemptId);
     requireCondition(submission !== undefined, 'recovery attempt is not registered');
-    if (submission.status !== 'RECONCILING' && submission.status !== 'RECONCILED') {
+    // A reconciled outcome is immutable and is returned as recorded, without new reads: later
+    // evidence carries a newer version, and the source window may be past its age bound.
+    if (submission.status === 'RECONCILED') {
+      requireCondition(submission.reconciledAttempt !== null, 'reconciled recovery attempt is missing');
+      return Object.freeze({
+        status: 'RECONCILED' as const,
+        attempt: structuredClone(submission.reconciledAttempt),
+        accountObservation: null,
+        observedFills: Object.freeze([]),
+        rawResponseCommitments: Object.freeze([]),
+      });
+    }
+    if (submission.status !== 'RECONCILING') {
       const reconciling = beginHyperliquidRecoverySubmissionReconciliation(snapshot.journal, {
         expectedVersion: snapshot.journal.version,
         recoveryAttemptId: input.recoveryAttemptId,
