@@ -3,191 +3,64 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import Database from 'better-sqlite3';
 import {
-  assetRef,
-  commitmentHash,
-  manifestHash,
   nativeClearingAccount,
+  nativeClearingCollateralAuthorization,
   nativeClearingDefaultBid,
-  nativeClearingDomainState,
   nativeClearingMarkObservation,
-  nativeClearingPolicy,
-  packageAllocation,
-  packageAllocationHash,
-  packageMatchingPolicy,
-  packageMatchingPolicyHash,
   packageSettlementCommitment,
-  packageSettlementCommitmentHash,
-  packageSettlementHandoff,
-  protocolId,
   toHex,
-  versionedManifestRef,
 } from '@naryx/protocol-types';
-import { privateKeyToAccount } from 'viem/accounts';
 import {
   NativeClearingStoreError,
   SqliteNativeClearingStore,
 } from '../src/native-clearing-store.js';
+import {
+  actor,
+  authorization,
+  backstopSigner,
+  fixture,
+  makerSigner,
+  markSigner,
+  takerSigner,
+} from './native-clearing-fixtures.js';
 
-const id = (value: number): string => value.toString(16).padStart(64, '0');
-const markSigner = privateKeyToAccount(`0x${'51'.repeat(32)}`);
-const takerSigner = privateKeyToAccount(`0x${'52'.repeat(32)}`);
-const makerSigner = privateKeyToAccount(`0x${'53'.repeat(32)}`);
-const backstopSigner = privateKeyToAccount(`0x${'54'.repeat(32)}`);
-const actor = (address: string): string => address.toLowerCase();
-
-function fixture() {
-  const matchingPolicy = packageMatchingPolicy({
-    matchingPolicyVersion: 1,
-    environment: 'devnet',
-    executionClassId: 'sol-carry-package',
-    allocationRule: 'PRICE_TIME',
-    directVersusImpliedPriority: 'DIRECT_FIRST',
-    selfMatchPolicy: 'CANCEL_INCOMING',
-    commonControlAsSelf: true,
-    amendmentPriorityRule: 'RETAIN_ON_SIZE_REDUCTION',
-    quantityIncrement: 10n,
-    minimumExecutionQuantity: 10n,
-    maximumImplicationDepth: 2,
-  });
-  const policy = nativeClearingPolicy({
-    version: 1,
-    clearingDomainId: 'sol-carry-clearing',
-    environment: 'devnet',
-    executionClassId: 'sol-carry-package',
-    matchingPolicyHash: packageMatchingPolicyHash(matchingPolicy),
-    strategySeries: versionedManifestRef('sol-carry', 1, id(1)),
-    riskDomainId: 'sol-carry-isolated-risk',
-    markSource: versionedManifestRef('sol-carry-mark', 1, id(4)),
-    markAuthorityId: actor(markSigner.address),
-    accountingAsset: assetRef('usdc', id(2), 6),
-    packageQuantityIncrementAtoms: 10n,
-    priceTickQuoteAtoms: 1n,
-    initialMarginQuoteAtomsPerIncrement: 200n,
-    maintenanceMarginQuoteAtomsPerIncrement: 100n,
-    maximumPositionAtoms: 1_000n,
-    maximumOpenInterestAtoms: 10_000n,
-    maximumDefaultTransferDiscountBps: 500n,
-    markMaximumStalenessMs: 5_000n,
-  });
-  const state = nativeClearingDomainState({
-    version: 1,
-    policyHash: policy.policyHash,
-    openInterestAtoms: 0n,
-    recoveryReserveQuoteAtoms: 300n,
-    sequence: 0n,
-  }, policy);
-  return { policy, state, matchingPolicy };
-}
-
-function open(
+async function open(
   store: SqliteNativeClearingStore,
   accountId: string,
-  participantId: string,
+  owner: typeof takerSigner,
   collateral: bigint,
 ) {
   const { policy } = fixture();
-  return store.openAccount(policy.clearingDomainId, nativeClearingAccount({
+  const account = store.openAccount(policy.clearingDomainId, nativeClearingAccount({
     version: 1,
     policyHash: policy.policyHash,
     accountId,
-    ownerId: participantId,
-    collateralQuoteAtoms: collateral,
+    ownerId: actor(owner.address),
+    collateralQuoteAtoms: 0n,
     cashBalanceQuoteAtoms: 0n,
     positionAtoms: 0n,
     sequence: 0n,
   }, policy));
-}
-
-function authorization(
-  accountTaker = 'account-taker',
-  participantTaker = actor(takerSigner.address),
-  accountMaker = 'account-maker',
-  participantMaker = actor(makerSigner.address),
-) {
-  const { policy, matchingPolicy } = fixture();
-  const allocation = packageAllocation({
+  const deposit = {
     version: 1,
-    environment: matchingPolicy.environment,
-    executionClassId: matchingPolicy.executionClassId,
-    matchingPolicyHash: manifestHash(packageMatchingPolicyHash(matchingPolicy)),
-    takerOrderId: commitmentHash(id(10)),
-    takerParticipantId: protocolId(participantTaker),
-    takerCommonControlGroupId: protocolId(`${participantTaker}-group`),
-    takerSide: 'BID',
-    takerTimeInForce: 'IOC',
-    takerLimitPriceTicks: 1_000n,
-    requestedQuantity: 10n,
-    firstFillSequence: 1n,
-    fills: Object.freeze([{
-      fillSequence: 1n,
-      makerEntryId: commitmentHash(id(11)),
-      makerSource: 'DIRECT',
-      makerSequence: 1n,
-      makerParticipantId: protocolId(participantMaker),
-      makerCommonControlGroupId: protocolId(`${participantMaker}-group`),
-      priceTicks: 1_000n,
-      quantity: 10n,
-      consumedSourceKeys: Object.freeze([]),
-    }]),
-    restedQuantity: 0n,
-    cancelledQuantity: 0n,
-    selfMatchCancelledEntryIds: Object.freeze([]),
-    invalidatedEntryIds: Object.freeze([]),
-    internalMatchedQuantity: 10n,
-    externalImpliedQuantity: 0n,
+    policyHash: policy.policyHash,
+    accountId,
+    ownerId: account.ownerId,
+    expectedAccountHash: account.accountHash,
+    expectedAccountSequence: account.sequence,
+    collateralDeltaQuoteAtoms: collateral,
+    validUntilUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+    validUntilValue: 100_000n,
+  } as const;
+  const signature = await owner.signMessage({
+    message: { raw: `0x${toHex(nativeClearingCollateralAuthorization(deposit).authorizationHash)}` },
   });
-  const takerSettlementCommitment = packageSettlementCommitment({
-    version: 1,
-    environment: matchingPolicy.environment,
-    executionClassId: matchingPolicy.executionClassId,
-    packageOrderId: allocation.takerOrderId,
-    strategyOrderHash: id(20),
-    graphHash: id(21),
-    participantId: participantTaker,
-    settlementAccount: accountTaker,
-    quantity: 10n,
-    validUntilUnit: 'SOLANA_SLOT',
-    validUntilValue: 100n,
+  return store.adjustAuthorizedCollateral({
+    authorization: deposit,
+    ownerSignature: { scheme: 'EIP191_SECP256K1', signature },
   });
-  const makerSettlementCommitment = packageSettlementCommitment({
-    version: 1,
-    environment: matchingPolicy.environment,
-    executionClassId: matchingPolicy.executionClassId,
-    packageOrderId: allocation.fills[0]!.makerEntryId,
-    strategyOrderHash: id(20),
-    graphHash: id(21),
-    participantId: participantMaker,
-    settlementAccount: accountMaker,
-    quantity: 10n,
-    validUntilUnit: 'SOLANA_SLOT',
-    validUntilValue: 100n,
-  });
-  const handoff = packageSettlementHandoff({
-    version: 1,
-    allocationHash: packageAllocationHash(allocation),
-    executionClassId: matchingPolicy.executionClassId,
-    takerSettlementCommitmentHash: packageSettlementCommitmentHash(takerSettlementCommitment),
-    fills: [{
-      fillSequence: 1n,
-      makerEntryId: allocation.fills[0]!.makerEntryId,
-      makerSource: 'DIRECT',
-      priceTicks: 1_000n,
-      quantity: 10n,
-      makerSettlementCommitmentHash: packageSettlementCommitmentHash(makerSettlementCommitment),
-    }],
-  });
-  return {
-    policy,
-    matchingPolicy,
-    allocation,
-    handoff,
-    takerSettlementCommitment,
-    makerSettlementCommitment,
-    fillSequence: 1n,
-    currentExpiryUnit: 'SOLANA_SLOT' as const,
-    currentExpiryValue: 50n,
-  };
 }
 
 async function recordMark(
@@ -216,7 +89,7 @@ async function recordMark(
   });
 }
 
-test('native clearing state persists exact matches and rejects stale writes', async () => {
+test('native clearing state persists exact matches and rejects stale writes and replays', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'naryx-native-clearing-'));
   const path = join(directory, 'clearing.db');
   try {
@@ -224,29 +97,81 @@ test('native clearing state persists exact matches and rejects stale writes', as
     let store = new SqliteNativeClearingStore(path, () => 10_000);
     store.registerDomain(policy, state);
     await recordMark(store, 1_000n, 1n);
-    const long = open(store, 'account-taker', actor(takerSigner.address), 5_000n);
-    const short = open(store, 'account-maker', actor(makerSigner.address), 5_000n);
+    const long = await open(store, 'account-taker', takerSigner, 5_000n);
+    const short = await open(store, 'account-maker', makerSigner, 5_000n);
     const receipt = store.settleAuthorizedMatch({
       authorization: authorization(),
       expectedStateHash: state.stateHash,
       expectedLongAccountHash: long.accountHash,
       expectedShortAccountHash: short.accountHash,
-      nowMs: 10_000n,
     });
     assert.equal(store.domain(policy.clearingDomainId)?.state.openInterestAtoms, 10n);
     assert.equal(store.account(long.accountId)?.positionAtoms, 10n);
-    assert.equal(store.events(policy.clearingDomainId)[0]?.eventHashHex, Buffer.from(receipt.receiptHash).toString('hex'));
+    assert.equal(
+      store.events(policy.clearingDomainId).find((event) => event.kind === 'MATCH')?.eventHashHex,
+      Buffer.from(receipt.receiptHash).toString('hex'),
+    );
     assert.throws(() => store.settleAuthorizedMatch({
       authorization: authorization(),
       expectedStateHash: state.stateHash,
       expectedLongAccountHash: long.accountHash,
       expectedShortAccountHash: short.accountHash,
-      nowMs: 10_000n,
     }), (error: unknown) => error instanceof NativeClearingStoreError && error.code === 'STALE_STATE');
+    const replay = () => store.settleAuthorizedMatch({
+      authorization: authorization(),
+      expectedStateHash: store.domain(policy.clearingDomainId)!.state.stateHash,
+      expectedLongAccountHash: store.account(long.accountId)!.accountHash,
+      expectedShortAccountHash: store.account(short.accountId)!.accountHash,
+    });
+    assert.throws(replay, (error: unknown) => error instanceof NativeClearingStoreError && error.code === 'SETTLEMENT_CONFLICT');
     store.close();
+    // A database written before settlements were recorded is backfilled from its MATCH events.
+    const raw = new Database(path);
+    raw.exec('DROP TABLE native_clearing_match_settlements');
+    raw.close();
     store = new SqliteNativeClearingStore(path, () => 11_000);
+    assert.throws(replay, (error: unknown) => error instanceof NativeClearingStoreError && error.code === 'SETTLEMENT_CONFLICT');
     assert.equal(store.account(short.accountId)?.positionAtoms, -10n);
-    assert.equal(store.events(policy.clearingDomainId).length, 1);
+    assert.equal(store.account(long.accountId)?.positionAtoms, 10n);
+    assert.equal(store.events(policy.clearingDomainId).filter((event) => event.kind === 'MATCH').length, 1);
+    store.close();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('native clearing accounts open unfunded and refuse clocks it cannot read', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-native-genesis-'));
+  try {
+    const { policy, state } = fixture();
+    const store = new SqliteNativeClearingStore(join(directory, 'clearing.db'), () => 10_000);
+    store.registerDomain(policy, state);
+    assert.throws(() => store.openAccount(policy.clearingDomainId, nativeClearingAccount({
+      version: 1,
+      policyHash: policy.policyHash,
+      accountId: 'account-funded',
+      ownerId: actor(takerSigner.address),
+      collateralQuoteAtoms: 1n,
+      cashBalanceQuoteAtoms: 0n,
+      positionAtoms: 0n,
+      sequence: 0n,
+    }, policy)), (error: unknown) => error instanceof NativeClearingStoreError && error.code === 'INVALID_GENESIS');
+    await recordMark(store, 1_000n, 1n);
+    const long = await open(store, 'account-taker', takerSigner, 5_000n);
+    const short = await open(store, 'account-maker', makerSigner, 5_000n);
+    const slotClocked = authorization();
+    const slot = (commitment: typeof slotClocked.takerSettlementCommitment) =>
+      packageSettlementCommitment({ ...commitment, validUntilUnit: 'SOLANA_SLOT' });
+    assert.throws(() => store.settleAuthorizedMatch({
+      authorization: {
+        ...slotClocked,
+        takerSettlementCommitment: slot(slotClocked.takerSettlementCommitment),
+        makerSettlementCommitment: slot(slotClocked.makerSettlementCommitment),
+      },
+      expectedStateHash: state.stateHash,
+      expectedLongAccountHash: long.accountHash,
+      expectedShortAccountHash: short.accountHash,
+    }), (error: unknown) => error instanceof NativeClearingStoreError && error.code === 'UNSUPPORTED_CLOCK');
     store.close();
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -257,18 +182,18 @@ test('default auction transfers exposure and journals reserve loss', async () =>
   const directory = mkdtempSync(join(tmpdir(), 'naryx-native-default-'));
   try {
     const { policy, state } = fixture();
-    const store = new SqliteNativeClearingStore(join(directory, 'clearing.db'), () => 10_000);
+    let now = 10_000;
+    const store = new SqliteNativeClearingStore(join(directory, 'clearing.db'), () => now);
     store.registerDomain(policy, state);
     await recordMark(store, 1_000n, 1n);
-    const long = open(store, 'account-taker', actor(takerSigner.address), 200n);
-    const short = open(store, 'account-maker', actor(makerSigner.address), 5_000n);
-    const backstop = open(store, 'account-backstop', actor(backstopSigner.address), 5_000n);
+    const long = await open(store, 'account-taker', takerSigner, 200n);
+    const short = await open(store, 'account-maker', makerSigner, 5_000n);
+    const backstop = await open(store, 'account-backstop', backstopSigner, 5_000n);
     store.settleAuthorizedMatch({
       authorization: authorization(),
-      expectedStateHash: state.stateHash,
+      expectedStateHash: store.domain(policy.clearingDomainId)!.state.stateHash,
       expectedLongAccountHash: long.accountHash,
       expectedShortAccountHash: short.accountHash,
-      nowMs: 10_000n,
     });
     await recordMark(store, 50n, 2n);
     const current = store.domain(policy.clearingDomainId)!;
@@ -279,7 +204,6 @@ test('default auction transfers exposure and journals reserve loss', async () =>
       expectedDefaultedAccountHash: defaulted.accountHash,
       auctionId: 'default-1',
       bidsCloseAtMs: 11_000n,
-      nowMs: 10_000n,
     });
     const bidInput = {
       version: 1,
@@ -293,22 +217,25 @@ test('default auction transfers exposure and journals reserve loss', async () =>
     } as const;
     const bid = nativeClearingDefaultBid(bidInput, auction);
     const bidSignature = await backstopSigner.signMessage({ message: { raw: `0x${toHex(bid.bidHash)}` } });
+    now = 10_500;
     await store.submitDefaultBid({
       auctionId: auction.auctionId,
       bid: bidInput,
       ownerSignature: { scheme: 'EIP191_SECP256K1', signature: bidSignature },
-      nowMs: 10_500n,
     });
+    now = 11_000;
     const resolution = store.settleDefaultAuction({
       auctionId: auction.auctionId,
       expectedStateHash: current.state.stateHash,
-      nowMs: 11_000n,
     });
     assert.equal(resolution.reserveConsumedQuoteAtoms, 300n);
     assert.equal(resolution.uncoveredDeficitQuoteAtoms, 452n);
     assert.equal(store.account(long.accountId)?.positionAtoms, 0n);
     assert.equal(store.account(backstop.accountId)?.positionAtoms, 10n);
-    assert.deepEqual(store.events(policy.clearingDomainId).map((event) => event.kind), ['MATCH', 'DEFAULT']);
+    assert.deepEqual(
+      store.events(policy.clearingDomainId).map((event) => event.kind),
+      ['COLLATERAL', 'COLLATERAL', 'COLLATERAL', 'MATCH', 'DEFAULT'],
+    );
     store.close();
   } finally {
     rmSync(directory, { recursive: true, force: true });

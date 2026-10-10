@@ -1,13 +1,19 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type {
-  ExpiryUnit,
-  NativeClearingAccountInput,
-  NativeClearingCollateralAuthorizationInput,
-  NativeClearingDefaultBidInput,
-  NativeClearingDomainStateInput,
-  NativeClearingMarkObservationInput,
-  NativeClearingMatchAuthorizationInput,
-  NativeClearingPolicyInput,
+import {
+  bytesEqual,
+  packageAllocation,
+  packageAllocationHash,
+  packageSettlementCommitment,
+  packageSettlementCommitmentHash,
+  packageSettlementHandoff,
+  packageSettlementHandoffHash,
+  toHex,
+  type NativeClearingAccountInput,
+  type NativeClearingCollateralAuthorizationInput,
+  type NativeClearingDefaultBidInput,
+  type NativeClearingDomainStateInput,
+  type NativeClearingMarkObservationInput,
+  type NativeClearingPolicyInput,
 } from '@naryx/protocol-types';
 import { internalCaller, readInternalBody, sendError, sendJson } from './internal-http.js';
 import {
@@ -15,6 +21,7 @@ import {
   type SqliteNativeClearingStore,
 } from './native-clearing-store.js';
 import type { NativeClearingControlSignature } from './native-clearing-authorization.js';
+import type { SqlitePackageExchangeStore } from './package-exchange-store.js';
 
 export interface NativeClearingAdminOptions {
   readonly clearing: Pick<
@@ -22,6 +29,31 @@ export interface NativeClearingAdminOptions {
     'registerDomain' | 'openAccount' | 'adjustReserve' | 'recordMark' | 'adjustAuthorizedCollateral'
       | 'settleAuthorizedMatch' | 'openDefaultAuction' | 'submitDefaultBid' | 'settleDefaultAuction'
   >;
+  /** The package exchange whose stored allocation, handoff, and participant settlement authorizations a match must cite. */
+  readonly exchange: Pick<SqlitePackageExchangeStore, 'getAllocation' | 'settlementHandoff' | 'settlementAuthorization'>;
+}
+
+type MatchAuthorizationInput = Parameters<SqliteNativeClearingStore['settleAuthorizedMatch']>[0]['authorization'];
+
+function requireExchangeBinding(exchange: NativeClearingAdminOptions['exchange'], input: MatchAuthorizationInput): void {
+  const allocation = packageAllocation(input.allocation);
+  const allocationHash = packageAllocationHash(allocation);
+  const stored = exchange.getAllocation(allocation.takerOrderId);
+  const handoff = exchange.settlementHandoff(allocationHash);
+  const authorized = [input.takerSettlementCommitment, input.makerSettlementCommitment].every((value) => {
+    const commitment = packageSettlementCommitment(value);
+    return exchange.settlementAuthorization(commitment.packageOrderId)?.settlementCommitmentHashHex
+      === toHex(packageSettlementCommitmentHash(commitment));
+  });
+  if (stored === undefined || !bytesEqual(packageAllocationHash(stored), allocationHash)
+    || handoff === undefined
+    || !bytesEqual(packageSettlementHandoffHash(handoff), packageSettlementHandoffHash(packageSettlementHandoff(input.handoff)))
+    || !authorized) {
+    throw new NativeClearingStoreError(
+      'SETTLEMENT_UNAUTHORIZED',
+      'Match must cite the exchange allocation, handoff, and both participants\' stored settlement authorizations.',
+    );
+  }
 }
 
 function exactKeys(body: Record<string, unknown>, expected: readonly string[]): boolean {
@@ -34,7 +66,7 @@ function rejected(response: ServerResponse, error: unknown): true {
   if (error instanceof NativeClearingStoreError) {
     const status = error.code.endsWith('NOT_FOUND') ? 404
       : error.code === 'CORRUPT_ROW' ? 500
-        : error.code === 'INVALID_SIGNATURE' ? 403
+        : error.code === 'INVALID_SIGNATURE' || error.code === 'SETTLEMENT_UNAUTHORIZED' ? 403
           : error.code.startsWith('STALE_') || error.code.endsWith('CONFLICT') || error.code === 'AUCTION_CLOSED'
             ? 409 : 400;
     return sendError(response, status, error.code, error.message);
@@ -63,11 +95,11 @@ export function createNativeClearingAdminHandler(
       ['/internal/native-clearing/accounts', ['clearingDomainId', 'account']],
       ['/internal/native-clearing/reserve', ['clearingDomainId', 'expectedStateHash', 'reserveDeltaQuoteAtoms']],
       ['/internal/native-clearing/marks', ['clearingDomainId', 'observation', 'authorization']],
-      ['/internal/native-clearing/collateral', ['authorization', 'ownerSignature', 'currentExpiryUnit', 'currentExpiryValue', 'nowMs']],
-      ['/internal/native-clearing/matches', ['authorization', 'expectedStateHash', 'expectedLongAccountHash', 'expectedShortAccountHash', 'nowMs']],
-      ['/internal/native-clearing/auctions', ['clearingDomainId', 'defaultedAccountId', 'expectedDefaultedAccountHash', 'auctionId', 'bidsCloseAtMs', 'nowMs']],
-      ['/internal/native-clearing/auction-bids', ['auctionId', 'bid', 'ownerSignature', 'nowMs']],
-      ['/internal/native-clearing/auction-settlements', ['auctionId', 'expectedStateHash', 'nowMs']],
+      ['/internal/native-clearing/collateral', ['authorization', 'ownerSignature']],
+      ['/internal/native-clearing/matches', ['authorization', 'expectedStateHash', 'expectedLongAccountHash', 'expectedShortAccountHash']],
+      ['/internal/native-clearing/auctions', ['clearingDomainId', 'defaultedAccountId', 'expectedDefaultedAccountHash', 'auctionId', 'bidsCloseAtMs']],
+      ['/internal/native-clearing/auction-bids', ['auctionId', 'bid', 'ownerSignature']],
+      ['/internal/native-clearing/auction-settlements', ['auctionId', 'expectedStateHash']],
     ]).get(url.pathname);
     if (action === undefined) return false;
     if (!internalCaller(request)) {
@@ -112,18 +144,20 @@ export function createNativeClearingAdminHandler(
             return options.clearing.adjustAuthorizedCollateral({
               authorization: body.authorization as unknown as NativeClearingCollateralAuthorizationInput,
               ownerSignature: body.ownerSignature as unknown as NativeClearingControlSignature,
-              currentExpiryUnit: body.currentExpiryUnit as ExpiryUnit,
-              currentExpiryValue: body.currentExpiryValue as bigint,
-              nowMs: body.nowMs as bigint,
             });
-          case '/internal/native-clearing/matches':
+          case '/internal/native-clearing/matches': {
+            const authorization = object(body.authorization);
+            if (authorization === undefined || 'currentExpiryUnit' in authorization || 'currentExpiryValue' in authorization) {
+              throw new TypeError('Match authorization must be an object without a caller-supplied clock.');
+            }
+            requireExchangeBinding(options.exchange, authorization as unknown as MatchAuthorizationInput);
             return options.clearing.settleAuthorizedMatch({
-              authorization: body.authorization as unknown as NativeClearingMatchAuthorizationInput,
+              authorization: authorization as unknown as MatchAuthorizationInput,
               expectedStateHash: body.expectedStateHash as string,
               expectedLongAccountHash: body.expectedLongAccountHash as string,
               expectedShortAccountHash: body.expectedShortAccountHash as string,
-              nowMs: body.nowMs as bigint,
             });
+          }
           case '/internal/native-clearing/auctions':
             return options.clearing.openDefaultAuction(body as unknown as Parameters<SqliteNativeClearingStore['openDefaultAuction']>[0]);
           case '/internal/native-clearing/auction-bids':
@@ -131,7 +165,6 @@ export function createNativeClearingAdminHandler(
               auctionId: body.auctionId as string,
               bid: body.bid as unknown as NativeClearingDefaultBidInput,
               ownerSignature: body.ownerSignature as unknown as NativeClearingControlSignature,
-              nowMs: body.nowMs as bigint,
             });
           case '/internal/native-clearing/auction-settlements':
             return options.clearing.settleDefaultAuction(body as unknown as Parameters<SqliteNativeClearingStore['settleDefaultAuction']>[0]);

@@ -103,6 +103,22 @@ CREATE TABLE IF NOT EXISTS native_clearing_events (
   recorded_at_ms INTEGER NOT NULL,
   UNIQUE (event_kind, event_hash)
 ) STRICT;
+CREATE TABLE IF NOT EXISTS native_clearing_match_settlements (
+  authorization_hash BLOB PRIMARY KEY,
+  policy_hash BLOB NOT NULL REFERENCES native_clearing_policies(policy_hash),
+  receipt_hash BLOB NOT NULL UNIQUE,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
+INSERT OR IGNORE INTO native_clearing_match_settlements (authorization_hash, policy_hash, receipt_hash, recorded_at_ms)
+  SELECT unhex(json_extract(event_json, '$.authorizationHash.value')), policy_hash, event_hash, recorded_at_ms
+  FROM native_clearing_events
+  WHERE event_kind = 'MATCH' AND event_hash NOT IN (SELECT receipt_hash FROM native_clearing_match_settlements);
+CREATE TRIGGER IF NOT EXISTS reject_native_clearing_match_settlement_update
+  BEFORE UPDATE ON native_clearing_match_settlements
+  BEGIN SELECT RAISE(ABORT, 'native clearing match settlements are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS reject_native_clearing_match_settlement_delete
+  BEFORE DELETE ON native_clearing_match_settlements
+  BEGIN SELECT RAISE(ABORT, 'native clearing match settlements are durable'); END;
 CREATE TRIGGER IF NOT EXISTS reject_native_clearing_policy_update
   BEFORE UPDATE ON native_clearing_policies
   BEGIN SELECT RAISE(ABORT, 'native clearing policies are immutable'); END;
@@ -169,6 +185,12 @@ function json(value: unknown, context: string): string {
 function clock(value: number): number {
   if (!Number.isSafeInteger(value) || value < 0) throw new Error('native clearing clock is invalid');
   return value;
+}
+
+function expiryNow(unit: ExpiryUnit, nowMs: bigint): bigint {
+  if (unit === 'EVM_UNIX_SECONDS') return nowMs / 1_000n;
+  if (unit === 'HYPERLIQUID_UNIX_MILLISECONDS') return nowMs;
+  throw new NativeClearingStoreError('UNSUPPORTED_CLOCK', 'Native clearing has no verified chain read for this expiry clock.');
 }
 
 function expected(actual: Uint8Array, value: Uint8Array | string, context: string): void {
@@ -242,8 +264,9 @@ export class SqliteNativeClearingStore {
     return this.#db.transaction(() => {
       const { policy } = this.#requiredDomain(clearingDomainId);
       const account = nativeClearingAccount(input, policy);
-      if (account.positionAtoms !== 0n || account.cashBalanceQuoteAtoms !== 0n || account.sequence !== 0n) {
-        throw new NativeClearingStoreError('INVALID_GENESIS', 'A new clearing account must begin flat at sequence zero.');
+      if (account.positionAtoms !== 0n || account.cashBalanceQuoteAtoms !== 0n || account.collateralQuoteAtoms !== 0n
+        || account.sequence !== 0n) {
+        throw new NativeClearingStoreError('INVALID_GENESIS', 'A new clearing account must begin flat and unfunded at sequence zero.');
       }
       const existing = this.account(account.accountId);
       if (existing !== undefined) {
@@ -338,15 +361,13 @@ export class SqliteNativeClearingStore {
   async adjustAuthorizedCollateral(input: Readonly<{
     authorization: NativeClearingCollateralAuthorizationInput;
     ownerSignature: NativeClearingControlSignature;
-    currentExpiryUnit: ExpiryUnit;
-    currentExpiryValue: bigint;
-    nowMs: bigint;
   }>): Promise<NativeClearingAccount> {
     const command = nativeClearingCollateralAuthorization(input.authorization);
     if (!await verifyNativeClearingControlSignature(command.ownerId, command.authorizationHash, input.ownerSignature)) {
       throw new NativeClearingStoreError('INVALID_SIGNATURE', 'Clearing account owner did not sign the collateral command.');
     }
     return this.#db.transaction(() => {
+      const nowMs = this.#nowMs();
       const current = this.account(command.accountId);
       if (current === undefined) throw new NativeClearingStoreError('ACCOUNT_NOT_FOUND', 'Native clearing account was not found.');
       const policy = this.#policy(current.policyHash);
@@ -354,17 +375,17 @@ export class SqliteNativeClearingStore {
         command,
         policy,
         current,
-        input.currentExpiryUnit,
-        input.currentExpiryValue,
+        command.validUntilUnit,
+        expiryNow(command.validUntilUnit, nowMs),
       );
-      const mark = this.#liveMark(policy, input.nowMs);
+      const mark = this.#liveMark(policy, nowMs);
       const next = adjustNativeClearingCollateral(
         current,
         policy,
         command.collateralDeltaQuoteAtoms,
         mark.priceTicks,
         mark.observedAtMs,
-        input.nowMs,
+        nowMs,
       );
       this.#updateAccount(current, next);
       this.#event('COLLATERAL', next.accountHash, policy, next.sequence, {
@@ -379,14 +400,19 @@ export class SqliteNativeClearingStore {
   }
 
   settleAuthorizedMatch(input: Readonly<{
-    authorization: NativeClearingMatchAuthorizationInput;
+    authorization: Omit<NativeClearingMatchAuthorizationInput, 'currentExpiryUnit' | 'currentExpiryValue'>;
     expectedStateHash: Uint8Array | string;
     expectedLongAccountHash: Uint8Array | string;
     expectedShortAccountHash: Uint8Array | string;
-    nowMs: bigint;
   }>): NativeClearingMatchReceipt {
     return this.#db.transaction(() => {
-      const authorization = nativeClearingMatchAuthorization(input.authorization);
+      const nowMs = this.#nowMs();
+      const currentExpiryUnit = input.authorization.takerSettlementCommitment.validUntilUnit;
+      const authorization = nativeClearingMatchAuthorization({
+        ...input.authorization,
+        currentExpiryUnit,
+        currentExpiryValue: expiryNow(currentExpiryUnit, nowMs),
+      });
       const { policy, state } = this.#requiredDomain(input.authorization.policy.clearingDomainId);
       expected(policy.policyHash, authorization.policyHash, 'authorized policy hash');
       const long = this.#requiredAccount(authorization.longAccountId, policy);
@@ -400,7 +426,11 @@ export class SqliteNativeClearingStore {
       expected(state.stateHash, input.expectedStateHash, 'expected domain state hash');
       expected(long.accountHash, input.expectedLongAccountHash, 'expected long account hash');
       expected(short.accountHash, input.expectedShortAccountHash, 'expected short account hash');
-      const mark = this.#liveMark(policy, input.nowMs);
+      if (this.#db.prepare('SELECT 1 FROM native_clearing_match_settlements WHERE authorization_hash = ?')
+        .get(authorization.authorizationHash) !== undefined) {
+        throw new NativeClearingStoreError('SETTLEMENT_CONFLICT', 'Match authorization was already settled.');
+      }
+      const mark = this.#liveMark(policy, nowMs);
       const result = applyNativeClearingMatch({
         policy,
         domainState: state,
@@ -411,7 +441,7 @@ export class SqliteNativeClearingStore {
         priceTicks: authorization.priceTicks,
         markPriceTicks: mark.priceTicks,
         observedAtMs: mark.observedAtMs,
-        nowMs: input.nowMs,
+        nowMs,
       });
       this.#updateState(state, result.domainState);
       this.#updateAccount(long, result.longAccount);
@@ -421,6 +451,10 @@ export class SqliteNativeClearingStore {
         markObservationHash: mark.observationHash,
         receipt: result.receipt,
       });
+      this.#db.prepare(`
+        INSERT INTO native_clearing_match_settlements (authorization_hash, policy_hash, receipt_hash, recorded_at_ms)
+        VALUES (?, ?, ?, ?)
+      `).run(authorization.authorizationHash, policy.policyHash, result.receipt.receiptHash, clock(this.#clock()));
       return result.receipt;
     }).immediate();
   }
@@ -431,19 +465,19 @@ export class SqliteNativeClearingStore {
     expectedDefaultedAccountHash: Uint8Array | string;
     auctionId: string;
     bidsCloseAtMs: bigint;
-    nowMs: bigint;
   }>): NativeClearingDefaultAuction {
     return this.#db.transaction(() => {
+      const nowMs = this.#nowMs();
       const { policy } = this.#requiredDomain(input.clearingDomainId);
       const defaulter = this.#requiredAccount(input.defaultedAccountId, policy);
       expected(defaulter.accountHash, input.expectedDefaultedAccountHash, 'expected defaulted account hash');
-      const mark = this.#liveMark(policy, input.nowMs);
+      const mark = this.#liveMark(policy, nowMs);
       const auction = nativeClearingDefaultAuction({
         policy,
         defaultedAccount: defaulter,
         markObservation: mark,
         auctionId: input.auctionId,
-        openedAtMs: input.nowMs,
+        openedAtMs: nowMs,
         bidsCloseAtMs: input.bidsCloseAtMs,
       });
       this.#db.prepare(`
@@ -465,10 +499,9 @@ export class SqliteNativeClearingStore {
     auctionId: string;
     bid: NativeClearingDefaultBidInput;
     ownerSignature: NativeClearingControlSignature;
-    nowMs: bigint;
   }>): Promise<NativeClearingDefaultBid> {
     const auctionRecord = this.#auctionRecord(input.auctionId);
-    if (auctionRecord.status !== 'OPEN' || input.nowMs >= auctionRecord.auction.bidsCloseAtMs) {
+    if (auctionRecord.status !== 'OPEN' || this.#nowMs() >= auctionRecord.auction.bidsCloseAtMs) {
       throw new NativeClearingStoreError('AUCTION_CLOSED', 'Default auction is not accepting bids.');
     }
     const bid = nativeClearingDefaultBid(input.bid, auctionRecord.auction);
@@ -507,9 +540,9 @@ export class SqliteNativeClearingStore {
   settleDefaultAuction(input: Readonly<{
     auctionId: string;
     expectedStateHash: Uint8Array | string;
-    nowMs: bigint;
   }>): NativeClearingDefaultResolution {
     return this.#db.transaction(() => {
+      const nowMs = this.#nowMs();
       const auctionRecord = this.#auctionRecord(input.auctionId);
       if (auctionRecord.status !== 'OPEN') {
         throw new NativeClearingStoreError('AUCTION_CLOSED', 'Default auction is already settled.');
@@ -519,7 +552,7 @@ export class SqliteNativeClearingStore {
       const state = this.#state(policy);
       expected(state.stateHash, input.expectedStateHash, 'expected domain state hash');
       const mark = this.#mark(auction.markObservationHash, policy);
-      if (input.nowMs < auction.bidsCloseAtMs || input.nowMs > mark.validUntilMs) {
+      if (nowMs < auction.bidsCloseAtMs || nowMs > mark.validUntilMs) {
         throw new NativeClearingStoreError('AUCTION_WINDOW', 'Default auction cannot settle outside its mark-bound window.');
       }
       const defaulter = this.#requiredAccount(auction.defaultedAccountId, policy);
@@ -531,7 +564,7 @@ export class SqliteNativeClearingStore {
           && account.sequence === candidate.nonce
           && bytesEqual(account.accountHash, candidate.backstopAccountHash);
       });
-      const selected = selectNativeClearingDefaultBid(auction, bids, input.nowMs);
+      const selected = selectNativeClearingDefaultBid(auction, bids, nowMs);
       const backstop = this.#requiredAccount(selected.backstopAccountId, policy);
       const result = resolveNativeClearingDefault({
         policy,
@@ -542,7 +575,7 @@ export class SqliteNativeClearingStore {
         transferPriceTicks: selected.transferPriceTicks,
         markPriceTicks: mark.priceTicks,
         observedAtMs: mark.observedAtMs,
-        nowMs: input.nowMs,
+        nowMs,
       });
       this.#updateState(state, result.domainState);
       this.#updateAccount(defaulter, result.defaultedAccount);
@@ -583,6 +616,10 @@ export class SqliteNativeClearingStore {
       LIMIT ?
     `).all(policy.policyHash, after, limit) as EventRow[];
     return Object.freeze(rows.map((row) => this.#decodeEvent(row, policy)));
+  }
+
+  #nowMs(): bigint {
+    return BigInt(clock(this.#clock()));
   }
 
   #requiredDomain(id: string): Readonly<{ policy: NativeClearingPolicy; state: NativeClearingDomainState }> {
