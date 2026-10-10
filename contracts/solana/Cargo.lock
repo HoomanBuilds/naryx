@@ -2061,9 +2061,16 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
+ "litesvm",
  "naryx_core",
+ "naryx_inventory_adapter",
+ "solana-account 3.4.0",
+ "solana-keypair",
+ "solana-message 3.1.0",
  "solana-sdk-ids 3.1.0",
  "solana-sha256-hasher 3.1.0",
+ "solana-signer",
+ "solana-transaction",
 ]
 
 [[package]]

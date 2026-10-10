@@ -90,6 +90,7 @@ pub struct MultiStrategyAccount {
     pub owner: Pubkey,
     pub next_nonce: u64,
     pub bump: u8,
+    pub open_package_count: u32,
 }
 
 #[account]

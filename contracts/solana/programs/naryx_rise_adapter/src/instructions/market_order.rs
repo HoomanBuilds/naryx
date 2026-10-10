@@ -79,10 +79,23 @@ pub struct ExecuteRiseOrder<'info> {
     pub spline_collection: UncheckedAccount<'info>,
 }
 
+/// Supplied by the multi-strategy program from its own validated execution, never by the payload.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy)]
+pub struct StrategyLegContext {
+    pub package_id: [u8; 32],
+    pub risk_increasing: bool,
+}
+
 #[derive(Clone, Copy)]
 enum OrderAction {
     EnterShort,
     CloseShort,
+}
+
+impl OrderAction {
+    fn is_risk_increasing(self) -> bool {
+        matches!(self, Self::EnterShort)
+    }
 }
 
 pub fn enter_short<'info>(
@@ -103,6 +116,28 @@ pub fn execute_typed<'info>(
     ctx: Context<'info, ExecuteRiseOrder<'info>>,
     payload: Vec<u8>,
 ) -> Result<()> {
+    let (action, args) = decode_typed(&payload)?;
+    let evidence = execute_order(ctx, args, action)?;
+    set_return_data(&evidence);
+    Ok(())
+}
+
+pub fn execute_bound<'info>(
+    ctx: Context<'info, ExecuteRiseOrder<'info>>,
+    context: StrategyLegContext,
+    payload: Vec<u8>,
+) -> Result<()> {
+    let (action, args) = decode_typed(&payload)?;
+    require!(
+        !action.is_risk_increasing() || context.risk_increasing,
+        RiseAdapterError::RiskDirectionMismatch
+    );
+    let evidence = execute_order(ctx, args, action)?;
+    set_return_data(&evidence);
+    Ok(())
+}
+
+fn decode_typed(payload: &[u8]) -> Result<(OrderAction, RiseMarketOrderArgs)> {
     require!(payload.len() >= 8, RiseAdapterError::TypedPayloadInvalid);
     let (discriminator, encoded) = payload.split_at(8);
     let action = if discriminator == ENTER_SHORT_DISCRIMINATOR {
@@ -116,9 +151,7 @@ pub fn execute_typed<'info>(
     let args = RiseMarketOrderArgs::deserialize(&mut encoded)
         .map_err(|_| error!(RiseAdapterError::TypedPayloadInvalid))?;
     require!(encoded.is_empty(), RiseAdapterError::TypedPayloadInvalid);
-    let evidence = execute_order(ctx, args, action)?;
-    set_return_data(&evidence);
-    Ok(())
+    Ok((action, args))
 }
 
 fn execute_order<'info>(
@@ -480,5 +513,25 @@ mod tests {
         let mut close = [0u8; core::mem::size_of::<MatchingEngineCPIResponse>()];
         close[40..48].copy_from_slice(&7u64.to_le_bytes());
         assert!(validate_return_data(RISE_PROGRAM_ID, &close, OrderAction::CloseShort, 7).is_ok());
+    }
+
+    #[test]
+    fn typed_payload_classifies_only_entry_as_risk_increasing() {
+        let args = RiseMarketOrderArgs {
+            base_lots: 1,
+            limit_price_in_ticks: 1,
+            last_valid_slot: 1,
+            min_post_collateral_quote_lots: 0,
+            client_order_id: 1,
+        };
+        for (discriminator, increasing) in [
+            (ENTER_SHORT_DISCRIMINATOR, true),
+            (CLOSE_SHORT_DISCRIMINATOR, false),
+        ] {
+            let mut payload = discriminator.to_vec();
+            args.serialize(&mut payload).unwrap();
+            let (action, _) = decode_typed(&payload).unwrap();
+            assert_eq!(action.is_risk_increasing(), increasing);
+        }
     }
 }

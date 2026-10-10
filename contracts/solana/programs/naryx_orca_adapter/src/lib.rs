@@ -36,4 +36,14 @@ pub mod naryx_orca_adapter {
     pub fn execute_typed_strategy_leg(ctx: Context<SwapOrca>, payload: Vec<u8>) -> Result<()> {
         swap::execute_typed(ctx, payload)
     }
+
+    /// A swap settles atomically into the token authority and leaves no venue position, so it
+    /// never adds exposure on its own; the package's position legs carry the direction check.
+    pub fn execute_bound_strategy_leg(
+        ctx: Context<SwapOrca>,
+        _context: StrategyLegContext,
+        payload: Vec<u8>,
+    ) -> Result<()> {
+        swap::execute_typed(ctx, payload)
+    }
 }

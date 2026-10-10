@@ -7,7 +7,9 @@ pub const STRATEGY_RECEIPT_SEED: &[u8] = b"strategy-receipt";
 
 pub const MAX_STRATEGY_CALLS: usize = 8;
 pub const MAX_CPI_ACCOUNTS_PER_CALL: usize = 24;
-pub const TYPED_ADAPTER_DISCRIMINATOR: [u8; 8] = [0x88, 0xc3, 0xa5, 0xee, 0x7e, 0x09, 0x04, 0x2c];
+/// `execute_bound_strategy_leg(context, payload)`: the context carries this program's package id and
+/// risk label so each adapter can bind the leg and refuse a risk-increasing action labelled otherwise.
+pub const BOUND_ADAPTER_DISCRIMINATOR: [u8; 8] = [0x72, 0x97, 0xcd, 0x4d, 0xbe, 0xc5, 0xb5, 0x84];
 pub const EXECUTION_HASH_DOMAIN: &[u8] = b"naryx.solana.multi-strategy.execution.v1";
 pub const CALLS_HASH_DOMAIN: &[u8] = b"naryx.solana.multi-strategy.calls.v1";
 pub const EVIDENCE_ROOT_DOMAIN: &[u8] = b"naryx.solana.multi-strategy.evidence.v1";

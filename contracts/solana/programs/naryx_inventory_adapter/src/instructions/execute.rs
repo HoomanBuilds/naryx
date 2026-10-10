@@ -22,6 +22,13 @@ pub struct ExactInventoryLeg {
     pub expected_post_inventory_atoms: u64,
 }
 
+/// Supplied by the multi-strategy program from its own validated execution, never by the payload.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq)]
+pub struct StrategyLegContext {
+    pub package_id: [u8; 32],
+    pub risk_increasing: bool,
+}
+
 #[derive(Accounts)]
 pub struct ExecutePackageInventory<'info> {
     pub strategy_account: Signer<'info>,
@@ -57,10 +64,14 @@ pub struct ExecutePackageInventory<'info> {
     pub token_program: Program<'info, Token>,
 }
 
-pub fn execute_handler(ctx: Context<ExecutePackageInventory>, payload: Vec<u8>) -> Result<()> {
+pub fn execute_handler(
+    ctx: Context<ExecutePackageInventory>,
+    context: StrategyLegContext,
+    payload: Vec<u8>,
+) -> Result<()> {
     let leg = ExactInventoryLeg::try_from_slice(payload.as_slice())
         .map_err(|_| error!(ErrorCode::InvalidPayload))?;
-    validate_leg(&ctx.accounts.inventory, &leg)?;
+    validate_leg(&ctx.accounts.inventory, &context, &leg)?;
     let pre_inventory = ctx.accounts.vault.amount;
     let pre_strategy = ctx.accounts.strategy_token.amount;
     require!(
@@ -113,10 +124,21 @@ pub fn execute_handler(ctx: Context<ExecutePackageInventory>, payload: Vec<u8>) 
     Ok(())
 }
 
-fn validate_leg(inventory: &PackageInventory, leg: &ExactInventoryLeg) -> Result<()> {
+fn validate_leg(
+    inventory: &PackageInventory,
+    context: &StrategyLegContext,
+    leg: &ExactInventoryLeg,
+) -> Result<()> {
     require!(
-        leg.package_id == inventory.package_id
-            && leg.order_hash != [0u8; 32]
+        context.package_id == inventory.package_id && leg.package_id == context.package_id,
+        ErrorCode::PackageMismatch
+    );
+    require!(
+        leg.action != LOCK || context.risk_increasing,
+        ErrorCode::RiskDirectionMismatch
+    );
+    require!(
+        leg.order_hash != [0u8; 32]
             && leg.quote_hash != [0u8; 32]
             && leg.route_hash != [0u8; 32]
             && (leg.action == LOCK || leg.action == RELEASE)
@@ -207,12 +229,40 @@ mod tests {
         }
     }
 
+    fn context(package_id: [u8; 32], risk_increasing: bool) -> StrategyLegContext {
+        StrategyLegContext {
+            package_id,
+            risk_increasing,
+        }
+    }
+
     #[test]
     fn validates_exact_lock_and_release_deltas() {
         let inventory = inventory();
-        assert!(validate_leg(&inventory, &leg(LOCK, 10, 35)).is_ok());
-        assert!(validate_leg(&inventory, &leg(RELEASE, 35, 10)).is_ok());
-        assert!(validate_leg(&inventory, &leg(LOCK, 10, 34)).is_err());
-        assert!(validate_leg(&inventory, &leg(RELEASE, 10, 35)).is_err());
+        let increasing = context([1u8; 32], true);
+        assert!(validate_leg(&inventory, &increasing, &leg(LOCK, 10, 35)).is_ok());
+        assert!(validate_leg(&inventory, &increasing, &leg(RELEASE, 35, 10)).is_ok());
+        assert!(validate_leg(&inventory, &increasing, &leg(LOCK, 10, 34)).is_err());
+        assert!(validate_leg(&inventory, &increasing, &leg(RELEASE, 10, 35)).is_err());
+    }
+
+    #[test]
+    fn binds_leg_to_executing_package_and_risk_direction() {
+        let inventory = inventory();
+        let reducing = context([1u8; 32], false);
+        assert!(validate_leg(&inventory, &reducing, &leg(RELEASE, 35, 10)).is_ok());
+        assert_eq!(
+            validate_leg(&inventory, &reducing, &leg(LOCK, 10, 35)).unwrap_err(),
+            error!(ErrorCode::RiskDirectionMismatch)
+        );
+        assert_eq!(
+            validate_leg(
+                &inventory,
+                &context([9u8; 32], false),
+                &leg(RELEASE, 35, 10)
+            )
+            .unwrap_err(),
+            error!(ErrorCode::PackageMismatch)
+        );
     }
 }

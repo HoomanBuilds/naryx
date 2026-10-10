@@ -22,10 +22,11 @@ pub mod naryx_inventory_adapter {
         initialize::initialize_handler(ctx, package_id)
     }
 
-    pub fn execute_typed_strategy_leg(
+    pub fn execute_bound_strategy_leg(
         ctx: Context<ExecutePackageInventory>,
+        context: StrategyLegContext,
         payload: Vec<u8>,
     ) -> Result<()> {
-        execute::execute_handler(ctx, payload)
+        execute::execute_handler(ctx, context, payload)
     }
 }

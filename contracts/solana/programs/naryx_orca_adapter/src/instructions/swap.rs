@@ -77,6 +77,13 @@ pub struct OrcaSwapExecuted {
     pub output_atoms: u64,
 }
 
+/// Supplied by the multi-strategy program from its own validated execution, never by the payload.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy)]
+pub struct StrategyLegContext {
+    pub package_id: [u8; 32],
+    pub risk_increasing: bool,
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize)]
 struct OrcaSwapArgs {
     amount: u64,

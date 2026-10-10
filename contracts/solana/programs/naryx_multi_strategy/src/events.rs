@@ -56,3 +56,12 @@ pub struct StrategyFeesCollected {
     pub protocol_fee_atoms: u64,
     pub solver_fee_atoms: u64,
 }
+
+#[event]
+pub struct IdleTokenWithdrawn {
+    pub strategy_account: Pubkey,
+    pub mint: Pubkey,
+    pub source: Pubkey,
+    pub destination: Pubkey,
+    pub amount: u64,
+}

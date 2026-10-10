@@ -42,4 +42,8 @@ pub enum ErrorCode {
     InvalidFeePolicy,
     #[msg("Strategy fee token accounts are invalid")]
     InvalidFeeAccounts,
+    #[msg("A strategy package is still open")]
+    PackageOpen,
+    #[msg("Strategy withdrawal is invalid")]
+    InvalidWithdrawal,
 }

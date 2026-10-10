@@ -36,4 +36,6 @@ pub enum TestPerpAdapterError {
     CollateralPostconditionFailed,
     #[msg("Typed strategy payload is not a supported test perp adapter instruction")]
     TypedPayloadInvalid,
+    #[msg("A risk-increasing test perp order was labelled non-increasing")]
+    RiskDirectionMismatch,
 }

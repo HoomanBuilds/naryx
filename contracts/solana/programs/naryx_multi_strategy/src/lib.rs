@@ -46,4 +46,8 @@ pub mod naryx_multi_strategy {
     ) -> Result<()> {
         execute::recovery_handler(ctx, execution, calls)
     }
+
+    pub fn withdraw_idle_token(ctx: Context<WithdrawIdleToken>, amount: u64) -> Result<()> {
+        withdraw::withdraw_handler(ctx, amount)
+    }
 }

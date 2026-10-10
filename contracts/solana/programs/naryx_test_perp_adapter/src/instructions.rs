@@ -26,6 +26,10 @@ pub enum TestPerpShortAction {
 }
 
 impl TestPerpShortAction {
+    fn is_risk_increasing(self) -> bool {
+        matches!(self, Self::Enter | Self::Increase)
+    }
+
     fn evidence_tag(self) -> u8 {
         match self {
             Self::Enter => 0,
@@ -97,6 +101,13 @@ pub fn initialize(
         bump: ctx.bumps.strategy,
     });
     Ok(())
+}
+
+/// Supplied by the multi-strategy program from its own validated execution, never by the payload.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy)]
+pub struct StrategyLegContext {
+    pub package_id: [u8; 32],
+    pub risk_increasing: bool,
 }
 
 /// Same field set and meaning as `naryx_rise_adapter::RiseMarketOrderArgs`.
@@ -277,6 +288,28 @@ pub fn execute_order(
 }
 
 pub fn execute_typed(ctx: Context<ExecuteTestPerpOrder>, payload: Vec<u8>) -> Result<()> {
+    let (action, args) = decode_typed(&payload)?;
+    let evidence = execute_order(ctx, args, action)?;
+    set_return_data(&evidence);
+    Ok(())
+}
+
+pub fn execute_bound(
+    ctx: Context<ExecuteTestPerpOrder>,
+    context: StrategyLegContext,
+    payload: Vec<u8>,
+) -> Result<()> {
+    let (action, args) = decode_typed(&payload)?;
+    require!(
+        !action.is_risk_increasing() || context.risk_increasing,
+        TestPerpAdapterError::RiskDirectionMismatch
+    );
+    let evidence = execute_order(ctx, args, action)?;
+    set_return_data(&evidence);
+    Ok(())
+}
+
+fn decode_typed(payload: &[u8]) -> Result<(TestPerpShortAction, TestPerpMarketOrderArgs)> {
     require!(
         payload.len() >= 8,
         TestPerpAdapterError::TypedPayloadInvalid
@@ -300,7 +333,32 @@ pub fn execute_typed(ctx: Context<ExecuteTestPerpOrder>, payload: Vec<u8>) -> Re
         encoded.is_empty(),
         TestPerpAdapterError::TypedPayloadInvalid
     );
-    let evidence = execute_order(ctx, args, action)?;
-    set_return_data(&evidence);
-    Ok(())
+    Ok((action, args))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_payload_classifies_enter_and_increase_as_risk_increasing() {
+        let args = TestPerpMarketOrderArgs {
+            base_lots: 1,
+            limit_price_in_ticks: 1,
+            last_valid_slot: 1,
+            min_post_collateral_quote_lots: 0,
+            client_order_id: 1,
+        };
+        for (discriminator, increasing) in [
+            (ENTER_SHORT_DISCRIMINATOR, true),
+            (INCREASE_SHORT_DISCRIMINATOR, true),
+            (DECREASE_SHORT_DISCRIMINATOR, false),
+            (CLOSE_SHORT_DISCRIMINATOR, false),
+        ] {
+            let mut payload = discriminator.to_vec();
+            args.serialize(&mut payload).unwrap();
+            let (action, _) = decode_typed(&payload).unwrap();
+            assert_eq!(action.is_risk_increasing(), increasing);
+        }
+    }
 }

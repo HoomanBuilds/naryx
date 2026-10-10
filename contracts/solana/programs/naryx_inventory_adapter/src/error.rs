@@ -12,4 +12,8 @@ pub enum ErrorCode {
     PostconditionFailed,
     #[msg("Inventory arithmetic overflowed")]
     ArithmeticOverflow,
+    #[msg("The inventory leg is not bound to the executing package")]
+    PackageMismatch,
+    #[msg("A risk-increasing inventory action was labelled non-increasing")]
+    RiskDirectionMismatch,
 }

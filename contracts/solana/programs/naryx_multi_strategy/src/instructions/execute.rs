@@ -22,9 +22,10 @@ use solana_sha256_hasher::hashv;
 
 use crate::{
     constants::{
-        CALLS_HASH_DOMAIN, EVIDENCE_ROOT_DOMAIN, EXECUTION_HASH_DOMAIN, MAX_CPI_ACCOUNTS_PER_CALL,
-        MAX_STRATEGY_CALLS, MULTI_STRATEGY_ACCOUNT_SEED, RECEIPT_HASH_DOMAIN,
-        STRATEGY_POSITION_SEED, STRATEGY_RECEIPT_SEED, TYPED_ADAPTER_DISCRIMINATOR,
+        BOUND_ADAPTER_DISCRIMINATOR, CALLS_HASH_DOMAIN, EVIDENCE_ROOT_DOMAIN,
+        EXECUTION_HASH_DOMAIN, MAX_CPI_ACCOUNTS_PER_CALL, MAX_STRATEGY_CALLS,
+        MULTI_STRATEGY_ACCOUNT_SEED, RECEIPT_HASH_DOMAIN, STRATEGY_POSITION_SEED,
+        STRATEGY_RECEIPT_SEED,
     },
     error::ErrorCode,
     events::{
@@ -304,6 +305,19 @@ fn execute<'info>(
         .nonce
         .checked_add(1)
         .ok_or_else(|| error!(ErrorCode::ArithmeticOverflow))?;
+    // ENTER requires an inactive position and terminal operations an active one, so the count
+    // moves exactly once per package lifecycle.
+    if matches!(execution.operation, crate::state::StrategyOperation::Enter) {
+        strategy_account.open_package_count = strategy_account
+            .open_package_count
+            .checked_add(1)
+            .ok_or_else(|| error!(ErrorCode::ArithmeticOverflow))?;
+    } else if execution.operation.is_terminal() {
+        strategy_account.open_package_count = strategy_account
+            .open_package_count
+            .checked_sub(1)
+            .ok_or_else(|| error!(ErrorCode::ArithmeticOverflow))?;
+    }
     let evidence = execute_calls(
         config,
         strategy_account,
@@ -475,6 +489,7 @@ fn finalize_state(
 ) {
     if execution.operation.is_terminal() {
         position.active = false;
+        position.package_id = [0u8; 32];
         position.state_hash = [0u8; 32];
     } else {
         if position.package_id == [0u8; 32] {
@@ -767,7 +782,9 @@ fn execute_calls<'info>(
             account_infos.push(account.clone());
         }
         require!(strategy_signer_count == 1, ErrorCode::InvalidCallAccounts);
-        let mut data = TYPED_ADAPTER_DISCRIMINATOR.to_vec();
+        let mut data = BOUND_ADAPTER_DISCRIMINATOR.to_vec();
+        data.extend_from_slice(&execution.package_id);
+        data.push(u8::from(call.risk_increasing));
         call.payload
             .serialize(&mut data)
             .map_err(|_| error!(ErrorCode::SerializationFailed))?;

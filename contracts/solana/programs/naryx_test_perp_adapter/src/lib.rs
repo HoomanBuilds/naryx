@@ -59,4 +59,12 @@ pub mod naryx_test_perp_adapter {
     ) -> Result<()> {
         instructions::execute_typed(ctx, payload)
     }
+
+    pub fn execute_bound_strategy_leg(
+        ctx: Context<ExecuteTestPerpOrder>,
+        context: StrategyLegContext,
+        payload: Vec<u8>,
+    ) -> Result<()> {
+        instructions::execute_bound(ctx, context, payload)
+    }
 }

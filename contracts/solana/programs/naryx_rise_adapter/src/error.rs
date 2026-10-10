@@ -64,4 +64,6 @@ pub enum RiseAdapterError {
     CollateralPostconditionFailed,
     #[msg("Typed strategy payload is not a supported Rise adapter instruction")]
     TypedPayloadInvalid,
+    #[msg("A risk-increasing Rise order was labelled non-increasing")]
+    RiskDirectionMismatch,
 }

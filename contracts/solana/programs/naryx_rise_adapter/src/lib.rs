@@ -42,4 +42,12 @@ pub mod naryx_rise_adapter {
     ) -> Result<()> {
         market_order::execute_typed(ctx, payload)
     }
+
+    pub fn execute_bound_strategy_leg<'info>(
+        ctx: Context<'info, ExecuteRiseOrder<'info>>,
+        context: StrategyLegContext,
+        payload: Vec<u8>,
+    ) -> Result<()> {
+        market_order::execute_bound(ctx, context, payload)
+    }
 }

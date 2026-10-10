@@ -41,6 +41,7 @@ pub fn initialize_handler(ctx: Context<InitializeMultiStrategyAccount>) -> Resul
             owner: ctx.accounts.owner.key(),
             next_nonce: 0,
             bump: ctx.bumps.strategy_account,
+            open_package_count: 0,
         });
     emit!(MultiStrategyAccountInitialized {
         strategy_account: ctx.accounts.strategy_account.key(),
