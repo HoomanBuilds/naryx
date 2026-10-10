@@ -1483,7 +1483,11 @@ export function createPublicApiHandler(options: PublicApiOptions) {
             settlementClass: entry.settlementClass,
             domains: entry.domains,
             open: entry.open,
-            ...(entry.open ? { halted: entry.halted, executable: entry.index.executable } : {}),
+            ...(entry.open ? {
+              halted: entry.halted,
+              executable: entry.index.executable,
+              indicativeWithImplied: entry.index.withImplied,
+            } : {}),
             ...(trade === undefined ? {} : { lastTrade: trade }),
           };
         }),

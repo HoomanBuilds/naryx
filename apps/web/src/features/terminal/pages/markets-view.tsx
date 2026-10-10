@@ -371,7 +371,7 @@ export function MarketsView() {
           <>
             <div className={styles.evidenceBar}>
               <span className={styles.pillOk}>Methodology v{curve.methodologyVersion}</span>
-              <p>{human(curve.quoteConvention)} in {curve.quoteAsset}. Prices are direct executable averages at each requested size.</p>
+              <p>{human(curve.quoteConvention)} in {curve.quoteAsset}. Direct depth is executable. The separate with-implied line is indicative and cannot be submitted as a fill.</p>
             </div>
             <div className={styles.scroll}>
               <table className={styles.table}>
@@ -393,7 +393,12 @@ export function MarketsView() {
                       <td>{point.domains.join(" + ")}</td>
                       {curveSizes.map((size, index) => (
                         <td key={size.toString()} className={styles.num}>
-                          {!point.open ? "-" : `${point.bids[index]?.averagePriceTicks.toString() ?? "-"} / ${point.asks[index]?.averagePriceTicks.toString() ?? "-"}`}
+                          {!point.open ? "-" : (
+                            <span className={styles.cellStack}>
+                              <strong>{point.bids[index]?.averagePriceTicks.toString() ?? "-"} / {point.asks[index]?.averagePriceTicks.toString() ?? "-"}</strong>
+                              <small className={styles.cellDetail}>With implied: {point.impliedBids[index]?.averagePriceTicks.toString() ?? "-"} / {point.impliedAsks[index]?.averagePriceTicks.toString() ?? "-"}</small>
+                            </span>
+                          )}
                         </td>
                       ))}
                       <td className={styles.num}>{point.lastTrade?.priceTicks.toString() ?? "-"}</td>

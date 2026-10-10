@@ -102,6 +102,8 @@ export interface PublicSeriesCurvePoint {
   readonly halted: boolean;
   readonly bids: readonly (PublicSizeQuote | null)[];
   readonly asks: readonly (PublicSizeQuote | null)[];
+  readonly impliedBids: readonly (PublicSizeQuote | null)[];
+  readonly impliedAsks: readonly (PublicSizeQuote | null)[];
   readonly lastTrade: PublicObservedTrade | null;
 }
 
@@ -352,13 +354,13 @@ export function usePublicPackageOpportunities(baseUrl: string | null, size: bigi
   return { opportunities, status };
 }
 
-function curveQuotes(value: unknown, sizes: readonly bigint[], context: string): readonly (PublicSizeQuote | null)[] {
+function curveQuotes(value: unknown, sizes: readonly bigint[], label: "EXECUTABLE" | "INDICATIVE", context: string): readonly (PublicSizeQuote | null)[] {
   if (!Array.isArray(value) || value.length !== sizes.length) throw new PublicApiError(`${context} does not answer every size`);
   return Object.freeze(value.map((candidate, index) => {
     if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) throw new PublicApiError(`${context}[${index}] is malformed`);
     const quote = candidate as Record<string, unknown>;
-    if (quote.label !== "EXECUTABLE" || exact(quote.size, `${context}[${index}].size`) !== sizes[index]) {
-      throw new PublicApiError(`${context}[${index}] is not executable at the requested size`);
+    if (quote.label !== label || exact(quote.size, `${context}[${index}].size`) !== sizes[index]) {
+      throw new PublicApiError(`${context}[${index}] has the wrong evidence label or size`);
     }
     const fillableQuantity = exact(quote.fillableQuantity, `${context}[${index}].fillableQuantity`);
     if (fillableQuantity > sizes[index]!) throw new PublicApiError(`${context}[${index}] overstates fillable depth`);
@@ -388,19 +390,26 @@ function seriesCurve(body: Record<string, unknown>, seriesId: string, sizes: rea
       domains: textList(point.domains, `${context}.domains`),
     };
     if (!point.open) {
-      if (point.executable !== undefined || point.lastTrade !== undefined) throw new PublicApiError(`${context} is closed but carries market data`);
-      return Object.freeze({ ...common, open: false, halted: false, bids: Object.freeze([]), asks: Object.freeze([]), lastTrade: null });
+      if (point.executable !== undefined || point.indicativeWithImplied !== undefined || point.lastTrade !== undefined) throw new PublicApiError(`${context} is closed but carries market data`);
+      return Object.freeze({ ...common, open: false, halted: false, bids: Object.freeze([]), asks: Object.freeze([]), impliedBids: Object.freeze([]), impliedAsks: Object.freeze([]), lastTrade: null });
     }
     if (typeof point.halted !== "boolean" || point.executable === null || typeof point.executable !== "object" || Array.isArray(point.executable)) {
       throw new PublicApiError(`${context} is malformed`);
     }
     const executable = point.executable as Record<string, unknown>;
+    const indicative = point.indicativeWithImplied;
+    if (indicative === null || typeof indicative !== "object" || Array.isArray(indicative)) {
+      throw new PublicApiError(`${context}.indicativeWithImplied is malformed`);
+    }
+    const withImplied = indicative as Record<string, unknown>;
     return Object.freeze({
       ...common,
       open: true,
       halted: point.halted,
-      bids: curveQuotes(executable.bids, sizes, `${context}.bids`),
-      asks: curveQuotes(executable.asks, sizes, `${context}.asks`),
+      bids: curveQuotes(executable.bids, sizes, "EXECUTABLE", `${context}.bids`),
+      asks: curveQuotes(executable.asks, sizes, "EXECUTABLE", `${context}.asks`),
+      impliedBids: curveQuotes(withImplied.bids, sizes, "INDICATIVE", `${context}.impliedBids`),
+      impliedAsks: curveQuotes(withImplied.asks, sizes, "INDICATIVE", `${context}.impliedAsks`),
       lastTrade: point.lastTrade === undefined ? null : observedTrade(point.lastTrade, `${context}.lastTrade`),
     });
   });

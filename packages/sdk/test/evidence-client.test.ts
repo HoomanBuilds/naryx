@@ -406,6 +406,10 @@ describe('order intake and terminal evidence', () => {
       label: 'EXECUTABLE',
       ...(averagePriceTicks === undefined ? {} : { averagePriceTicks }),
     });
+    const impliedQuote = (size: bigint, averagePriceTicks?: bigint) => ({
+      ...quote(size, averagePriceTicks),
+      label: 'INDICATIVE',
+    });
     const trade = { priceTicks: 100n, quantity: 10n, recordedAtMs: 5, allocationHash: 'ab'.repeat(32), label: 'OBSERVED' };
     const curve = {
       seriesId: 'sol-carry',
@@ -414,18 +418,21 @@ describe('order intake and terminal evidence', () => {
       asOfValue: 1n,
       methodologyVersion: 1,
       points: [
-        { executionClassId: 'class-a', settlementClass: 'ATOMIC_POSTCONDITION', domains: ['svm:testnet'], open: true, halted: false, executable: { bids: [quote(10n, 96n)], asks: [quote(10n, 104n)] }, lastTrade: trade },
+        { executionClassId: 'class-a', settlementClass: 'ATOMIC_POSTCONDITION', domains: ['svm:testnet'], open: true, halted: false, executable: { bids: [quote(10n, 96n)], asks: [quote(10n, 104n)] }, indicativeWithImplied: { bids: [impliedQuote(10n, 97n)], asks: [impliedQuote(10n, 103n)] }, lastTrade: trade },
         { executionClassId: 'class-b', settlementClass: 'ASYNC_BONDED_SOLVER', domains: ['evm:base'], open: false },
       ],
     };
     const curvePath = 'GET /v1/curves/sol-carry?sizes=10';
     const read = await client({ [curvePath]: { body: curve } }).getCurve('sol-carry', [10n]);
     assert.equal(read.points[0]?.lastTrade?.priceTicks, 100n);
+    assert.equal(read.points[0]?.indicativeWithImplied?.asks[0]?.averagePriceTicks, 103n);
     assert.equal(read.points[1]?.open, false);
     const mislabeled = { ...curve, points: [{ ...curve.points[0], lastTrade: { ...trade, label: 'MODELED' } }] };
     await assert.rejects(client({ [curvePath]: { body: mislabeled } }).getCurve('sol-carry', [10n]), /OBSERVED/);
     const phantom = { ...curve, points: [{ ...curve.points[0], executable: { bids: [{ ...quote(10n, 96n), fillableQuantity: 5n }], asks: [quote(10n, 104n)] } }] };
     await assert.rejects(client({ [curvePath]: { body: phantom } }).getCurve('sol-carry', [10n]), /depth it does not have/);
+    const mislabeledImplied = { ...curve, points: [{ ...curve.points[0], indicativeWithImplied: { bids: [quote(10n, 97n)], asks: [impliedQuote(10n, 103n)] } }] };
+    await assert.rejects(client({ [curvePath]: { body: mislabeledImplied } }).getCurve('sol-carry', [10n]), /INDICATIVE/);
     const closedWithData = { ...curve, points: [{ ...curve.points[1], lastTrade: trade }] };
     await assert.rejects(client({ [curvePath]: { body: closedWithData } }).getCurve('sol-carry', [10n]), /closed but carries/);
 

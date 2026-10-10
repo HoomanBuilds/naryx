@@ -550,6 +550,7 @@ export interface SeriesCurvePoint {
   readonly open: boolean;
   readonly halted?: boolean;
   readonly executable?: { readonly bids: readonly SizeQuoteView[]; readonly asks: readonly SizeQuoteView[] };
+  readonly indicativeWithImplied?: { readonly bids: readonly SizeQuoteView[]; readonly asks: readonly SizeQuoteView[] };
   readonly lastTrade?: ObservedTrade;
 }
 
@@ -3232,11 +3233,16 @@ export class NaryxClient {
         return domain;
       });
       if (!point.open) {
-        if (point.executable !== undefined || point.lastTrade !== undefined) throw new NaryxEvidenceError(`${context} is closed but carries market data`);
+        if (point.executable !== undefined || point.indicativeWithImplied !== undefined || point.lastTrade !== undefined) {
+          throw new NaryxEvidenceError(`${context} is closed but carries market data`);
+        }
         return Object.freeze({ executionClassId: point.executionClassId, settlementClass: point.settlementClass, domains: Object.freeze(domains), open: false });
       }
       if (typeof point.halted !== 'boolean') throw new NaryxEvidenceError(`${context}.halted is malformed`);
       const executable = record(point.executable, `${context}.executable`);
+      const indicative = point.indicativeWithImplied === undefined
+        ? undefined
+        : record(point.indicativeWithImplied, `${context}.indicativeWithImplied`);
       const lastTrade = observedTrade(point.lastTrade, `${context}.lastTrade`);
       return Object.freeze({
         executionClassId: point.executionClassId,
@@ -3247,6 +3253,12 @@ export class NaryxClient {
         executable: Object.freeze({
           bids: sizeQuotes(executable.bids, sizes, 'EXECUTABLE', `${context}.executable.bids`),
           asks: sizeQuotes(executable.asks, sizes, 'EXECUTABLE', `${context}.executable.asks`),
+        }),
+        ...(indicative === undefined ? {} : {
+          indicativeWithImplied: Object.freeze({
+            bids: sizeQuotes(indicative.bids, sizes, 'INDICATIVE', `${context}.indicativeWithImplied.bids`),
+            asks: sizeQuotes(indicative.asks, sizes, 'INDICATIVE', `${context}.indicativeWithImplied.asks`),
+          }),
         }),
         ...(lastTrade === undefined ? {} : { lastTrade }),
       });

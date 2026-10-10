@@ -981,6 +981,7 @@ test("series indices, curves, and the opportunity feed are built from executable
       points: readonly {
         executionClassId: string;
         executable: { bids: readonly { averagePriceTicks?: bigint }[]; asks: readonly { averagePriceTicks?: bigint }[] };
+        indicativeWithImplied: { bids: readonly { averagePriceTicks?: bigint; label: string }[]; asks: readonly { averagePriceTicks?: bigint; label: string }[] };
         lastTrade?: { priceTicks: bigint; quantity: bigint; label: string };
       }[];
     };
@@ -988,6 +989,10 @@ test("series indices, curves, and the opportunity feed are built from executable
     assert.deepEqual(
       curve.points.map((point) => [point.executable.bids[0]?.averagePriceTicks, point.executable.asks[0]?.averagePriceTicks, point.lastTrade?.priceTicks, point.lastTrade?.quantity, point.lastTrade?.label]),
       [[96n, 104n, 100n, 10n, "OBSERVED"]],
+    );
+    assert.deepEqual(
+      curve.points.map((point) => [point.indicativeWithImplied.bids[0]?.averagePriceTicks, point.indicativeWithImplied.asks[0]?.averagePriceTicks, point.indicativeWithImplied.bids[0]?.label]),
+      [[96n, 104n, "INDICATIVE"]],
     );
 
     const feed = (await get("/v1/opportunities?size=10")).body as {
