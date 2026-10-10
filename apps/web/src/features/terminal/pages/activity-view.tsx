@@ -235,6 +235,41 @@ function exactAmount(atoms: bigint, decimals: number, symbol: string): string {
   return `${negative ? "-" : ""}${whole}${fraction ? `.${fraction}` : ""} ${symbol.toUpperCase()}`;
 }
 
+function csvCell(value: string | number | bigint): string {
+  const text = String(value);
+  return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function exportStrategyReceipts(receipts: readonly StrategyReceiptHistoryRow[]) {
+  const headings = [
+    "recorded_at_utc", "receipt_hash", "order_hash", "quote_hash", "route_hash", "template_id",
+    "lifecycle_action", "domains", "settlement_class", "solver_id", "terminal_state", "finality_status",
+    "quote_asset", "quote_decimals", "gross_leg_notional_atoms", "service_fee_atoms", "solver_fee_atoms",
+    "venue_fee_atoms", "network_cost_atoms", "recovery_cost_atoms", "explicit_cost_atoms",
+    "terminal_residual_value_atoms", "onchain_enforced_legs", "total_legs", "evidence_grades",
+  ];
+  const rows = receipts.map((receipt) => {
+    const economics = receipt.executionEconomics;
+    const evidence = receipt.executionEvidence;
+    return [
+      new Date(receipt.recordedAtMs).toISOString(), receipt.receiptHash, receipt.orderHash, receipt.quoteHash,
+      evidence.routeHash, receipt.templateId, receipt.lifecycleAction, receipt.domainIds.join("|"),
+      evidence.settlementClass, evidence.solverId, receipt.terminalState, receipt.finalityStatus,
+      economics.quoteAssetId, economics.quoteAssetDecimals, economics.grossLegNotionalAtoms,
+      economics.serviceFeeAtoms, economics.solverFeeAtoms, economics.venueFeeAtoms, economics.networkCostAtoms,
+      economics.recoveryCostAtoms, economics.explicitCostAtoms, economics.terminalResidualValueAtoms,
+      evidence.onchainEnforcedLegCount, evidence.legCount, evidence.evidenceGrades.join("|"),
+    ].map(csvCell).join(",");
+  });
+  const blob = new Blob([[headings.join(","), ...rows].join("\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `naryx-strategy-receipts-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 /** A package the service recorded for a connected wallet, as an Activity row with its service state and evidence. */
 type Row = RecordedAttempt & Readonly<{
   listed?: true;
@@ -380,8 +415,13 @@ export function ActivityView() {
 
       <section className={styles.card} aria-labelledby="strategy-receipts-title">
         <div className={styles.cardHead}>
-          <h2 id="strategy-receipts-title">Canonical strategy receipts</h2>
-          <p>Final package economics and evidence, indexed from the connected wallet&apos;s durable strategy orders.</p>
+          <div>
+            <h2 id="strategy-receipts-title">Canonical strategy receipts</h2>
+            <p>Final package economics and evidence, indexed from the connected wallet&apos;s durable strategy orders.</p>
+          </div>
+          <button type="button" className={styles.ghost} disabled={strategyReceipts.length === 0} onClick={() => exportStrategyReceipts(strategyReceipts)}>
+            Export exact CSV
+          </button>
         </div>
         <div className={styles.scroll}>
           <table className={styles.table}>
