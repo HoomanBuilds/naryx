@@ -13,6 +13,7 @@ import {
   assetId,
   assetRef,
   compareExpiry,
+  compareProtocolIds,
   domainId,
   domainRef,
   encodeAssetAmount,
@@ -723,5 +724,17 @@ describe('forged runtime objects are revalidated at the encoder boundary', () =>
       () => encodeExpiry(new CanonicalWriter(), undefined as unknown as Expiry),
       MalformedInputError,
     );
+  });
+});
+
+describe('compareProtocolIds', () => {
+  test('orders identifiers by byte value regardless of host collation', () => {
+    const ids = ['leg1', 'hedge', 'Leg2', 'leg_b', 'chain-hedge', 'leg-a', 'aave', 'zeta'];
+    const expected = ['Leg2', 'aave', 'chain-hedge', 'hedge', 'leg-a', 'leg1', 'leg_b', 'zeta'];
+    assert.deepEqual([...ids].sort(compareProtocolIds), expected);
+    for (const locale of ['en', 'cs', 'da']) {
+      assert.notDeepEqual([...ids].sort((left, right) => left.localeCompare(right, locale)), expected);
+    }
+    assert.equal(compareProtocolIds('same', 'same'), 0);
   });
 });

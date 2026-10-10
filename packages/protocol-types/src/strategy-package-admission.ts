@@ -9,7 +9,7 @@ import {
   type PackageGraphInput,
 } from './package-graph.js';
 import type { FeeCap } from './package-order-primitives.js';
-import type { AssetRef, DomainRef } from './primitives.js';
+import { compareProtocolIds, type AssetRef, type DomainRef } from './primitives.js';
 import {
   strategyPackageOrder,
   strategyPackageOrderHash,
@@ -117,7 +117,7 @@ export function validateStrategyPackageAdmission(
   const graphDomains = graph.legs.reduce<DomainRef[]>((domains, leg) => {
     if (!domains.some((domain) => sameDomain(domain, leg.domain))) domains.push(leg.domain);
     return domains;
-  }, []).sort((left, right) => left.domainId.localeCompare(right.domainId));
+  }, []).sort((left, right) => compareProtocolIds(left.domainId, right.domainId));
   requireCondition(graphDomains.length === quote.domains.length && graphDomains.every((value, index) => sameDomain(value, quote.domains[index]!)), `${context}.quote.domains`, 'quote domains do not match the graph');
   const graphLegIds = graph.legs.map((leg) => leg.legId).sort();
   const quoteLegIds = quote.legEconomics.map((leg) => leg.legId);
@@ -205,8 +205,8 @@ export function validateStrategyPackageRouteAdmission(
   requireCondition(route.settlementClass === admitted.graph.settlementClass, `${context}.route.settlementClass`, 'route settlement class mismatch');
   requireCondition(route.routeExpiryUnit === admitted.order.expiryUnit, `${context}.route.routeExpiryUnit`, 'route and order clocks differ');
   requireCondition(route.routeExpiryValue <= admitted.order.expiryValue && route.routeExpiryValue <= admitted.quote.validUntilValue, `${context}.route.routeExpiryValue`, 'route outlives the signed order or quote');
-  const graphLegs = [...admitted.graph.legs].sort((left, right) => left.legId.localeCompare(right.legId));
-  const routeLegs = [...route.legs].sort((left, right) => left.legId.localeCompare(right.legId));
+  const graphLegs = [...admitted.graph.legs].sort((left, right) => compareProtocolIds(left.legId, right.legId));
+  const routeLegs = [...route.legs].sort((left, right) => compareProtocolIds(left.legId, right.legId));
   requireCondition(graphLegs.length === routeLegs.length, `${context}.route.legs`, 'route leg count mismatch');
   for (let index = 0; index < graphLegs.length; index += 1) {
     const graphLeg = graphLegs[index]!;

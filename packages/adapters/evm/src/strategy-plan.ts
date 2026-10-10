@@ -1,6 +1,7 @@
 import type { CompiledStrategyExecution } from '@naryx/adapter-core';
 import {
   bytesEqual,
+  compareProtocolIds,
   strategyPackageOrderHash,
   strategyPackageQuoteHash,
   typedStrategyRouteHash,
@@ -176,7 +177,7 @@ export function compileEvmStrategyPlan(input: Readonly<{
   if (route.settlementClass !== 'CROSS_DOMAIN_PREPOSITIONED') requireCondition(stageIds.every((stage, index) => stage === index), 'EVM route stages must be contiguous from zero');
   const stages = Object.freeze(stageIds.map((stage) => Object.freeze({
     stage,
-    calls: Object.freeze(calls.filter((call) => call.stage === stage).sort((left, right) => left.legId.localeCompare(right.legId))),
+    calls: Object.freeze(calls.filter((call) => call.stage === stage).sort((left, right) => compareProtocolIds(left.legId, right.legId))),
   })));
   return Object.freeze({
     domains: Object.freeze([domainPlan.domain]),

@@ -5,7 +5,7 @@ import { enumDiscriminant, type EnumTable } from './enums.js';
 import { DuplicateElementError, MalformedInputError } from './errors.js';
 import { domainHash, HASH_DOMAIN } from './hashing.js';
 import { commitmentHash, encodeCommitmentHash, type CommitmentHash } from './package-order-primitives.js';
-import { encodeProtocolId, protocolId, type ProtocolId } from './primitives.js';
+import { compareProtocolIds, encodeProtocolId, protocolId, type ProtocolId } from './primitives.js';
 
 export const ROUTE_DECISION_VERSION = 1;
 export const EXECUTION_INTELLIGENCE_VERSION = 1;
@@ -677,7 +677,7 @@ export function executionIntelligence(input: ExecutionIntelligenceInput): Execut
   });
   const deliveryAttempts = Object.freeze([...input.deliveryAttempts]
     .sort((left, right) => left.submittedAtValue === right.submittedAtValue
-      ? left.attemptId.localeCompare(right.attemptId)
+      ? compareProtocolIds(left.attemptId, right.attemptId)
       : left.submittedAtValue < right.submittedAtValue ? -1 : 1));
   const recordHash = commitmentHash(
     domainHash(

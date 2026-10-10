@@ -22,6 +22,7 @@ import {
   type DomainRef,
   type ManifestHash,
   type ProtocolId,
+  compareProtocolIds,
 } from './primitives.js';
 import {
   FIELD_EVIDENCE_GRADE,
@@ -170,7 +171,7 @@ function checkedAmount(value: AssetAmount, context: string, asset?: AssetRef, no
 function checkedDomains(values: readonly DomainRef[], context: string): readonly DomainRef[] {
   if (!Array.isArray(values) || values.length === 0 || values.length > 16) throw new MalformedInputError(context, 'expected 1 to 16 domains');
   const checked = values.map((value, index) => domainRef(value.domainId, value.domainManifestVersion, value.domainManifestHash, `${context}[${index}]`))
-    .sort((left, right) => left.domainId.localeCompare(right.domainId));
+    .sort((left, right) => compareProtocolIds(left.domainId, right.domainId));
   for (let index = 1; index < checked.length; index += 1) {
     if (checked[index - 1]!.domainId === checked[index]!.domainId) throw new DuplicateElementError(context, `domain ${checked[index]!.domainId} appears twice`);
   }
@@ -218,7 +219,7 @@ function checkedLegOutcomes(values: readonly StrategyLegOutcomeInput[], domains:
       onchainEnforced: value.onchainEnforced,
       evidenceHash: commitmentHash(value.evidenceHash, `${context}.evidenceHash`),
     });
-  }).sort((left, right) => left.legId.localeCompare(right.legId));
+  }).sort((left, right) => compareProtocolIds(left.legId, right.legId));
   for (let index = 1; index < checked.length; index += 1) {
     if (checked[index - 1]!.legId === checked[index]!.legId) throw new DuplicateElementError('strategyPackageReceipt.legOutcomes', `leg ${checked[index]!.legId} appears twice`);
   }

@@ -39,6 +39,7 @@ import {
   protocolId,
   type DomainRef,
   type ProtocolId,
+  compareProtocolIds,
 } from './primitives.js';
 import { validateStrategyTemplateGraph } from './strategy-template-program.js';
 
@@ -256,7 +257,7 @@ export function compileTypedStrategyRoute(input: Readonly<{
     }));
   }
   const domainPlans: TypedStrategyDomainPlan[] = [];
-  for (const domain of [...new Map(graph.legs.map((leg) => [leg.domain.domainId, leg.domain])).values()].sort((left, right) => left.domainId.localeCompare(right.domainId))) {
+  for (const domain of [...new Map(graph.legs.map((leg) => [leg.domain.domainId, leg.domain])).values()].sort((left, right) => compareProtocolIds(left.domainId, right.domainId))) {
     const domainLegs = legs.filter((leg) => sameDomain(leg.domain, domain));
     const kinds = [...new Set(domainLegs.map((leg) => leg.executionPlanKind))];
     if (kinds.length !== 1) {
@@ -278,7 +279,7 @@ export function compileTypedStrategyRoute(input: Readonly<{
     graphHash: packageGraphHash(input.graph),
     solverId: protocolId(input.solverId, 'compileTypedStrategyRoute.solverId'),
     settlementClass: graph.settlementClass,
-    legs: Object.freeze(legs.sort((left, right) => left.legId.localeCompare(right.legId))),
+    legs: Object.freeze(legs.sort((left, right) => compareProtocolIds(left.legId, right.legId))),
     domainPlans: Object.freeze(domainPlans),
     routeExpiryUnit: input.routeExpiryUnit,
     routeExpiryValue,

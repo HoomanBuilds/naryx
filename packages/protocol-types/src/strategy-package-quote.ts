@@ -43,6 +43,7 @@ import {
   type DomainRef,
   type ManifestHash,
   type ProtocolId,
+  compareProtocolIds,
 } from './primitives.js';
 import { requireStrategyTemplateDefinition } from './strategy-template-program.js';
 
@@ -252,7 +253,7 @@ function checkedDomains(values: readonly DomainRef[], context: string): readonly
   const checked = values.map((value, index) => {
     object(value, `${context}[${index}]`);
     return domainRef(value.domainId, value.domainManifestVersion, value.domainManifestHash, `${context}[${index}]`);
-  }).sort((left, right) => left.domainId.localeCompare(right.domainId));
+  }).sort((left, right) => compareProtocolIds(left.domainId, right.domainId));
   for (let index = 1; index < checked.length; index += 1) {
     if (checked[index - 1]!.domainId === checked[index]!.domainId) throw new DuplicateElementError(context, `domain ${checked[index]!.domainId} appears twice`);
   }
@@ -278,7 +279,7 @@ function checkedMetrics(
       scale: Number(checkedUnsigned(value.scale, U8_BITS, `${at}.scale`)),
       unitId: protocolId(value.unitId, `${at}.unitId`),
     });
-  }).sort((left, right) => left.metricId.localeCompare(right.metricId));
+  }).sort((left, right) => compareProtocolIds(left.metricId, right.metricId));
   for (let index = 1; index < checked.length; index += 1) {
     if (checked[index - 1]!.metricId === checked[index]!.metricId) throw new DuplicateElementError(context, `metric ${checked[index]!.metricId} appears twice`);
   }
@@ -313,7 +314,7 @@ function checkedLegEconomics(
       builderFee: quoteAmount(value.builderFee, quoteAsset, `${at}.builderFee`, true),
       residualValue: quoteAmount(value.residualValue, quoteAsset, `${at}.residualValue`, true),
     });
-  }).sort((left, right) => left.legId.localeCompare(right.legId));
+  }).sort((left, right) => compareProtocolIds(left.legId, right.legId));
   for (let index = 1; index < checked.length; index += 1) {
     if (checked[index - 1]!.legId === checked[index]!.legId) throw new DuplicateElementError(context, `leg ${checked[index]!.legId} appears twice`);
   }

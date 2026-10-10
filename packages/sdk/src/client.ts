@@ -1,4 +1,5 @@
 import {
+  compareProtocolIds,
   crossDomainPlanHash,
   manualRecoveryApprovalHash,
   manualRecoveryIncidentHash,
@@ -1471,14 +1472,14 @@ export async function verifyStrategyQuoteProof(expectedQuoteHash: string, value:
   const graphDomains = graph.legs.reduce<DomainRef[]>((domains, leg) => {
     if (!domains.some((domain) => sameDomainRef(domain, leg.domain))) domains.push(leg.domain);
     return domains;
-  }, []).sort((left, right) => left.domainId.localeCompare(right.domainId));
+  }, []).sort((left, right) => compareProtocolIds(left.domainId, right.domainId));
   requireStrategyProof(graphDomains.length === quote.domains.length
     && graphDomains.every((domain, index) => sameDomainRef(domain, quote.domains[index]!)),
   'strategy quote domains do not match the graph');
 
-  const graphLegs = [...graph.legs].sort((left, right) => left.legId.localeCompare(right.legId));
-  const quoteLegs = [...quote.legEconomics].sort((left, right) => left.legId.localeCompare(right.legId));
-  const routeLegs = [...route.legs].sort((left, right) => left.legId.localeCompare(right.legId));
+  const graphLegs = [...graph.legs].sort((left, right) => compareProtocolIds(left.legId, right.legId));
+  const quoteLegs = [...quote.legEconomics].sort((left, right) => compareProtocolIds(left.legId, right.legId));
+  const routeLegs = [...route.legs].sort((left, right) => compareProtocolIds(left.legId, right.legId));
   requireStrategyProof(graphLegs.length === quoteLegs.length && graphLegs.length === routeLegs.length,
     'strategy proof leg counts differ');
   for (let index = 0; index < graphLegs.length; index += 1) {
@@ -1508,7 +1509,7 @@ export async function verifyStrategyQuoteProof(expectedQuoteHash: string, value:
   requireStrategyProof(quote.legEconomics.reduce((sum, leg) => sum + leg.residualValue.atoms, 0n) === quote.totalResidualValue.atoms,
     'strategy quote residual total is inconsistent');
 
-  const plans = [...route.domainPlans].sort((left, right) => left.domain.domainId.localeCompare(right.domain.domainId));
+  const plans = [...route.domainPlans].sort((left, right) => compareProtocolIds(left.domain.domainId, right.domain.domainId));
   requireStrategyProof(plans.length === graphDomains.length, 'strategy route domain plan count differs from the graph');
   for (let index = 0; index < graphDomains.length; index += 1) {
     const domain = graphDomains[index]!;
@@ -1583,9 +1584,9 @@ export async function verifyStrategyReceiptProof(expectedReceiptHash: string, va
     && receipt.domains.every((domain, index) => sameDomainRef(domain, quoteProof.quote.domains[index]!)),
   'strategy receipt domains differ from the selected quote');
 
-  const graphLegs = [...quoteProof.graph.legs].sort((left, right) => left.legId.localeCompare(right.legId));
-  const quoteLegs = [...quoteProof.quote.legEconomics].sort((left, right) => left.legId.localeCompare(right.legId));
-  const outcomes = [...receipt.legOutcomes].sort((left, right) => left.legId.localeCompare(right.legId));
+  const graphLegs = [...quoteProof.graph.legs].sort((left, right) => compareProtocolIds(left.legId, right.legId));
+  const quoteLegs = [...quoteProof.quote.legEconomics].sort((left, right) => compareProtocolIds(left.legId, right.legId));
+  const outcomes = [...receipt.legOutcomes].sort((left, right) => compareProtocolIds(left.legId, right.legId));
   requireStrategyProof(graphLegs.length === outcomes.length, 'strategy receipt does not report every graph leg');
   for (let index = 0; index < graphLegs.length; index += 1) {
     const graphLeg = graphLegs[index]!;
@@ -1865,8 +1866,8 @@ function verifyRouteAgainstGraph(
     && route.routeExpiryUnit === graph.expiryUnit
     && route.routeExpiryValue === routeExpiryValue,
   'compiled strategy route header differs from the request');
-  const graphLegs = [...graph.legs].sort((left, right) => left.legId.localeCompare(right.legId));
-  const routeLegs = [...route.legs].sort((left, right) => left.legId.localeCompare(right.legId));
+  const graphLegs = [...graph.legs].sort((left, right) => compareProtocolIds(left.legId, right.legId));
+  const routeLegs = [...route.legs].sort((left, right) => compareProtocolIds(left.legId, right.legId));
   requireStrategyProof(graphLegs.length === routeLegs.length, 'compiled strategy route leg count differs from the graph');
   for (let index = 0; index < graphLegs.length; index += 1) {
     const graphLeg = graphLegs[index]!;
@@ -1884,8 +1885,8 @@ function verifyRouteAgainstGraph(
   const graphDomains = graph.legs.reduce<DomainRef[]>((domains, leg) => {
     if (!domains.some((domain) => sameDomainRef(domain, leg.domain))) domains.push(leg.domain);
     return domains;
-  }, []).sort((left, right) => left.domainId.localeCompare(right.domainId));
-  const plans = [...route.domainPlans].sort((left, right) => left.domain.domainId.localeCompare(right.domain.domainId));
+  }, []).sort((left, right) => compareProtocolIds(left.domainId, right.domainId));
+  const plans = [...route.domainPlans].sort((left, right) => compareProtocolIds(left.domain.domainId, right.domain.domainId));
   requireStrategyProof(plans.length === graphDomains.length, 'compiled strategy route domain plan count differs from the graph');
   for (let index = 0; index < graphDomains.length; index += 1) {
     const domain = graphDomains[index]!;
@@ -1991,8 +1992,8 @@ async function verifyRequestedStrategyQuote(
   const routeLegIds = route.legs.map((leg) => leg.legId).sort();
   requireStrategyProof(quoteLegIds.length === routeLegIds.length && quoteLegIds.every((legId, index) => legId === routeLegIds[index]),
     'requested strategy quote legs differ from the route');
-  const domains = [...quote.domains].sort((left, right) => left.domainId.localeCompare(right.domainId));
-  const plans = [...route.domainPlans].sort((left, right) => left.domain.domainId.localeCompare(right.domain.domainId));
+  const domains = [...quote.domains].sort((left, right) => compareProtocolIds(left.domainId, right.domainId));
+  const plans = [...route.domainPlans].sort((left, right) => compareProtocolIds(left.domain.domainId, right.domain.domainId));
   requireStrategyProof(domains.length === plans.length && domains.every((domain, index) => sameDomainRef(domain, plans[index]!.domain)),
     'requested strategy quote domains differ from the route');
   for (const plan of plans) {

@@ -26,6 +26,7 @@ import {
   protocolId,
   type AssetRef,
   type ProtocolId,
+  compareProtocolIds,
 } from './primitives.js';
 
 export const PORTFOLIO_OPTIMIZATION_POLICY_VERSION = 1;
@@ -439,7 +440,7 @@ function candidateInputHash(
     const shocks = scenario.priceShocksBps.map((shock, shockIndex) => Object.freeze({
       underlyingId: protocolId(shock.underlyingId, `optimizePortfolio.candidate.stressScenarios[${index}].priceShocksBps[${shockIndex}].underlyingId`),
       shockBps: checkedSigned(shock.shockBps, U64_BITS, `optimizePortfolio.candidate.stressScenarios[${index}].priceShocksBps[${shockIndex}].shockBps`),
-    })).sort((left, right) => left.underlyingId.localeCompare(right.underlyingId));
+    })).sort((left, right) => compareProtocolIds(left.underlyingId, right.underlyingId));
     if (new Set(shocks.map((shock) => shock.underlyingId)).size !== shocks.length) {
       throw new DuplicateElementError('optimizePortfolio.candidate.stressScenarios.priceShocksBps', 'underlying appears twice');
     }
@@ -455,7 +456,7 @@ function candidateInputHash(
       closeCostMultiplierBps: unsigned(scenario.closeCostMultiplierBps, U64_BITS, `optimizePortfolio.candidate.stressScenarios[${index}].closeCostMultiplierBps`),
       failed: Object.freeze(failed),
     });
-  }).sort((left, right) => left.scenarioId.localeCompare(right.scenarioId));
+  }).sort((left, right) => compareProtocolIds(left.scenarioId, right.scenarioId));
   if (new Set(scenarios.map((scenario) => scenario.scenarioId)).size !== scenarios.length) {
     throw new DuplicateElementError('optimizePortfolio.candidate.stressScenarios', 'scenario id appears twice');
   }
@@ -694,14 +695,14 @@ export function optimizePortfolio(
   const candidates = candidateInputs.map((candidate) => candidateDecision(candidate, policy, decisionAtMs));
   const ids = candidates.map((candidate) => candidate.candidateId);
   if (new Set(ids).size !== ids.length) throw new DuplicateElementError('optimizePortfolio.candidates', 'candidate id appears twice');
-  const orderedCandidates = Object.freeze([...candidates].sort((left, right) => left.candidateId.localeCompare(right.candidateId)));
+  const orderedCandidates = Object.freeze([...candidates].sort((left, right) => compareProtocolIds(left.candidateId, right.candidateId)));
   const ranked = candidates.filter((candidate) => candidate.eligible).sort((left, right) => {
     for (const metric of policy.objectivePriority) {
       const result = compareMetric(metric, left, right);
       if (result !== 0) return result;
     }
     const routeOrder = compareBytes(left.routeHash, right.routeHash);
-    return routeOrder !== 0 ? routeOrder : left.candidateId.localeCompare(right.candidateId);
+    return routeOrder !== 0 ? routeOrder : compareProtocolIds(left.candidateId, right.candidateId);
   });
   const selectedCandidateId = ranked[0]?.candidateId;
   const policyHash = portfolioOptimizationPolicyHash(policyInput);

@@ -42,6 +42,7 @@ import {
   type AssetRef,
   type ManifestHash,
   type ProtocolId,
+  compareProtocolIds,
 } from './primitives.js';
 import { requireStrategyTemplateDefinition } from './strategy-template-program.js';
 
@@ -208,7 +209,7 @@ function checkedMetricLimits(
       scale: Number(checkedUnsigned(value.scale, U8_BITS, `${at}.scale`)),
       unitId: protocolId(value.unitId, `${at}.unitId`),
     });
-  }).sort((left, right) => left.metricId.localeCompare(right.metricId));
+  }).sort((left, right) => compareProtocolIds(left.metricId, right.metricId));
   for (let index = 1; index < checked.length; index += 1) {
     if (checked[index - 1]!.metricId === checked[index]!.metricId) {
       throw new DuplicateElementError(context, `metric ${checked[index]!.metricId} appears twice`);

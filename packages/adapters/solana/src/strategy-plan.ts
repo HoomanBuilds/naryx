@@ -1,6 +1,7 @@
 import type { CompiledStrategyExecution } from '@naryx/adapter-core';
 import {
   bytesEqual,
+  compareProtocolIds,
   strategyPackageOrderHash,
   strategyPackageQuoteHash,
   typedStrategyRouteHash,
@@ -167,7 +168,7 @@ export function compileSolanaStrategyPlan(input: Readonly<{
       computeUnitLimit: materialized.computeUnitLimit,
       instruction: materialized.instruction,
     });
-  }).sort((left, right) => left.stage - right.stage || left.legId.localeCompare(right.legId));
+  }).sort((left, right) => left.stage - right.stage || compareProtocolIds(left.legId, right.legId));
   const totalComputeUnitLimit = records.reduce((sum, value) => sum + value.computeUnitLimit, 0);
   requireCondition(totalComputeUnitLimit <= input.maximumTransactionComputeUnits, 'strategy instruction plan exceeds the transaction compute limit');
   const stageIds = [...new Set(records.map((record) => record.stage))];

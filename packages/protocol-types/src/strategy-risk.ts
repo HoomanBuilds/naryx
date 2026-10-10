@@ -12,6 +12,7 @@ import {
   protocolId,
   type AssetRef,
   type ProtocolId,
+  compareProtocolIds,
 } from './primitives.js';
 
 export const STRATEGY_RISK_SNAPSHOT_VERSION = 1;
@@ -114,7 +115,7 @@ function dependencies(values: readonly StrategyRiskDependencyInput[], context: s
     enumDiscriminant(STRATEGY_RISK_DEPENDENCY_KIND, value.kind, `${at}.kind`);
     return Object.freeze({ kind: value.kind, dependencyId: protocolId(value.dependencyId, `${at}.dependencyId`) });
   }).sort((left, right) => STRATEGY_RISK_DEPENDENCY_KIND[left.kind as StrategyRiskDependencyKind] - STRATEGY_RISK_DEPENDENCY_KIND[right.kind as StrategyRiskDependencyKind]
-    || left.dependencyId.localeCompare(right.dependencyId));
+    || compareProtocolIds(left.dependencyId, right.dependencyId));
   for (let index = 1; index < checked.length; index += 1) {
     const previous = checked[index - 1]!;
     const current = checked[index]!;
@@ -263,7 +264,7 @@ export function aggregateStrategyRisk(inputs: readonly StrategyRiskSnapshotInput
     maximumLossQuoteAtoms: checked.reduce((sum, value) => sum + value.maximumLossQuoteAtoms, 0n),
     closeCostQuoteAtoms: checked.reduce((sum, value) => sum + value.closeCostQuoteAtoms, 0n),
     maximumTimeToUnwindMs: checked.reduce((maximum, value) => value.timeToUnwindMs > maximum ? value.timeToUnwindMs : maximum, 0n),
-    byUnderlying: Object.freeze([...byUnderlying.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([underlyingId, value]) => Object.freeze({
+    byUnderlying: Object.freeze([...byUnderlying.entries()].sort(([left], [right]) => compareProtocolIds(left, right)).map(([underlyingId, value]) => Object.freeze({
       underlyingId: protocolId(underlyingId),
       grossNotionalQuoteAtoms: value.gross,
       deltaQuoteAtomsForFullMove: value.delta,
@@ -272,7 +273,7 @@ export function aggregateStrategyRisk(inputs: readonly StrategyRiskSnapshotInput
       thetaQuoteAtomsPerDay: value.theta,
     }))),
     dependencyConcentrations: Object.freeze([...byDependency.values()].sort((left, right) => STRATEGY_RISK_DEPENDENCY_KIND[left.kind] - STRATEGY_RISK_DEPENDENCY_KIND[right.kind]
-      || left.dependencyId.localeCompare(right.dependencyId)).map((value) => Object.freeze({
+      || compareProtocolIds(left.dependencyId, right.dependencyId)).map((value) => Object.freeze({
       kind: value.kind,
       dependencyId: value.dependencyId,
       grossNotionalQuoteAtoms: value.gross,

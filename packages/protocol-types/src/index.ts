@@ -156,6 +156,7 @@ export {
   manifestHash,
   encodeManifestHash,
   protocolId,
+  compareProtocolIds,
   encodeProtocolId,
   domainId,
   assetId,

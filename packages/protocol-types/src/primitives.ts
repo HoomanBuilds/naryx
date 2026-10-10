@@ -84,6 +84,11 @@ export function protocolId(value: string, context = 'protocolId'): ProtocolId {
   return value as ProtocolId;
 }
 
+// Canonical ordering for hashed identifier sets: byte order, never the host locale's collation.
+export function compareProtocolIds(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export function encodeProtocolId(
   writer: CanonicalWriter,
   value: ProtocolId,

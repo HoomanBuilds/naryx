@@ -5,7 +5,7 @@ import type { TerminalState } from './terminal-outcome.js';
 import { DuplicateElementError, MalformedInputError } from './errors.js';
 import { domainHash, HASH_DOMAIN } from './hashing.js';
 import { commitmentHash, encodeCommitmentHash, type CommitmentHash } from './package-order-primitives.js';
-import { domainRef, encodeDomainRef, encodeProtocolId, protocolId, type DomainRef, type ProtocolId } from './primitives.js';
+import { compareProtocolIds, domainRef, encodeDomainRef, encodeProtocolId, protocolId, type DomainRef, type ProtocolId } from './primitives.js';
 import { bytesEqual, toHex } from './bytes.js';
 
 export const CROSS_DOMAIN_PLAN_VERSION = 1;
@@ -286,7 +286,7 @@ export function crossDomainExecutionBundle(
   }
   const compensations = input.compensations
     .map((value, index) => crossDomainCompensationAction(value, `${context}.compensations[${index}]`))
-    .sort((left, right) => left.domain.domainId.localeCompare(right.domain.domainId));
+    .sort((left, right) => compareProtocolIds(left.domain.domainId, right.domain.domainId));
   for (const leg of plan.legs) {
     const matches = compensations.filter((action) => sameDomain(action.domain, leg.domain));
     if (matches.length !== 1) throw new MalformedInputError(`${context}.compensations`, `domain ${leg.domain.domainId} must have exactly one action`);
