@@ -670,6 +670,34 @@ export {
 } from './cross-batch-clearing.js';
 
 export {
+  NATIVE_CLEARING_POLICY_VERSION,
+  NATIVE_CLEARING_DOMAIN_STATE_VERSION,
+  NATIVE_CLEARING_ACCOUNT_VERSION,
+  NATIVE_CLEARING_MATCH_VERSION,
+  NATIVE_CLEARING_DEFAULT_VERSION,
+  NATIVE_CLEARING_ACCOUNT_STATUS,
+  nativeClearingPolicy,
+  nativeClearingDomainState,
+  nativeClearingAccount,
+  nativeClearingAccountHealth,
+  adjustNativeClearingCollateral,
+  applyNativeClearingMatch,
+  resolveNativeClearingDefault,
+  type NativeClearingAccountStatus,
+  type NativeClearingPolicyInput,
+  type NativeClearingPolicy,
+  type NativeClearingDomainStateInput,
+  type NativeClearingDomainState,
+  type NativeClearingAccountInput,
+  type NativeClearingAccount,
+  type NativeClearingAccountHealth,
+  type NativeClearingMatchReceipt,
+  type NativeClearingMatchResult,
+  type NativeClearingDefaultResolution,
+  type NativeClearingDefaultResult,
+} from './native-package-clearing.js';
+
+export {
   NETTING_ALLOCATION_SETTLEMENT_EVIDENCE_VERSION,
   NETTING_SETTLEMENT_COMPLETION_RECEIPT_VERSION,
   NETTING_SETTLEMENT_STATE_KIND,
