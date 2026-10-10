@@ -680,6 +680,7 @@ export {
   nativeClearingDomainState,
   nativeClearingAccount,
   nativeClearingAccountHealth,
+  adjustNativeClearingRecoveryReserve,
   adjustNativeClearingCollateral,
   applyNativeClearingMatch,
   resolveNativeClearingDefault,

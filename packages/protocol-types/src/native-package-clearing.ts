@@ -308,6 +308,27 @@ export function nativeClearingDomainState(
   return Object.freeze({ ...payload, stateHash });
 }
 
+export function adjustNativeClearingRecoveryReserve(
+  stateInput: NativeClearingDomainStateInput | NativeClearingDomainState,
+  policyInput: NativeClearingPolicyInput | NativeClearingPolicy,
+  reserveDeltaQuoteAtoms: bigint,
+): NativeClearingDomainState {
+  const policy = nativeClearingPolicy(policyInput);
+  const state = nativeClearingDomainState(stateInput, policy);
+  const delta = signed(reserveDeltaQuoteAtoms, I256_BITS, 'adjustNativeClearingRecoveryReserve.reserveDeltaQuoteAtoms');
+  const reserve = state.recoveryReserveQuoteAtoms + delta;
+  if (reserve < 0n) {
+    throw new MalformedInputError('adjustNativeClearingRecoveryReserve.reserveDeltaQuoteAtoms', 'withdrawal exceeds the recovery reserve');
+  }
+  return nativeClearingDomainState({
+    version: state.version,
+    policyHash: state.policyHash,
+    openInterestAtoms: state.openInterestAtoms,
+    recoveryReserveQuoteAtoms: reserve,
+    sequence: state.sequence + 1n,
+  }, policy);
+}
+
 function accountPayload(input: Omit<NativeClearingAccount, 'accountHash'>): Uint8Array {
   return canonicalBytes((writer) => {
     writer.writeU32(input.version, 'version');

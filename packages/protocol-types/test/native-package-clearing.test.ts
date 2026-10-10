@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   adjustNativeClearingCollateral,
+  adjustNativeClearingRecoveryReserve,
   applyNativeClearingMatch,
   assetRef,
   nativeClearingAccount,
@@ -96,6 +97,21 @@ test('a bilateral package match conserves positions and quote value', () => {
   assert.equal(result.shortAccount.cashBalanceQuoteAtoms, 2_000n);
   assert.equal(result.domainState.openInterestAtoms, 20n);
   assert.notDeepEqual(result.receipt.receiptHash, domain.stateHash);
+});
+
+test('recovery reserve funding is sequenced and cannot over-withdraw', () => {
+  const policy = nativeClearingPolicy(policyInput());
+  const state = nativeClearingDomainState({
+    version: 1,
+    policyHash: policy.policyHash,
+    openInterestAtoms: 0n,
+    recoveryReserveQuoteAtoms: 100n,
+    sequence: 0n,
+  }, policy);
+  const funded = adjustNativeClearingRecoveryReserve(state, policy, 50n);
+  assert.equal(funded.recoveryReserveQuoteAtoms, 150n);
+  assert.equal(funded.sequence, 1n);
+  assert.throws(() => adjustNativeClearingRecoveryReserve(funded, policy, -151n), /exceeds the recovery reserve/);
 });
 
 test('risk-increasing matching and collateral withdrawal require initial margin', () => {
