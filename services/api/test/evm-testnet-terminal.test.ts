@@ -1512,6 +1512,31 @@ test("durable Base outcomes keep what the chain proved for each bound transactio
     assert.deepEqual(store.attemptOutcome(attemptId), {
       state: "FINALIZED", transactionHash: second.transactionHash, blockNumber: "130", receiptHash: hashHex(60),
     });
+
+    // An unproven transaction binds only an unbound key; a proven one may replace it until an outcome is FINALIZED.
+    ports = portsFor(store);
+    const third = { attemptId, idempotencyKey: "idem-base-outcome-0003", transactionHash: hashHex(64) };
+    await ports.preparation!.prepare({ attemptId, idempotencyKey: third.idempotencyKey, traderSignature });
+    await ports.atomicObservation!.observe(third);
+    assert.equal(store.get(third.idempotencyKey)?.boundTransactionHash, third.transactionHash);
+    assert.throws(
+      () => store.bindTransactionHash(third.idempotencyKey, hashHex(65)),
+      (error: unknown) => error instanceof PreparedEvmTestnetAtomicStoreError && error.code === "TRANSACTION_CONFLICT",
+    );
+    store.bindTransactionHash(third.idempotencyKey, hashHex(65), true);
+    assert.equal(store.get(third.idempotencyKey)?.boundTransactionHash, hashHex(65));
+    assert.deepEqual(store.pendingObservations(10), [{ ...third, transactionHash: hashHex(65) }]);
+    assert.throws(
+      () => store.bindTransactionHash(second.idempotencyKey, hashHex(66), true),
+      (error: unknown) => error instanceof PreparedEvmTestnetAtomicStoreError && error.code === "TRANSACTION_CONFLICT",
+    );
+    // A transaction the chain proves is not this package never binds.
+    const fourth = { attemptId, idempotencyKey: "idem-base-outcome-0004", transactionHash: hashHex(67) };
+    await ports.preparation!.prepare({ attemptId, idempotencyKey: fourth.idempotencyKey, traderSignature });
+    receipt = { status: "success", blockNumber: 120n, logs: [] };
+    assert.equal((await ports.atomicObservation!.observe(fourth)).lifecycle, "EVIDENCE_MISMATCH");
+    assert.equal(store.get(fourth.idempotencyKey)?.boundTransactionHash, undefined);
+    receipt = null;
     const raw = new Database(dbPath);
     try {
       assert.throws(

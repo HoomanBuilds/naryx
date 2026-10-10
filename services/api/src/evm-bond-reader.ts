@@ -9,6 +9,8 @@ type Fetch = (url: string, init: { method: string; headers: Record<string, strin
 export interface EvmBondReaderOptions {
   /** A read-only https (or loopback) JSON-RPC endpoint; the reader holds no key and sends nothing. */
   readonly rpcUrl: string;
+  /** The vault's chain; every read first checks that the endpoint serves it. */
+  readonly chainId: bigint;
   readonly vault: string;
   /** Registered solver ids by the EVM address that opened their bonds. */
   readonly solverByAddress: ReadonlyMap<string, string>;
@@ -18,26 +20,35 @@ export interface EvmBondReaderOptions {
 }
 
 /**
- * Reads a performance bond's live state from the vault with one `eth_call` and presents it as the
- * kernel's bond ledger. Paid and still-contestable claims are one encumbrance, which is exactly
- * what the backing check needs. An unknown bond, solver, or asset reads as no bond.
+ * Reads a performance bond's finalized state from the vault with one `eth_call`, on an endpoint whose
+ * `eth_chainId` matches the configured chain, and presents it as the kernel's bond ledger. Paid and
+ * still-contestable claims are one encumbrance, which is exactly what the backing check needs. An
+ * unknown bond, solver, or asset reads as no bond.
  */
 export function createEvmBondReader(options: EvmBondReaderOptions): (bondIdHex: string) => Promise<PerformanceBondLedger | undefined> {
   if (!/^(https:\/\/|http:\/\/(127\.0\.0\.1|localhost)(:\d{1,5})?)/.test(options.rpcUrl)) throw new Error("RPC URLs must be https or loopback http");
   const vault = options.vault.toLowerCase();
   if (!/^0x[0-9a-f]{40}$/.test(vault)) throw new Error("the vault must be a 20-byte address");
+  if (typeof options.chainId !== "bigint" || options.chainId <= 0n) throw new Error("the chain id must be a positive integer");
   const fetcher = options.fetch ?? (fetch as unknown as Fetch);
-  return async (bondIdHex) => {
-    if (!/^[0-9a-f]{64}$/.test(bondIdHex)) return undefined;
+  const rpc = async (method: string, params: readonly unknown[]): Promise<unknown> => {
     const response = await fetcher(options.rpcUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: vault, data: `${BOND_SELECTOR}${bondIdHex}` }, "latest"] }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
     });
-    if (!response.ok) throw new Error(`eth_call answered HTTP ${response.status}`);
-    const body = (await response.json()) as { result?: unknown; error?: unknown };
-    if (typeof body.result !== "string" || !/^0x([0-9a-f]{64})*$/i.test(body.result) || (body.result.length - 2) / 64 !== WORDS) throw new Error("bond read is malformed");
-    const data = body.result.toLowerCase();
+    if (!response.ok) throw new Error(`${method} answered HTTP ${response.status}`);
+    return ((await response.json()) as { result?: unknown }).result;
+  };
+  return async (bondIdHex) => {
+    if (!/^[0-9a-f]{64}$/.test(bondIdHex)) return undefined;
+    const chainId = await rpc("eth_chainId", []);
+    if (typeof chainId !== "string" || !/^0x[0-9a-f]{1,16}$/i.test(chainId) || BigInt(chainId) !== options.chainId) {
+      throw new Error("the bond endpoint serves another chain");
+    }
+    const result = await rpc("eth_call", [{ to: vault, data: `${BOND_SELECTOR}${bondIdHex}` }, "finalized"]);
+    if (typeof result !== "string" || !/^0x([0-9a-f]{64})*$/i.test(result) || (result.length - 2) / 64 !== WORDS) throw new Error("bond read is malformed");
+    const data = result.toLowerCase();
     const word = (index: number) => BigInt(`0x${data.slice(2 + index * 64, 2 + (index + 1) * 64)}`);
     const address = (index: number) => `0x${data.slice(2 + index * 64 + 24, 2 + (index + 1) * 64)}`;
     const solver = options.solverByAddress.get(address(0));

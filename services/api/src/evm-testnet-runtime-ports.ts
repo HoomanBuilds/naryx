@@ -388,7 +388,11 @@ export interface PreparedEvmTestnetAtomicStore {
     traderSignature: string,
     preparation: EvmTestnetAtomicPreparationDto,
   ): PreparedEvmTestnetAtomicRecord;
-  bindTransactionHash(idempotencyKey: string, transactionHash: string): PreparedEvmTestnetAtomicRecord;
+  /**
+   * Binds the broadcast transaction. With `replaceUnfinalized`, a store that records outcomes may
+   * replace a bound transaction whose outcome is not FINALIZED; a store that cannot prove that never replaces.
+   */
+  bindTransactionHash(idempotencyKey: string, transactionHash: string, replaceUnfinalized?: boolean): PreparedEvmTestnetAtomicRecord;
   /** A durable store keeps each observation's outcome beside the transaction it binds. */
   recordOutcome?(outcome: EvmTestnetAtomicOutcome): void;
 }
@@ -2101,7 +2105,6 @@ export function createEvmTestnetTerminalPorts(options: EvmTestnetRuntimePortsOpt
           quoteHash: prepared.preparation.quoteHash,
           routeHash: prepared.preparation.routeHash,
         });
-        store.bindTransactionHash(idempotencyKey, transactionHash);
         const binding = atomicContext.atomicBinding;
         const observed = await observeEvmAtomicPackage(
           atomicReadPort,
@@ -2124,6 +2127,15 @@ export function createEvmTestnetTerminalPorts(options: EvmTestnetRuntimePortsOpt
           },
           { attemptId, idempotencyKey, transactionHash },
           domains.order,
+        );
+        // A transaction proven to carry this exact package's verifier receipt may replace an
+        // unfinalized binding. One the chain has not shown yet binds only an unbound attempt, so the
+        // sweep can still observe it, and one proven not to be this package never binds.
+        if (observation.lifecycle === "EVIDENCE_MISMATCH") return observation;
+        store.bindTransactionHash(
+          idempotencyKey,
+          transactionHash,
+          observation.lifecycle === "SUBMITTED" || observation.lifecycle === "CONFIRMED" || observation.lifecycle === "FINALIZED",
         );
         if (store.recordOutcome !== undefined) {
           const state = await atomicOutcomeState(observation, atomicContext.admission);

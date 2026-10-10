@@ -13,14 +13,19 @@ test("the bond reader turns the vault's bond state into the kernel ledger the ba
   const state = (encumbered: bigint, released: boolean) =>
     `0x${address(SOLVER)}${address(TOKEN)}${word(1_000n)}${word(600n)}${word(encumbered)}${word(0n)}${word(100n)}${word(5_000n)}${word(0)}${word(0b10)}${word(released ? 1 : 0)}`;
   let result = state(0n, false);
+  let chainId = "0x14a34";
   const reader = createEvmBondReader({
     rpcUrl: "http://127.0.0.1:8545",
+    chainId: 84_532n,
     vault: `0x${"cd".repeat(20)}`,
     solverByAddress: new Map([[SOLVER, "solver-a"]]),
     assetByAddress: new Map([[TOKEN, assetRef("usdc", "33".repeat(32), 6)]]),
     fetch: async (_url, init) => {
+      const request = JSON.parse(init.body) as { method: string; params: [{ data: string }, string] };
+      if (request.method === "eth_chainId") return { ok: true, status: 200, json: async () => ({ result: chainId }) };
       calls += 1;
-      assert.match(JSON.parse(init.body).params[0].data, /^0x8b3ee973(b0){32}$/);
+      assert.match(request.params[0].data, /^0x8b3ee973(b0){32}$/);
+      assert.equal(request.params[1], "finalized");
       return { ok: true, status: 200, json: async () => ({ result }) };
     },
   });
@@ -34,5 +39,8 @@ test("the bond reader turns the vault's bond state into the kernel ledger the ba
   assert.deepEqual(verifyQuoteBond(quote, (await reader("b0".repeat(32)))!, "EVM_UNIX_SECONDS"), { backed: false, violations: ["BOND_RELEASED"] });
   result = `0x${word(0).repeat(11)}`;
   assert.equal(await reader("b0".repeat(32)), undefined, "an unopened bond reads as none");
+  assert.equal(calls, 4);
+  chainId = "0x1";
+  await assert.rejects(reader("b0".repeat(32)), /another chain/);
   assert.equal(calls, 4);
 });

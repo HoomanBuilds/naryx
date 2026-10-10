@@ -27,13 +27,6 @@ CREATE TABLE IF NOT EXISTS evm_prepared_atomic_attempts (
 ) STRICT;
 CREATE TRIGGER IF NOT EXISTS reject_evm_prepared_atomic_delete BEFORE DELETE ON evm_prepared_atomic_attempts
 BEGIN SELECT RAISE(ABORT, 'prepared EVM attempts are durable'); END;
-CREATE TRIGGER IF NOT EXISTS reject_evm_prepared_atomic_rewrite BEFORE UPDATE ON evm_prepared_atomic_attempts
-WHEN NEW.idempotency_key IS NOT OLD.idempotency_key
-  OR NEW.attempt_id IS NOT OLD.attempt_id
-  OR NEW.trader_signature IS NOT OLD.trader_signature
-  OR NEW.preparation_json IS NOT OLD.preparation_json
-  OR OLD.bound_transaction_hash IS NOT NULL
-BEGIN SELECT RAISE(ABORT, 'prepared EVM attempts bind a transaction once'); END;
 CREATE TABLE IF NOT EXISTS evm_atomic_attempt_outcomes (
   idempotency_key TEXT PRIMARY KEY REFERENCES evm_prepared_atomic_attempts(idempotency_key),
   attempt_id TEXT NOT NULL,
@@ -53,12 +46,26 @@ WHEN NOT EXISTS (
 BEGIN SELECT RAISE(ABORT, 'EVM attempt outcomes record only the bound transaction'); END;
 CREATE TRIGGER IF NOT EXISTS reject_evm_atomic_outcome_delete BEFORE DELETE ON evm_atomic_attempt_outcomes
 BEGIN SELECT RAISE(ABORT, 'EVM attempt outcomes are durable'); END;
-CREATE TRIGGER IF NOT EXISTS reject_evm_atomic_outcome_rewrite BEFORE UPDATE ON evm_atomic_attempt_outcomes
+DROP TRIGGER IF EXISTS reject_evm_prepared_atomic_rewrite;
+CREATE TRIGGER IF NOT EXISTS reject_evm_prepared_atomic_rebind BEFORE UPDATE ON evm_prepared_atomic_attempts
 WHEN NEW.idempotency_key IS NOT OLD.idempotency_key
   OR NEW.attempt_id IS NOT OLD.attempt_id
-  OR NEW.transaction_hash IS NOT OLD.transaction_hash
-  OR OLD.state IN ('REVERTED', 'FINALIZED')
-  OR (OLD.state = 'EXPIRED' AND NEW.state NOT IN ('REVERTED', 'FINALIZED'))
+  OR NEW.trader_signature IS NOT OLD.trader_signature
+  OR NEW.preparation_json IS NOT OLD.preparation_json
+  OR (OLD.bound_transaction_hash IS NOT NULL AND (NEW.bound_transaction_hash IS NULL OR EXISTS (
+    SELECT 1 FROM evm_atomic_attempt_outcomes WHERE idempotency_key = OLD.idempotency_key AND state = 'FINALIZED')))
+BEGIN SELECT RAISE(ABORT, 'prepared EVM attempts rebind a transaction only before a finalized outcome'); END;
+DROP TRIGGER IF EXISTS reject_evm_atomic_outcome_rewrite;
+CREATE TRIGGER IF NOT EXISTS reject_evm_atomic_outcome_change BEFORE UPDATE ON evm_atomic_attempt_outcomes
+WHEN NEW.idempotency_key IS NOT OLD.idempotency_key
+  OR NEW.attempt_id IS NOT OLD.attempt_id
+  OR OLD.state = 'FINALIZED'
+  OR (NEW.transaction_hash IS OLD.transaction_hash AND (OLD.state = 'REVERTED'
+    OR (OLD.state = 'EXPIRED' AND NEW.state NOT IN ('REVERTED', 'FINALIZED'))))
+  OR NOT EXISTS (
+    SELECT 1 FROM evm_prepared_atomic_attempts
+    WHERE idempotency_key = NEW.idempotency_key AND bound_transaction_hash = NEW.transaction_hash
+  )
 BEGIN SELECT RAISE(ABORT, 'a settled EVM attempt outcome never changes'); END;
 `;
 
@@ -167,9 +174,10 @@ function supersedes(recorded: EvmTestnetAtomicOutcomeState, next: EvmTestnetAtom
 /**
  * Durable prepared Base Sepolia attempts keyed by idempotency key. Each row is revalidated against
  * its request commitment on read, an idempotency key binds one attempt, trader signature, and
- * preparation forever, and a broadcast transaction hash binds once, so observation and replay
- * survive a restart and a conflicting reuse fails closed. Beside each bound transaction it keeps
- * what the latest observation proved about it, so a package's outcome survives a reload and a restart.
+ * preparation forever, and a bound transaction is replaced only on request and only before its
+ * outcome is FINALIZED, so observation and replay survive a restart and a conflicting reuse fails
+ * closed. Beside each bound transaction it keeps what the latest observation proved about it, so a
+ * package's outcome survives a reload and a restart.
  */
 export class SqlitePreparedEvmTestnetAtomicStore implements PreparedEvmTestnetAtomicStore {
   readonly #db: Database.Database;
@@ -177,6 +185,8 @@ export class SqlitePreparedEvmTestnetAtomicStore implements PreparedEvmTestnetAt
   readonly #select: Database.Statement;
   readonly #insert: Database.Statement;
   readonly #bind: Database.Statement;
+  readonly #rebind: Database.Statement;
+  readonly #resetOutcome: Database.Statement;
   readonly #selectOutcome: Database.Statement;
   readonly #upsertOutcome: Database.Statement;
   readonly #attemptOutcome: Database.Statement;
@@ -196,6 +206,14 @@ export class SqlitePreparedEvmTestnetAtomicStore implements PreparedEvmTestnetAt
     this.#bind = this.#db.prepare(
       "UPDATE evm_prepared_atomic_attempts SET bound_transaction_hash = ? WHERE idempotency_key = ? AND bound_transaction_hash IS NULL",
     );
+    this.#rebind = this.#db.prepare(
+      "UPDATE evm_prepared_atomic_attempts SET bound_transaction_hash = ? WHERE idempotency_key = ? AND bound_transaction_hash = ?",
+    );
+    this.#resetOutcome = this.#db.prepare(`
+      UPDATE evm_atomic_attempt_outcomes
+      SET transaction_hash = ?, state = 'PENDING', block_number = NULL, receipt_hash = NULL, observed_at_ms = ?
+      WHERE idempotency_key = ?
+    `);
     this.#selectOutcome = this.#db.prepare("SELECT * FROM evm_atomic_attempt_outcomes WHERE idempotency_key = ?");
     this.#upsertOutcome = this.#db.prepare(`
       INSERT INTO evm_atomic_attempt_outcomes
@@ -265,7 +283,7 @@ export class SqlitePreparedEvmTestnetAtomicStore implements PreparedEvmTestnetAt
     }).immediate();
   }
 
-  bindTransactionHash(idempotencyKey: string, transactionHash: string): PreparedEvmTestnetAtomicRecord {
+  bindTransactionHash(idempotencyKey: string, transactionHash: string, replaceUnfinalized = false): PreparedEvmTestnetAtomicRecord {
     return this.#db.transaction(() => {
       const existing = this.get(idempotencyKey);
       if (existing === undefined) {
@@ -275,13 +293,19 @@ export class SqlitePreparedEvmTestnetAtomicStore implements PreparedEvmTestnetAt
       validator.save(existing.attemptId, existing.idempotencyKey, existing.traderSignature, existing.preparation);
       const bound = validator.bindTransactionHash(idempotencyKey, transactionHash);
       if (existing.boundTransactionHash !== undefined) {
-        if (existing.boundTransactionHash !== bound.boundTransactionHash) {
+        if (existing.boundTransactionHash === bound.boundTransactionHash) return existing;
+        const outcome = this.#selectOutcome.get(idempotencyKey) as OutcomeRow | undefined;
+        if (!replaceUnfinalized || (outcome !== undefined && decodeOutcome(outcome).state === "FINALIZED")) {
           throw new PreparedEvmTestnetAtomicStoreError(
             "TRANSACTION_CONFLICT",
             `Idempotency key "${idempotencyKey}" is already bound to a different transaction.`,
           );
         }
-        return existing;
+        if (this.#rebind.run(bound.boundTransactionHash, idempotencyKey, existing.boundTransactionHash).changes !== 1) {
+          throw new PreparedEvmTestnetAtomicStoreError("TRANSACTION_CONFLICT", "Prepared EVM attempt transaction binding raced.");
+        }
+        if (outcome !== undefined) this.#resetOutcome.run(bound.boundTransactionHash, this.#clock(), idempotencyKey);
+        return bound;
       }
       if (this.#bind.run(bound.boundTransactionHash, idempotencyKey).changes !== 1) {
         throw new PreparedEvmTestnetAtomicStoreError("TRANSACTION_CONFLICT", "Prepared EVM attempt transaction binding raced.");
