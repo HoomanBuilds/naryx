@@ -67,6 +67,11 @@ import {
   type PackageBookAuthorizationChallenge,
   type StrategyOrderAuthorizationChallenge,
 } from "./generalized-strategy-preparation";
+import {
+  readSharedStrategyConfiguration,
+  StrategyPresetControls,
+  type StrategyConfiguration,
+} from "./strategy-presets";
 import styles from "./trading-terminal.module.css";
 
 /** How long a prepared Devnet review stays signable. */
@@ -1093,6 +1098,7 @@ function Ticket({
   strategyTemplates,
   selectedStrategyTemplateId,
   selectedLifecycleAction,
+  strategyPresetControls,
   privateApiBaseUrl,
   publicApiBaseUrl,
   packageMarketId,
@@ -1145,6 +1151,7 @@ function Ticket({
   strategyTemplates: readonly StrategyProgramTemplate[];
   selectedStrategyTemplateId: string;
   selectedLifecycleAction: string;
+  strategyPresetControls: ReactNode;
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
   packageMarketId: string | null;
@@ -1234,6 +1241,8 @@ function Ticket({
           ))}
         </div>
       ) : null}
+
+      {strategyPresetControls}
 
       <div className={styles.sideSwitch} role="group" aria-label="Package mode" data-mode={mode} hidden={!nativeCashFlow}>
         <span className={styles.sidePill} aria-hidden="true" />
@@ -1739,12 +1748,6 @@ export function TradingTerminal({
     setPreviewRejection(null);
   }
   const [mode, setMode] = useState<PackageMode>("entry");
-  // Portfolio's Exit button opens this page with ?mode=exit; the page is static, so read it once here.
-  useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("mode") !== "exit") return;
-    const timer = window.setTimeout(() => setMode("exit"), 0);
-    return () => window.clearTimeout(timer);
-  }, []);
   const [size, setSize] = useState(initialSnapshot.ticket.defaultSize);
   const [slippage, setSlippage] = useState<SlippageBps>(
     initialSnapshot.ticket.defaultSlippageBps,
@@ -1798,6 +1801,46 @@ export function TradingTerminal({
     });
     if (domains.length > 0 && !domains.includes(selectedDomain)) setSelectedDomain(domains[0] as DomainId);
   }, [resolvedPackageMarketId, selectedDomain, selectedPackageDomainIds, selectedPackageTemplateId, setSelectedDomain, strategyTemplates]);
+  const applyStrategyConfiguration = useCallback((configuration: StrategyConfiguration) => {
+    const template = strategyTemplates.find((candidate) => candidate.templateId === configuration.templateId);
+    if (template === undefined) return "That strategy template is not available in this environment.";
+    if (!template.actions.some((action) => action.action === configuration.lifecycleAction)) {
+      return "That lifecycle action is not available for this strategy.";
+    }
+    if (!snapshot.ticket.quoteModes.some((candidate) => candidate.id === configuration.quoteMode)) {
+      return "That quote mode is not available in this market.";
+    }
+    if (configuration.packageMarketId !== null && packageMarkets.length > 0
+      && !packageMarkets.some((market) => market.packageMarketId === configuration.packageMarketId)) {
+      return "That package market is not available in this environment.";
+    }
+    setSelectedDomain(configuration.domain);
+    setSelectedStrategyTemplateId(configuration.templateId);
+    setSelectedLifecycleAction(configuration.lifecycleAction);
+    setMode(configuration.mode);
+    setSize(configuration.size);
+    setSlippage(configuration.slippageBps);
+    setQuoteMode(configuration.quoteMode);
+    if (configuration.packageMarketId !== null) {
+      setActivePackageMarketId(configuration.packageMarketId);
+      window.localStorage.setItem(PACKAGE_MARKET_STORAGE_KEY, configuration.packageMarketId);
+    }
+    return null;
+  }, [packageMarkets, setSelectedDomain, snapshot.ticket.quoteModes, strategyTemplates]);
+  const sharedStrategyApplied = useRef(false);
+  useEffect(() => {
+    if (sharedStrategyApplied.current) return;
+    const shared = readSharedStrategyConfiguration(window.location.search);
+    if (shared === null) {
+      sharedStrategyApplied.current = true;
+      if (new URLSearchParams(window.location.search).get("mode") === "exit") setMode("exit");
+      return;
+    }
+    if (!strategyTemplates.some((template) => template.templateId === shared.templateId) && privateApiBaseUrl !== null) return;
+    if (shared.packageMarketId !== null && publicApiBaseUrl !== null && packageMarkets.length === 0) return;
+    sharedStrategyApplied.current = true;
+    applyStrategyConfiguration(shared);
+  }, [applyStrategyConfiguration, packageMarkets.length, privateApiBaseUrl, publicApiBaseUrl, strategyTemplates]);
   const { feed, status: publicFeedStatus } = usePublicMarketFeed(
     publicApiBaseUrl,
     resolvedPackageMarketId,
@@ -3522,6 +3565,23 @@ export function TradingTerminal({
             strategyTemplates={strategyTemplates}
             selectedStrategyTemplateId={selectedStrategyTemplateId}
             selectedLifecycleAction={selectedLifecycleAction}
+            strategyPresetControls={(
+              <StrategyPresetControls
+                key={`${selectedDomain}:${selectedStrategyTemplateId}`}
+                configuration={{
+                  domain: selectedDomain,
+                  templateId: selectedStrategyTemplateId,
+                  lifecycleAction: selectedLifecycleAction,
+                  mode,
+                  size,
+                  slippageBps: slippage,
+                  quoteMode,
+                  packageMarketId: resolvedPackageMarketId,
+                }}
+                defaultName={`${strategyTemplates.find((template) => template.templateId === selectedStrategyTemplateId)?.displayName ?? "Strategy"} on ${DOMAIN_META[selectedDomain].label}`}
+                onApply={applyStrategyConfiguration}
+              />
+            )}
             privateApiBaseUrl={privateApiBaseUrl}
             publicApiBaseUrl={publicApiBaseUrl}
             packageMarketId={resolvedPackageMarketId}

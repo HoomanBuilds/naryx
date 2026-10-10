@@ -356,6 +356,114 @@
   color: var(--up-strong);
 }
 
+.strategyPresets {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: color-mix(in srgb, var(--field) 55%, transparent);
+  padding: 8px;
+}
+
+.strategyPresets summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.strategyPresets summary span:last-child {
+  color: var(--yellow);
+  font-family: var(--font-geist-mono), monospace;
+}
+
+.strategyPresetCreate {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.strategyPresetCreate input,
+.strategyPresetCreate button,
+.strategyPresetList button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  background: var(--canvas);
+  color: var(--text-secondary);
+  padding: 0 8px;
+  font-size: 10.5px;
+}
+
+.strategyPresetCreate input {
+  min-width: 0;
+  color: var(--text-primary);
+}
+
+.strategyPresetCreate button,
+.strategyPresetList button {
+  cursor: pointer;
+}
+
+.strategyPresetCreate button:hover,
+.strategyPresetList button:hover {
+  border-color: var(--line-strong);
+  color: var(--text-primary);
+}
+
+.strategyPresetList {
+  display: grid;
+  gap: 5px;
+  max-height: 160px;
+  margin: 8px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.strategyPresetList li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 5px;
+}
+
+.strategyPresetList .strategyPresetName {
+  display: grid;
+  min-width: 0;
+  height: auto;
+  justify-items: start;
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.strategyPresetName strong,
+.strategyPresetName span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strategyPresetName span {
+  color: var(--text-dim);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9.5px;
+}
+
+.strategyPresets p,
+.strategyPresets output {
+  display: block;
+  margin: 7px 0 0;
+  color: var(--text-dim);
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+
+.strategyPresets output {
+  color: var(--yellow);
+}
+
 .lifecycleSelector {
   display: flex;
   gap: 4px;
