@@ -143,6 +143,8 @@ class FakeChain implements EvmNettingResidualChainPort {
   broadcastCount = 0;
   observations = 0;
   pendingOnce = false;
+  broadcastFails = false;
+  consumedElsewhere = false;
 
   async chainId(): Promise<number> { return 84_532; }
   async currentTimeSeconds(): Promise<bigint> { return 1_900_000_000n; }
@@ -161,12 +163,20 @@ class FakeChain implements EvmNettingResidualChainPort {
 
   async broadcast(_raw: Hex, expected: Hex): Promise<Hex> {
     this.broadcastCount += 1;
+    if (this.broadcastFails) throw new Error('nonce too low');
     return expected;
+  }
+
+  async nonceConsumedElsewhere(input: Parameters<EvmNettingResidualChainPort['nonceConsumedElsewhere']>[0]) {
+    assert.equal(input.transactionNonce, 7n);
+    return this.consumedElsewhere
+      ? Object.freeze({ observedAtSeconds: 1_900_000_005n, authoritativeEvidenceHash: hexId(32) })
+      : null;
   }
 
   async observe(input: Parameters<EvmNettingResidualChainPort['observe']>[0]) {
     this.observations += 1;
-    if (this.pendingOnce && this.observations === 1) return null;
+    if (this.consumedElsewhere || (this.pendingOnce && this.observations === 1)) return null;
     return Object.freeze({
       executionId: input.plan.executionId,
       trader: executionAccount,
@@ -226,4 +236,26 @@ test('rejects a noncanonical idempotency key before touching the chain', async (
       && error.code === 'IDEMPOTENCY_MISMATCH');
   assert.equal(chain.signCount, 0);
   assert.equal(journal.attempt, null);
+});
+
+test('records a signed residual whose nonce another transaction consumed as not executed', async () => {
+  const journal = new MemoryJournal();
+  const chain = new FakeChain();
+  chain.broadcastFails = true;
+  const subject = runtime(journal, chain);
+  const idempotencyKey = toHex(intent.intentHash);
+  // Without proof that the nonce was consumed elsewhere, the failure stays retryable and SIGNED.
+  await assert.rejects(subject.execute({ intent, idempotencyKey }), /nonce too low/);
+  assert.equal(journal.attempt?.status, 'SIGNED');
+
+  chain.consumedElsewhere = true;
+  const evidence = await subject.execute({ intent, idempotencyKey });
+  assert.equal(evidence.outcome, 'REJECTED');
+  assert.equal(evidence.filledSignedQuantityAtoms, 0n);
+  assert.equal(evidence.grossQuoteAtoms, 0n);
+  assert.equal(evidence.observedAtValue, 1_900_000_005n);
+  assert.equal(journal.attempt?.status, 'TERMINAL');
+  assert.equal(chain.signCount, 1);
+  const replay = await subject.execute({ intent, idempotencyKey });
+  assert.equal(toHex(replay.evidenceHash), toHex(evidence.evidenceHash));
 });

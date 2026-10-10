@@ -277,6 +277,47 @@ export function createViemBaseSepoliaResidualChain(input: Readonly<{
         }
       }
     },
+    nonceConsumedElsewhere: async ({ transactionHash, transactionNonce }) => {
+      // Nonce first, receipt second: a receipt for this hash at any depth means it was mined.
+      const latest = await publicClient.getBlock({ blockTag: 'latest' });
+      const depth = BigInt(confirmations - 1);
+      if (latest.number < depth) return null;
+      const confirmed = await publicClient.getBlock({ blockNumber: latest.number - depth });
+      const accountNonce = BigInt(await publicClient.getTransactionCount({
+        address: input.account.address,
+        blockNumber: confirmed.number,
+      }));
+      if (accountNonce <= transactionNonce) return null;
+      try {
+        await publicClient.getTransactionReceipt({ hash: transactionHash });
+        return null;
+      } catch (error) {
+        if (!(error instanceof TransactionReceiptNotFoundError)) throw error;
+      }
+      return Object.freeze({
+        observedAtSeconds: latest.timestamp,
+        authoritativeEvidenceHash: keccak256(encodeAbiParameters(
+          [
+            { type: 'string' },
+            { type: 'bytes32' },
+            { type: 'address' },
+            { type: 'uint256' },
+            { type: 'uint256' },
+            { type: 'bytes32' },
+            { type: 'uint256' },
+          ],
+          [
+            'naryx/base-sepolia/residual-nonce-consumed/v1',
+            transactionHash,
+            getAddress(input.account.address),
+            transactionNonce,
+            accountNonce,
+            confirmed.hash,
+            confirmed.number,
+          ],
+        )),
+      });
+    },
     observe: async ({ plan, transactionHash, submittedAtSeconds }) => {
       let receipt;
       try {

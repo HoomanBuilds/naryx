@@ -73,6 +73,14 @@ export interface EvmNettingResidualChainPort {
     signedAtSeconds: bigint;
   }>>;
   broadcast(rawTransaction: Hex, expectedTransactionHash: Hex): Promise<Hex>;
+  /**
+   * Proof that a signed transaction can never execute: the account nonce at a confirmed block is
+   * past `transactionNonce` and no receipt exists for `transactionHash`. Null when not proven.
+   */
+  nonceConsumedElsewhere(input: Readonly<{
+    transactionHash: Hex;
+    transactionNonce: bigint;
+  }>): Promise<Readonly<{ observedAtSeconds: bigint; authoritativeEvidenceHash: Hex }> | null>;
   observe(input: Readonly<{
     plan: EvmTestPerpNettingResidualPlan;
     transactionHash: Hex;
@@ -153,7 +161,7 @@ export class EvmTestPerpNettingResidualRuntime {
       || typeof journal?.recordSubmitted !== 'function' || typeof journal?.recordTerminal !== 'function'
       || typeof chain?.chainId !== 'function' || typeof chain?.currentTimeSeconds !== 'function'
       || typeof chain?.sign !== 'function' || typeof chain?.broadcast !== 'function'
-      || typeof chain?.observe !== 'function') {
+      || typeof chain?.observe !== 'function' || typeof chain?.nonceConsumedElsewhere !== 'function') {
       throw new Error('complete EVM residual runtime ports are required');
     }
     this.#resolver = resolver;
@@ -234,9 +242,17 @@ export class EvmTestPerpNettingResidualRuntime {
       && attempt.signedAtSeconds !== undefined, 'JOURNAL_STATE_INVALID',
     'Base residual signed transaction is incomplete');
     if (attempt.status === 'SIGNED') {
-      const broadcastHash = await this.#chain.broadcast(attempt.rawTransaction, attempt.transactionHash);
-      requireCondition(broadcastHash.toLowerCase() === attempt.transactionHash.toLowerCase(),
-        'JOURNAL_STATE_INVALID', 'Base RPC returned another transaction hash');
+      let broadcastHash: Hex | undefined;
+      try {
+        broadcastHash = await this.#chain.broadcast(attempt.rawTransaction, attempt.transactionHash);
+      } catch (error) {
+        if (await this.#consumedElsewhere(attempt) === null) throw error;
+      }
+      requireCondition(broadcastHash === undefined
+        || broadcastHash.toLowerCase() === attempt.transactionHash.toLowerCase(),
+      'JOURNAL_STATE_INVALID', 'Base RPC returned another transaction hash');
+      // A transaction whose nonce another transaction consumed passes through SUBMITTED, the only
+      // journal path to TERMINAL, and is then recorded below as not executed.
       attempt = await this.#journal.recordSubmitted({
         intentHash: expectedKey,
         transactionHash: attempt.transactionHash,
@@ -246,11 +262,31 @@ export class EvmTestPerpNettingResidualRuntime {
     requireCondition(attempt.status === 'SUBMITTED' && attempt.transactionHash !== undefined
       && attempt.submittedAtSeconds !== undefined, 'JOURNAL_STATE_INVALID',
     'Base residual is not ready for receipt reconciliation');
-    const observation = await this.#chain.observe({
+    let observation = await this.#chain.observe({
       plan,
       transactionHash: attempt.transactionHash,
       submittedAtSeconds: attempt.submittedAtSeconds,
     });
+    if (observation === null) {
+      const consumed = await this.#consumedElsewhere(attempt);
+      // The adapter's zero-fill terminal class: the evidence outcome is REJECTED, so the residual
+      // can be planned again under a new intent.
+      if (consumed !== null) {
+        observation = Object.freeze({
+          executionId: plan.executionId,
+          trader: plan.executionAccount,
+          terminalStatus: 'REVERTED' as const,
+          sizeDeltaWad: 0n,
+          notionalWad: 0n,
+          feeWad: 0n,
+          submittedAtSeconds: attempt.submittedAtSeconds,
+          observedAtSeconds: consumed.observedAtSeconds > attempt.submittedAtSeconds
+            ? consumed.observedAtSeconds : attempt.submittedAtSeconds,
+          executionReferenceHash: attempt.transactionHash,
+          authoritativeEvidenceHash: consumed.authoritativeEvidenceHash,
+        });
+      }
+    }
     requireCondition(observation !== null, 'EVIDENCE_PENDING',
       'Base residual transaction is not final yet');
     const evidence = 'clearingPlanHash' in input.intent
@@ -261,5 +297,13 @@ export class EvmTestPerpNettingResidualRuntime {
     requireCondition(attempt.status === 'TERMINAL' && attempt.evidence !== undefined,
       'JOURNAL_STATE_INVALID', 'Base residual terminal evidence was not persisted');
     return attempt.evidence;
+  }
+
+  async #consumedElsewhere(attempt: EvmNettingResidualAttempt) {
+    if (attempt.transactionHash === undefined || attempt.transactionNonce === undefined) return null;
+    return this.#chain.nonceConsumedElsewhere({
+      transactionHash: attempt.transactionHash,
+      transactionNonce: attempt.transactionNonce,
+    });
   }
 }
