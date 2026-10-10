@@ -24,6 +24,7 @@ import {
   HYPERLIQUID_TESTNET_EXCHANGE_URL,
   HyperliquidNettingResidualSqliteDurableJournal,
   HyperliquidNettingResidualLaneRegistry,
+  HyperliquidNettingResidualRuntimeError,
   HyperliquidNettingResidualTestnetRuntime,
   HyperliquidNettingResidualTestnetSubmissionService,
   HyperliquidSdkTestnetOrderSubmitter,
@@ -286,7 +287,23 @@ test('executes one durable residual and resumes evidence without rebroadcast', a
   assert.equal(resumed.outcome, 'EXACT_FILLED');
   assert.equal(resumed.filledSignedQuantityAtoms, first.filledSignedQuantityAtoms);
   assert.equal(resumed.submittedAtValue, first.submittedAtValue);
-  assert.equal(resumed.observedAtValue, intent.validUntilValue + 1n);
+  // The window closes at a read deadline a quarter of the evidence age bound after the clock.
+  assert.equal(resumed.observedAtValue, intent.validUntilValue + 1n + 250n);
+  assert.equal(transport.requests.length, 2);
+
+  // Evidence collected long after the age bound still scans from the submission nonce.
+  nowMs = Number(first.submittedAtValue) + 60_000;
+  const late = await runtime.execute(executionInput);
+  assert.equal(late.submittedAtValue, first.submittedAtValue);
+  assert.equal(late.observedAtValue, BigInt(nowMs + 250));
+  nowMs = Number(first.submittedAtValue) + 86_400_000 - 250;
+  assert.equal((await runtime.execute(executionInput)).submittedAtValue, first.submittedAtValue);
+  nowMs += 1;
+  await assert.rejects(
+    runtime.execute(executionInput),
+    (error: unknown) => error instanceof HyperliquidNettingResidualRuntimeError
+      && error.code === 'MANUAL_RECONCILIATION_REQUIRED',
+  );
   assert.equal(transport.requests.length, 2);
 
   await assert.rejects(

@@ -23,6 +23,7 @@ const HASH = /^0x[0-9a-f]{64}$/;
 const CLOID = /^0x[0-9a-f]{32}$/;
 const IDENTIFIER = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 const ACTION_COMMITMENT_SCHEME = 'NARYX_CANONICAL_HYPERCORE_ACTION_SHA256_V1';
+const MAX_EVIDENCE_WINDOW_MS = 86_400_000;
 const TERMINAL_STATUSES = new Set([
   'filled',
   'canceled',
@@ -191,9 +192,11 @@ function validateWindow(window: HyperliquidNettingResidualEvidenceWindow): void 
     window.maxEvidenceAgeMs, window.maxSnapshotSkewMs]) {
     requireCondition(Number.isSafeInteger(value) && value >= 0, 'evidence window values are invalid');
   }
+  // The window opens at submission however late evidence is collected; each read's own freshness
+  // is checked against maxEvidenceAgeMs.
   requireCondition(window.startTimeMs <= window.endTimeMs && window.endTimeMs <= window.nowMs
-    && window.nowMs - window.startTimeMs <= window.maxEvidenceAgeMs,
-  'evidence window is stale or inverted');
+    && window.nowMs - window.startTimeMs <= MAX_EVIDENCE_WINDOW_MS,
+  'evidence window is too long or inverted');
   if (window.maxFillPages !== undefined) {
     requireCondition(Number.isSafeInteger(window.maxFillPages)
       && window.maxFillPages > 0 && window.maxFillPages <= 64, 'fill page limit is invalid');
@@ -251,6 +254,7 @@ function verifyEnvelope(
   if (!sameRequest(envelope.request, expectedRequest)) addReason(reasons, 'REQUEST_IDENTITY_MISMATCH');
   if (!Number.isSafeInteger(envelope.requestedAtMs) || !Number.isSafeInteger(envelope.receivedAtMs)
     || envelope.requestedAtMs < window.startTimeMs || envelope.receivedAtMs > window.endTimeMs
+    || window.nowMs - envelope.requestedAtMs > window.maxEvidenceAgeMs
     || envelope.receivedAtMs < envelope.requestedAtMs) {
     addReason(reasons, 'STALE_OR_MIXED_SNAPSHOT');
   }

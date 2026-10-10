@@ -34,6 +34,10 @@ import type { HyperliquidSubmissionAccount } from './index.js';
 import type { HyperliquidTrustedTimePort } from './hyperliquid-trusted-time.js';
 
 const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
+// Fills are scanned from the submission nonce however late evidence is collected, up to this bound;
+// the keeper applies the same bound and checks read freshness against the age bound separately.
+const MAX_EVIDENCE_WINDOW_MS = 86_400_000;
+const MAX_READ_BUDGET_MS = 5_000;
 
 export type HyperliquidNettingResidualRuntimeErrorCode =
   | 'IDEMPOTENCY_MISMATCH'
@@ -41,6 +45,7 @@ export type HyperliquidNettingResidualRuntimeErrorCode =
   | 'INTENT_EXPIRED'
   | 'SUBMISSION_FAILED'
   | 'EVIDENCE_PENDING'
+  | 'MANUAL_RECONCILIATION_REQUIRED'
   | 'JOURNAL_STATE_INVALID';
 
 export class HyperliquidNettingResidualRuntimeError extends Error {
@@ -129,16 +134,23 @@ function evidenceWindow(
     );
   }
   const startTimeMs = Number(journal.record.nonce);
-  if (startTimeMs > observedAtMs
-    || observedAtMs - startTimeMs > options.maximumEvidenceAgeMs) {
+  if (startTimeMs > observedAtMs) {
     throw new HyperliquidNettingResidualRuntimeError(
-      'EVIDENCE_PENDING', 'residual evidence window is unavailable or stale',
+      'EVIDENCE_PENDING', 'residual evidence window has not opened',
+    );
+  }
+  // The keeper stamps each read with its own clock, so the window closes at a short read deadline.
+  const deadline = observedAtMs
+    + Math.max(1, Math.min(MAX_READ_BUDGET_MS, Math.floor(options.maximumEvidenceAgeMs / 4)));
+  if (deadline - startTimeMs > MAX_EVIDENCE_WINDOW_MS) {
+    throw new HyperliquidNettingResidualRuntimeError(
+      'MANUAL_RECONCILIATION_REQUIRED', 'residual evidence window exceeds the reconcilable bound',
     );
   }
   return Object.freeze({
     startTimeMs,
-    endTimeMs: observedAtMs,
-    nowMs: observedAtMs,
+    endTimeMs: deadline,
+    nowMs: deadline,
     maxEvidenceAgeMs: options.maximumEvidenceAgeMs,
     maxSnapshotSkewMs: options.maximumSnapshotSkewMs,
     ...(options.maximumFillPages === undefined

@@ -697,3 +697,23 @@ test('reconciles a bound HIP-3 perpetual leg in a generalized package', async ()
   assert.equal(result.legs[2]?.feeAssetId, 'usdc');
   assert.equal(result.legs[2]?.venueFeeQuoteAtoms, 1n);
 });
+
+test('late residual evidence scans from submission while each read must still be fresh', async () => {
+  const late = { ...evidenceWindow, endTimeMs: 3_601_000, nowMs: 3_601_000 };
+  const client = new FixtureClient();
+  client.statuses.set(spotCloid, orderStatus(spotCloid, 1, '@7', 'B'));
+  client.fills = [fill(spotCloid, 1, 10, '@7', 'B', '0.000001', 'UBTC')];
+  const collector = new HyperliquidNettingResidualAuthoritativeEvidenceCollector(client);
+
+  client.stamp = 3_600_950;
+  assert.equal((await collector.collect({ ...netResidualRequest(), window: late })).status, 'COMPLETE');
+  // One millisecond past the age bound before the window's now is stale.
+  client.stamp = 3_601_000 - 9_000;
+  const stale = await collector.collect({ ...netResidualRequest(), window: late });
+  assert.equal(stale.status, 'INCOMPLETE');
+  assert.ok(stale.reasons.includes('STALE_OR_MIXED_SNAPSHOT'));
+  await assert.rejects(
+    collector.collect({ ...netResidualRequest(), window: { ...late, endTimeMs: 86_401_001, nowMs: 86_401_001 } }),
+    /too long/,
+  );
+});

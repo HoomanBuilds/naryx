@@ -30,6 +30,7 @@ import {
   HYPERLIQUID_TESTNET_INFO_URL,
   HyperliquidAuthoritativeEvidenceCollector,
   HYPERLIQUID_TESTNET_EVIDENCE_RECONCILIATION_COLLECTOR,
+  HyperliquidRecoverySourceRegistry,
   HyperliquidTestnetEvidenceRuntime,
   NARYX_HYPERCORE_ACTION_COMMITMENT_SCHEME,
   type HyperliquidEvidenceMarketBinding,
@@ -464,4 +465,23 @@ test('incomplete post-submission evidence keeps reconciling with preserved reaso
   assert.equal(result.attempt.status, 'RECONCILING');
   assert.ok(result.reasons.includes('AMBIGUOUS_CLOID'));
   assert.ok(result.rawResponseCommitments.length > 0);
+});
+
+test('a package reconciled to RECOVERY_REQUIRED is recorded as a keeper recovery source', async () => {
+  const { client, collector, state } = await preparedState();
+  client.stamp = 9_950;
+  configureExact(client);
+  client.statuses.set(perpCloid, orderStatus(perpCloid, 2, 'BTC', 'A', 'canceled'));
+  client.fills = [fill(spotCloid, 1, 10, '@7', 'B')];
+  client.perpetualSize = '0';
+  const sources = new HyperliquidRecoverySourceRegistry();
+  const result = await new HyperliquidTestnetEvidenceRuntime(collector, sources).reconcile(
+    state, handoff(state.attemptId, state.actionHash), binding, evidenceWindow,
+  );
+  assert.equal(result.status, 'RECONCILED');
+  assert.equal(result.attempt.status, 'RECOVERY_REQUIRED');
+  assert.equal(sources.has(result.attempt), true);
+  assert.equal(sources.has(structuredClone(result.attempt)), true);
+  const altered = { ...result.attempt.account, tradingAccount: `0x${'98'.repeat(20)}` as const };
+  assert.equal(sources.has({ ...result.attempt, account: altered }), false);
 });

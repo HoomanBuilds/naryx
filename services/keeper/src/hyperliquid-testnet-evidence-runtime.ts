@@ -253,8 +253,12 @@ function verifyHandoff(
 
 export class HyperliquidTestnetEvidenceRuntime {
   readonly #collector: HyperliquidAuthoritativeEvidenceCollector;
+  readonly #recoverySources: Readonly<{ record(attempt: HyperliquidPackageAttempt): void }> | undefined;
 
-  constructor(collector: HyperliquidAuthoritativeEvidenceCollector) {
+  constructor(
+    collector: HyperliquidAuthoritativeEvidenceCollector,
+    recoverySources?: Readonly<{ record(attempt: HyperliquidPackageAttempt): void }>,
+  ) {
     if (collector === null
       || typeof collector !== 'object'
       || typeof collector.captureCheckpoint !== 'function'
@@ -262,6 +266,7 @@ export class HyperliquidTestnetEvidenceRuntime {
       throw new Error('an authoritative evidence collector is required');
     }
     this.#collector = collector;
+    this.#recoverySources = recoverySources;
   }
 
   async prepare(
@@ -327,6 +332,7 @@ export class HyperliquidTestnetEvidenceRuntime {
       });
     }
     const attempt = reconcileHyperliquidPackageAttempt(reconciling, evidence.input);
+    this.#recoverySources?.record(attempt);
     return Object.freeze({
       status: 'RECONCILED' as const,
       attempt,
