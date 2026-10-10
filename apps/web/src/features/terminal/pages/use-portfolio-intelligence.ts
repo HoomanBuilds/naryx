@@ -191,7 +191,7 @@ async function readRisk(client: NaryxClient, strategyId: string): Promise<Verifi
 }
 
 export function usePortfolioIntelligence(baseUrl: string | null, owners: readonly (string | null)[]): PortfolioIntelligenceState {
-  const activeOwners = [...new Set(owners.filter((owner): owner is string => owner !== null).map((owner) => owner.trim()).filter(Boolean))].sort();
+  const activeOwners = [...new Set(owners.filter((owner): owner is string => owner !== null).map((owner) => owner.trim()).map((owner) => (owner.startsWith("0x") ? owner.toLowerCase() : owner)).filter(Boolean))].sort();
   const query = useQuery({
     queryKey: ["portfolio-intelligence", baseUrl, activeOwners],
     enabled: baseUrl !== null && activeOwners.length > 0,

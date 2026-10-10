@@ -996,7 +996,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     if ((match = /^\/v1\/owners\/([^/]+)\/strategies$/.exec(path)) !== null) {
       onlyParams(url, []);
       if (options.strategies === undefined) throw new RequestError(503, "STRATEGIES_UNAVAILABLE", "No strategy book is configured on this server.");
-      const ownerId = id(match[1], "Owner id");
+      const requestedOwnerId = id(match[1], "Owner id");
+      const ownerId = requestedOwnerId.startsWith("0x") ? requestedOwnerId.toLowerCase() : requestedOwnerId;
       return {
         environment: options.strategies.environmentName(),
         ownerId,

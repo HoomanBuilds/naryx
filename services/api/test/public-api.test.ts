@@ -1015,6 +1015,24 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
   });
 });
 
+test("owner strategy reads match checksummed EVM owners against their canonical lowercase id", async () => {
+  let requested: string | undefined;
+  await withMarket(async (get) => {
+    const owned = await get("/v1/owners/0x00000000000000000000000000000000000000AB/strategies");
+    assert.equal(owned.status, 200);
+    assert.equal(requested, "0x00000000000000000000000000000000000000ab");
+    assert.equal((owned.body as { ownerId: string }).ownerId, "0x00000000000000000000000000000000000000ab");
+  }, {
+    strategies: {
+      environmentName: () => "testnet",
+      ownerStrategies: (ownerId: string) => {
+        requested = ownerId;
+        return [];
+      },
+    } as never,
+  });
+});
+
 test("candles are built only from recorded trades and the index keeps executable depth separate", async () => {
   await withMarket(async (get, store) => {
     registerAll(store);
