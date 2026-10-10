@@ -54,9 +54,8 @@ contract ERC4626TypedVaultAdapter is ITypedStrategyAdapter, ReentrancyGuard {
 
     constructor(Deployment memory deployment) {
         if (
-            deployment.chainId == 0 || deployment.strategyAccount.code.length == 0
-                || deployment.packageId == bytes32(0) || address(deployment.vault).code.length == 0
-                || address(deployment.assetToken).code.length == 0
+            deployment.chainId == 0 || deployment.strategyAccount.code.length == 0 || deployment.packageId == bytes32(0)
+                || address(deployment.vault).code.length == 0 || address(deployment.assetToken).code.length == 0
                 || address(deployment.vault) == address(deployment.assetToken)
                 || deployment.strategyAccountCodeHash == bytes32(0) || deployment.vaultCodeHash == bytes32(0)
                 || deployment.assetTokenCodeHash == bytes32(0)
@@ -155,9 +154,8 @@ contract ERC4626TypedVaultAdapter is ITypedStrategyAdapter, ReentrancyGuard {
         if (
             leg.packageId != packageId || leg.orderHash == bytes32(0) || leg.quoteHash == bytes32(0)
                 || leg.routeHash == bytes32(0)
-                || (leg.action != DEPOSIT_EXACT_ASSETS && leg.action != REDEEM_EXACT_SHARES)
-                || leg.inputAtoms == 0 || leg.minimumOutputAtoms == 0
-                || leg.minimumOutputAtoms > leg.maximumOutputAtoms
+                || (leg.action != DEPOSIT_EXACT_ASSETS && leg.action != REDEEM_EXACT_SHARES) || leg.inputAtoms == 0
+                || leg.minimumOutputAtoms == 0 || leg.minimumOutputAtoms > leg.maximumOutputAtoms
         ) revert InvalidLeg();
     }
 

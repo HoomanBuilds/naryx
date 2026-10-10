@@ -91,11 +91,12 @@ contract PremiaV3TypedOptionAdapter is ITypedStrategyAdapter, ReentrancyGuard {
 
     constructor(Deployment memory deployment) {
         if (
-            deployment.chainId == 0 || deployment.strategyAccount.code.length == 0
-                || deployment.packageId == bytes32(0) || address(deployment.pool).code.length == 0
-                || address(deployment.baseToken).code.length == 0 || address(deployment.quoteToken).code.length == 0
+            deployment.chainId == 0 || deployment.strategyAccount.code.length == 0 || deployment.packageId == bytes32(0)
+                || address(deployment.pool).code.length == 0 || address(deployment.baseToken).code.length == 0
+                || address(deployment.quoteToken).code.length == 0
                 || address(deployment.baseToken) == address(deployment.quoteToken)
-                || address(deployment.poolToken) != (deployment.isCallPool ? address(deployment.baseToken) : address(deployment.quoteToken))
+                || address(deployment.poolToken)
+                    != (deployment.isCallPool ? address(deployment.baseToken) : address(deployment.quoteToken))
                 || deployment.oracleAdapter.code.length == 0 || deployment.strike == 0 || deployment.maturity == 0
                 || deployment.strategyAccountCodeHash == bytes32(0) || deployment.poolCodeHash == bytes32(0)
                 || deployment.baseTokenCodeHash == bytes32(0) || deployment.quoteTokenCodeHash == bytes32(0)
@@ -210,8 +211,14 @@ contract PremiaV3TypedOptionAdapter is ITypedStrategyAdapter, ReentrancyGuard {
                 || address(pool).codehash != poolCodeHash || address(baseToken).codehash != baseTokenCodeHash
                 || address(quoteToken).codehash != quoteTokenCodeHash || oracleAdapter.codehash != oracleAdapterCodeHash
         ) revert DeploymentChanged();
-        (address currentBase, address currentQuote, address currentOracle, uint256 currentStrike, uint256 currentMaturity, bool currentIsCall) =
-            pool.getPoolSettings();
+        (
+            address currentBase,
+            address currentQuote,
+            address currentOracle,
+            uint256 currentStrike,
+            uint256 currentMaturity,
+            bool currentIsCall
+        ) = pool.getPoolSettings();
         if (
             currentBase != address(baseToken) || currentQuote != address(quoteToken) || currentOracle != oracleAdapter
                 || currentStrike != strike || currentMaturity != maturity || currentIsCall != isCallPool

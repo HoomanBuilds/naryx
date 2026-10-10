@@ -52,9 +52,8 @@ contract ERC4626TypedVaultAdapterFactory is ITypedStrategyAdapterFactory {
             deployment.chainId == 0 || address(deployment.accountFactory).code.length == 0
                 || address(deployment.vault).code.length == 0 || address(deployment.assetToken).code.length == 0
                 || address(deployment.vault) == address(deployment.assetToken)
-                || deployment.accountFactoryCodeHash == bytes32(0)
-                || deployment.strategyAccountCodeHash == bytes32(0) || deployment.vaultCodeHash == bytes32(0)
-                || deployment.assetTokenCodeHash == bytes32(0)
+                || deployment.accountFactoryCodeHash == bytes32(0) || deployment.strategyAccountCodeHash == bytes32(0)
+                || deployment.vaultCodeHash == bytes32(0) || deployment.assetTokenCodeHash == bytes32(0)
         ) revert InvalidConfiguration();
         deploymentChainId = deployment.chainId;
         accountFactory = deployment.accountFactory;
@@ -137,8 +136,9 @@ contract ERC4626TypedVaultAdapterFactory is ITypedStrategyAdapterFactory {
     function _assertDeployment() private view {
         if (
             block.chainid != deploymentChainId || address(accountFactory).codehash != accountFactoryCodeHash
-                || accountFactory.accountCodeHash() != strategyAccountCodeHash || address(vault).codehash != vaultCodeHash
-                || address(assetToken).codehash != assetTokenCodeHash || vault.asset() != address(assetToken)
+                || accountFactory.accountCodeHash() != strategyAccountCodeHash
+                || address(vault).codehash != vaultCodeHash || address(assetToken).codehash != assetTokenCodeHash
+                || vault.asset() != address(assetToken)
         ) revert DeploymentChanged();
     }
 

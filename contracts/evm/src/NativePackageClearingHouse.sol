@@ -168,8 +168,7 @@ contract NativePackageClearingHouse is ReentrancyGuard {
                 || configuration.priceTickQuoteAtoms == 0 || configuration.initialMarginQuoteAtomsPerIncrement == 0
                 || configuration.maintenanceMarginQuoteAtomsPerIncrement == 0
                 || configuration.maintenanceMarginQuoteAtomsPerIncrement
-                    > configuration.initialMarginQuoteAtomsPerIncrement
-                || configuration.maximumPositionAtoms == 0
+                    > configuration.initialMarginQuoteAtomsPerIncrement || configuration.maximumPositionAtoms == 0
                 || configuration.maximumPositionAtoms > uint128(type(int128).max)
                 || configuration.maximumPositionAtoms % configuration.packageQuantityIncrementAtoms != 0
                 || configuration.maximumOpenInterestAtoms == 0
@@ -258,7 +257,9 @@ contract NativePackageClearingHouse is ReentrancyGuard {
         account_.sequence += 1;
     }
 
-    function publishMark(bytes32 observationHash, uint128 priceTicks, uint64 sourceSequence, uint64 validUntil) external {
+    function publishMark(bytes32 observationHash, uint128 priceTicks, uint64 sourceSequence, uint64 validUntil)
+        external
+    {
         if (msg.sender != markAuthority) revert Unauthorized();
         if (
             observationHash == bytes32(0) || priceTicks == 0 || sourceSequence <= currentMark.sourceSequence
@@ -324,11 +325,11 @@ contract NativePackageClearingHouse is ReentrancyGuard {
         if (consumedAuthorization[match_.authorizationHash]) revert Replay();
         if (
             match_.authorizationHash == bytes32(0) || match_.longAccountId == match_.shortAccountId
-                || match_.quantityAtoms == 0
-                || match_.quantityAtoms > uint128(type(int128).max)
+                || match_.quantityAtoms == 0 || match_.quantityAtoms > uint128(type(int128).max)
                 || match_.quantityAtoms % packageQuantityIncrementAtoms != 0 || match_.priceTicks == 0
                 || block.timestamp >= match_.expiry
-                || (match_.feePayerAccountId != match_.longAccountId && match_.feePayerAccountId != match_.shortAccountId)
+                || (match_.feePayerAccountId != match_.longAccountId
+                    && match_.feePayerAccountId != match_.shortAccountId)
         ) revert InvalidMatch();
         _requireUnlocked(match_.longAccountId);
         _requireUnlocked(match_.shortAccountId);
@@ -384,17 +385,18 @@ contract NativePackageClearingHouse is ReentrancyGuard {
         if (auctionId == bytes32(0) || _auctions[auctionId].defaultedAccountId != bytes32(0)) revert InvalidAuction();
         _requireUnlocked(accountId);
         Account storage defaulted = _accounts[accountId];
-        if (defaulted.owner == address(0) || defaulted.positionAtoms == 0 || _status(defaulted, currentMark.priceTicks) != 4) {
+        if (
+            defaulted.owner == address(0) || defaulted.positionAtoms == 0
+                || _status(defaulted, currentMark.priceTicks) != 4
+        ) {
             revert InvalidAuction();
         }
         uint64 closeAt = uint64(block.timestamp) + defaultAuctionDurationSeconds;
         if (closeAt > currentMark.validUntil) revert StaleMark();
-        uint128 minimumPrice = uint128(
-            _ceilDiv(uint256(currentMark.priceTicks) * (BPS - maximumDefaultTransferDiscountBps), BPS)
-        );
-        uint128 maximumPrice = uint128(
-            uint256(currentMark.priceTicks) * (BPS + maximumDefaultTransferDiscountBps) / BPS
-        );
+        uint128 minimumPrice =
+            uint128(_ceilDiv(uint256(currentMark.priceTicks) * (BPS - maximumDefaultTransferDiscountBps), BPS));
+        uint128 maximumPrice =
+            uint128(uint256(currentMark.priceTicks) * (BPS + maximumDefaultTransferDiscountBps) / BPS);
         _auctions[auctionId] = DefaultAuction({
             defaultedAccountId: accountId,
             defaultedAccountHash: accountHash(accountId),
@@ -429,7 +431,9 @@ contract NativePackageClearingHouse is ReentrancyGuard {
                 || priceTicks < auction_.minimumPriceTicks || priceTicks > auction_.maximumPriceTicks
         ) revert InvalidAuction();
         if (auction_.bestBackstopAccountId != bytes32(0)) {
-            bool improves = auction_.positionAtoms > 0 ? priceTicks > auction_.bestPriceTicks : priceTicks < auction_.bestPriceTicks;
+            bool improves = auction_.positionAtoms > 0
+                ? priceTicks > auction_.bestPriceTicks
+                : priceTicks < auction_.bestPriceTicks;
             if (!improves) revert InvalidAuction();
             delete accountLock[auction_.bestBackstopAccountId];
         }
@@ -437,7 +441,10 @@ contract NativePackageClearingHouse is ReentrancyGuard {
         int256 value = _signedQuoteValue(auction_.positionAtoms, priceTicks);
         projected.cashBalanceQuoteAtoms -= value;
         projected.positionAtoms += auction_.positionAtoms;
-        if (_abs(projected.positionAtoms) > maximumPositionAtoms || _statusMemory(projected, auction_.markPriceTicks) != 1) {
+        if (
+            _abs(projected.positionAtoms) > maximumPositionAtoms
+                || _statusMemory(projected, auction_.markPriceTicks) != 1
+        ) {
             revert MarginViolation();
         }
         auction_.bestBackstopAccountId = backstopAccountId;
@@ -456,8 +463,10 @@ contract NativePackageClearingHouse is ReentrancyGuard {
                 || block.timestamp > auction_.bestBidValidUntil || block.timestamp > auction_.markValidUntil
                 || auction_.bestBackstopAccountId == bytes32(0)
         ) revert AuctionUnavailable();
-        if (accountHash(auction_.defaultedAccountId) != auction_.defaultedAccountHash
-            || accountHash(auction_.bestBackstopAccountId) != auction_.bestBackstopAccountHash) revert InvalidAuction();
+        if (
+            accountHash(auction_.defaultedAccountId) != auction_.defaultedAccountHash
+                || accountHash(auction_.bestBackstopAccountId) != auction_.bestBackstopAccountHash
+        ) revert InvalidAuction();
         Account storage defaulted = _accounts[auction_.defaultedAccountId];
         Account storage backstop = _accounts[auction_.bestBackstopAccountId];
         int128 transferred = defaulted.positionAtoms;
@@ -482,20 +491,16 @@ contract NativePackageClearingHouse is ReentrancyGuard {
         delete accountLock[auction_.defaultedAccountId];
         delete accountLock[auction_.bestBackstopAccountId];
         emit DefaultAuctionSettled(
-            auctionId,
-            auction_.defaultedAccountId,
-            auction_.bestBackstopAccountId,
-            reserveConsumed,
-            uncovered
+            auctionId, auction_.defaultedAccountId, auction_.bestBackstopAccountId, reserveConsumed, uncovered
         );
     }
 
     function cancelExpiredDefaultAuction(bytes32 auctionId) external {
         DefaultAuction storage auction_ = _auctions[auctionId];
-        if (
-            auction_.defaultedAccountId == bytes32(0) || auction_.settled
-                || block.timestamp <= auction_.markValidUntil
-        ) revert AuctionUnavailable();
+        if (auction_.defaultedAccountId == bytes32(0) || auction_.settled || block.timestamp <= auction_.markValidUntil)
+        {
+            revert AuctionUnavailable();
+        }
         auction_.settled = true;
         delete accountLock[auction_.defaultedAccountId];
         if (auction_.bestBackstopAccountId != bytes32(0)) delete accountLock[auction_.bestBackstopAccountId];
@@ -610,8 +615,8 @@ contract NativePackageClearingHouse is ReentrancyGuard {
     function _requirePostMatchMargin(Account storage account_, int128 positionBefore) private view {
         uint256 beforeAbs = _abs(positionBefore);
         uint256 afterAbs = _abs(account_.positionAtoms);
-        bool crossed = positionBefore != 0 && account_.positionAtoms != 0
-            && (positionBefore > 0) != (account_.positionAtoms > 0);
+        bool crossed =
+            positionBefore != 0 && account_.positionAtoms != 0 && (positionBefore > 0) != (account_.positionAtoms > 0);
         uint8 status = _status(account_, currentMark.priceTicks);
         if (afterAbs > beforeAbs || crossed) {
             if (status != 1) revert MarginViolation();

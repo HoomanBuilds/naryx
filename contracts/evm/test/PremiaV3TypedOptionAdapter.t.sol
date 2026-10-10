@@ -140,7 +140,12 @@ contract PremiaV3TypedOptionAdapterTest is Test {
     }
 
     function testBuysAndExercisesAnIsolatedLongOption() public {
-        account.execute(adapter, base, 10 ether, _leg(1, true, 100 ether, 10 ether, 10 ether, 0, 0, 100 ether, 0, -10 ether, -10 ether));
+        account.execute(
+            adapter,
+            base,
+            10 ether,
+            _leg(1, true, 100 ether, 10 ether, 10 ether, 0, 0, 100 ether, 0, -10 ether, -10 ether)
+        );
         assertEq(pool.balanceOf(address(adapter), 1), 100 ether);
         assertEq(base.balanceOf(address(account)), 90 ether);
 
@@ -152,7 +157,12 @@ contract PremiaV3TypedOptionAdapterTest is Test {
 
     function testRejectsUnexpectedPositionState() public {
         vm.expectRevert(PremiaV3TypedOptionAdapter.PreconditionFailed.selector);
-        account.execute(adapter, base, 10 ether, _leg(1, true, 100 ether, 10 ether, 10 ether, 1, 0, 100 ether, 0, -10 ether, -10 ether));
+        account.execute(
+            adapter,
+            base,
+            10 ether,
+            _leg(1, true, 100 ether, 10 ether, 10 ether, 1, 0, 100 ether, 0, -10 ether, -10 ether)
+        );
     }
 
     function _leg(

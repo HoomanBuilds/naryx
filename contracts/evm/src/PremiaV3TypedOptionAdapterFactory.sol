@@ -53,19 +53,20 @@ contract PremiaV3TypedOptionAdapterFactory is ITypedStrategyAdapterFactory {
                 || address(deployment.pool).code.length == 0 || address(deployment.baseToken).code.length == 0
                 || address(deployment.quoteToken).code.length == 0
                 || address(deployment.baseToken) == address(deployment.quoteToken)
-                || address(deployment.poolToken) != (deployment.isCallPool ? address(deployment.baseToken) : address(deployment.quoteToken))
+                || address(deployment.poolToken)
+                    != (deployment.isCallPool ? address(deployment.baseToken) : address(deployment.quoteToken))
                 || deployment.oracleAdapter.code.length == 0 || deployment.strike == 0 || deployment.maturity == 0
-                || deployment.accountFactoryCodeHash == bytes32(0)
-                || deployment.strategyAccountCodeHash == bytes32(0) || deployment.poolCodeHash == bytes32(0)
-                || deployment.baseTokenCodeHash == bytes32(0) || deployment.quoteTokenCodeHash == bytes32(0)
-                || deployment.oracleAdapterCodeHash == bytes32(0)
+                || deployment.accountFactoryCodeHash == bytes32(0) || deployment.strategyAccountCodeHash == bytes32(0)
+                || deployment.poolCodeHash == bytes32(0) || deployment.baseTokenCodeHash == bytes32(0)
+                || deployment.quoteTokenCodeHash == bytes32(0) || deployment.oracleAdapterCodeHash == bytes32(0)
         ) revert InvalidConfiguration();
         _deployment = deployment;
         _assertDeployment();
     }
 
     function factoryMetadata() external view returns (bytes32, uint32, address, address) {
-        return (ADAPTER_CLASS_ID, ADAPTER_CLASS_VERSION, address(_deployment.baseToken), address(_deployment.quoteToken));
+        return
+            (ADAPTER_CLASS_ID, ADAPTER_CLASS_VERSION, address(_deployment.baseToken), address(_deployment.quoteToken));
     }
 
     function adapterOf(address strategyAccount, bytes32 packageId) public view returns (address) {

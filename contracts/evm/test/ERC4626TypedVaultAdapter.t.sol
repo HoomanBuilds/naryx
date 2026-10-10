@@ -67,9 +67,8 @@ contract ERC4626TypedVaultAdapterTest is Test {
         assertEq(asset.balanceOf(address(account)), 90 ether);
         assertEq(vault.balanceOf(address(account)), 10 ether);
 
-        bytes32 redeemEvidence = account.execute(
-            adapter, IERC20(address(vault)), 10 ether, _leg(2, 10 ether, 10 ether, 10 ether)
-        );
+        bytes32 redeemEvidence =
+            account.execute(adapter, IERC20(address(vault)), 10 ether, _leg(2, 10 ether, 10 ether, 10 ether));
         assertNotEq(redeemEvidence, bytes32(0));
         assertEq(asset.balanceOf(address(account)), 100 ether);
         assertEq(vault.balanceOf(address(account)), 0);

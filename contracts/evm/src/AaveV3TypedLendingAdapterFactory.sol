@@ -47,21 +47,22 @@ contract AaveV3TypedLendingAdapterFactory is ITypedStrategyAdapterFactory {
                 || address(deployment.pool).code.length == 0 || address(deployment.collateralToken).code.length == 0
                 || address(deployment.debtToken).code.length == 0
                 || address(deployment.collateralToken) == address(deployment.debtToken)
-                || deployment.accountFactoryCodeHash == bytes32(0)
-                || deployment.strategyAccountCodeHash == bytes32(0) || deployment.poolCodeHash == bytes32(0)
-                || deployment.collateralTokenCodeHash == bytes32(0) || deployment.debtTokenCodeHash == bytes32(0)
+                || deployment.accountFactoryCodeHash == bytes32(0) || deployment.strategyAccountCodeHash == bytes32(0)
+                || deployment.poolCodeHash == bytes32(0) || deployment.collateralTokenCodeHash == bytes32(0)
+                || deployment.debtTokenCodeHash == bytes32(0)
         ) revert InvalidConfiguration();
         _deployment = deployment;
         _assertDeployment();
     }
 
     function factoryMetadata() external view returns (bytes32, uint32, address, address) {
-        return (
-            ADAPTER_CLASS_ID,
-            ADAPTER_CLASS_VERSION,
-            address(_deployment.collateralToken),
-            address(_deployment.debtToken)
-        );
+        return
+            (
+                ADAPTER_CLASS_ID,
+                ADAPTER_CLASS_VERSION,
+                address(_deployment.collateralToken),
+                address(_deployment.debtToken)
+            );
     }
 
     function adapterOf(address strategyAccount, bytes32 packageId) public view returns (address) {

@@ -393,17 +393,18 @@ contract TypedAdapterPerpVenue is ISynFuturesInstrument, ISynFuturesPositionObse
             adapters = new TypedStrategyAdapterRegistry(config);
             StrategyFeePolicyRegistry fees = new StrategyFeePolicyRegistry(config);
             RiskDomainRegistry riskDomains = new RiskDomainRegistry(config);
-            accountFactory = new NaryxMultiStrategyAccountFactory(
+            accountFactory =
+                new NaryxMultiStrategyAccountFactory(
                 config, solvers, adapters, fees, riskDomains, FEE_POLICY_SUBJECT_ID
             );
             account = accountFactory.create(address(0xA11CE));
             spotFactory = new UniswapV3TypedSpotAdapterFactory(_spotFactoryDeployment());
             perpFactory = new SynFuturesTypedPerpAdapterFactory(_perpFactoryDeployment());
 
-        TypedStrategyAdapterRegistry.AdapterBinding memory binding = _spotBinding();
-        TypedStrategyAdapterRegistry.AdapterControl memory control = _control();
-        vm.prank(PROPOSER);
-        adapters.proposeRegistration(binding, control);
+            TypedStrategyAdapterRegistry.AdapterBinding memory binding = _spotBinding();
+            TypedStrategyAdapterRegistry.AdapterControl memory control = _control();
+            vm.prank(PROPOSER);
+            adapters.proposeRegistration(binding, control);
             vm.warp(block.timestamp + 1);
             vm.prank(GOVERNANCE_EXECUTOR);
             adapters.activateRegistration(ADAPTER_ID);

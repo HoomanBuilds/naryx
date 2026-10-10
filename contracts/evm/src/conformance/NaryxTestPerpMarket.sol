@@ -111,11 +111,7 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
         int128 entryFundingIndex
     );
     event PositionIncreased(
-        address indexed trader,
-        int128 sizeDelta,
-        int128 newSize,
-        uint256 fillPriceWad,
-        uint256 feeWad
+        address indexed trader, int128 sizeDelta, int128 newSize, uint256 fillPriceWad, uint256 feeWad
     );
     event PositionDecreased(
         address indexed trader,
@@ -303,7 +299,9 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
             executionId == bytes32(0) || minimumNotionalWad == 0 || minimumNotionalWad > maximumNotionalWad
                 || boundedExecutionConsumed[executionId]
         ) {
-            if (boundedExecutionConsumed[executionId]) revert BoundedExecutionConsumed();
+            if (boundedExecutionConsumed[executionId]) {
+                revert BoundedExecutionConsumed();
+            }
             revert InvalidTradeBounds();
         }
         (int128 sizeDelta, int128 balanceDelta) = _tradeArguments(args);
@@ -317,11 +315,7 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
         emit BoundedTradeExecuted(executionId, msg.sender, sizeDelta, fillPriceWad, notionalWad, feeWad);
     }
 
-    function _tradeArguments(bytes32[2] calldata args)
-        private
-        view
-        returns (int128 sizeDelta, int128 balanceDelta)
-    {
+    function _tradeArguments(bytes32[2] calldata args) private view returns (int128 sizeDelta, int128 balanceDelta) {
         uint256 tradeHeader = uint256(args[0]);
         uint64 deadline = uint64(tradeHeader >> 56);
         if (
@@ -462,7 +456,8 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
         bool buy = position.size < 0;
         uint256 exitNotional = _notional(sizeAbs, _fillPrice(oraclePriceWad(), sizeAbs, buy), buy);
         (int256 realizedPnl, int256 funding, int256 equity) = _equity(position, exitNotional);
-        return _previewSettlement(position, exitNotional, realizedPnl, funding, equity, _feeWad(exitNotional, takerFeeBps));
+        return
+            _previewSettlement(position, exitNotional, realizedPnl, funding, equity, _feeWad(exitNotional, takerFeeBps));
     }
 
     function previewIncrease(address trader, int128 sizeDelta, uint256 balanceWad)
@@ -550,9 +545,9 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
             revert InsufficientInitialMargin();
         }
         uint256 oldSizeAbs = _abs(position.size);
-        int256 weightedFundingIndex = (
-            int256(oldSizeAbs) * int256(position.entryFundingIndex) + int256(_abs(sizeDelta)) * currentIndex
-        ) / int256(newSizeAbs);
+        int256 weightedFundingIndex =
+            (int256(oldSizeAbs) * int256(position.entryFundingIndex) + int256(_abs(sizeDelta)) * currentIndex)
+                / int256(newSizeAbs);
         post = position;
         post.balance = int256(newMargin).toInt128();
         post.size = (int256(position.size) + int256(sizeDelta)).toInt128();
@@ -607,12 +602,11 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
         _emitPositionDecreased(stored, sizeDelta, settlement);
     }
 
-    function _previewDecrease(
-        Position memory position,
-        int128 sizeDelta,
-        int128 balanceDelta,
-        int256 currentIndex
-    ) private view returns (Position memory post, Settlement memory settlement) {
+    function _previewDecrease(Position memory position, int128 sizeDelta, int128 balanceDelta, int256 currentIndex)
+        private
+        view
+        returns (Position memory post, Settlement memory settlement)
+    {
         if (sizeDelta == 0 || balanceDelta != 0 || _sameDirection(position.size, sizeDelta)) {
             revert InvalidTradeShape();
         }
@@ -628,16 +622,12 @@ contract NaryxTestPerpMarket is ISynFuturesInstrument, ISynFuturesPositionObserv
             work.positionSize,
             position.size > 0 ? Math.Rounding.Ceil : Math.Rounding.Floor
         );
-        work.releasedMargin = Math.mulDiv(
-            uint256(int256(position.balance)), work.closeSize, work.positionSize
-        );
+        work.releasedMargin = Math.mulDiv(uint256(int256(position.balance)), work.closeSize, work.positionSize);
         work.realizedPnl = position.size < 0
             ? int256(work.closedEntryNotional) - int256(work.exitNotional)
             : int256(work.exitNotional) - int256(work.closedEntryNotional);
         int256 accrued = int256(sizeDelta) * (currentIndex - position.entryFundingIndex);
-        work.funding = accrued >= 0
-            ? accrued / int256(WAD)
-            : -int256(Math.ceilDiv(uint256(-accrued), WAD));
+        work.funding = accrued >= 0 ? accrued / int256(WAD) : -int256(Math.ceilDiv(uint256(-accrued), WAD));
         work.equity = int256(work.releasedMargin) + work.realizedPnl + work.funding;
         settlement = _previewSettlement(
             Position({

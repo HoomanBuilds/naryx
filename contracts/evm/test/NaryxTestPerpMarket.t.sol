@@ -175,8 +175,10 @@ contract NaryxTestPerpMarketTest is Test {
 
         oracle.setPrice(1_900e8);
         _fundInsurance(1_000e6);
-        (ISynFuturesPositionObserver.Position memory decreasePreview, NaryxTestPerpMarket.Settlement memory settlement) =
-            market.previewDecrease(alice, 0.5e18);
+        (
+            ISynFuturesPositionObserver.Position memory decreasePreview,
+            NaryxTestPerpMarket.Settlement memory settlement
+        ) = market.previewDecrease(alice, 0.5e18);
         uint256 reserveBefore = market.reserveOf(alice);
         vm.prank(alice);
         ISynFuturesInstrument.PositionCache memory decreased = market.trade(_args(0.5e18, 0));

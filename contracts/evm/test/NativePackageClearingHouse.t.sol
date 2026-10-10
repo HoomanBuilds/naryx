@@ -73,7 +73,9 @@ contract NativePackageClearingHouseTest is Test {
         vm.prank(vm.addr(LONG_KEY));
         clearing.withdraw(LONG_ACCOUNT, 975_000);
         NativePackageClearingHouse.NativeMatch memory match_ = _match(keccak256("authorization-2"));
-        clearing.executeMatch(match_, _sign(LONG_KEY, clearing.matchDigest(match_)), _sign(SHORT_KEY, clearing.matchDigest(match_)));
+        clearing.executeMatch(
+            match_, _sign(LONG_KEY, clearing.matchDigest(match_)), _sign(SHORT_KEY, clearing.matchDigest(match_))
+        );
         clearing.publishMark(keccak256("mark-2"), 1, 2, uint64(block.timestamp + 600));
         token.mint(address(this), 100_000);
         token.approve(address(clearing), 100_000);
@@ -103,7 +105,9 @@ contract NativePackageClearingHouseTest is Test {
         vm.prank(vm.addr(LONG_KEY));
         clearing.withdraw(LONG_ACCOUNT, 975_000);
         NativePackageClearingHouse.NativeMatch memory match_ = _match(keccak256("authorization-3"));
-        clearing.executeMatch(match_, _sign(LONG_KEY, clearing.matchDigest(match_)), _sign(SHORT_KEY, clearing.matchDigest(match_)));
+        clearing.executeMatch(
+            match_, _sign(LONG_KEY, clearing.matchDigest(match_)), _sign(SHORT_KEY, clearing.matchDigest(match_))
+        );
         clearing.publishMark(keccak256("mark-3"), 1, 2, uint64(block.timestamp + 60));
         bytes32 auctionId = keccak256("auction-2");
         clearing.openDefaultAuction(auctionId, LONG_ACCOUNT);
@@ -114,11 +118,7 @@ contract NativePackageClearingHouseTest is Test {
         assertEq(clearing.accountLock(LONG_ACCOUNT), bytes32(0));
     }
 
-    function _match(bytes32 authorizationHash)
-        private
-        view
-        returns (NativePackageClearingHouse.NativeMatch memory)
-    {
+    function _match(bytes32 authorizationHash) private view returns (NativePackageClearingHouse.NativeMatch memory) {
         return NativePackageClearingHouse.NativeMatch({
             authorizationHash: authorizationHash,
             longAccountId: LONG_ACCOUNT,
