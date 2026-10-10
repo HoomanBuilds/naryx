@@ -172,6 +172,11 @@ contract PremiaV3TypedOptionAdapter is ITypedStrategyAdapter, ReentrancyGuard {
         return keccak256(abi.encode(address(this), deploymentChainId, leg, outcome));
     }
 
+    function isRiskIncreasing(bytes calldata payload) external pure returns (bool) {
+        ExactOptionLeg memory leg = abi.decode(payload, (ExactOptionLeg));
+        return leg.expectedPostLongs > leg.expectedPreLongs || leg.expectedPostShorts > leg.expectedPreShorts;
+    }
+
     function assertDeployment() external view {
         _assertDeployment();
     }

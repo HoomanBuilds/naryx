@@ -194,6 +194,18 @@ contract SynFuturesTypedPerpAdapter is ITypedStrategyAdapter, ReentrancyGuard {
         return keccak256(abi.encode(address(this), deploymentChainId, executionHash, stateHash));
     }
 
+    /// @dev Reads the live position, which `executeLeg` requires to match the leg's committed pre-position.
+    function isRiskIncreasing(bytes calldata payload) external view returns (bool) {
+        ExactPerpLeg memory leg = abi.decode(payload, (ExactPerpLeg));
+        if (leg.collateralInAtoms != 0) return true;
+        int128 pre = _position().size;
+        int128 post = leg.expectedPostSizeWad;
+        if (post == 0) return false;
+        if (pre > 0 && post > 0) return post > pre;
+        if (pre < 0 && post < 0) return post < pre;
+        return true;
+    }
+
     function position() external view returns (ISynFuturesPositionObserver.Position memory) {
         return _position();
     }

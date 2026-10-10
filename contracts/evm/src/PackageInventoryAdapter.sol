@@ -116,6 +116,10 @@ contract PackageInventoryAdapter is ITypedStrategyAdapter, ReentrancyGuard {
         );
     }
 
+    function isRiskIncreasing(bytes calldata payload) external pure returns (bool) {
+        return abi.decode(payload, (ExactInventoryLeg)).action == LOCK;
+    }
+
     function assertDeployment() external view {
         _assertDeployment();
     }

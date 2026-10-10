@@ -156,6 +156,13 @@ contract AaveV3TypedLendingAdapterTest is Test {
         assertEq(pool.collateralOf(address(adapter)), 0);
     }
 
+    function testOnlySupplyAndBorrowIncreaseRisk() public view {
+        assertTrue(adapter.isRiskIncreasing(_leg(1, 1 ether, 1 ether, 1 ether, 1 ether, 0)));
+        assertTrue(adapter.isRiskIncreasing(_leg(3, 1 ether, 1 ether, 1 ether, 1 ether, 1 ether)));
+        assertFalse(adapter.isRiskIncreasing(_leg(2, 1 ether, 1 ether, 1 ether, 0, 0)));
+        assertFalse(adapter.isRiskIncreasing(_leg(4, 1 ether, 1 ether, 1 ether, 1 ether, 0)));
+    }
+
     function testRejectsAStaleSignedPrecondition() public {
         bytes memory payload = _leg(1, 10 ether, 10 ether, 10 ether, 10 ether, 0);
         AaveV3TypedLendingAdapter.ExactLendingLeg memory leg =

@@ -152,6 +152,14 @@ contract UniswapV3TypedSpotAdapter is ITypedStrategyAdapter, ReentrancyGuard {
         );
     }
 
+    /// @dev A swap settles atomically into the strategy account and leaves no venue position. Whether a buy or a
+    /// sell adds exposure depends on the package (a buy closes a reverse-basis short), so the package's position
+    /// legs carry the direction check.
+    function isRiskIncreasing(bytes calldata payload) external pure returns (bool) {
+        abi.decode(payload, (ExactSpotLeg));
+        return false;
+    }
+
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external {
         bytes32 commitment = _callbackCommitment;
         if (msg.sender != pool || commitment == bytes32(0) || keccak256(data) != commitment) {

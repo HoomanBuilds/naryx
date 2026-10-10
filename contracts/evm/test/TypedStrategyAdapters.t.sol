@@ -251,6 +251,7 @@ contract TypedAdapterPerpVenue is ISynFuturesInstrument, ISynFuturesPositionObse
             open.maximumReserveAfterAtoms = 50 ether;
             open.collateralInAtoms = 100 ether;
 
+            assertTrue(perp.isRiskIncreasing(abi.encode(open)));
             bytes32 openEvidence = account.execute(perp, quote, 100 ether, abi.encode(open));
             assertTrue(openEvidence != bytes32(0));
             assertEq(quote.balanceOf(address(account)), 900 ether);
@@ -264,6 +265,14 @@ contract TypedAdapterPerpVenue is ISynFuturesInstrument, ISynFuturesPositionObse
             close.withdrawAll = true;
             close.minimumCollateralOutAtoms = 100 ether;
             close.maximumCollateralOutAtoms = 100 ether;
+            assertFalse(perp.isRiskIncreasing(abi.encode(close)));
+            SynFuturesTypedPerpAdapter.ExactPerpLeg memory probe = _emptyPerpLeg();
+            probe.expectedPostSizeWad = 10;
+            assertFalse(perp.isRiskIncreasing(abi.encode(probe)));
+            probe.expectedPostSizeWad = 11;
+            assertTrue(perp.isRiskIncreasing(abi.encode(probe)));
+            probe.expectedPostSizeWad = -1;
+            assertTrue(perp.isRiskIncreasing(abi.encode(probe)));
 
             bytes32 closeEvidence = account.execute(perp, quote, 0, abi.encode(close));
             assertTrue(closeEvidence != bytes32(0));

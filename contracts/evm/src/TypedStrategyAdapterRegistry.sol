@@ -259,7 +259,8 @@ contract TypedStrategyAdapterRegistry {
             revert AdapterUnknown(identity.subjectId, identity.manifestVersion);
         }
         AdapterControl storage control = _controls[key];
-        _validateDomain(binding.domain);
+        // A domain manifest rotation must not strand exits through bindings registered under the prior manifest.
+        if (context.riskIncreasing) _validateDomain(binding.domain);
         if (
             !_sameManifest(binding.identity, identity) || !_sameTemplate(binding.template, template)
                 || binding.settlementClass.classId != settlementClass.classId

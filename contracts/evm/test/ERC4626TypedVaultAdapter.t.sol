@@ -76,6 +76,11 @@ contract ERC4626TypedVaultAdapterTest is Test {
         assertEq(vault.balanceOf(address(adapter)), 0);
     }
 
+    function testOnlyDepositIncreasesRisk() public view {
+        assertTrue(adapter.isRiskIncreasing(_leg(1, 10 ether, 10 ether, 10 ether)));
+        assertFalse(adapter.isRiskIncreasing(_leg(2, 10 ether, 10 ether, 10 ether)));
+    }
+
     function testRejectsOutputOutsideTheSignedRange() public {
         vm.expectRevert(ERC4626TypedVaultAdapter.PostconditionFailed.selector);
         account.execute(adapter, asset, 10 ether, _leg(1, 10 ether, 11 ether, 12 ether));

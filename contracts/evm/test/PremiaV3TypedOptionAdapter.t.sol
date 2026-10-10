@@ -155,6 +155,13 @@ contract PremiaV3TypedOptionAdapterTest is Test {
         assertEq(base.balanceOf(address(adapter)), 0);
     }
 
+    function testOnlyLegsThatGrowLongsOrShortsIncreaseRisk() public view {
+        assertTrue(adapter.isRiskIncreasing(_leg(1, true, 100 ether, 10 ether, 10 ether, 0, 0, 100 ether, 0, 0, 0)));
+        assertTrue(adapter.isRiskIncreasing(_leg(1, false, 100 ether, 10 ether, 100 ether, 0, 0, 0, 100 ether, 0, 0)));
+        assertFalse(adapter.isRiskIncreasing(_leg(1, true, 100 ether, 10 ether, 10 ether, 0, 100 ether, 0, 0, 0, 0)));
+        assertFalse(adapter.isRiskIncreasing(_leg(2, false, 0, 0, 0, 100 ether, 0, 0, 0, 0, 0)));
+    }
+
     function testRejectsUnexpectedPositionState() public {
         vm.expectRevert(PremiaV3TypedOptionAdapter.PreconditionFailed.selector);
         account.execute(

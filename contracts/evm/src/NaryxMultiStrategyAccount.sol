@@ -163,7 +163,10 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
     error AdapterExecutionFailed(uint256 callIndex, bytes returnData);
     error AdapterEvidenceInvalid(uint256 callIndex);
     error InsufficientGas(uint256 callIndex);
+    error RiskDirectionMismatch(uint256 callIndex);
     error UnauthorizedOwner();
+    error PackageActive();
+    error InvalidWithdrawal();
 
     event StrategyExecuted(
         bytes32 indexed receiptHash,
@@ -199,6 +202,7 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         uint256 outputAtoms,
         bytes32 evidenceHash
     );
+    event IdleTokenWithdrawn(address indexed token, address indexed recipient, uint256 amount);
 
     address public owner;
     address public immutable accountFactory;
@@ -218,6 +222,7 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
 
     uint256 public nextNonce;
     uint256 public nextCollateralNonce;
+    uint256 public activePackageCount;
     mapping(bytes32 packageId => PackageState state) private _packages;
     mapping(bytes32 receiptHash => Receipt receipt) private _receipts;
     mapping(bytes32 receiptHash => bytes32 authorizationHash) public nettingAuthorizationOf;
@@ -434,6 +439,20 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         );
     }
 
+    /// @notice Owner-only exit for idle balances. Refused while any package is open, so no open package's
+    /// holdings can leave the account outside a signed execution.
+    function withdrawIdleToken(IERC20 token, address recipient, uint256 amount) external nonReentrant {
+        if (msg.sender != owner) revert UnauthorizedOwner();
+        if (address(token) == address(0) || recipient == address(0) || amount == 0) revert InvalidWithdrawal();
+        if (block.chainid != deploymentChainId) revert InvalidConfiguration();
+        if (activePackageCount != 0) revert PackageActive();
+        uint256 balanceBefore = token.balanceOf(address(this));
+        if (balanceBefore < amount) revert InvalidWithdrawal();
+        token.safeTransfer(recipient, amount);
+        if (token.balanceOf(address(this)) != balanceBefore - amount) revert InvalidWithdrawal();
+        emit IdleTokenWithdrawn(address(token), recipient, amount);
+    }
+
     function _settle(Execution calldata execution, AdapterCall[] calldata calls, bytes32 callCommitment)
         private
         returns (bytes32 receiptHash)
@@ -475,7 +494,9 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
 
         if (execution.operation == EXIT || execution.operation == EMERGENCY_UNWIND) {
             delete _packages[execution.packageId];
+            activePackageCount -= 1;
         } else {
+            if (execution.operation == ENTER) activePackageCount += 1;
             PackageState storage state = _packages[execution.packageId];
             state.template = execution.template;
             state.riskDomainId = execution.risk.riskDomainId;
@@ -579,6 +600,9 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
                 gasLimit: item.gasLimit
             })
         );
+        if (!item.riskIncreasing && ITypedStrategyAdapter(adapter).isRiskIncreasing(item.payload)) {
+            revert RiskDirectionMismatch(callIndex);
+        }
         if (gasleft() <= item.gasLimit + POST_CALL_GAS_RESERVE) revert InsufficientGas(callIndex);
         if (item.approvalAtoms != 0) IERC20(item.approvalToken).forceApprove(adapter, item.approvalAtoms);
         (bool success, bytes memory result) =

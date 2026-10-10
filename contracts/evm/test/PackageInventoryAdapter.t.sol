@@ -70,6 +70,11 @@ contract PackageInventoryAdapterTest is Test {
         assertEq(token.balanceOf(address(adapter)), 25 ether);
     }
 
+    function testOnlyLockIncreasesRisk() public view {
+        assertTrue(adapter.isRiskIncreasing(_leg(1, 40 ether, 0, 40 ether)));
+        assertFalse(adapter.isRiskIncreasing(_leg(2, 15 ether, 40 ether, 25 ether)));
+    }
+
     function testRejectsUnexpectedInventoryState() public {
         vm.expectRevert(PackageInventoryAdapter.PreconditionFailed.selector);
         account.execute(adapter, token, 40 ether, _leg(1, 40 ether, 1 ether, 41 ether));

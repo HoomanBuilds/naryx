@@ -83,6 +83,10 @@ contract ERC4626TypedVaultAdapter is ITypedStrategyAdapter, ReentrancyGuard {
         return leg.action == DEPOSIT_EXACT_ASSETS ? _deposit(leg) : _redeem(leg);
     }
 
+    function isRiskIncreasing(bytes calldata payload) external pure returns (bool) {
+        return abi.decode(payload, (ExactVaultLeg)).action == DEPOSIT_EXACT_ASSETS;
+    }
+
     function assertDeployment() external view {
         _assertDeployment();
     }

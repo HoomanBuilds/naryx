@@ -47,6 +47,11 @@ contract MultiStrategyAdapter is ITypedStrategyAdapter {
         return expectedEvidence;
     }
 
+    function isRiskIncreasing(bytes calldata payload) external pure returns (bool) {
+        (uint8 mode,,,,) = abi.decode(payload, (uint8, IERC20, address, uint256, bytes32));
+        return mode == 1;
+    }
+
     function manageCollateral(bytes calldata payload) external returns (bytes32 evidenceHash, uint256 outputAtoms) {
         (uint8 mode, IERC20 token, uint256 amount, bytes32 expectedEvidence) =
             abi.decode(payload, (uint8, IERC20, uint256, bytes32));
@@ -386,6 +391,86 @@ contract NaryxMultiStrategyAccountTest is Test {
         assertEq(quote.balanceOf(address(account)), 1_000 ether);
     }
 
+    function testRejectsRiskIncreasingLegLabelledAsExitAndKeepsGenuineExit() public {
+        NaryxMultiStrategyAccount.Execution memory entry = _enter();
+        vm.prank(PAUSER);
+        adapters.tightenControl(_adapterRef(), TypedStrategyAdapterRegistry.Lifecycle.EXIT_ONLY, 100 ether, 1_000 ether);
+
+        NaryxMultiStrategyAccount.Execution memory exit = _execution(account.EXIT(), STATE_ONE, bytes32(0), 1);
+        NaryxMultiStrategyAccount.AdapterCall[] memory mislabelled = _calls(
+            false,
+            address(quote),
+            10 ether,
+            abi.encode(uint8(1), IERC20(address(quote)), RECIPIENT, 10 ether, EVIDENCE_TWO)
+        );
+        bytes memory ownerSignature = _sign(ownerKey, account.ownerDigest(exit, mislabelled));
+        bytes memory solverSignature = _sign(solverKey, account.solverDigest(exit, mislabelled));
+        vm.expectRevert(abi.encodeWithSelector(NaryxMultiStrategyAccount.RiskDirectionMismatch.selector, uint256(0)));
+        account.execute(exit, mislabelled, ownerSignature, solverSignature);
+
+        _exit(entry.packageId);
+        assertEq(quote.balanceOf(RECIPIENT), 10 ether);
+    }
+
+    function testDomainRotationBlocksStaleBindingEntryButPreservesExit() public {
+        NaryxMultiStrategyAccount.Execution memory entry = _enter();
+        vm.prank(PROPOSER);
+        config.proposeDomain(2, keccak256("domain-v2"));
+        vm.warp(block.timestamp + 1);
+        vm.prank(GOVERNANCE_EXECUTOR);
+        config.activateDomain();
+
+        TypedStrategyAdapterRegistry.CallContext memory context = TypedStrategyAdapterRegistry.CallContext({
+            target: address(adapter),
+            packageId: entry.packageId,
+            riskIncreasing: true,
+            approvalToken: address(0),
+            approvalAtoms: 0,
+            grossNotionalAtoms: 1 ether,
+            gasLimit: 500_000
+        });
+        vm.prank(address(account));
+        vm.expectRevert(TypedStrategyAdapterRegistry.InvalidBinding.selector);
+        adapters.validateCall(_adapterRef(), _template(), _settlement(), context);
+
+        quote.mint(address(adapter), 10 ether);
+        NaryxMultiStrategyAccount.Execution memory exit = _execution(account.EXIT(), STATE_ONE, bytes32(0), 1);
+        exit.domainManifestVersion = 2;
+        exit.domainManifestHash = keccak256("domain-v2");
+        NaryxMultiStrategyAccount.AdapterCall[] memory exitCalls = _calls(
+            false, address(0), 0, abi.encode(uint8(0), IERC20(address(quote)), address(0), 10 ether, EVIDENCE_TWO)
+        );
+        account.execute(
+            exit,
+            exitCalls,
+            _sign(ownerKey, account.ownerDigest(exit, exitCalls)),
+            _sign(solverKey, account.solverDigest(exit, exitCalls))
+        );
+        assertFalse(account.packageState(entry.packageId).active);
+    }
+
+    function testOwnerWithdrawsIdleTokensOnlyWhileNoPackageIsOpen() public {
+        NaryxMultiStrategyAccount.Execution memory entry = _enter();
+        assertEq(account.activePackageCount(), 1);
+        vm.prank(owner);
+        vm.expectRevert(NaryxMultiStrategyAccount.PackageActive.selector);
+        account.withdrawIdleToken(IERC20(address(quote)), owner, 1);
+
+        _exit(entry.packageId);
+        assertEq(account.activePackageCount(), 0);
+        vm.expectRevert(NaryxMultiStrategyAccount.UnauthorizedOwner.selector);
+        account.withdrawIdleToken(IERC20(address(quote)), address(this), 1);
+
+        uint256 idle = quote.balanceOf(address(account));
+        vm.prank(owner);
+        vm.expectRevert(NaryxMultiStrategyAccount.InvalidWithdrawal.selector);
+        account.withdrawIdleToken(IERC20(address(quote)), owner, idle + 1);
+        vm.prank(owner);
+        account.withdrawIdleToken(IERC20(address(quote)), owner, idle);
+        assertEq(quote.balanceOf(owner), idle);
+        assertEq(quote.balanceOf(address(account)), 0);
+    }
+
     function testRegistryRejectsAdapterMetadataMismatch() public {
         TypedStrategyAdapterRegistry.AdapterBinding memory binding = _binding();
         binding.identity = TypedStrategyAdapterRegistry.ManifestRef(
@@ -425,6 +510,37 @@ contract NaryxMultiStrategyAccountTest is Test {
             _collateralManagement(packageId, 2, type(uint256).max, 10 ether, 10 ether, address(0), 0, 2),
             abi.encode(uint8(0), IERC20(address(quote)), 10 ether, EVIDENCE_TWO)
         );
+    }
+
+    function _enter() private returns (NaryxMultiStrategyAccount.Execution memory entry) {
+        entry = _execution(account.ENTER(), bytes32(0), STATE_ONE, 0);
+        NaryxMultiStrategyAccount.AdapterCall[] memory calls = _calls(
+            true,
+            address(quote),
+            10 ether,
+            abi.encode(uint8(1), IERC20(address(quote)), RECIPIENT, 10 ether, EVIDENCE_ONE)
+        );
+        account.execute(
+            entry,
+            calls,
+            _sign(ownerKey, account.ownerDigest(entry, calls)),
+            _sign(solverKey, account.solverDigest(entry, calls))
+        );
+    }
+
+    function _exit(bytes32 packageId) private {
+        quote.mint(address(adapter), 10 ether);
+        NaryxMultiStrategyAccount.Execution memory exit = _execution(account.EXIT(), STATE_ONE, bytes32(0), 1);
+        NaryxMultiStrategyAccount.AdapterCall[] memory calls = _calls(
+            false, address(0), 0, abi.encode(uint8(0), IERC20(address(quote)), address(0), 10 ether, EVIDENCE_TWO)
+        );
+        account.execute(
+            exit,
+            calls,
+            _sign(ownerKey, account.ownerDigest(exit, calls)),
+            _sign(solverKey, account.solverDigest(exit, calls))
+        );
+        assertFalse(account.packageState(packageId).active);
     }
 
     function _binding() private view returns (TypedStrategyAdapterRegistry.AdapterBinding memory) {

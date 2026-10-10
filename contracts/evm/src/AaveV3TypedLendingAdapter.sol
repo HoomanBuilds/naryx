@@ -152,6 +152,11 @@ contract AaveV3TypedLendingAdapter is ITypedStrategyAdapter, ReentrancyGuard {
         );
     }
 
+    function isRiskIncreasing(bytes calldata payload) external pure returns (bool) {
+        uint8 action = abi.decode(payload, (ExactLendingLeg)).action;
+        return action == SUPPLY_COLLATERAL || action == BORROW_DEBT;
+    }
+
     function manageCollateral(bytes calldata payload)
         external
         nonReentrant
