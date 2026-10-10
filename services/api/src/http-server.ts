@@ -2228,7 +2228,8 @@ export function createPrivateTerminalRequestHandler(
         if (error instanceof StrategyPackageStoreError) {
           const status = error.code === "QUOTE_NOT_FOUND" ? 404
             : error.code === "CORRUPT_ROW" ? 500
-              : error.code === "IDEMPOTENCY_CONFLICT" || error.code === "QUOTE_ALREADY_SELECTED" ? 409
+              : error.code === "IDEMPOTENCY_CONFLICT" || error.code === "QUOTE_ALREADY_SELECTED"
+                || error.code === "ORDER_ALREADY_SELECTED" ? 409
                 : 400;
           reject(response, status, error.code, error.message);
           return;

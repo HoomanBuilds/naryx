@@ -134,6 +134,17 @@ CREATE TABLE IF NOT EXISTS strategy_native_execution_attempts (
   status TEXT NOT NULL CHECK (status = 'HYPERLIQUID_TESTNET_QUOTE_SELECTED'),
   selected_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS strategy_execution_order_selections (
+  order_hash BLOB PRIMARY KEY REFERENCES strategy_package_orders(order_hash),
+  attempt_id TEXT NOT NULL UNIQUE,
+  selected_at_ms INTEGER NOT NULL
+) STRICT;
+INSERT OR IGNORE INTO strategy_execution_order_selections (order_hash, attempt_id, selected_at_ms)
+SELECT order_hash, attempt_id, selected_at_ms FROM (
+  SELECT order_hash, attempt_id, selected_at_ms FROM strategy_execution_attempts
+  UNION ALL
+  SELECT order_hash, attempt_id, selected_at_ms FROM strategy_native_execution_attempts
+) ORDER BY selected_at_ms, attempt_id;
 CREATE TABLE IF NOT EXISTS strategy_package_receipts (
   receipt_hash BLOB PRIMARY KEY,
   order_hash BLOB NOT NULL REFERENCES strategy_package_orders(order_hash),
@@ -1494,6 +1505,8 @@ export class SqliteStrategyPackageStore {
       }
       const byQuote = this.db.prepare("SELECT * FROM strategy_execution_attempts WHERE quote_hash = ?").get(hashBuffer(quoteHashHex)) as Parameters<typeof attemptRow>[0] | undefined;
       requireCondition(byQuote === undefined, "QUOTE_ALREADY_SELECTED", "The strategy quote was already selected with another idempotency key.");
+      requireCondition(this.db.prepare("SELECT 1 FROM strategy_execution_order_selections WHERE order_hash = ?").get(hashBuffer(admission.orderHashHex)) === undefined,
+        "ORDER_ALREADY_SELECTED", "The strategy order already has a selected execution attempt.");
       this.db.prepare(`
         INSERT INTO strategy_execution_attempts
           (attempt_id, idempotency_key, order_hash, graph_hash, quote_hash, route_hash,
@@ -1509,6 +1522,9 @@ export class SqliteStrategyPackageStore {
         hashBuffer(source.sourceOrderHashHex),
         selectedAtMs,
       );
+      this.db.prepare(`
+        INSERT INTO strategy_execution_order_selections (order_hash, attempt_id, selected_at_ms) VALUES (?, ?, ?)
+      `).run(hashBuffer(admission.orderHashHex), attemptId, selectedAtMs);
       return Object.freeze({
         attemptId,
         idempotencyKey,
@@ -1577,6 +1593,8 @@ export class SqliteStrategyPackageStore {
       }
       const byQuote = this.db.prepare("SELECT * FROM strategy_native_execution_attempts WHERE quote_hash = ?").get(hashBuffer(quoteHashHex)) as Parameters<typeof nativeAttemptRow>[0] | undefined;
       requireCondition(byQuote === undefined, "QUOTE_ALREADY_SELECTED", "The strategy quote was already selected with another idempotency key.");
+      requireCondition(this.db.prepare("SELECT 1 FROM strategy_execution_order_selections WHERE order_hash = ?").get(hashBuffer(admission.orderHashHex)) === undefined,
+        "ORDER_ALREADY_SELECTED", "The strategy order already has a selected execution attempt.");
       let transitionPosition: StoredNativeStrategyPosition | undefined;
       if (admission.order.lifecycleAction !== "ENTRY") {
         requireCondition(admission.order.expectedStrategyStateHash !== undefined,
@@ -1615,6 +1633,9 @@ export class SqliteStrategyPackageStore {
         hashBuffer(admission.routeHashHex),
         selectedAtMs,
       );
+      this.db.prepare(`
+        INSERT INTO strategy_execution_order_selections (order_hash, attempt_id, selected_at_ms) VALUES (?, ?, ?)
+      `).run(hashBuffer(admission.orderHashHex), attemptId, selectedAtMs);
       if (transitionPosition !== undefined) {
         const pending = this.db.prepare(`
           SELECT 1 FROM strategy_native_transitions

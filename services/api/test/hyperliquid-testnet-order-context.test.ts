@@ -9,12 +9,19 @@ import {
   domainRef,
   exactSignedRate,
   packageGraphHash,
+  protocolId,
+  requireStrategyTemplateDefinition,
+  strategyPackageOrder,
   strategyPackageOrderHash,
+  strategyPackageQuote,
   stringifyProtocolJson,
+  typedStrategyRouteHash,
   toHex,
   validateStrategyTemplateGraph,
+  type AdmittedStrategyRoute,
   type PackageGraphInput,
   type StrategyPackageOrderInput,
+  type TypedStrategyRoute,
 } from "@naryx/protocol-types";
 import {
   HYPERLIQUID_TESTNET_INFO_URL,
@@ -597,6 +604,130 @@ test("a selected Hyperliquid package stages one typed strategy order with exact 
     } finally {
       strategyStore.close();
       rmSync(strategyScratch, { recursive: true, force: true });
+    }
+  });
+});
+
+test("a generalized Hyperliquid entry order selects one execution attempt however many quotes it has", async () => {
+  const market = fakeMarket();
+  const runtimeConfig = config();
+  const feed = priceFeed(market, runtimeConfig);
+  assert.equal(await feed.refresh(), true);
+  const runtime = createHyperliquidTestnetOrderRuntime(runtimeConfig, feed, () => market.now);
+  await withOrders(async (orders) => {
+    const scratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-strategy-selection-"));
+    const strategyStore = new SqliteStrategyPackageStore(join(scratch, "strategies.db"), { clock: () => market.now });
+    try {
+      const coordinator = new InternalOrderCoordinator({ contexts: runtime.contexts, clock: runtime.clock, store: orders });
+      const created = await coordinator.createOrder(orderRequest("1", "hyper-generalized-order-0002"));
+      const port = createHyperliquidGeneralizedOrderPort({
+        config: runtimeConfig,
+        profile: {
+          seriesId: "btc-cash-carry-usdc",
+          seriesVersion: 1,
+          executionClassId: "hyperliquid-testnet-batched-ioc",
+          executionClassVersion: 1,
+        },
+        orders,
+        intents: {
+          getAttemptForOrder: (orderHash) => orderHash === created.record.orderHashHex ? ({} as never) : undefined,
+          getAuthorization: () => undefined,
+        },
+        intake: {
+          store: (order, graph) => ({
+            version: 1,
+            status: "STORED_FOR_QUOTING",
+            ...strategyStore.registerOrder(order, graph),
+            currentTime: { unit: "HYPERLIQUID_UNIX_MILLISECONDS", value: BigInt(market.now) },
+            timeSource: "SERVER",
+            stages: [],
+          }),
+        },
+        sources: strategyStore,
+      });
+      const staged = port.stage(created.record.orderHashHex);
+      const order = strategyPackageOrder(staged.order);
+      strategyStore.recordOwnerAuthorization(staged.intake.orderHashHex, ACCOUNT, `0x${"01".repeat(65)}`);
+      const routeFor = (quoteNonce: bigint): TypedStrategyRoute => ({
+        version: 1,
+        environment: order.environment,
+        orderHash: strategyPackageOrderHash(order),
+        graphHash: packageGraphHash(staged.graph),
+        solverId: protocolId(runtimeConfig.solverId),
+        settlementClass: order.settlementClass,
+        legs: [],
+        domainPlans: [{ domain: runtimeConfig.domain, executionPlanKind: "HYPERCORE_BATCHED_IOC", legIds: [], stageCount: 1 }],
+        routeExpiryUnit: "HYPERLIQUID_UNIX_MILLISECONDS",
+        routeExpiryValue: order.expiryValue - quoteNonce,
+      });
+      const zero = { asset: order.quoteAsset, atoms: 0n };
+      const quoteHashes = [1n, 2n].map((quoteNonce) => {
+        const route = routeFor(quoteNonce);
+        const quote = strategyPackageQuote({
+          version: 1,
+          environment: order.environment,
+          domains: [runtimeConfig.domain],
+          orderHash: route.orderHash,
+          graphHash: route.graphHash,
+          routeHash: typedStrategyRouteHash(route),
+          templateId: order.templateId,
+          templateVersion: order.templateVersion,
+          packageTemplateManifestHash: order.packageTemplateManifestHash,
+          seriesId: order.seriesId,
+          seriesVersion: order.seriesVersion,
+          seriesManifestHash: order.seriesManifestHash,
+          executionClassId: order.executionClassId,
+          executionClassVersion: order.executionClassVersion,
+          executionClassManifestHash: order.executionClassManifestHash,
+          quoteConventionId: order.quoteConventionId,
+          riskClassId: order.riskClassId,
+          solverId: runtimeConfig.solverId,
+          solverCapabilityManifestHash: "15".repeat(32),
+          quoteMode: "EXECUTION_COMMITMENT",
+          settlementClass: order.settlementClass,
+          quoteAsset: order.quoteAsset,
+          metrics: requireStrategyTemplateDefinition(order.templateId).metricIds
+            .map((metricId) => ({ metricId, value: 0n, scale: 0, unitId: "unit" })),
+          legEconomics: [{
+            legId: "perp", quantity: { asset: order.economicQuantity.asset, atoms: 1n },
+            grossNotional: zero, marginDelta: zero, venueFee: zero, builderFee: zero, residualValue: zero,
+          }],
+          netPackageOutcome: zero,
+          totalGrossNotional: zero,
+          totalMarginDelta: zero,
+          totalResidualValue: zero,
+          serviceCharges: [],
+          passThroughCosts: [],
+          feePolicyVersion: 1,
+          feePolicyManifestHash: "16".repeat(32),
+          validUntilUnit: "HYPERLIQUID_UNIX_MILLISECONDS",
+          validUntilValue: order.expiryValue,
+          quoteNonce,
+          solverSignatureScheme: "ED25519",
+          solverVerificationKey: new Uint8Array(32).fill(1),
+          signature: new Uint8Array(64).fill(2),
+        });
+        return strategyStore.registerQuote({ order, graph: staged.graph, quote, route } as unknown as AdmittedStrategyRoute).quoteHashHex;
+      });
+      const select = (index: number, idempotencyKey: string) => strategyStore.selectHyperliquidExecution({
+        quoteHashHex: quoteHashes[index]!,
+        orderHashHex: staged.intake.orderHashHex,
+        routeHashHex: toHex(typedStrategyRouteHash(routeFor(BigInt(index + 1)))),
+        sourceOrderHashHex: created.record.orderHashHex,
+        idempotencyKey,
+      });
+      const first = select(0, "strategy-select-key-0001");
+      assert.deepEqual(select(0, "strategy-select-key-0001"), first);
+      assert.throws(() => select(1, "strategy-select-key-0002"), { code: "ORDER_ALREADY_SELECTED" });
+      assert.throws(() => strategyStore.selectNativeHyperliquidExecution({
+        quoteHashHex: quoteHashes[1]!,
+        orderHashHex: staged.intake.orderHashHex,
+        routeHashHex: toHex(typedStrategyRouteHash(routeFor(2n))),
+        idempotencyKey: "strategy-select-key-0003",
+      }), { code: "ORDER_ALREADY_SELECTED" });
+    } finally {
+      strategyStore.close();
+      rmSync(scratch, { recursive: true, force: true });
     }
   });
 });
