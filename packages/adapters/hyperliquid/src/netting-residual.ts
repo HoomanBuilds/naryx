@@ -226,6 +226,8 @@ export function hyperliquidNettingResidualEvidence(input: Readonly<{
     && plan.maximumFeeQuoteAtoms === intent.maximumFeeQuoteAtoms
     && plan.requestExpiryMs === intent.validUntilValue,
   'residual execution plan differs from the intent');
+  requireCondition(plan.clientOrderId === clientOrderId(intent.intentHash, plan.order.a) && plan.order.c === plan.clientOrderId,
+    'residual execution plan does not derive from the intent');
   requireCondition(observation.clientOrderId.toLowerCase() === plan.clientOrderId,
     'residual observation cites another client order');
   requireCondition(observation.terminalStatus !== 'UNKNOWN',

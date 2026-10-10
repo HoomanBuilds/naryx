@@ -168,6 +168,15 @@ test('translates only matching terminal venue evidence', () => {
     }),
     /fee exceeds/,
   );
+  const foreignOrder = `0x${'cd'.repeat(16)}` as const;
+  assert.throws(
+    () => hyperliquidNettingResidualEvidence({
+      intent,
+      plan: { ...plan, clientOrderId: foreignOrder, order: { ...plan.order, c: foreignOrder } },
+      observation: { ...observation, clientOrderId: foreignOrder },
+    }),
+    /does not derive from the intent/,
+  );
 });
 
 test('compiles and proves one pooled cross-batch residual with the same Testnet lane', () => {

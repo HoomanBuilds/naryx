@@ -229,6 +229,13 @@ export function evmTestPerpNettingResidualEvidence(input: Readonly<{
     && plan.maximumFeeWad === exactWad(intent.maximumFeeQuoteAtoms, intent.quoteAsset.decimals, 'EVM residual fee cap')
     && plan.requestExpirySeconds === intent.validUntilValue,
   'EVM residual execution plan differs from the intent');
+  const limitNotionalWad = exactWad((intent.quantityAtoms / intent.quantityIncrementAtoms)
+    * intent.limitPriceTicks * intent.priceTickQuoteAtoms, intent.quoteAsset.decimals, 'EVM residual notional limit');
+  requireCondition(plan.executionId.toLowerCase() === toHex(intent.intentHash).toLowerCase()
+    && plan.sizeDeltaWad === exactWad(plan.requestedSignedQuantityAtoms, intent.quantityAsset.decimals, 'EVM residual quantity')
+    && plan.minimumNotionalWad === (intent.side === 'SELL' ? limitNotionalWad : 1n)
+    && plan.maximumNotionalWad === (intent.side === 'BUY' ? limitNotionalWad : UINT256_MAX),
+  'EVM residual execution plan does not derive from the intent');
   requireCondition(observation.executionId.toLowerCase() === plan.executionId.toLowerCase(),
     'EVM residual observation cites another execution');
   requireCondition(getAddress(observation.trader) === plan.executionAccount,

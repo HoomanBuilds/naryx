@@ -189,6 +189,18 @@ test('translates only the matching bounded event into terminal evidence', () => 
     plan,
     observation: { ...observation, notionalWad: plan.maximumNotionalWad + 1n },
   }), /violates the bounded trade/);
+  const halfSize = plan.sizeDeltaWad / 2n;
+  assert.throws(() => evmTestPerpNettingResidualEvidence({
+    intent,
+    plan: { ...plan, sizeDeltaWad: halfSize },
+    observation: { ...observation, sizeDeltaWad: halfSize },
+  }), /does not derive from the intent/);
+  const otherExecution = `0x${'ab'.repeat(32)}` as const;
+  assert.throws(() => evmTestPerpNettingResidualEvidence({
+    intent,
+    plan: { ...plan, executionId: otherExecution },
+    observation: { ...observation, executionId: otherExecution },
+  }), /does not derive from the intent/);
 });
 
 test('compiles and proves a pooled Base Sepolia residual', () => {
