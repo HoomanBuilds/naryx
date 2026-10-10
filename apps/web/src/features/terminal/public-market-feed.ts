@@ -570,6 +570,7 @@ export interface PublicFeedStatus {
 }
 
 interface LiveState {
+  readonly packageMarketId: string;
   readonly bids: DepthLevel[];
   readonly asks: DepthLevel[];
   readonly trades: TapeTrade[];
@@ -579,6 +580,7 @@ interface LiveState {
 }
 
 const BOOK_UNIT = { unit: "ticks", precision: 0 } as const;
+const CONNECTING: PublicFeedStatus = { state: "connecting", detail: "Connecting to the public market API." };
 const PACKAGE_PRICE: SeriesMeta = {
   title: "Package price",
   unit: "ticks",
@@ -611,11 +613,15 @@ export function usePublicMarketFeed(
   reference: MarketFeed | null,
 ): { readonly feed: MarketFeed; readonly status: PublicFeedStatus | null } {
   const configured = baseUrl !== null && packageMarketId !== null;
-  const [live, setLive] = useState<LiveState | null>(null);
-  const [status, setStatus] = useState<PublicFeedStatus>({ state: "connecting", detail: "Connecting to the public market API." });
+  const [observedLive, setLive] = useState<LiveState | null>(null);
+  const [observedStatus, setStatus] = useState<{ packageMarketId: string; status: PublicFeedStatus } | null>(null);
+  // Another market's book and status are never shown while the selected one loads.
+  const live = observedLive?.packageMarketId === packageMarketId ? observedLive : null;
+  const status = observedStatus?.packageMarketId === packageMarketId ? observedStatus.status : CONNECTING;
 
   useEffect(() => {
     if (baseUrl === null || packageMarketId === null) return;
+    const marketId = packageMarketId;
     const base = baseUrl.replace(/\/+$/, "");
     const market = encodeURIComponent(packageMarketId);
     const controller = new AbortController();
@@ -631,17 +637,24 @@ export function usePublicMarketFeed(
     let reconnectDelayMs = STREAM_RETRY_MIN_MS;
 
     const publish = (detail: string) => {
-      const observed = { bids, asks, trades, cursor, halted };
+      const observed = { packageMarketId: marketId, bids, asks, trades, cursor, halted };
       setLive((previous) => ({ ...observed, version: (previous?.version ?? 0) + 1 }));
-      setStatus({ state: "live", detail: halted ? "Market halted by the exchange." : detail, updatedAtMs: Date.now() });
+      setStatus({
+        packageMarketId: marketId,
+        status: { state: "live", detail: halted ? "Market halted by the exchange." : detail, updatedAtMs: Date.now() },
+      });
     };
     const markStale = (error: unknown) => {
       const detail = error instanceof Error ? error.message : "request failed";
-      setStatus((previous) =>
-        previous.state === "live" || previous.state === "stale"
-          ? { state: "stale", detail: `Last update failed (${detail}); showing the last observed data.`, ...(previous.updatedAtMs === undefined ? {} : { updatedAtMs: previous.updatedAtMs }) }
-          : { state: "unavailable", detail: `Public market API unavailable (${detail}); no market data is shown.` },
-      );
+      setStatus((observed) => {
+        const previous = observed?.packageMarketId === marketId ? observed.status : CONNECTING;
+        return {
+          packageMarketId: marketId,
+          status: previous.state === "live" || previous.state === "stale"
+            ? { state: "stale", detail: `Last update failed (${detail}); showing the last observed data.`, ...(previous.updatedAtMs === undefined ? {} : { updatedAtMs: previous.updatedAtMs }) }
+            : { state: "unavailable", detail: `Public market API unavailable (${detail}); no market data is shown.` },
+        };
+      });
     };
     const schedule = (delayMs: number) => {
       if (timer !== undefined) clearTimeout(timer);

@@ -172,8 +172,13 @@ export function StrategyPresetControls({
       setStatus("Name this preset before saving it.");
       return;
     }
+    const valid = parseConfiguration(configuration);
+    if (valid === null) {
+      setStatus("Enter a nonzero size and supported inputs before saving this preset.");
+      return;
+    }
     const preset: StrategyPreset = {
-      ...configuration,
+      ...valid,
       version: 1,
       id: crypto.randomUUID(),
       name: trimmed,

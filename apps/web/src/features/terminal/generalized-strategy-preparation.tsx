@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import bs58 from "bs58";
 import {
   NaryxClient,
@@ -2685,7 +2685,8 @@ export function GeneralizedStrategyPreparationPanel({
   const [sealedAuction, setSealedAuction] = useState<SealedAuctionReview | null>(null);
   const [sealedAuctionBusy, setSealedAuctionBusy] = useState(false);
   const [sealedAuctionAwardBusy, setSealedAuctionAwardBusy] = useState(false);
-  const [sealedAuctionAwardAttempt, setSealedAuctionAwardAttempt] = useState("");
+  const sealedAuctionAwardAttempt = useRef("");
+  const sealedAuctionAwardRequest = useRef<AbortController | null>(null);
   const [sealedAuctionAwardedQuote, setSealedAuctionAwardedQuote] = useState("");
   const [review, setReview] = useState<StrategyPreparationReview | null>(null);
   const [executionAttempt, setExecutionAttempt] = useState<SelectedStrategyExecution | null>(null);
@@ -2832,7 +2833,7 @@ export function GeneralizedStrategyPreparationPanel({
     setPrivateRfqBusy(null);
     setPrivateRfqError(null);
     setSealedAuction(null);
-    setSealedAuctionAwardAttempt("");
+    sealedAuctionAwardAttempt.current = "";
     setSealedAuctionAwardedQuote("");
     resetNettingAllocation();
   }
@@ -2865,7 +2866,7 @@ export function GeneralizedStrategyPreparationPanel({
 
   function clearSealedAuction() {
     setSealedAuction(null);
-    setSealedAuctionAwardAttempt("");
+    sealedAuctionAwardAttempt.current = "";
     setSealedAuctionAwardedQuote("");
   }
 
@@ -3017,14 +3018,15 @@ export function GeneralizedStrategyPreparationPanel({
   useEffect(() => {
     if (publicApiBaseUrl === null || sealedAuction === null || sealedAuction.phase !== "CLOSED"
       || sealedAuction.outcome !== "AWARDED" || sealedAuction.winner === null
-      || sealedAuctionAwardAttempt === sealedAuction.auctionHash
+      || sealedAuctionAwardAttempt.current === sealedAuction.auctionHash
       || sealedAuctionAwardedQuote === sealedAuction.winner.quoteHash) return;
     const active = sealedAuction;
     const controller = new AbortController();
     void (async () => {
       await Promise.resolve();
       if (controller.signal.aborted) return;
-      setSealedAuctionAwardAttempt(active.auctionHash);
+      sealedAuctionAwardAttempt.current = active.auctionHash;
+      sealedAuctionAwardRequest.current = controller;
       setSealedAuctionAwardBusy(true);
       setError(null);
       try {
@@ -3063,11 +3065,14 @@ export function GeneralizedStrategyPreparationPanel({
           setError(cause instanceof Error ? cause.message : "Sealed auction award failed closed.");
         }
       } finally {
-        if (!controller.signal.aborted) setSealedAuctionAwardBusy(false);
+        if (sealedAuctionAwardRequest.current === controller) {
+          sealedAuctionAwardRequest.current = null;
+          setSealedAuctionAwardBusy(false);
+        }
       }
     })();
     return () => controller.abort();
-  }, [publicApiBaseUrl, sealedAuction, sealedAuctionAwardAttempt, sealedAuctionAwardedQuote]);
+  }, [publicApiBaseUrl, sealedAuction, sealedAuctionAwardedQuote]);
 
   useEffect(() => {
     if (!solanaLane || privateApiBaseUrl === null || sourceOrderHash !== null
@@ -4551,7 +4556,7 @@ export function GeneralizedStrategyPreparationPanel({
       setExecutionResult(null);
       setExecutionProgress(null);
       setStrategyReceipt(null);
-      setSealedAuctionAwardAttempt("");
+      sealedAuctionAwardAttempt.current = "";
       setSealedAuctionAwardedQuote("");
       setSealedAuction(Object.freeze({
         auctionHash,
@@ -4578,7 +4583,7 @@ export function GeneralizedStrategyPreparationPanel({
     if (publicApiBaseUrl === null || sealedAuction === null || sealedAuction.phase !== "CLOSED"
       || sealedAuction.outcome !== "AWARDED" || sealedAuction.winner === null) return;
     setSealedAuctionAwardBusy(true);
-    setSealedAuctionAwardAttempt(sealedAuction.auctionHash);
+    sealedAuctionAwardAttempt.current = sealedAuction.auctionHash;
     setError(null);
     try {
       const response = await fetch(`${publicApiBaseUrl}/v1/auctions/sealed/${sealedAuction.auctionHash}/award`, {

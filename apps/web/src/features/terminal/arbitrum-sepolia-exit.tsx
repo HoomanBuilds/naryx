@@ -74,6 +74,12 @@ function decimalText(atoms: string, decimals: number, unit = ""): string {
   return `${padded.slice(0, -decimals)}${fraction ? `.${fraction}` : ""}${unit ? ` ${unit}` : ""}`;
 }
 
+function exactDecimal(atoms: string, decimals: number): string {
+  const padded = atoms.padStart(decimals + 1, "0");
+  const fraction = padded.slice(-decimals).replace(/0+$/, "");
+  return `${padded.slice(0, -decimals)}${fraction ? `.${fraction}` : ""}`;
+}
+
 function compact(value: string, leading = 10, trailing = 8): string {
   return value.length > leading + trailing + 3 ? `${value.slice(0, leading)}...${value.slice(-trailing)}` : value;
 }
@@ -284,7 +290,7 @@ export function useArbitrumSepoliaExit(input: Readonly<{
       if (nextStep === "select") {
         const attempt = await provider.selectArbitrumQuote(flowAtStart.quote!);
         done({ attempt });
-        onSelected(attempt.attemptId, decimalText(exitOrder.quantityAtoms, BASE_DECIMALS), flowAtStart.owner);
+        onSelected(attempt.attemptId, exactDecimal(exitOrder.quantityAtoms, BASE_DECIMALS), flowAtStart.owner);
         return;
       }
       const attempt = flowAtStart.attempt!;

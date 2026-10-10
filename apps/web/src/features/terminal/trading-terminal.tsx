@@ -84,6 +84,24 @@ const PACKAGE_DOMAIN_TO_TERMINAL: Readonly<Record<string, DomainId>> = Object.fr
   "hypercore:testnet": "hyperliquid",
 });
 const SLIPPAGE_OPTIONS: readonly SlippageBps[] = [5, 10, 25];
+
+// Storage throws when the browser blocks it; the choice then lasts for the page only.
+function readStoredPackageMarket(): string | null {
+  try {
+    return window.localStorage.getItem(PACKAGE_MARKET_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function storePackageMarket(packageMarketId: string) {
+  try {
+    window.localStorage.setItem(PACKAGE_MARKET_STORAGE_KEY, packageMarketId);
+  } catch {
+    // Unavailable storage only loses the remembered market.
+  }
+}
+
 const FALLBACK_CASH_TEMPLATE: StrategyProgramTemplate = Object.freeze({
   templateId: "cash-and-carry-v1",
   templateVersion: 1,
@@ -1452,7 +1470,7 @@ function Ticket({
           templateId={selectedStrategyTemplateId}
           lifecycleAction={selectedLifecycleAction}
           sourceOrderHash={selectedDomain === "hyperliquid" && selectedLifecycleAction === "ENTRY" ? hyperliquidFlow?.attempt?.orderHash ?? null : null}
-          strategyOwner={selectedDomain === "hyperliquid" ? hyperliquidFlow?.owner ?? null : connectedEvmAccount}
+          strategyOwner={(selectedDomain === "hyperliquid" ? hyperliquidFlow?.owner : connectedEvmAccount)?.toLowerCase() ?? null}
           solanaOwner={connectedSolanaAccount}
           sendSolanaTransaction={sendSolanaTransaction}
           signStrategyOrder={signStrategyOrder}
@@ -1823,11 +1841,11 @@ export function TradingTerminal({
     if (packageMarkets.length === 0) return;
     setActivePackageMarketId((current) => {
       const requested = new URLSearchParams(window.location.search).get("market");
-      const stored = window.localStorage.getItem(PACKAGE_MARKET_STORAGE_KEY);
+      const stored = readStoredPackageMarket();
       const candidates = [requested, current, stored, packageMarketId, packageMarkets[0]?.packageMarketId];
       const selected = candidates.find((candidate) => candidate !== null && candidate !== undefined
         && packageMarkets.some((market) => market.packageMarketId === candidate)) ?? null;
-      if (selected !== null) window.localStorage.setItem(PACKAGE_MARKET_STORAGE_KEY, selected);
+      if (selected !== null) storePackageMarket(selected);
       return selected;
     });
   }, [packageMarketId, packageMarkets, publicApiBaseUrl]);
@@ -1837,8 +1855,27 @@ export function TradingTerminal({
   const selectedPackageMarket = packageMarkets.find((market) => market.packageMarketId === resolvedPackageMarketId) ?? null;
   const selectedPackageTemplateId = selectedPackageMarket?.templateId ?? null;
   const selectedPackageDomainIds = selectedPackageMarket?.domainIds.join("\n") ?? "";
+  // A market change brings its template and lane; a lane change picks a market on that lane instead
+  // of snapping back to the market's first lane.
+  const followedPackageMarketId = useRef<string | null>(null);
   useEffect(() => {
     if (resolvedPackageMarketId === null) return;
+    const domains = (selectedPackageDomainIds === "" ? [] : selectedPackageDomainIds.split("\n")).flatMap((domainId) => {
+      const domain = PACKAGE_DOMAIN_TO_TERMINAL[domainId];
+      return domain === undefined ? [] : [domain];
+    });
+    if (followedPackageMarketId.current === resolvedPackageMarketId) {
+      if (domains.length === 0 || domains.includes(selectedDomain)) return;
+      const laneMarkets = packageMarkets.filter((market) => market.domainIds
+        .some((domainId) => PACKAGE_DOMAIN_TO_TERMINAL[domainId] === selectedDomain));
+      const laneMarket = laneMarkets.find((market) => market.templateId === selectedStrategyTemplateId) ?? laneMarkets[0];
+      if (laneMarket !== undefined) {
+        setActivePackageMarketId(laneMarket.packageMarketId);
+        storePackageMarket(laneMarket.packageMarketId);
+      }
+      return;
+    }
+    followedPackageMarketId.current = resolvedPackageMarketId;
     const template = strategyTemplates.find((candidate) => candidate.templateId === selectedPackageTemplateId);
     if (template !== undefined) {
       setSelectedStrategyTemplateId(template.templateId);
@@ -1846,12 +1883,9 @@ export function TradingTerminal({
         ? current
         : template.actions[0]?.action ?? "ENTRY");
     }
-    const domains = (selectedPackageDomainIds === "" ? [] : selectedPackageDomainIds.split("\n")).flatMap((domainId) => {
-      const domain = PACKAGE_DOMAIN_TO_TERMINAL[domainId];
-      return domain === undefined ? [] : [domain];
-    });
     if (domains.length > 0 && !domains.includes(selectedDomain)) setSelectedDomain(domains[0] as DomainId);
-  }, [resolvedPackageMarketId, selectedDomain, selectedPackageDomainIds, selectedPackageTemplateId, setSelectedDomain, strategyTemplates]);
+  }, [packageMarkets, resolvedPackageMarketId, selectedDomain, selectedPackageDomainIds, selectedPackageTemplateId,
+    selectedStrategyTemplateId, setSelectedDomain, strategyTemplates]);
   const applyStrategyConfiguration = useCallback((configuration: StrategyConfiguration) => {
     const template = strategyTemplates.find((candidate) => candidate.templateId === configuration.templateId);
     if (template === undefined) return "That strategy template is not available in this environment.";
@@ -1866,6 +1900,7 @@ export function TradingTerminal({
       return "That package market is not available in this environment.";
     }
     setSelectedDomain(configuration.domain);
+    sizedLane.current = configuration.domain;
     setSelectedStrategyTemplateId(configuration.templateId);
     setSelectedLifecycleAction(configuration.lifecycleAction);
     setMode(configuration.mode);
@@ -1874,7 +1909,7 @@ export function TradingTerminal({
     setQuoteMode(configuration.quoteMode);
     if (configuration.packageMarketId !== null) {
       setActivePackageMarketId(configuration.packageMarketId);
-      window.localStorage.setItem(PACKAGE_MARKET_STORAGE_KEY, configuration.packageMarketId);
+      storePackageMarket(configuration.packageMarketId);
     }
     return null;
   }, [packageMarkets, setSelectedDomain, snapshot.ticket.quoteModes, strategyTemplates]);
@@ -1884,7 +1919,10 @@ export function TradingTerminal({
     const shared = readSharedStrategyConfiguration(window.location.search);
     if (shared === null) {
       sharedStrategyApplied.current = true;
-      if (new URLSearchParams(window.location.search).get("mode") === "exit") setMode("exit");
+      if (new URLSearchParams(window.location.search).get("mode") === "exit") {
+        setMode("exit");
+        setSelectedLifecycleAction("EXIT");
+      }
       return;
     }
     if (!strategyTemplates.some((template) => template.templateId === shared.templateId) && privateApiBaseUrl !== null) return;
@@ -2042,11 +2080,18 @@ export function TradingTerminal({
     };
   }, [marketTick, privateProvider, selectedDomain]);
 
+  const hyperliquidFlowBusy = hyperliquidFlow !== null && hyperliquidFlow.busy !== null;
   useEffect(() => {
-    if (!privateProvider || selectedDomain !== "hyperliquid" ||
+    if (!privateProvider || selectedDomain !== "hyperliquid" || hyperliquidFlowBusy ||
         providerConnection !== "connected" || !runtimeHealth?.hyperliquidTestnet.available) return;
     const controller = new AbortController();
     let active = true;
+    // A connection blip or refetch keeps an order in progress; only a new ticket, owner, or context
+    // starts over, and never while a step is running.
+    const keeps = (previous: HyperliquidFlowState | null, contextId: string | null) => previous !== null && (
+      previous.busy !== null || (previous.ticketKey === ticketKey && previous.owner === hyperliquidOwner
+        && previous.context !== null && (contextId === null || previous.context.contextId === contextId)
+        && (previous.order !== null || previous.attempt !== null || previous.error !== null)));
     const fresh = (
       context: HyperliquidTestnetContext | null,
       account: HyperliquidAccountStatus | null,
@@ -2072,17 +2117,22 @@ export function TradingTerminal({
         const account = hyperliquidOwner === null ? null
           : await privateProvider.getHyperliquidAccount(context, hyperliquidOwner, controller.signal).catch(() => null);
         if (!active) return;
-        setHyperliquidFlow(fresh(context, account, null));
+        setHyperliquidFlow((previous) => keeps(previous, context.contextId)
+          ? previous
+          : fresh(context, account, null));
       })
       .catch((cause) => {
         if (!active || controller.signal.aborted) return;
-        setHyperliquidFlow(fresh(null, null, cause instanceof Error ? cause.message : "Hyperliquid context discovery failed."));
+        setHyperliquidFlow((previous) => keeps(previous, null)
+          ? previous
+          : fresh(null, null, cause instanceof Error ? cause.message : "Hyperliquid context discovery failed."));
       });
     return () => {
       active = false;
       controller.abort();
     };
-  }, [hyperliquidOwner, privateProvider, providerConnection, runtimeHealth?.hyperliquidTestnet.available, selectedDomain, ticketKey]);
+  }, [hyperliquidFlowBusy, hyperliquidOwner, privateProvider, providerConnection, runtimeHealth?.hyperliquidTestnet.available,
+    selectedDomain, ticketKey]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -3553,6 +3603,7 @@ export function TradingTerminal({
 
   function jumpToTicket(nextMode: PackageMode) {
     setMode(nextMode);
+    handleLifecycleActionChange(nextMode === "exit" ? "EXIT" : "ENTRY");
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     document.getElementById("package-ticket")?.scrollIntoView({ block: "start", behavior: reduceMotion ? "auto" : "smooth" });
   }
@@ -3573,7 +3624,7 @@ export function TradingTerminal({
             marketStatus={packageMarketStatus?.detail ?? null}
             onPackageMarketChange={(nextMarketId) => {
               setActivePackageMarketId(nextMarketId);
-              window.localStorage.setItem(PACKAGE_MARKET_STORAGE_KEY, nextMarketId);
+              storePackageMarket(nextMarketId);
             }}
           />
         </div>

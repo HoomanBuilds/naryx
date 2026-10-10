@@ -193,8 +193,11 @@ function PayoffChart({ feed, snapshot, preview, size }: { feed: MarketFeed; snap
   const holdingDays = Number(/(\d+)D$/i.exec(snapshot.market.packageId)?.[1] ?? "30");
   const quantity = Number(size);
   // The latest basis candle, else the snapshot's observed basis; never an assumed zero, which would
-  // move break-even and the convergence payoff by the whole basis.
-  const observedBasis = useMemo(() => feed.candles("basis", "1m").at(-1)?.close ?? null, [feed]);
+  // move break-even and the convergence payoff by the whole basis. A traded package's basis series is
+  // its price in ticks, not a basis, so only a bps series is read.
+  const observedBasis = useMemo(() => feed.seriesMeta("basis").unit === "bps"
+    ? feed.candles("basis", "1m").at(-1)?.close ?? null
+    : null, [feed]);
   const basisKnown = observedBasis ?? parseMetric(snapshot, /^basis$/i);
   const entryBasis = basisKnown ?? 0;
   const fees = preview ? Number(preview.totalFee.value) : 0;
