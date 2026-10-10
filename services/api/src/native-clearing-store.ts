@@ -7,6 +7,8 @@ import {
   commitmentHash,
   nativeClearingAccount,
   nativeClearingDomainState,
+  nativeClearingExecutionId,
+  nativeClearingMatchAuthorization,
   nativeClearingPolicy,
   parseProtocolJson,
   protocolId,
@@ -19,6 +21,7 @@ import {
   type NativeClearingDomainState,
   type NativeClearingDomainStateInput,
   type NativeClearingMatchReceipt,
+  type NativeClearingMatchAuthorizationInput,
   type NativeClearingPolicy,
   type NativeClearingPolicyInput,
 } from '@naryx/protocol-types';
@@ -254,32 +257,49 @@ export class SqliteNativeClearingStore {
     }).immediate();
   }
 
-  match(input: Readonly<{
-    clearingDomainId: string;
+  settleAuthorizedMatch(input: Readonly<{
+    authorization: NativeClearingMatchAuthorizationInput;
     expectedStateHash: Uint8Array | string;
-    longAccountId: string;
     expectedLongAccountHash: Uint8Array | string;
-    shortAccountId: string;
     expectedShortAccountHash: Uint8Array | string;
-    executionId: string;
-    quantityAtoms: bigint;
-    priceTicks: bigint;
     markPriceTicks: bigint;
     observedAtMs: bigint;
     nowMs: bigint;
   }>): NativeClearingMatchReceipt {
     return this.#db.transaction(() => {
-      const { policy, state } = this.#requiredDomain(input.clearingDomainId);
-      const long = this.#requiredAccount(input.longAccountId, policy);
-      const short = this.#requiredAccount(input.shortAccountId, policy);
+      const authorization = nativeClearingMatchAuthorization(input.authorization);
+      const { policy, state } = this.#requiredDomain(input.authorization.policy.clearingDomainId);
+      expected(policy.policyHash, authorization.policyHash, 'authorized policy hash');
+      const long = this.#requiredAccount(authorization.longAccountId, policy);
+      const short = this.#requiredAccount(authorization.shortAccountId, policy);
+      if (long.ownerId !== authorization.longParticipantId || short.ownerId !== authorization.shortParticipantId) {
+        throw new NativeClearingStoreError(
+          'OWNER_MISMATCH',
+          'Settlement commitments do not identify the durable clearing account owners.',
+        );
+      }
       expected(state.stateHash, input.expectedStateHash, 'expected domain state hash');
       expected(long.accountHash, input.expectedLongAccountHash, 'expected long account hash');
       expected(short.accountHash, input.expectedShortAccountHash, 'expected short account hash');
-      const result = applyNativeClearingMatch({ ...input, policy, domainState: state, longAccount: long, shortAccount: short });
+      const result = applyNativeClearingMatch({
+        policy,
+        domainState: state,
+        longAccount: long,
+        shortAccount: short,
+        executionId: nativeClearingExecutionId(authorization),
+        quantityAtoms: authorization.quantityAtoms,
+        priceTicks: authorization.priceTicks,
+        markPriceTicks: input.markPriceTicks,
+        observedAtMs: input.observedAtMs,
+        nowMs: input.nowMs,
+      });
       this.#updateState(state, result.domainState);
       this.#updateAccount(long, result.longAccount);
       this.#updateAccount(short, result.shortAccount);
-      this.#event('MATCH', result.receipt.receiptHash, policy, result.domainState.sequence, result.receipt);
+      this.#event('MATCH', result.receipt.receiptHash, policy, result.domainState.sequence, {
+        authorizationHash: authorization.authorizationHash,
+        receipt: result.receipt,
+      });
       return result.receipt;
     }).immediate();
   }
