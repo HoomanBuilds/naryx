@@ -2,6 +2,8 @@
 
 **The Complex Order Network. Trade the strategy, not the legs.**
 
+[Live app](https://naryx.vercel.app/trade) | [Website](https://naryx.vercel.app) | [Source](https://github.com/HoomanBuilds/naryx)
+
 Naryx is an open execution network for complete onchain financial strategies. A trader describes one typed package, receives one signed package quote, authorizes one bounded outcome, and follows one lifecycle through execution, recovery, exit, and receipt verification. The first implemented strategy is cash-and-carry: acquire spot and short the matching perpetual as one economic order.
 
 The missing primitive is simple: onchain venues expose individual orders, but not an open protocol that can price, authorize, execute, recover, and verify a complete multi-leg strategy as one bounded object.
@@ -58,7 +60,8 @@ The repository keeps compile-time imports, deployment artifacts, network calls, 
 | `apps/web` | Public landing page at `/` and the trading terminal at `/trade` for package construction, quote review, wallet authorization, readiness, execution progress, recovery state, and receipts. |
 | `deployments` | Published IDLs, ABIs, identities, and reviewed deployment evidence. It contains no executable logic or secrets. |
 | `tests` | Cross-workspace local lifecycle, fork qualification, and conformance evidence. |
-| `packages/sdk`, `services/indexer` | Defined future boundaries. They are not claimed as completed public products. |
+| `packages/sdk` | Public TypeScript client and solver SDK with local evidence verification, market data, package lifecycle, RFQ, sealed-auction, maker automation, and streaming clients. |
+| `services/indexer` | Read-only EVM event indexer with reorg handling, finality tracking, normalized package evidence, bonded-coordinator reconstruction, and accounting exports. |
 
 ## Chain roles
 
@@ -77,17 +80,17 @@ Adding another instance of an implemented runtime family is manifest registratio
 
 ## Implementation and activation status
 
-**Pre-mainnet. Public deployment is intentionally deferred. Mainnet writes are prohibited.**
+**Pre-mainnet. Public testnet deployments are active. Mainnet writes are prohibited.**
 
 | Environment | Current evidence | Activation status |
 |---|---|---|
 | Solana local | Real local validator, current SBF programs, canonical manifests, authenticated entry, rollback, public exit, and receipt reconciliation. | Locally verified. |
 | Base local | Private Anvil deployment of the atomic EVM contract graph with entry, exit, solver authorization, and receipts. | Locally verified. |
 | Arbitrum local | Private Anvil deployment of the bonded asynchronous coordinator and isolated GMX lifecycle with entry and exit scenarios. | Locally verified. |
-| Solana Devnet | Five public program identities, build artifacts, release verifier, unsigned transaction materializer, signerless observer, readiness gate, and browser review flow exist. | Deployment and initialization deferred. |
-| Base Sepolia | Deployment and configuration scripts, immutable runtime manifest validation, bytecode qualification, unsigned attempt materialization, and wallet handoff exist. | Deployment deferred. |
-| Arbitrum Sepolia | Deployment and configuration scripts plus signerless asynchronous lifecycle observation exist. | Deployment deferred. |
-| Hyperliquid Testnet | Signed quote, batched IOC compiler, durable nonce journal, account and market preflight, isolated executor, evidence collection, reconciliation, recovery, and terminal flow exist behind independent default-off gates. | Public execution deferred pending a qualified dedicated Testnet account, test assets, and passing market depth. |
+| Solana Devnet | A legacy five-program release is public, but its core predates the current risk-domain registry. Fresh coherent program identities and release artifacts are prepared locally. | Replacement deployment, initialization, and complete lifecycle evidence pending Devnet SOL. |
+| Base Sepolia | Fifteen Naryx contracts and the reviewed dependency graph are active. Public evidence covers deliberate atomic rollback, entry, exit, and terminal cleanup. | Testnet evidence complete for the first cash-and-carry route. |
+| Arbitrum Sepolia | The bonded asynchronous coordinator and isolated GMX lifecycle are active. Public evidence covers failed submission, slash, reclaim, entry and exit callbacks, and terminal cleanup. | Testnet evidence complete for the first cash-and-carry route. |
+| Hyperliquid Testnet | Ordered spot and perpetual IOC stages completed entry and exit with exact fee evidence, durable attempt state, reconciliation, and a flat terminal perpetual position. | Testnet evidence complete for the first cash-and-carry route. |
 | Base and Arbitrum production-state forks | Pinned read-only qualification harnesses are committed. Without the required RPC and reviewed point-in-time inputs, the harnesses compile and explicitly skip instead of inventing evidence. | No completed fork evidence is claimed. |
 | Solana and Hyperliquid mainnet shadow | Signerless readers validate production identity, authority, market state, liquidity, fees, and bounded executable economics. | Read-only capability only. No activation or trading claim. |
 | Any mainnet write | No deployment, approval, transfer, bridge, deposit, order, recovery, or signed payload for later broadcast is allowed. | Prohibited until explicit authorization and all readiness gates pass. |
