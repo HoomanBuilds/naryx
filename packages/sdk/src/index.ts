@@ -74,6 +74,7 @@ export {
   type OrderActivationAttemptView,
   type OrderActivationView,
   type DerivedAdvancedOrderView,
+  type PreparedAdvancedOrderAttemptView,
   type PackageBookLevelView,
   type PackageDepth,
   type PackageMarketSummary,

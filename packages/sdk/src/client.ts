@@ -91,6 +91,7 @@ import {
   strategyStateHash,
   strategyPackageOrder,
   strategyPackageOrderHash,
+  strategySlicePolicy,
   strategyPackageQuote,
   strategyPackageQuoteHash,
   strategyPackageReceipt,
@@ -230,6 +231,8 @@ import {
   type StressScenario,
   type StrategyPackageOrder,
   type StrategyPackageOrderInput,
+  type StrategySlicePolicy,
+  type StrategySlicePolicyCategory,
   type StrategyPackageQuote,
   type StrategyPackageQuoteInput,
   type StrategyPackageReceipt,
@@ -449,10 +452,24 @@ export interface OrderActivationAttemptView {
   readonly failureReason?: string;
   readonly reservedAtMs: number;
   readonly completedAtMs?: number;
+  readonly childOrderHashHex?: string;
+  readonly childGraphHashHex?: string;
+  readonly slicePolicies?: Readonly<Record<StrategySlicePolicyCategory, StrategySlicePolicy>>;
+  readonly preparedAtMs?: number;
+  readonly settlementEvidence?: Readonly<{
+    childOrderHashHex: string;
+    packageOrderIdHex: string;
+    allocationHashHex: string;
+    receiptHashHex: string;
+    allocatedQuantityAtoms: bigint;
+    allocatedNotionalTicks: bigint;
+    recordedAtMs: number;
+  }>;
 }
 
 export interface OrderActivationView {
   readonly orderHashHex: string;
+  readonly sourceOrderHashHex?: string;
   readonly order: StrategyPackageOrder;
   readonly condition?: ActivationConditionInput;
   readonly schedule?: ExecutionScheduleInput;
@@ -470,6 +487,25 @@ export interface DerivedAdvancedOrderView {
   readonly created: boolean;
   readonly status: 'STORED_FOR_QUOTING';
   readonly activation: OrderActivationView;
+}
+
+export interface PreparedAdvancedOrderAttemptView {
+  readonly attemptId: string;
+  readonly parentOrderHash: string;
+  readonly sourceOrderHash: string;
+  readonly orderHash: string;
+  readonly graphHash: string;
+  readonly order: StrategyPackageOrder;
+  readonly graph: PackageGraph;
+  readonly slicePolicies: Readonly<Record<StrategySlicePolicyCategory, StrategySlicePolicy>>;
+  readonly packageBookRequest: Readonly<{
+    strategyOrderHash: string;
+    side: 'BID' | 'ASK';
+    limitPriceTicks: bigint;
+  }>;
+  readonly created: boolean;
+  readonly replayed: boolean;
+  readonly status: 'STORED_FOR_QUOTING';
 }
 
 export interface SubmittedOrder {
@@ -1109,6 +1145,31 @@ function orderActivationView(value: unknown, requestedHash: string): OrderActiva
       || (attempt.status !== 'RESERVED' && attempt.status !== 'SUCCEEDED' && attempt.status !== 'FAILED')) {
       throw new NaryxEvidenceError('order activation attempt identity is invalid');
     }
+    const slicePolicies = attempt.slicePolicies === undefined ? undefined
+      : parseSlicePolicies(attempt.slicePolicies, requestedHash, attempt.attemptId);
+    const childOrderHashHex = attempt.childOrderHashHex === undefined
+      ? undefined
+      : hashHex(attempt.childOrderHashHex, 'child order hash');
+    const settlementEvidence = attempt.settlementEvidence === undefined
+      ? undefined
+      : (() => {
+        const evidence = record(attempt.settlementEvidence, 'attempt settlement evidence');
+        const evidenceChildOrderHash = hashHex(evidence.childOrderHashHex, 'evidence child order hash');
+        const allocatedQuantityAtoms = big(evidence.allocatedQuantityAtoms, 'evidence allocated quantity');
+        if (childOrderHashHex === undefined || evidenceChildOrderHash !== childOrderHashHex
+          || attempt.status === 'RESERVED' || allocatedQuantityAtoms !== big(attempt.maximumQuantityAtoms, 'attempt maximum quantity')) {
+          throw new NaryxEvidenceError('attempt settlement evidence does not bind a completed exact child');
+        }
+        return Object.freeze({
+          childOrderHashHex: evidenceChildOrderHash,
+          packageOrderIdHex: hashHex(evidence.packageOrderIdHex, 'evidence package order id'),
+          allocationHashHex: hashHex(evidence.allocationHashHex, 'evidence allocation hash'),
+          receiptHashHex: hashHex(evidence.receiptHashHex, 'evidence receipt hash'),
+          allocatedQuantityAtoms,
+          allocatedNotionalTicks: big(evidence.allocatedNotionalTicks, 'evidence allocated notional'),
+          recordedAtMs: count(evidence.recordedAtMs, 'evidence recording time'),
+        });
+      })();
     return Object.freeze({
       attemptId: attempt.attemptId,
       orderHashHex: requestedHash,
@@ -1124,10 +1185,16 @@ function orderActivationView(value: unknown, requestedHash: string): OrderActiva
       ...(attempt.failureReason === undefined ? {} : { failureReason: String(attempt.failureReason) }),
       reservedAtMs: count(attempt.reservedAtMs, 'attempt reservation time'),
       ...(attempt.completedAtMs === undefined ? {} : { completedAtMs: count(attempt.completedAtMs, 'attempt completion time') }),
+      ...(childOrderHashHex === undefined ? {} : { childOrderHashHex }),
+      ...(attempt.childGraphHashHex === undefined ? {} : { childGraphHashHex: hashHex(attempt.childGraphHashHex, 'child graph hash') }),
+      ...(slicePolicies === undefined ? {} : { slicePolicies }),
+      ...(attempt.preparedAtMs === undefined ? {} : { preparedAtMs: count(attempt.preparedAtMs, 'attempt preparation time') }),
+      ...(settlementEvidence === undefined ? {} : { settlementEvidence }),
     });
   });
   return Object.freeze({
     orderHashHex: requestedHash,
+    ...(body.sourceOrderHashHex === undefined ? {} : { sourceOrderHashHex: hashHex(body.sourceOrderHashHex, 'source order hash') }),
     order,
     ...(condition === undefined ? {} : { condition }),
     ...(schedule === undefined ? {} : { schedule }),
@@ -1137,6 +1204,34 @@ function orderActivationView(value: unknown, requestedHash: string): OrderActiva
     registeredAtMs: count(body.registeredAtMs, 'registration time'),
     updatedAtMs: count(body.updatedAtMs, 'update time'),
   });
+}
+
+const STRATEGY_SLICE_POLICY_CATEGORIES = Object.freeze([
+  'NETTING',
+  'PRIVACY',
+  'SOLVER',
+  'DELIVERY',
+  'RESOURCE',
+  'PORTFOLIO_RISK_LIMITS',
+] as const satisfies readonly StrategySlicePolicyCategory[]);
+
+function parseSlicePolicies(
+  value: unknown,
+  parentOrderHash: string,
+  attemptId: string,
+): Readonly<Record<StrategySlicePolicyCategory, StrategySlicePolicy>> {
+  const source = record(value, 'strategy slice policies');
+  if (Object.keys(source).length !== STRATEGY_SLICE_POLICY_CATEGORIES.length) {
+    throw new NaryxEvidenceError('strategy slice policy set is incomplete');
+  }
+  const policies = Object.fromEntries(STRATEGY_SLICE_POLICY_CATEGORIES.map((category) => {
+    const policy = strategySlicePolicy(source[category] as StrategySlicePolicy, `strategy slice policy ${category}`);
+    if (toHex(policy.parentOrderHash) !== parentOrderHash || toHex(policy.activationAttemptId) !== attemptId) {
+      throw new NaryxEvidenceError('strategy slice policy cites another activation');
+    }
+    return [category, policy];
+  })) as unknown as Readonly<Record<StrategySlicePolicyCategory, StrategySlicePolicy>>;
+  return Object.freeze(policies);
 }
 
 function servedId(value: unknown, context: string): string {
@@ -3652,6 +3747,71 @@ export class NaryxClient {
   async getOrderActivation(orderHash: string): Promise<OrderActivationView> {
     const requested = hashHex(orderHash, 'order hash');
     return orderActivationView(await this.#request('GET', `/v1/order-activations/${requested}`), requested);
+  }
+
+  /** Prepares the exact immediate child package for one reserved advanced-order attempt. */
+  async prepareOrderActivationAttempt(attemptIdValue: string, atSlot?: bigint): Promise<PreparedAdvancedOrderAttemptView> {
+    const attemptId = hashHex(attemptIdValue, 'activation attempt id');
+    if (atSlot !== undefined && (typeof atSlot !== 'bigint' || atSlot <= 0n)) {
+      throw new TypeError('atSlot must be a positive integer');
+    }
+    const body = record(await this.#request(
+      'POST',
+      `/v1/order-activations/attempts/${attemptId}/prepare`,
+      atSlot === undefined ? {} : { atSlot },
+    ), 'advanced order attempt preparation');
+    if (body.version !== 1 || body.attemptId !== attemptId || typeof body.created !== 'boolean'
+      || typeof body.replayed !== 'boolean' || body.status !== 'STORED_FOR_QUOTING') {
+      throw new NaryxEvidenceError('advanced order attempt preparation response is inconsistent');
+    }
+    const parentOrderHash = hashHex(body.parentOrderHash, 'parent order hash');
+    const sourceOrderHash = hashHex(body.sourceOrderHash, 'source order hash');
+    const orderHash = hashHex(body.orderHash, 'child order hash');
+    const graphHash = hashHex(body.graphHash, 'child graph hash');
+    const order = strategyPackageOrder(body.order as StrategyPackageOrderInput);
+    const graph = packageGraph(body.graph as PackageGraphInput);
+    if (toHex(strategyPackageOrderHash(order)) !== orderHash || toHex(packageGraphHash(graph)) !== graphHash
+      || toHex(order.graphHash) !== graphHash) {
+      throw new NaryxEvidenceError('prepared child package identity is inconsistent');
+    }
+    const slicePolicies = parseSlicePolicies(body.slicePolicies, parentOrderHash, attemptId);
+    const policyHashes = graph.policyHashes;
+    const graphPolicyHashes = [
+      policyHashes.netting,
+      policyHashes.privacy,
+      policyHashes.solver,
+      policyHashes.delivery,
+      policyHashes.resource,
+      policyHashes.portfolioRiskLimits,
+    ];
+    if (STRATEGY_SLICE_POLICY_CATEGORIES.some((category, index) => (
+      toHex(slicePolicies[category].parentPolicyHash) !== toHex(graphPolicyHashes[index]!)
+      || toHex(slicePolicies[category].parentGraphHash) === graphHash
+    ))) {
+      throw new NaryxEvidenceError('prepared child graph does not preserve its parent policies');
+    }
+    const packageBook = record(body.packageBookRequest, 'package book request');
+    if (packageBook.strategyOrderHash !== orderHash || (packageBook.side !== 'BID' && packageBook.side !== 'ASK')) {
+      throw new NaryxEvidenceError('prepared child package book request is inconsistent');
+    }
+    return Object.freeze({
+      attemptId,
+      parentOrderHash,
+      sourceOrderHash,
+      orderHash,
+      graphHash,
+      order,
+      graph,
+      slicePolicies,
+      packageBookRequest: Object.freeze({
+        strategyOrderHash: orderHash,
+        side: packageBook.side,
+        limitPriceTicks: big(packageBook.limitPriceTicks, 'package book limit price'),
+      }),
+      created: body.created,
+      replayed: body.replayed,
+      status: body.status,
+    });
   }
 
   /** Requests one signed solver quote for a stored strategy order and verifies its exposed commitments. */
