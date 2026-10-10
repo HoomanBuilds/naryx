@@ -12,6 +12,7 @@ use crate::{
 pub struct InitializePackageInventory<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
+    /// CHECK: This account contributes identity only. Execution later requires the same key to sign.
     pub strategy_account: UncheckedAccount<'info>,
     pub mint: Account<'info, Mint>,
     #[account(
