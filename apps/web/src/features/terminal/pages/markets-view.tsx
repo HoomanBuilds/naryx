@@ -7,6 +7,7 @@ import { MarketAlerts } from "../market-alerts";
 import { usePublicPackageMarkets, usePublicPackageOpportunities, usePublicSeriesCurve } from "../public-market-feed";
 import { useTerminal } from "../shell/terminal-context";
 import { PaperTradingLab } from "./paper-trading-lab";
+import { StrategyGraphStudio } from "./strategy-graph-studio";
 import styles from "./pages.module.css";
 
 const WATCHLIST_KEY = "naryx.terminal.market-watchlist.v1";
@@ -222,6 +223,8 @@ export function MarketsView() {
       </section>
 
       <PaperTradingLab baseUrl={publicApiBaseUrl} opportunities={opportunities} scanSize={scanSize} />
+
+      <StrategyGraphStudio baseUrl={publicApiBaseUrl} />
 
       <section className={styles.card} aria-labelledby="market-list-title">
         <div className={styles.cardHead}>
