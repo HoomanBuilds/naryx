@@ -3,6 +3,10 @@ import type { MetricObservation } from "@naryx/protocol-types";
 import { internalCaller, readInternalBody, sendError, sendJson } from "./internal-http.js";
 import { OrderActivationStoreError, type SqliteOrderActivationStore } from "./order-activation-store.js";
 import type { SqliteMetricObservationStore } from "./metric-observation-store.js";
+import {
+  AdvancedOrderReconciliationError,
+  type AdvancedOrderReconciliation,
+} from "./advanced-order-reconciliation.js";
 
 function failure(response: ServerResponse, error: unknown): true {
   if (error instanceof OrderActivationStoreError) {
@@ -11,12 +15,18 @@ function failure(response: ServerResponse, error: unknown): true {
         : error.code.endsWith("CONFLICT") || error.code === "ATTEMPT_OUTSTANDING" || error.code === "ORDER_TERMINAL" ? 409 : 400;
     return sendError(response, status, error.code, error.message);
   }
+  if (error instanceof AdvancedOrderReconciliationError) {
+    const status = error.code.endsWith("NOT_FOUND") ? 404
+      : error.code.endsWith("MISMATCH") || error.code === "ATTEMPT_TERMINAL" ? 409 : 400;
+    return sendError(response, status, error.code, error.message);
+  }
   return sendError(response, 400, "INVALID_REQUEST", error instanceof Error ? error.message : "Activation request was rejected.");
 }
 
 export function createOrderActivationAdminHandler(options: {
   readonly activations: Pick<SqliteOrderActivationStore, "reserve" | "complete" | "cancel">;
   readonly observations?: Pick<SqliteMetricObservationStore, "observations">;
+  readonly reconciliation?: Pick<AdvancedOrderReconciliation, "reconcile">;
 }): (request: IncomingMessage, response: ServerResponse) => boolean {
   return (request, response) => {
     const url = new URL(request.url ?? "/", "http://internal.local");
@@ -29,6 +39,7 @@ export function createOrderActivationAdminHandler(options: {
     }
     if (url.pathname !== "/internal/order-activations/reserve"
       && url.pathname !== "/internal/order-activations/complete"
+      && url.pathname !== "/internal/order-activations/reconcile"
       && url.pathname !== "/internal/order-activations/cancel") {
       return sendError(response, 404, "NOT_FOUND", "Unknown order activation route.");
     }
@@ -55,6 +66,9 @@ export function createOrderActivationAdminHandler(options: {
             || typeof body.executedQuantityAtoms !== "bigint") {
             throw new TypeError("Completion requires attemptId, outcome, and executedQuantityAtoms.");
           }
+          if (body.outcome === "SUCCEEDED") {
+            throw new OrderActivationStoreError("EVIDENCE_REQUIRED", "Successful attempts must be reconciled from allocation and final receipt evidence.");
+          }
           return sendJson(response, 200, options.activations.complete({
             attemptId: body.attemptId,
             outcome: body.outcome,
@@ -62,6 +76,15 @@ export function createOrderActivationAdminHandler(options: {
             ...(body.executionPriceTicks === undefined ? {} : { executionPriceTicks: body.executionPriceTicks as bigint }),
             ...(body.failureReason === undefined ? {} : { failureReason: String(body.failureReason) }),
           }));
+        }
+        if (url.pathname === "/internal/order-activations/reconcile") {
+          if (options.reconciliation === undefined) {
+            return sendError(response, 503, "RECONCILIATION_UNAVAILABLE", "Advanced order reconciliation is not configured.");
+          }
+          if (Object.keys(body).length !== 1 || typeof body.attemptId !== "string") {
+            throw new TypeError("Reconciliation requires only attemptId.");
+          }
+          return sendJson(response, 200, options.reconciliation.reconcile(body.attemptId));
         }
         if (typeof body.orderHash !== "string") throw new TypeError("Cancellation requires orderHash.");
         return sendJson(response, 200, options.activations.cancel(body.orderHash));

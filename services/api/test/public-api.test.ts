@@ -173,6 +173,7 @@ test("advanced-order activation registration and status use the configured durab
   } as never;
   let registered = false;
   let derived = false;
+  let prepared = false;
   await withMarket(async (request) => {
     const post = await request("/v1/order-activations", {
       method: "POST",
@@ -194,6 +195,15 @@ test("advanced-order activation registration and status use the configured durab
     assert.equal(derive.status, 200);
     assert.equal((derive.body as { sourceOrderHash: string }).sourceOrderHash, sourceOrderHash);
     assert.equal(derived, true);
+    const attemptId = id(8_004);
+    const prepare = await request(`/v1/order-activations/attempts/${attemptId}/prepare`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(toProtocolJson({ atSlot: 10n })),
+    });
+    assert.equal(prepare.status, 200);
+    assert.equal((prepare.body as { attemptId: string }).attemptId, attemptId);
+    assert.equal(prepared, true);
   }, {
     orderActivations: {
       register: (input) => {
@@ -210,6 +220,22 @@ test("advanced-order activation registration and status use the configured durab
           order: {} as never,
           intake: { orderHashHex: orderHash, graphHashHex: id(8_003), created: true, status: "STORED_FOR_QUOTING" },
           activation: view,
+        } as never;
+      },
+    },
+    advancedOrderExecutions: {
+      prepare: ({ attemptId, atSlot }) => {
+        prepared = attemptId === id(8_004) && atSlot === 10n;
+        return {
+          attemptId,
+          parentOrderHashHex: orderHash,
+          sourceOrderHashHex: id(8_002),
+          order: {},
+          graph: {},
+          intake: { orderHashHex: id(8_005), graphHashHex: id(8_006), created: true, status: "STORED_FOR_QUOTING" },
+          slicePolicies: {},
+          packageBookRequest: { strategyOrderHash: id(8_005), side: "BID", limitPriceTicks: 100n },
+          replayed: false,
         } as never;
       },
     },

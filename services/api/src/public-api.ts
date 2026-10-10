@@ -120,6 +120,10 @@ import { NativeClearingStoreError, type SqliteNativeClearingStore } from './nati
 import { OrderActivationStoreError, type SqliteOrderActivationStore } from "./order-activation-store.js";
 import { AdvancedOrderFactoryError, type AdvancedOrderFactory } from "./advanced-order-factory.js";
 import {
+  AdvancedOrderExecutionFactoryError,
+  type AdvancedOrderExecutionFactory,
+} from "./advanced-order-execution-factory.js";
+import {
   GeneralizedStrategyQuoteClientError,
   type GeneralizedStrategyQuotePort,
 } from "./generalized-strategy-quote-client.js";
@@ -342,6 +346,8 @@ export interface PublicApiOptions {
   readonly orderActivations?: Pick<SqliteOrderActivationStore, "register" | "view">;
   /** Derives a bound advanced order from a previously admitted immediate strategy order. */
   readonly advancedOrders?: Pick<AdvancedOrderFactory, "derive">;
+  /** Prepares an exact immediate child package for a reserved advanced-order attempt. */
+  readonly advancedOrderExecutions?: Pick<AdvancedOrderExecutionFactory, "prepare">;
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
   readonly nowValue: () => bigint;
   readonly rateLimit: { readonly windowMs: number; readonly maxRequests: number };
@@ -536,6 +542,13 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       throw new RequestError(503, "ADVANCED_ORDERS_UNAVAILABLE", "No advanced-order factory is configured on this server.");
     }
     return options.advancedOrders;
+  }
+
+  function requireAdvancedOrderExecutions() {
+    if (options.advancedOrderExecutions === undefined) {
+      throw new RequestError(503, "ADVANCED_ORDER_EXECUTION_UNAVAILABLE", "No advanced-order execution factory is configured on this server.");
+    }
+    return options.advancedOrderExecutions;
   }
 
   function requireDelivery() {
@@ -1704,6 +1717,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     const privateRfqAcceptanceMatch = /^\/v1\/rfqs\/private\/([0-9a-f]{64})\/accept$/.exec(path);
     const sealedAuctionAwardMatch = /^\/v1\/auctions\/sealed\/([0-9a-f]{64})\/award$/.exec(path);
     const nettingExecutionMatch = /^\/v1\/netting\/batches\/([0-9a-f]{64})\/execute$/.exec(path);
+    const activationPreparationMatch = /^\/v1\/order-activations\/attempts\/([0-9a-f]{64})\/prepare$/.exec(path);
     if (![
       "/v1/orders/validate",
       "/v1/routes/replay-decision",
@@ -1746,13 +1760,39 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/builders",
       "/v1/builders/attributions",
     ].includes(path) && sealedAuctionAwardMatch === null && privateRfqAcceptanceMatch === null
-      && nettingExecutionMatch === null) {
+      && nettingExecutionMatch === null && activationPreparationMatch === null) {
       throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
     }
     const body = object(await readProtocolBody(
       request,
       path === '/v1/portfolio/optimize' ? MAX_PORTFOLIO_OPTIMIZATION_BODY_BYTES : MAX_BODY_BYTES,
     ), "Request body");
+    if (activationPreparationMatch !== null) {
+      const keys = Object.keys(body);
+      if (keys.some((key) => key !== "atSlot")
+        || (body.atSlot !== undefined && (typeof body.atSlot !== "bigint" || body.atSlot <= 0n))) {
+        throw new RequestError(400, "INVALID_REQUEST", "Activation preparation accepts only an optional positive atSlot.");
+      }
+      const prepared = requireAdvancedOrderExecutions().prepare({
+        attemptId: activationPreparationMatch[1] as string,
+        ...(body.atSlot === undefined ? {} : { atSlot: body.atSlot }),
+      });
+      return {
+        version: 1,
+        attemptId: prepared.attemptId,
+        parentOrderHash: prepared.parentOrderHashHex,
+        sourceOrderHash: prepared.sourceOrderHashHex,
+        order: prepared.order,
+        graph: prepared.graph,
+        orderHash: prepared.intake.orderHashHex,
+        graphHash: prepared.intake.graphHashHex,
+        created: prepared.intake.created,
+        status: prepared.intake.status,
+        slicePolicies: prepared.slicePolicies,
+        packageBookRequest: prepared.packageBookRequest,
+        replayed: prepared.replayed,
+      };
+    }
     if (path === '/v1/portfolio/optimize') {
       const keys = Object.keys(body).sort();
       if (keys.length !== 3 || keys[0] !== 'candidates' || keys[1] !== 'policy' || keys[2] !== 'strategyAccount') {
@@ -2725,6 +2765,11 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         }
         if (error instanceof AdvancedOrderFactoryError) {
           const status = error.code === "ORDER_NOT_FOUND" ? 404 : error.code.startsWith("SOURCE_ORDER_") ? 409 : 400;
+          return fail(response, status, error.code, error.message);
+        }
+        if (error instanceof AdvancedOrderExecutionFactoryError) {
+          const status = error.code.endsWith("NOT_FOUND") ? 404
+            : error.code.startsWith("INVALID_") ? 400 : 409;
           return fail(response, status, error.code, error.message);
         }
         if (error instanceof GeneralizedStrategyQuoteClientError) {

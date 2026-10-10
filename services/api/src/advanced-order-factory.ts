@@ -103,6 +103,7 @@ export class AdvancedOrderFactory {
     const intake = this.dependencies.intake.store(order, source.graph, input.atSlot);
     const activation = this.dependencies.activations.register({
       orderHashHex: intake.orderHashHex,
+      sourceOrderHashHex: input.sourceOrderHashHex,
       ...(condition === undefined ? {} : { condition }),
       ...(schedule === undefined ? {} : { schedule }),
     }).view;

@@ -4,15 +4,26 @@ export {
   type OrderActivationAttempt,
   type OrderActivationAttemptStatus,
   type OrderActivationReservation,
+  type OrderActivationSettlementEvidence,
   type OrderActivationStatus,
   type OrderActivationView,
 } from "./order-activation-store.js";
 export { createOrderActivationAdminHandler } from "./order-activation-admin.js";
 export {
+  AdvancedOrderReconciliation,
+  AdvancedOrderReconciliationError,
+  type AdvancedOrderReconciliationResult,
+} from "./advanced-order-reconciliation.js";
+export {
   AdvancedOrderFactory,
   AdvancedOrderFactoryError,
   type DerivedAdvancedOrder,
 } from "./advanced-order-factory.js";
+export {
+  AdvancedOrderExecutionFactory,
+  AdvancedOrderExecutionFactoryError,
+  type PreparedAdvancedOrderAttempt,
+} from "./advanced-order-execution-factory.js";
 export {
   MetricObservationStoreError,
   SqliteMetricObservationStore,

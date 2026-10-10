@@ -31,6 +31,8 @@ import { createStrategyPackageInternalHandler, SqliteStrategyPackageStore } from
 import { SqliteOrderActivationStore } from "./order-activation-store.js";
 import { createOrderActivationAdminHandler } from "./order-activation-admin.js";
 import { AdvancedOrderFactory } from "./advanced-order-factory.js";
+import { AdvancedOrderExecutionFactory } from "./advanced-order-execution-factory.js";
+import { AdvancedOrderReconciliation } from "./advanced-order-reconciliation.js";
 import { loadMetricObservationSources, SqliteMetricObservationStore } from "./metric-observation-store.js";
 import { createMetricObservationAdminHandler } from "./metric-observation-admin.js";
 import { createPackageReopeningAdminHandler } from "./package-reopening-admin.js";
@@ -567,6 +569,12 @@ export function loadPublicMarketRuntime(
     const advancedOrders = strategyPackages === undefined || strategyOrderIntake === undefined || orderActivations === undefined
       ? undefined
       : new AdvancedOrderFactory({ orders: strategyPackages, intake: strategyOrderIntake, activations: orderActivations });
+    const advancedOrderExecutions = strategyPackages === undefined || strategyOrderIntake === undefined || orderActivations === undefined
+      ? undefined
+      : new AdvancedOrderExecutionFactory({ orders: strategyPackages, intake: strategyOrderIntake, activations: orderActivations });
+    const advancedOrderReconciliation = strategyPackages === undefined || orderActivations === undefined
+      ? undefined
+      : new AdvancedOrderReconciliation({ activations: orderActivations, strategies: strategyPackages, exchange: store });
     const generalizedQuoteSetting = environment.NARYX_GENERALIZED_STRATEGY_QUOTE_ENABLED ?? "false";
     if (generalizedQuoteSetting !== "true" && generalizedQuoteSetting !== "false") {
       throw new PublicMarketConfigError("NARYX_GENERALIZED_STRATEGY_QUOTE_ENABLED must be true or false.");
@@ -775,6 +783,7 @@ export function loadPublicMarketRuntime(
       ...(orderActivations === undefined ? [] : [createOrderActivationAdminHandler({
         activations: orderActivations,
         ...(metricObservations === undefined ? {} : { observations: metricObservations }),
+        ...(advancedOrderReconciliation === undefined ? {} : { reconciliation: advancedOrderReconciliation }),
       })]),
       ...(metricObservations === undefined ? [] : [createMetricObservationAdminHandler({ observations: metricObservations })]),
       ...(strategyPackages === undefined ? [] : [createStrategyPackageInternalHandler(strategyPackages)]),
@@ -815,6 +824,7 @@ export function loadPublicMarketRuntime(
       ...(nativeClearing === undefined ? {} : { nativeClearing }),
       ...(orderActivations === undefined ? {} : { orderActivations }),
       ...(advancedOrders === undefined ? {} : { advancedOrders }),
+      ...(advancedOrderExecutions === undefined ? {} : { advancedOrderExecutions }),
       nowValue,
       rateLimit,
       clockMs,

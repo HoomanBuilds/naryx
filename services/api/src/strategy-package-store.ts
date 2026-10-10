@@ -2298,6 +2298,28 @@ export class SqliteStrategyPackageStore {
       "CORRUPT_ROW", "A stored receipt does not match its quote or receipt hash.");
     return Object.freeze({ receiptHashHex, receipt, recordedAtMs: row.recorded_at_ms });
   }
+
+  receiptByOrder(orderHashHex: string): StoredStrategyPackageReceipt | undefined {
+    const rows = this.db.prepare(`
+      SELECT receipt_hash, receipt_json, recorded_at_ms
+      FROM strategy_package_receipts
+      WHERE order_hash = ?
+      ORDER BY recorded_at_ms, receipt_hash
+      LIMIT 2
+    `).all(hashBuffer(orderHashHex)) as Array<{
+      receipt_hash: Uint8Array;
+      receipt_json: string;
+      recorded_at_ms: number;
+    }>;
+    if (rows.length === 0) return undefined;
+    requireCondition(rows.length === 1, "RECEIPT_CONFLICT", "A strategy order has more than one terminal receipt.");
+    const row = rows[0]!;
+    const receipt = strategyPackageReceipt(parseProtocolJson(row.receipt_json) as StrategyPackageReceiptInput);
+    const receiptHashHex = toHex(row.receipt_hash);
+    requireCondition(toHex(receipt.orderHash) === orderHashHex && toHex(strategyPackageReceiptHash(receipt)) === receiptHashHex,
+      "CORRUPT_ROW", "A stored receipt does not match its order or receipt hash.");
+    return Object.freeze({ receiptHashHex, receipt, recordedAtMs: row.recorded_at_ms });
+  }
 }
 
 export function createStrategyPackageInternalHandler(
