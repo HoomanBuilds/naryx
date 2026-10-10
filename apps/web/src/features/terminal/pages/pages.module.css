@@ -254,6 +254,35 @@
   grid-column: 1 / -1;
 }
 
+.paperControls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(180px, 0.6fr) minmax(180px, 0.6fr) auto auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.paperQuote {
+  min-height: 67px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.paperQuote span,
+.paperQuote small {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.paperQuote strong {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 14px;
+}
+
 .watchFilter {
   display: inline-flex;
   align-items: center;
@@ -874,6 +903,10 @@ a.ghost {
 
   .scenarioResults .scenarioWide {
     grid-column: auto;
+  }
+
+  .paperControls {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .lifecycleGrid {
