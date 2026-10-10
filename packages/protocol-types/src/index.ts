@@ -1451,6 +1451,7 @@ export {
   keeperActionAuthorizationHash,
   authorizeKeeperAction,
   activatePackageOrder,
+  activateStrategyPackageOrder,
   type ConditionMetric,
   type ConditionComparator,
   type ScheduleKind,

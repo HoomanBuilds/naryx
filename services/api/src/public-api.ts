@@ -95,6 +95,8 @@ import type {
   TypedAdapterActionSupportInput,
   TypedStrategyRoute,
   CollateralSnapshotInput,
+  ActivationConditionInput,
+  ExecutionScheduleInput,
 } from "@naryx/protocol-types";
 import { MAX_TAPE_PAGE, PackageExchangeStoreError, type SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { RegistryStoreError, type SqliteRegistryStore } from "./registry-store.js";
@@ -115,6 +117,7 @@ import { positionsView, RISK_METHODOLOGY, riskView } from "./position-risk-view.
 import { verifyEd25519 } from "./ed25519.js";
 import { StrategyPackageStoreError, type SqliteStrategyPackageStore } from "./strategy-package-store.js";
 import { NativeClearingStoreError, type SqliteNativeClearingStore } from './native-clearing-store.js';
+import { OrderActivationStoreError, type SqliteOrderActivationStore } from "./order-activation-store.js";
 import {
   GeneralizedStrategyQuoteClientError,
   type GeneralizedStrategyQuotePort,
@@ -334,6 +337,8 @@ export interface PublicApiOptions {
     SqliteNativeClearingStore,
     'domains' | 'domain' | 'accounts' | 'account' | 'latestMark' | 'defaultAuction' | 'events'
   >;
+  /** Durable advanced-order registration and progress; execution remains on the loopback controller. */
+  readonly orderActivations?: Pick<SqliteOrderActivationStore, "register" | "view">;
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
   readonly nowValue: () => bigint;
   readonly rateLimit: { readonly windowMs: number; readonly maxRequests: number };
@@ -514,6 +519,13 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       throw new RequestError(503, "COLLATERAL_UNAVAILABLE", "No collateral snapshot store is configured on this server.");
     }
     return options.collateral;
+  }
+
+  function requireOrderActivations() {
+    if (options.orderActivations === undefined) {
+      throw new RequestError(503, "ORDER_ACTIVATIONS_UNAVAILABLE", "No advanced-order activation runtime is configured on this server.");
+    }
+    return options.orderActivations;
   }
 
   function requireDelivery() {
@@ -832,6 +844,12 @@ export function createPublicApiHandler(options: PublicApiOptions) {
   function readRoutes(url: URL): unknown {
     const path = url.pathname;
     let match: RegExpExecArray | null;
+    if ((match = /^\/v1\/order-activations\/([0-9a-f]{64})$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const view = requireOrderActivations().view(match[1] as string);
+      if (view === undefined) throw new RequestError(404, "ACTIVATION_NOT_FOUND", "No activation is registered for this order.");
+      return { version: 1, ...view };
+    }
     if (path === '/v1/native-clearing/domains') {
       onlyParams(url, []);
       return { version: 1, domains: requireNativeClearing().domains() };
@@ -1708,6 +1726,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/position-snapshots",
       "/v1/collateral-snapshots",
       "/v1/health-snapshots",
+      "/v1/order-activations",
       "/v1/recovery/approvals",
       "/v1/strategies/commands",
       "/v1/strategies/commands/authorization",
@@ -1742,6 +1761,19 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         }
         throw error;
       }
+    }
+    if (path === "/v1/order-activations") {
+      const keys = Object.keys(body).sort();
+      if (keys.some((key) => key !== "condition" && key !== "orderHash" && key !== "schedule")
+        || typeof body.orderHash !== "string" || !HASH_HEX.test(body.orderHash)) {
+        throw new RequestError(400, "INVALID_REQUEST", "Advanced-order registration requires orderHash and only its bound condition or schedule documents.");
+      }
+      const registered = requireOrderActivations().register({
+        orderHashHex: body.orderHash,
+        ...(body.condition === undefined ? {} : { condition: object(body.condition, "condition") as unknown as ActivationConditionInput }),
+        ...(body.schedule === undefined ? {} : { schedule: object(body.schedule, "schedule") as unknown as ExecutionScheduleInput }),
+      });
+      return { version: 1, created: registered.created, ...registered.view };
     }
     if (nettingExecutionMatch !== null) {
       if (Object.keys(body).length !== 0) {
@@ -2649,6 +2681,12 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           const status = error.code.endsWith('NOT_FOUND') || error.code === 'MARK_UNAVAILABLE' ? 404
             : error.code === 'CORRUPT_ROW' ? 500
               : error.code === 'INVALID_INPUT' ? 400 : 409;
+          return fail(response, status, error.code, error.message);
+        }
+        if (error instanceof OrderActivationStoreError) {
+          const status = error.code === "CORRUPT_ROW" ? 500
+            : error.code.endsWith("NOT_FOUND") ? 404
+              : ["INVALID_HASH", "ORDER_MISMATCH", "ORDER_NOT_ADVANCED", "CONDITION_MISMATCH", "SCHEDULE_MISMATCH", "UNSUPPORTED_ENVIRONMENT"].includes(error.code) ? 400 : 409;
           return fail(response, status, error.code, error.message);
         }
         if (error instanceof GeneralizedStrategyQuoteClientError) {

@@ -151,6 +151,50 @@ test("depth keeps direct and implied quantity apart within a level", async () =>
   });
 });
 
+test("advanced-order activation registration and status use the configured durable runtime", async () => {
+  const orderHash = id(8_001);
+  const condition = {
+    conditionVersion: 1,
+    metric: "TIME",
+    comparator: "AT_OR_ABOVE",
+    threshold: 1_000n,
+    observationUnit: "EVM_UNIX_SECONDS",
+    maximumObservationAge: 0n,
+  } as const;
+  const view = {
+    orderHashHex: orderHash,
+    order: { packageOrderType: "CONDITIONAL" },
+    condition,
+    status: "WAITING",
+    progress: { executedQuantity: 0n, executedNotionalTicks: 0n, attemptedSlices: 0, failedSlices: 0 },
+    attempts: [],
+    registeredAtMs: 1,
+    updatedAtMs: 1,
+  } as never;
+  let registered = false;
+  await withMarket(async (request) => {
+    const post = await request("/v1/order-activations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(toProtocolJson({ orderHash, condition })),
+    });
+    assert.equal(post.status, 200);
+    assert.equal((post.body as { created: boolean }).created, true);
+    assert.equal(registered, true);
+    const read = await request(`/v1/order-activations/${orderHash}`);
+    assert.equal(read.status, 200);
+    assert.equal((read.body as { orderHashHex: string }).orderHashHex, orderHash);
+  }, {
+    orderActivations: {
+      register: (input) => {
+        registered = input.orderHashHex === orderHash && input.condition?.metric === "TIME";
+        return { created: true, view };
+      },
+      view: (requested) => requested === orderHash ? view : undefined,
+    },
+  });
+});
+
 test('native clearing reads remain optional and event pages are bounded', async () => {
   const domain = {
     policy: { clearingDomainId: 'sol-carry-clearing' },

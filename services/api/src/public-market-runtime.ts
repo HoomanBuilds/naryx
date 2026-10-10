@@ -28,6 +28,8 @@ import { SqliteBuilderStore } from "./builder-store.js";
 import { createKeeperExecutorHandler, keeperClock, SqliteKeeperExecutor } from "./keeper-executor.js";
 import { createCoordinationInternalHandler, SqliteCoordinationStore } from "./coordination-store.js";
 import { createStrategyPackageInternalHandler, SqliteStrategyPackageStore } from "./strategy-package-store.js";
+import { SqliteOrderActivationStore } from "./order-activation-store.js";
+import { createOrderActivationAdminHandler } from "./order-activation-admin.js";
 import { createPackageReopeningAdminHandler } from "./package-reopening-admin.js";
 import { HttpGeneralizedStrategyQuoteClient } from "./generalized-strategy-quote-client.js";
 import { HttpPortfolioOptimizationClient } from './portfolio-optimization-client.js';
@@ -465,6 +467,17 @@ export function loadPublicMarketRuntime(
       ? undefined
       : new SqliteStrategyPackageStore(absolute(strategyPackagePath, "NARYX_STRATEGY_PACKAGE_DB"), { clock: clockMs });
     if (strategyPackages !== undefined) opened.push(strategyPackages);
+    const orderActivationPath = optional(environment.NARYX_ORDER_ACTIVATION_DB);
+    if (orderActivationPath !== undefined && strategyPackages === undefined) {
+      throw new PublicMarketConfigError("NARYX_ORDER_ACTIVATION_DB requires NARYX_STRATEGY_PACKAGE_DB.");
+    }
+    const orderActivations = orderActivationPath === undefined || strategyPackages === undefined
+      ? undefined
+      : new SqliteOrderActivationStore(absolute(orderActivationPath, "NARYX_ORDER_ACTIVATION_DB"), {
+        orders: strategyPackages,
+        clock: clockMs,
+      });
+    if (orderActivations !== undefined) opened.push(orderActivations);
     const strategyPath = optional(environment.NARYX_STRATEGY_DB);
     if (strategyPath !== undefined && evidence === undefined) {
       throw new PublicMarketConfigError("NARYX_STRATEGY_DB requires NARYX_EVIDENCE_DB, whose settled receipts found strategies.");
@@ -737,6 +750,7 @@ export function loadPublicMarketRuntime(
       ...(keeper === undefined ? [] : [createKeeperExecutorHandler({ executor: keeper, nowIn: keeperClock(clockMs) })]),
       ...(coordination === undefined ? [] : [createCoordinationInternalHandler(coordination)]),
       ...(nativeClearing === undefined ? [] : [createNativeClearingAdminHandler({ clearing: nativeClearing })]),
+      ...(orderActivations === undefined ? [] : [createOrderActivationAdminHandler({ activations: orderActivations })]),
       ...(strategyPackages === undefined ? [] : [createStrategyPackageInternalHandler(strategyPackages)]),
       ...(nettingAllocationAdmin === undefined ? [] : [nettingAllocationAdmin]),
       ...(solverState === undefined || makerSolverId === undefined ? [] : [createMakerOperationsHandler({
@@ -773,6 +787,7 @@ export function loadPublicMarketRuntime(
       ...(keeper === undefined ? {} : { health: keeper }),
       ...(coordination === undefined ? {} : { coordination }),
       ...(nativeClearing === undefined ? {} : { nativeClearing }),
+      ...(orderActivations === undefined ? {} : { orderActivations }),
       nowValue,
       rateLimit,
       clockMs,

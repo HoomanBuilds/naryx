@@ -1,4 +1,14 @@
 export {
+  OrderActivationStoreError,
+  SqliteOrderActivationStore,
+  type OrderActivationAttempt,
+  type OrderActivationAttemptStatus,
+  type OrderActivationReservation,
+  type OrderActivationStatus,
+  type OrderActivationView,
+} from "./order-activation-store.js";
+export { createOrderActivationAdminHandler } from "./order-activation-admin.js";
+export {
   createMakerOperationsHandler,
   makerOperationsSnapshot,
   MAKER_OPERATIONS_PATH,

@@ -7,6 +7,7 @@ import { domainHash, HASH_DOMAIN } from './hashing.js';
 import { packageOrder, type PackageOrderInput } from './package-order.js';
 import { commitmentHash, encodeCommitmentHash, type CommitmentHash } from './package-order-primitives.js';
 import { encodeProtocolId, protocolId, type ProtocolId } from './primitives.js';
+import { strategyPackageOrder, type StrategyPackageOrderInput } from './strategy-package-order.js';
 
 const U32_BITS = 32;
 const U64_BITS = 64;
@@ -749,6 +750,58 @@ export interface OrderActivationEvidence {
   readonly atValue: bigint;
 }
 
+interface ActivatablePackageOrder {
+  readonly packageOrderType: PackageOrderInput['packageOrderType'];
+  readonly activationConditionHash?: CommitmentHash;
+  readonly executionScheduleHash?: CommitmentHash;
+  readonly expiryUnit: ExpiryUnit;
+  readonly expiryValue: bigint;
+  readonly quantityAtoms: bigint;
+}
+
+function activateCanonicalPackageOrder(
+  order: ActivatablePackageOrder,
+  evidence: OrderActivationEvidence,
+):
+  | { readonly active: true; readonly maximumQuantityAtoms: bigint; readonly sliceIndex?: number }
+  | { readonly active: false; readonly reason: OrderActivationRejection } {
+  object(evidence, 'activatePackageOrder.evidence');
+  const reject = (reason: OrderActivationRejection) => Object.freeze({ active: false as const, reason });
+  const at = unsigned(evidence.atValue, U64_BITS, 'activatePackageOrder.atValue');
+  if (at >= order.expiryValue) return reject('ORDER_EXPIRED');
+  const type = order.packageOrderType;
+  const immediate = type === 'LIMIT' || type === 'MARKETABLE_LIMIT' || type === 'POST_ONLY';
+  if (immediate) {
+    if (order.activationConditionHash !== undefined || order.executionScheduleHash !== undefined) return reject('ACTIVATION_NOT_EXPECTED');
+    return Object.freeze({ active: true as const, maximumQuantityAtoms: order.quantityAtoms });
+  }
+  const scheduled = type === 'SCHEDULED' || type === 'PACKAGE_TWAP';
+  if ((type === 'CONDITIONAL' && order.activationConditionHash === undefined) || (scheduled && order.executionScheduleHash === undefined)) {
+    return reject('ACTIVATION_NOT_BOUND');
+  }
+  if (type === 'CONDITIONAL' && order.executionScheduleHash !== undefined) return reject('ACTIVATION_NOT_EXPECTED');
+  if (order.activationConditionHash !== undefined) {
+    if (evidence.condition === undefined || compareBytes(activationConditionHash(evidence.condition), order.activationConditionHash) !== 0) {
+      return reject('CONDITION_MISMATCH');
+    }
+    if (activationCondition(evidence.condition).observationUnit !== order.expiryUnit) return reject('TIME_UNIT_MISMATCH');
+    const verdict = evaluateActivationCondition(evidence.condition, evidence.observations, at);
+    if (!verdict.satisfied) return reject(verdict.reason);
+  }
+  if (!scheduled) return Object.freeze({ active: true as const, maximumQuantityAtoms: order.quantityAtoms });
+  if (evidence.schedule === undefined || compareBytes(executionScheduleHash(evidence.schedule), order.executionScheduleHash as Uint8Array) !== 0) {
+    return reject('SCHEDULE_MISMATCH');
+  }
+  const schedule = executionSchedule(evidence.schedule);
+  if (schedule.kind !== type) return reject('SCHEDULE_MISMATCH');
+  if (schedule.timeUnit !== order.expiryUnit) return reject('TIME_UNIT_MISMATCH');
+  if (schedule.aggregateQuantityLimit > order.quantityAtoms) return reject('SCHEDULE_ABOVE_ORDER');
+  if (evidence.progress === undefined) throw new MalformedInputError('activatePackageOrder.progress', 'a scheduled order needs its progress');
+  const slice = nextScheduleSlice(schedule, evidence.progress, at);
+  if (!slice.due) return reject(slice.reason);
+  return Object.freeze({ active: true as const, maximumQuantityAtoms: slice.maximumQuantity, sliceIndex: slice.sliceIndex });
+}
+
 /**
  * Decides whether a signed package order may execute now, and how much of it. An immediate order
  * executes in full and may bind neither a condition nor a schedule. A CONDITIONAL order executes in
@@ -763,40 +816,30 @@ export function activatePackageOrder(
   | { readonly active: true; readonly maximumQuantityAtoms: bigint; readonly sliceIndex?: number }
   | { readonly active: false; readonly reason: OrderActivationRejection } {
   const order = packageOrder(orderInput);
-  object(evidence, 'activatePackageOrder.evidence');
-  const reject = (reason: OrderActivationRejection) => Object.freeze({ active: false as const, reason });
-  const at = unsigned(evidence.atValue, U64_BITS, 'activatePackageOrder.atValue');
-  if (at >= order.expiryValue) return reject('ORDER_EXPIRED');
-  const type = order.packageOrderType;
-  const immediate = type === 'LIMIT' || type === 'MARKETABLE_LIMIT' || type === 'POST_ONLY';
-  if (immediate) {
-    if (order.activationConditionHash !== undefined || order.executionScheduleHash !== undefined) return reject('ACTIVATION_NOT_EXPECTED');
-    return Object.freeze({ active: true as const, maximumQuantityAtoms: order.quantity.atoms });
-  }
-  const scheduled = type === 'SCHEDULED' || type === 'PACKAGE_TWAP';
-  if ((type === 'CONDITIONAL' && order.activationConditionHash === undefined) || (scheduled && order.executionScheduleHash === undefined)) {
-    return reject('ACTIVATION_NOT_BOUND');
-  }
-  if (type === 'CONDITIONAL' && order.executionScheduleHash !== undefined) return reject('ACTIVATION_NOT_EXPECTED');
-  if (order.activationConditionHash !== undefined) {
-    if (evidence.condition === undefined || compareBytes(activationConditionHash(evidence.condition), order.activationConditionHash) !== 0) {
-      return reject('CONDITION_MISMATCH');
-    }
-    // `atValue` is in the order's expiry unit; a condition timed in another unit cannot be judged.
-    if (activationCondition(evidence.condition).observationUnit !== order.expiryUnit) return reject('TIME_UNIT_MISMATCH');
-    const verdict = evaluateActivationCondition(evidence.condition, evidence.observations, at);
-    if (!verdict.satisfied) return reject(verdict.reason);
-  }
-  if (!scheduled) return Object.freeze({ active: true as const, maximumQuantityAtoms: order.quantity.atoms });
-  if (evidence.schedule === undefined || compareBytes(executionScheduleHash(evidence.schedule), order.executionScheduleHash as Uint8Array) !== 0) {
-    return reject('SCHEDULE_MISMATCH');
-  }
-  const schedule = executionSchedule(evidence.schedule);
-  if (schedule.kind !== type) return reject('SCHEDULE_MISMATCH');
-  if (schedule.timeUnit !== order.expiryUnit) return reject('TIME_UNIT_MISMATCH');
-  if (schedule.aggregateQuantityLimit > order.quantity.atoms) return reject('SCHEDULE_ABOVE_ORDER');
-  if (evidence.progress === undefined) throw new MalformedInputError('activatePackageOrder.progress', 'a scheduled order needs its progress');
-  const slice = nextScheduleSlice(schedule, evidence.progress, at);
-  if (!slice.due) return reject(slice.reason);
-  return Object.freeze({ active: true as const, maximumQuantityAtoms: slice.maximumQuantity, sliceIndex: slice.sliceIndex });
+  return activateCanonicalPackageOrder({
+    packageOrderType: order.packageOrderType,
+    ...(order.activationConditionHash === undefined ? {} : { activationConditionHash: order.activationConditionHash }),
+    ...(order.executionScheduleHash === undefined ? {} : { executionScheduleHash: order.executionScheduleHash }),
+    expiryUnit: order.expiryUnit,
+    expiryValue: order.expiryValue,
+    quantityAtoms: order.quantity.atoms,
+  }, evidence);
+}
+
+/** Activates the generalized strategy order used by the package exchange and terminal. */
+export function activateStrategyPackageOrder(
+  orderInput: StrategyPackageOrderInput,
+  evidence: OrderActivationEvidence,
+):
+  | { readonly active: true; readonly maximumQuantityAtoms: bigint; readonly sliceIndex?: number }
+  | { readonly active: false; readonly reason: OrderActivationRejection } {
+  const order = strategyPackageOrder(orderInput);
+  return activateCanonicalPackageOrder({
+    packageOrderType: order.packageOrderType,
+    ...(order.activationConditionHash === undefined ? {} : { activationConditionHash: order.activationConditionHash }),
+    ...(order.executionScheduleHash === undefined ? {} : { executionScheduleHash: order.executionScheduleHash }),
+    expiryUnit: order.expiryUnit,
+    expiryValue: order.expiryValue,
+    quantityAtoms: order.economicQuantity.atoms,
+  }, evidence);
 }

@@ -2,13 +2,17 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
   activatePackageOrder,
+  activateStrategyPackageOrder,
   activationConditionHash,
+  assetRef,
   authorizeKeeperAction,
   evaluateActivationCondition,
   executionScheduleHash,
   isRiskReducing,
   keeperActionAuthorizationHash,
   nextScheduleSlice,
+  STRATEGY_QUOTE_CONVENTION_ID,
+  STRATEGY_RISK_CLASS_ID,
   strategyHealthSnapshotHash,
   toHex,
   twapSliceWithinLimit,
@@ -17,6 +21,7 @@ import {
   type KeeperActionAuthorizationInput,
   type KeeperActionRequest,
   type StrategyHealthSnapshotInput,
+  type StrategyPackageOrderInput,
 } from '../src/index.js';
 import { atomicInput } from './order-fixtures.js';
 
@@ -42,6 +47,46 @@ const schedule = (overrides: Partial<ExecutionScheduleInput> = {}): ExecutionSch
   stopRule: 'STOP_ON_FIRST_FAILURE',
   ...overrides,
 });
+
+const strategyOrder = (overrides: Partial<StrategyPackageOrderInput> = {}): StrategyPackageOrderInput => {
+  const sol = assetRef('sol', '31'.repeat(32), 9);
+  const usdc = assetRef('usdc', '32'.repeat(32), 6);
+  return {
+    version: 1,
+    environment: 'testnet',
+    templateId: 'cash-and-carry-v1',
+    templateVersion: 1,
+    packageTemplateManifestHash: '33'.repeat(32),
+    graphHash: '34'.repeat(32),
+    seriesId: 'sol-carry',
+    seriesVersion: 1,
+    seriesManifestHash: '35'.repeat(32),
+    executionClassId: 'sol-carry-atomic',
+    executionClassVersion: 1,
+    executionClassManifestHash: '36'.repeat(32),
+    quoteConventionId: STRATEGY_QUOTE_CONVENTION_ID.ANNUALIZED_NET_YIELD,
+    riskClassId: STRATEGY_RISK_CLASS_ID.DELTA_NEUTRAL_BASIS,
+    owner: 'owner-1',
+    settlementAccount: 'strategy-1',
+    lifecycleAction: 'ENTRY',
+    settlementClass: 'ATOMIC_POSTCONDITION',
+    packageOrderType: 'LIMIT',
+    packageTimeInForce: 'FOK',
+    economicQuantity: { asset: sol, atoms: 100n },
+    quoteAsset: usdc,
+    metricLimits: [],
+    maximumServiceFeesByAsset: [],
+    maximumVenueFeesByAsset: [],
+    maximumNetworkFeesByAsset: [],
+    maximumRecoveryCostByAsset: [],
+    maximumMarginIncrease: { asset: usdc, atoms: 0n },
+    maximumResidualValue: { asset: usdc, atoms: 0n },
+    expiryUnit: 'EVM_UNIX_SECONDS',
+    expiryValue: 2_000n,
+    nonce: 1n,
+    ...overrides,
+  };
+};
 
 const health = (overrides: Partial<StrategyHealthSnapshotInput> = {}): StrategyHealthSnapshotInput => ({
   snapshotVersion: 1,
@@ -238,6 +283,17 @@ describe('package order activation', () => {
     const scheduled = orderAt({ packageOrderType: 'SCHEDULED', executionScheduleHash: executionScheduleHash(secondsSchedule) });
     const progress = { executedQuantity: 0n, executedNotionalTicks: 0n, attemptedSlices: 0, failedSlices: 0 };
     assert.deepEqual(activatePackageOrder(scheduled, { schedule: secondsSchedule, progress, observations: [], atValue: 1_000n }), { active: false, reason: 'TIME_UNIT_MISMATCH' });
+  });
+
+  test('the generalized strategy order activates through the same bounded kernel', () => {
+    const bounded = schedule({ aggregateQuantityLimit: 100n, maximumSliceQuantity: 25n });
+    const order = strategyOrder({ packageOrderType: 'SCHEDULED', executionScheduleHash: executionScheduleHash(bounded) });
+    assert.deepEqual(activateStrategyPackageOrder(order, {
+      schedule: bounded,
+      progress: { executedQuantity: 0n, executedNotionalTicks: 0n, attemptedSlices: 0, failedSlices: 0 },
+      observations: [],
+      atValue: 1_000n,
+    }), { active: true, maximumQuantityAtoms: 25n, sliceIndex: 0 });
   });
 });
 
