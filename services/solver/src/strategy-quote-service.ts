@@ -1,4 +1,5 @@
 import {
+  compareProtocolIds,
   bytesEqual,
   compileTypedStrategyRoute,
   commitmentHash,
@@ -273,7 +274,7 @@ export class GeneralizedStrategyQuoteService {
         && domain.domainManifestVersion === leg.domain.domainManifestVersion
         && bytesEqual(domain.domainManifestHash, leg.domain.domainManifestHash))) values.push(leg.domain);
       return values;
-    }, []).sort((left, right) => left.domainId.localeCompare(right.domainId));
+    }, []).sort((left, right) => compareProtocolIds(left.domainId, right.domainId));
     const quote = buildSignedStrategyPackageQuote({
       version: 1,
       environment: documents.order.environment,

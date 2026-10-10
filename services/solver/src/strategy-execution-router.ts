@@ -1,5 +1,6 @@
 import type { CompiledStrategyExecution } from '@naryx/adapter-core';
 import {
+  compareProtocolIds,
   bytesEqual,
   crossDomainPlan,
   crossDomainPlanHash,
@@ -136,7 +137,7 @@ export async function compileStrategyRouteExecution(input: Readonly<{
     graphHash: route.graphHash,
     quoteHash,
     routeHash,
-    domains: Object.freeze(executions.sort((left, right) => left.domainPlan.domain.domainId.localeCompare(right.domainPlan.domain.domainId))),
+    domains: Object.freeze(executions.sort((left, right) => compareProtocolIds(left.domainPlan.domain.domainId, right.domainPlan.domain.domainId))),
     coordination: coordination(route),
     ...(coordinationPlan === undefined ? {} : {
       crossDomainPlan: coordinationPlan,

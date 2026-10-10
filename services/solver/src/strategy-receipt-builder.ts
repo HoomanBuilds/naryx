@@ -1,4 +1,5 @@
 import {
+  compareProtocolIds,
   bytesEqual,
   strategyPackageOrderHash,
   strategyPackageQuoteHash,
@@ -52,8 +53,8 @@ export function buildStrategyPackageReceipt(input: StrategyReceiptBuildInput): S
   const { admission } = input;
   const routeHash = typedStrategyRouteHash(admission.route);
   requireCondition(bytesEqual(admission.quote.routeHash, routeHash), 'the selected quote does not bind the admitted route');
-  const graphLegs = [...admission.graph.legs].sort((left, right) => left.legId.localeCompare(right.legId));
-  const outcomes = [...input.legOutcomes].sort((left, right) => left.legId.localeCompare(right.legId));
+  const graphLegs = [...admission.graph.legs].sort((left, right) => compareProtocolIds(left.legId, right.legId));
+  const outcomes = [...input.legOutcomes].sort((left, right) => compareProtocolIds(left.legId, right.legId));
   requireCondition(outcomes.length === graphLegs.length, 'execution evidence must report every graph leg');
   for (let index = 0; index < graphLegs.length; index += 1) {
     const graphLeg = graphLegs[index]!;
