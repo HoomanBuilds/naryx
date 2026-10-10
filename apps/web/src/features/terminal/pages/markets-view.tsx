@@ -394,7 +394,7 @@ export function MarketsView() {
           <>
             <div className={styles.evidenceBar}>
               <span className={styles.pillOk}>Methodology v{curve.methodologyVersion}</span>
-              <p>{human(curve.quoteConvention)} in {curve.quoteAsset}. Direct depth is executable. The separate with-implied line is indicative and cannot be submitted as a fill.</p>
+              <p>{human(curve.quoteConvention)} in {curve.quoteAsset}. Direct depth is executable. Premiums measure each active settlement class against the best direct price at the same size. The separate with-implied line is indicative and cannot be submitted as a fill.</p>
             </div>
             <div className={styles.scroll}>
               <table className={styles.table}>
@@ -409,25 +409,29 @@ export function MarketsView() {
                   </tr>
                 </thead>
                 <tbody>
-                  {curve.points.map((point) => (
-                    <tr key={point.executionClassId}>
-                      <td className={styles.mono}>{point.executionClassId}</td>
-                      <td>{human(point.settlementClass)}</td>
-                      <td>{point.domains.join(" + ")}</td>
-                      {curveSizes.map((size, index) => (
-                        <td key={size.toString()} className={styles.num}>
-                          {!point.open ? "-" : (
-                            <span className={styles.cellStack}>
-                              <strong>{point.bids[index]?.averagePriceTicks.toString() ?? "-"} / {point.asks[index]?.averagePriceTicks.toString() ?? "-"}</strong>
-                              <small className={styles.cellDetail}>With implied: {point.impliedBids[index]?.averagePriceTicks.toString() ?? "-"} / {point.impliedAsks[index]?.averagePriceTicks.toString() ?? "-"}</small>
-                            </span>
-                          )}
-                        </td>
-                      ))}
-                      <td className={styles.num}>{point.lastTrade?.priceTicks.toString() ?? "-"}</td>
-                      <td><span className={!point.open || point.halted ? styles.pillWarn : styles.pillOk}>{!point.open ? "Closed" : point.halted ? "Halted" : "Open"}</span></td>
-                    </tr>
-                  ))}
+                  {curve.points.map((point) => {
+                    const premiums = curve.premiumSurface.points.find((entry) => entry.executionClassId === point.executionClassId)?.premiums;
+                    return (
+                      <tr key={point.executionClassId}>
+                        <td className={styles.mono}>{point.executionClassId}</td>
+                        <td>{human(point.settlementClass)}</td>
+                        <td>{point.domains.join(" + ")}</td>
+                        {curveSizes.map((size, index) => (
+                          <td key={size.toString()} className={styles.num}>
+                            {!point.open ? "-" : (
+                              <span className={styles.cellStack}>
+                                <strong>{point.bids[index]?.averagePriceTicks.toString() ?? "-"} / {point.asks[index]?.averagePriceTicks.toString() ?? "-"}</strong>
+                                <small className={styles.cellDetail}>With implied: {point.impliedBids[index]?.averagePriceTicks.toString() ?? "-"} / {point.impliedAsks[index]?.averagePriceTicks.toString() ?? "-"}</small>
+                                <small className={styles.cellDetail}>Bid discount / ask premium: {premiums?.[index]?.bidDiscountTicks?.toString() ?? "-"} / {premiums?.[index]?.askPremiumTicks?.toString() ?? "-"}</small>
+                              </span>
+                            )}
+                          </td>
+                        ))}
+                        <td className={styles.num}>{point.lastTrade?.priceTicks.toString() ?? "-"}</td>
+                        <td><span className={!point.open || point.halted ? styles.pillWarn : styles.pillOk}>{!point.open ? "Closed" : point.halted ? "Halted" : "Open"}</span></td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

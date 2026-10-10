@@ -128,6 +128,7 @@ import {
   solverSignatureDigest,
   replayRouteDecision,
   replaySealedAuction,
+  settlementPremiumSurface,
   requiresSuccessfulReceipt,
   verifyQualificationHistory,
   sealedAuctionHash,
@@ -249,6 +250,7 @@ import {
   type NativeClearingDomainState,
   type NativeClearingMarkObservation,
   type NativeClearingPolicy,
+  type SettlementPremiumSurface,
 } from '@naryx/protocol-types';
 import { verifyTypedData, type Hex } from 'viem';
 
@@ -641,6 +643,7 @@ export interface SeriesCurve {
   readonly quoteConvention: string;
   readonly asOfValue: bigint;
   readonly methodologyVersion: number;
+  readonly premiumSurface: SettlementPremiumSurface;
   readonly points: readonly SeriesCurvePoint[];
 }
 
@@ -3437,12 +3440,26 @@ export class NaryxClient {
         return domain;
       });
       if (!point.open) {
-        if (point.executable !== undefined || point.indicativeWithImplied !== undefined || point.lastTrade !== undefined) {
+        if (point.executable !== undefined || point.indicativeWithImplied !== undefined || point.lastTrade !== undefined || point.halted !== undefined) {
           throw new NaryxEvidenceError(`${context} is closed but carries market data`);
         }
         return Object.freeze({ executionClassId: point.executionClassId, settlementClass: point.settlementClass, domains: Object.freeze(domains), open: false });
       }
       if (typeof point.halted !== 'boolean') throw new NaryxEvidenceError(`${context}.halted is malformed`);
+      if (point.halted) {
+        if (point.executable !== undefined || point.indicativeWithImplied !== undefined) {
+          throw new NaryxEvidenceError(`${context} is halted but carries executable depth`);
+        }
+        const lastTrade = observedTrade(point.lastTrade, `${context}.lastTrade`);
+        return Object.freeze({
+          executionClassId: point.executionClassId,
+          settlementClass: point.settlementClass,
+          domains: Object.freeze(domains),
+          open: true,
+          halted: true,
+          ...(lastTrade === undefined ? {} : { lastTrade }),
+        });
+      }
       const executable = record(point.executable, `${context}.executable`);
       const indicative = point.indicativeWithImplied === undefined
         ? undefined
@@ -3467,13 +3484,26 @@ export class NaryxClient {
         ...(lastTrade === undefined ? {} : { lastTrade }),
       });
     });
+    const verifiedPoints = Object.freeze(points);
+    const premiumSurface = settlementPremiumSurface(
+      verifiedPoints.flatMap((point) => !point.open || point.halted ? [] : [{
+        executionClassId: point.executionClassId,
+        bids: point.executable!.bids,
+        asks: point.executable!.asks,
+      }]),
+      sizes,
+    );
+    if (!sameProtocolValue(body.premiumSurface, premiumSurface)) {
+      throw new NaryxEvidenceError('settlement premium surface differs from direct executable depth');
+    }
     return Object.freeze({
       seriesId,
       quoteAsset: body.quoteAsset,
       quoteConvention: body.quoteConvention,
       asOfValue: big(body.asOfValue, 'asOfValue'),
       methodologyVersion: count(body.methodologyVersion, 'methodologyVersion'),
-      points: Object.freeze(points),
+      premiumSurface,
+      points: verifiedPoints,
     });
   }
 
@@ -3484,7 +3514,7 @@ export class NaryxClient {
     if (body.seriesId !== seriesId) throw new NaryxEvidenceError('index is for another series');
     for (const [index, entry] of list(body.executionClasses, 'executionClasses').entries()) {
       const executionClass = record(entry, `executionClasses[${index}]`);
-      if (executionClass.open !== true) continue;
+      if (executionClass.open !== true || executionClass.halted === true) continue;
       const served = record(executionClass.index, `executionClasses[${index}].index`);
       const executable = record(served.executable, `executionClasses[${index}].index.executable`);
       const implied = record(served.withImplied, `executionClasses[${index}].index.withImplied`);

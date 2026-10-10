@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { settlementPremiumSurface, type SettlementPremiumSurface } from "@naryx/sdk";
 import {
   CHART_INTERVALS,
   type Candle,
@@ -112,7 +113,24 @@ export interface PublicSeriesCurve {
   readonly quoteAsset: string;
   readonly quoteConvention: string;
   readonly methodologyVersion: number;
+  readonly premiumSurface: SettlementPremiumSurface;
   readonly points: readonly PublicSeriesCurvePoint[];
+}
+
+function sameExact(left: unknown, right: unknown): boolean {
+  if (typeof left !== typeof right) return false;
+  if (left === null || right === null || typeof left !== "object") return left === right;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+      && left.every((entry, index) => sameExact(entry, right[index]));
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord).sort();
+  const rightKeys = Object.keys(rightRecord).sort();
+  return leftKeys.length === rightKeys.length && leftKeys.every((key, index) => (
+    key === rightKeys[index] && sameExact(leftRecord[key], rightRecord[key])
+  ));
 }
 
 function requiredText(value: unknown, context: string): string {
@@ -390,10 +408,15 @@ function seriesCurve(body: Record<string, unknown>, seriesId: string, sizes: rea
       domains: textList(point.domains, `${context}.domains`),
     };
     if (!point.open) {
-      if (point.executable !== undefined || point.indicativeWithImplied !== undefined || point.lastTrade !== undefined) throw new PublicApiError(`${context} is closed but carries market data`);
+      if (point.executable !== undefined || point.indicativeWithImplied !== undefined || point.lastTrade !== undefined || point.halted !== undefined) throw new PublicApiError(`${context} is closed but carries market data`);
       return Object.freeze({ ...common, open: false, halted: false, bids: Object.freeze([]), asks: Object.freeze([]), impliedBids: Object.freeze([]), impliedAsks: Object.freeze([]), lastTrade: null });
     }
-    if (typeof point.halted !== "boolean" || point.executable === null || typeof point.executable !== "object" || Array.isArray(point.executable)) {
+    if (typeof point.halted !== "boolean") throw new PublicApiError(`${context}.halted is malformed`);
+    if (point.halted) {
+      if (point.executable !== undefined || point.indicativeWithImplied !== undefined) throw new PublicApiError(`${context} is halted but carries executable depth`);
+      return Object.freeze({ ...common, open: true, halted: true, bids: Object.freeze([]), asks: Object.freeze([]), impliedBids: Object.freeze([]), impliedAsks: Object.freeze([]), lastTrade: point.lastTrade === undefined ? null : observedTrade(point.lastTrade, `${context}.lastTrade`) });
+    }
+    if (point.executable === null || typeof point.executable !== "object" || Array.isArray(point.executable)) {
       throw new PublicApiError(`${context} is malformed`);
     }
     const executable = point.executable as Record<string, unknown>;
@@ -414,11 +437,31 @@ function seriesCurve(body: Record<string, unknown>, seriesId: string, sizes: rea
     });
   });
   if (new Set(points.map((point) => point.executionClassId)).size !== points.length) throw new PublicApiError("series curve repeats an execution class");
+  const premiumSurface = settlementPremiumSurface(
+    points.flatMap((point) => !point.open || point.halted ? [] : [{
+      executionClassId: point.executionClassId,
+      bids: sizes.map((size, index) => ({
+        size,
+        fillableQuantity: point.bids[index] === null ? BigInt(0) : size,
+        label: "EXECUTABLE" as const,
+        ...(point.bids[index] === null ? {} : { averagePriceTicks: point.bids[index]!.averagePriceTicks }),
+      })),
+      asks: sizes.map((size, index) => ({
+        size,
+        fillableQuantity: point.asks[index] === null ? BigInt(0) : size,
+        label: "EXECUTABLE" as const,
+        ...(point.asks[index] === null ? {} : { averagePriceTicks: point.asks[index]!.averagePriceTicks }),
+      })),
+    }]),
+    sizes,
+  );
+  if (!sameExact(body.premiumSurface, premiumSurface)) throw new PublicApiError("settlement premium surface differs from executable depth");
   return Object.freeze({
     seriesId,
     quoteAsset: body.quoteAsset,
     quoteConvention: body.quoteConvention,
     methodologyVersion: body.methodologyVersion,
+    premiumSurface,
     points: Object.freeze(points),
   });
 }

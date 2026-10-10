@@ -1339,6 +1339,7 @@ export {
   CANDLE_INTERVAL_MS,
   aggregateCandles,
   executablePackageIndex,
+  settlementPremiumSurface,
   type DataLabel,
   type CandleInterval,
   type TapeTrade,
@@ -1346,6 +1347,10 @@ export {
   type CandleSeries,
   type SizeQuote,
   type ExecutablePackageIndex,
+  type ExecutionClassDepth,
+  type SettlementPremiumReference,
+  type SettlementPremiumPoint,
+  type SettlementPremiumSurface,
 } from './market-data.js';
 
 export {

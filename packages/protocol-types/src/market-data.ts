@@ -149,6 +149,34 @@ export interface ExecutablePackageIndex {
   readonly withImplied: { readonly bids: readonly SizeQuote[]; readonly asks: readonly SizeQuote[] };
 }
 
+export interface ExecutionClassDepth {
+  readonly executionClassId: string;
+  readonly bids: readonly SizeQuote[];
+  readonly asks: readonly SizeQuote[];
+}
+
+export interface SettlementPremiumReference {
+  readonly size: bigint;
+  readonly bestBidTicks?: bigint;
+  readonly bestAskTicks?: bigint;
+}
+
+export interface SettlementPremiumPoint {
+  readonly executionClassId: string;
+  readonly premiums: readonly {
+    readonly size: bigint;
+    readonly bidDiscountTicks?: bigint;
+    readonly askPremiumTicks?: bigint;
+  }[];
+}
+
+export interface SettlementPremiumSurface {
+  readonly methodologyVersion: number;
+  readonly label: 'EXECUTABLE';
+  readonly references: readonly SettlementPremiumReference[];
+  readonly points: readonly SettlementPremiumPoint[];
+}
+
 function walk(levels: readonly PackageBookLevel[], side: PackageBookSide, size: bigint, includeImplied: boolean): SizeQuote {
   let remaining = size;
   let notional = 0n;
@@ -216,5 +244,87 @@ export function executablePackageIndex(
     ...(bestBid === undefined ? {} : { bestBidTicks: bestBid }),
     ...(bestAsk === undefined ? {} : { bestAskTicks: bestAsk }),
     ...(bestBid === undefined || bestAsk === undefined ? {} : { spreadTicks: bestAsk - bestBid }),
+  });
+}
+
+function completeExecutablePrice(quote: SizeQuote, size: bigint, context: string): bigint | undefined {
+  if (quote.label !== 'EXECUTABLE') throw new MalformedInputError(`${context}.label`, 'settlement premiums require direct executable depth');
+  if (quote.size !== size) throw new MalformedInputError(`${context}.size`, 'quote does not answer the requested size');
+  if (quote.fillableQuantity > size) throw new MalformedInputError(`${context}.fillableQuantity`, 'fillable quantity exceeds requested size');
+  if (quote.averagePriceTicks === undefined) {
+    if (quote.fillableQuantity === size) throw new MalformedInputError(`${context}.averagePriceTicks`, 'a complete fill is missing its price');
+    return undefined;
+  }
+  if (quote.fillableQuantity !== size) throw new MalformedInputError(`${context}.averagePriceTicks`, 'partial depth cannot publish an average price');
+  return checkedSigned(quote.averagePriceTicks, I128_BITS, `${context}.averagePriceTicks`);
+}
+
+/**
+ * Compares the same economic package across execution classes using direct executable depth only.
+ * A bid discount is the gap below the best executable bid. An ask premium is the gap above the
+ * best executable ask. Missing full-size depth stays missing rather than becoming modeled data.
+ */
+export function settlementPremiumSurface(
+  classes: readonly ExecutionClassDepth[],
+  sizes: readonly bigint[],
+): SettlementPremiumSurface {
+  if (!Array.isArray(classes) || classes.length > 64) {
+    throw new MalformedInputError('settlementPremiumSurface.classes', 'expected at most 64 execution classes');
+  }
+  if (!Array.isArray(sizes) || sizes.length === 0 || sizes.length > 16) {
+    throw new MalformedInputError('settlementPremiumSurface.sizes', 'expected 1 to 16 sizes');
+  }
+  const checkedSizes = sizes.map((size, index) => {
+    const checked = checkedUnsigned(size, U128_BITS, `settlementPremiumSurface.sizes[${index}]`);
+    if (checked === 0n) throw new MalformedInputError(`settlementPremiumSurface.sizes[${index}]`, 'size is zero');
+    return checked;
+  });
+  const checkedClasses = classes.map((entry, classIndex) => {
+    const context = `settlementPremiumSurface.classes[${classIndex}]`;
+    if (typeof entry !== 'object' || entry === null || typeof entry.executionClassId !== 'string' || entry.executionClassId.length === 0) {
+      throw new MalformedInputError(context, 'execution class is malformed');
+    }
+    if (!Array.isArray(entry.bids) || !Array.isArray(entry.asks)
+      || entry.bids.length !== checkedSizes.length || entry.asks.length !== checkedSizes.length) {
+      throw new MalformedInputError(context, 'execution class must answer every requested size on both sides');
+    }
+    return Object.freeze({
+      executionClassId: entry.executionClassId,
+      bids: Object.freeze(entry.bids.map((quote: SizeQuote, index: number) => completeExecutablePrice(quote, checkedSizes[index]!, `${context}.bids[${index}]`))),
+      asks: Object.freeze(entry.asks.map((quote: SizeQuote, index: number) => completeExecutablePrice(quote, checkedSizes[index]!, `${context}.asks[${index}]`))),
+    });
+  });
+  if (new Set(checkedClasses.map((entry) => entry.executionClassId)).size !== checkedClasses.length) {
+    throw new MalformedInputError('settlementPremiumSurface.classes', 'execution class ids repeat');
+  }
+  const references = Object.freeze(checkedSizes.map((size, index) => {
+    const bids = checkedClasses.flatMap((entry) => entry.bids[index] === undefined ? [] : [entry.bids[index]]);
+    const asks = checkedClasses.flatMap((entry) => entry.asks[index] === undefined ? [] : [entry.asks[index]]);
+    const bestBidTicks = bids.reduce<bigint | undefined>((best, price) => best === undefined || price! > best ? price! : best, undefined);
+    const bestAskTicks = asks.reduce<bigint | undefined>((best, price) => best === undefined || price! < best ? price! : best, undefined);
+    return Object.freeze({
+      size,
+      ...(bestBidTicks === undefined ? {} : { bestBidTicks }),
+      ...(bestAskTicks === undefined ? {} : { bestAskTicks }),
+    });
+  }));
+  const points = Object.freeze(checkedClasses.map((entry) => Object.freeze({
+    executionClassId: entry.executionClassId,
+    premiums: Object.freeze(checkedSizes.map((size, index) => {
+      const bid = entry.bids[index];
+      const ask = entry.asks[index];
+      const reference = references[index]!;
+      return Object.freeze({
+        size,
+        ...(bid === undefined || reference.bestBidTicks === undefined ? {} : { bidDiscountTicks: reference.bestBidTicks - bid }),
+        ...(ask === undefined || reference.bestAskTicks === undefined ? {} : { askPremiumTicks: ask - reference.bestAskTicks }),
+      });
+    })),
+  })));
+  return Object.freeze({
+    methodologyVersion: MARKET_DATA_METHODOLOGY_VERSION,
+    label: 'EXECUTABLE',
+    references,
+    points,
   });
 }

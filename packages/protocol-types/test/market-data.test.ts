@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { aggregateCandles, executablePackageIndex } from '../src/index.js';
+import { aggregateCandles, executablePackageIndex, settlementPremiumSurface } from '../src/index.js';
 
 const MIN = 60_000;
 
@@ -62,5 +62,42 @@ describe('executable package index', () => {
     // 25 at 99 is not enough for 30; with 5 more at 98: 2475 + 490 = 2965 / 30 = 98.83, rounded down.
     assert.equal(executablePackageIndex(bids, asks, [30n]).withImplied.bids[0]?.averagePriceTicks, 98n);
     assert.throws(() => executablePackageIndex(bids, asks, [0n]), /size is zero/);
+  });
+});
+
+describe('settlement premium surface', () => {
+  const quote = (size: bigint, averagePriceTicks?: bigint) => ({
+    size,
+    fillableQuantity: averagePriceTicks === undefined ? 0n : size,
+    label: 'EXECUTABLE' as const,
+    ...(averagePriceTicks === undefined ? {} : { averagePriceTicks }),
+  });
+
+  test('measures each execution class against the best direct price at every size', () => {
+    const surface = settlementPremiumSurface([
+      { executionClassId: 'atomic', bids: [quote(10n, 99n), quote(20n, 97n)], asks: [quote(10n, 101n), quote(20n)] },
+      { executionClassId: 'async', bids: [quote(10n, 98n), quote(20n)], asks: [quote(10n, 103n), quote(20n, 105n)] },
+    ], [10n, 20n]);
+    assert.deepEqual(surface.references, [
+      { size: 10n, bestBidTicks: 99n, bestAskTicks: 101n },
+      { size: 20n, bestBidTicks: 97n, bestAskTicks: 105n },
+    ]);
+    assert.deepEqual(surface.points[0]?.premiums, [
+      { size: 10n, bidDiscountTicks: 0n, askPremiumTicks: 0n },
+      { size: 20n, bidDiscountTicks: 0n },
+    ]);
+    assert.deepEqual(surface.points[1]?.premiums, [
+      { size: 10n, bidDiscountTicks: 1n, askPremiumTicks: 2n },
+      { size: 20n, askPremiumTicks: 0n },
+    ]);
+  });
+
+  test('rejects indicative or partial prices', () => {
+    assert.throws(() => settlementPremiumSurface([
+      { executionClassId: 'bad', bids: [{ ...quote(10n, 99n), label: 'INDICATIVE' }], asks: [quote(10n, 101n)] },
+    ], [10n]), /direct executable depth/);
+    assert.throws(() => settlementPremiumSurface([
+      { executionClassId: 'bad', bids: [{ ...quote(10n, 99n), fillableQuantity: 5n }], asks: [quote(10n, 101n)] },
+    ], [10n]), /partial depth/);
   });
 });

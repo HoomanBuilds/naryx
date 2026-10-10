@@ -1069,6 +1069,11 @@ test("series indices, curves, and the opportunity feed are built from executable
 
     const curve = (await get(`/v1/curves/${SERIES.seriesId}?sizes=10`)).body as {
       quoteConvention: string;
+      premiumSurface: {
+        label: string;
+        references: readonly { size: bigint; bestBidTicks?: bigint; bestAskTicks?: bigint }[];
+        points: readonly { executionClassId: string; premiums: readonly { bidDiscountTicks?: bigint; askPremiumTicks?: bigint }[] }[];
+      };
       points: readonly {
         executionClassId: string;
         executable: { bids: readonly { averagePriceTicks?: bigint }[]; asks: readonly { averagePriceTicks?: bigint }[] };
@@ -1077,6 +1082,9 @@ test("series indices, curves, and the opportunity feed are built from executable
       }[];
     };
     assert.equal(curve.quoteConvention, SERIES.quoteConvention);
+    assert.equal(curve.premiumSurface.label, "EXECUTABLE");
+    assert.deepEqual(curve.premiumSurface.references, [{ size: 10n, bestBidTicks: 96n, bestAskTicks: 104n }]);
+    assert.deepEqual(curve.premiumSurface.points[0]?.premiums, [{ size: 10n, bidDiscountTicks: 0n, askPremiumTicks: 0n }]);
     assert.deepEqual(
       curve.points.map((point) => [point.executable.bids[0]?.averagePriceTicks, point.executable.asks[0]?.averagePriceTicks, point.lastTrade?.priceTicks, point.lastTrade?.quantity, point.lastTrade?.label]),
       [[96n, 104n, 100n, 10n, "OBSERVED"]],
@@ -1094,6 +1102,19 @@ test("series indices, curves, and the opportunity feed are built from executable
     assert.deepEqual(feed.opportunities.map((entry) => [entry.packageMarketId, entry.seriesId, entry.spreadAtSizeTicks, entry.lastTrade?.priceTicks]), [[CLASS, SERIES.seriesId, 8n, 100n]]);
     // Size the book cannot fill on either side is not an opportunity.
     assert.deepEqual(((await get("/v1/opportunities?size=1000")).body as { opportunities: readonly unknown[] }).opportunities, []);
+
+    haltBook(store, 702);
+    const haltedCurve = (await get(`/v1/curves/${SERIES.seriesId}?sizes=10`)).body as {
+      premiumSurface: { points: readonly unknown[] };
+      points: readonly { open: boolean; halted?: boolean; executable?: unknown; indicativeWithImplied?: unknown; lastTrade?: unknown }[];
+    };
+    assert.deepEqual(
+      haltedCurve.points.map((point) => [point.open, point.halted, point.executable, point.indicativeWithImplied, point.lastTrade !== undefined]),
+      [[true, true, undefined, undefined, true]],
+    );
+    assert.deepEqual(haltedCurve.premiumSurface.points, []);
+
+    assert.deepEqual(((await get("/v1/opportunities?size=10")).body as { opportunities: readonly unknown[] }).opportunities, []);
 
     assert.equal((await get("/v1/curves/unknown-series")).status, 404);
     assert.equal((await get("/v1/indices/unknown-series")).status, 404);

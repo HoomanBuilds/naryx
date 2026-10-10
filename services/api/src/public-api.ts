@@ -7,6 +7,7 @@ import {
   CANDLE_INTERVAL_MS,
   decideRfq,
   executablePackageIndex,
+  settlementPremiumSurface,
   fromProtocolJson,
   MARKET_DATA_METHODOLOGY_VERSION,
   QUALIFICATION_OBJECT_TYPE,
@@ -854,10 +855,11 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           domains: executionClass.domains.map((domain) => domain.domainId),
         };
         if (state === undefined) return { ...terms, open: false as const };
+        if (state.halted) return { ...terms, open: true as const, halted: true as const };
         return {
           ...terms,
           open: true as const,
-          halted: state.halted,
+          halted: false as const,
           index: executablePackageIndex(packageBookLevels(state, "BID", now), packageBookLevels(state, "ASK", now), sizes),
         };
       }),
@@ -1510,13 +1512,23 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       // observed trade. Nothing is interpolated or modeled; a class without depth has no point.
       onlyParams(url, ["sizes"]);
       const series = seriesOf(id(match[1], "Series id"));
-      const { now, classes } = seriesBooks(series.seriesId, sizesParam(url));
+      const sizes = sizesParam(url);
+      const { now, classes } = seriesBooks(series.seriesId, sizes);
+      const premiumSurface = settlementPremiumSurface(
+        classes.flatMap((entry) => !entry.open || entry.halted ? [] : [{
+          executionClassId: entry.executionClassId,
+          bids: entry.index.executable.bids,
+          asks: entry.index.executable.asks,
+        }]),
+        sizes,
+      );
       return {
         seriesId: series.seriesId,
         quoteAsset: series.quoteAsset,
         quoteConvention: series.quoteConvention,
         asOfValue: now,
         methodologyVersion: MARKET_DATA_METHODOLOGY_VERSION,
+        premiumSurface,
         points: classes.map((entry) => {
           const trade = entry.open ? lastTrade(entry.executionClassId) : undefined;
           return {
@@ -1524,11 +1536,11 @@ export function createPublicApiHandler(options: PublicApiOptions) {
             settlementClass: entry.settlementClass,
             domains: entry.domains,
             open: entry.open,
-            ...(entry.open ? {
+            ...(entry.open && !entry.halted ? {
               halted: entry.halted,
               executable: entry.index.executable,
               indicativeWithImplied: entry.index.withImplied,
-            } : {}),
+            } : entry.open ? { halted: true } : {}),
             ...(trade === undefined ? {} : { lastTrade: trade }),
           };
         }),

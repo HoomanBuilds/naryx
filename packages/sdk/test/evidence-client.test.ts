@@ -417,16 +417,25 @@ describe('order intake and terminal evidence', () => {
       quoteConvention: 'annualized-net-yield-v1',
       asOfValue: 1n,
       methodologyVersion: 1,
+      premiumSurface: {
+        methodologyVersion: 1,
+        label: 'EXECUTABLE',
+        references: [{ size: 10n, bestBidTicks: 96n, bestAskTicks: 104n }],
+        points: [{ executionClassId: 'class-a', premiums: [{ size: 10n, bidDiscountTicks: 0n, askPremiumTicks: 0n }] }],
+      },
       points: [
         { executionClassId: 'class-a', settlementClass: 'ATOMIC_POSTCONDITION', domains: ['svm:testnet'], open: true, halted: false, executable: { bids: [quote(10n, 96n)], asks: [quote(10n, 104n)] }, indicativeWithImplied: { bids: [impliedQuote(10n, 97n)], asks: [impliedQuote(10n, 103n)] }, lastTrade: trade },
         { executionClassId: 'class-b', settlementClass: 'ASYNC_BONDED_SOLVER', domains: ['evm:base'], open: false },
+        { executionClassId: 'class-c', settlementClass: 'BATCHED_IOC_WITH_RECOVERY', domains: ['hypercore:testnet'], open: true, halted: true, lastTrade: trade },
       ],
     };
     const curvePath = 'GET /v1/curves/sol-carry?sizes=10';
     const read = await client({ [curvePath]: { body: curve } }).getCurve('sol-carry', [10n]);
     assert.equal(read.points[0]?.lastTrade?.priceTicks, 100n);
+    assert.equal(read.premiumSurface.points[0]?.premiums[0]?.askPremiumTicks, 0n);
     assert.equal(read.points[0]?.indicativeWithImplied?.asks[0]?.averagePriceTicks, 103n);
     assert.equal(read.points[1]?.open, false);
+    assert.equal(read.points[2]?.halted, true);
     const mislabeled = { ...curve, points: [{ ...curve.points[0], lastTrade: { ...trade, label: 'MODELED' } }] };
     await assert.rejects(client({ [curvePath]: { body: mislabeled } }).getCurve('sol-carry', [10n]), /OBSERVED/);
     const phantom = { ...curve, points: [{ ...curve.points[0], executable: { bids: [{ ...quote(10n, 96n), fillableQuantity: 5n }], asks: [quote(10n, 104n)] } }] };
@@ -435,6 +444,8 @@ describe('order intake and terminal evidence', () => {
     await assert.rejects(client({ [curvePath]: { body: mislabeledImplied } }).getCurve('sol-carry', [10n]), /INDICATIVE/);
     const closedWithData = { ...curve, points: [{ ...curve.points[1], lastTrade: trade }] };
     await assert.rejects(client({ [curvePath]: { body: closedWithData } }).getCurve('sol-carry', [10n]), /closed but carries/);
+    const haltedWithDepth = { ...curve, points: [{ ...curve.points[2]!, executable: curve.points[0]!.executable }] };
+    await assert.rejects(client({ [curvePath]: { body: haltedWithDepth } }).getCurve('sol-carry', [10n]), /halted but carries/);
 
     const feedPath = 'GET /v1/opportunities?size=10';
     const feed = {
