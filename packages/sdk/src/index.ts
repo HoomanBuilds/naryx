@@ -81,6 +81,9 @@ export {
   type PackageReopeningOrderSubmission,
   type VerifiedPackageReopening,
   type PackageBookAmendmentResult,
+  type VerifiedNativeClearingDomain,
+  type NativeClearingEventView,
+  type VerifiedNativeClearingAuction,
   type VerifiedTerminalEvidence,
 } from './client.js';
 export {

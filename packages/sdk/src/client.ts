@@ -128,6 +128,12 @@ import {
   TERMINAL_STATE,
   terminalOutcomeHash,
   terminalOutcomeRecord,
+  nativeClearingAccount,
+  nativeClearingDefaultAuctionHash,
+  nativeClearingDefaultBidHash,
+  nativeClearingDomainState,
+  nativeClearingMarkObservation,
+  nativeClearingPolicy,
   toHex,
   toProtocolJson,
   validatePackageOrderProfile,
@@ -227,6 +233,12 @@ import {
   type TypedAdapterActionSupportInput,
   type TypedStrategyRoute,
   type TypedStrategyRouteRejection,
+  type NativeClearingAccount,
+  type NativeClearingDefaultAuction,
+  type NativeClearingDefaultBid,
+  type NativeClearingDomainState,
+  type NativeClearingMarkObservation,
+  type NativeClearingPolicy,
 } from '@naryx/protocol-types';
 import { verifyTypedData, type Hex } from 'viem';
 
@@ -421,6 +433,27 @@ export interface SubmittedOrder {
   readonly replayed: boolean;
   /** Intake only: the order may be quoted; nothing has executed. */
   readonly status: 'ACCEPTED_FOR_QUOTING';
+}
+
+export interface VerifiedNativeClearingDomain {
+  readonly policy: NativeClearingPolicy;
+  readonly state: NativeClearingDomainState;
+}
+
+export interface NativeClearingEventView {
+  readonly kind: 'RESERVE' | 'COLLATERAL' | 'MATCH' | 'DEFAULT';
+  readonly eventHashHex: string;
+  readonly policyHashHex: string;
+  readonly sequence: number;
+  readonly sourceSequence: number;
+  readonly payload: unknown;
+  readonly recordedAtMs: number;
+}
+
+export interface VerifiedNativeClearingAuction {
+  readonly auction: NativeClearingDefaultAuction;
+  readonly status: 'OPEN' | 'SETTLED';
+  readonly bids: readonly NativeClearingDefaultBid[];
 }
 
 export interface OrderStatusView {
@@ -1425,6 +1458,17 @@ function checkId(value: string, name: string): string {
   return value;
 }
 
+function verifiedNativeClearingDomain(value: unknown, context: string): VerifiedNativeClearingDomain {
+  const served = record(value, context);
+  try {
+    const policy = nativeClearingPolicy(served.policy as NativeClearingPolicy);
+    const state = nativeClearingDomainState(served.state as NativeClearingDomainState, policy);
+    return Object.freeze({ policy, state });
+  } catch (error) {
+    throw new NaryxEvidenceError(`${context} failed verification: ${(error as Error).message}`);
+  }
+}
+
 function levels(value: unknown, context: string): readonly PackageBookLevelView[] {
   return Object.freeze(
     list(value, context).map((entry, index) => {
@@ -2089,6 +2133,129 @@ export class NaryxClient {
       throw new NaryxApiError(response.status, String(error.code), String(error.message));
     }
     return parsed;
+  }
+
+  /** Lists native package clearing domains after recomputing every policy and state hash. */
+  async getNativeClearingDomains(): Promise<readonly VerifiedNativeClearingDomain[]> {
+    const body = record(await this.#request('GET', '/v1/native-clearing/domains'), 'native clearing domains');
+    if (body.version !== 1) throw new NaryxEvidenceError('native clearing domain response version is unsupported');
+    return Object.freeze(list(body.domains, 'native clearing domains').map((domain, index) => (
+      verifiedNativeClearingDomain(domain, `native clearing domains[${index}]`)
+    )));
+  }
+
+  /** Reads one native clearing domain and verifies its immutable policy and current state. */
+  async getNativeClearingDomain(clearingDomainId: string): Promise<VerifiedNativeClearingDomain> {
+    const id = checkId(clearingDomainId, 'native clearing domain id');
+    const body = record(
+      await this.#request('GET', `/v1/native-clearing/domains/${id}`),
+      'native clearing domain',
+    );
+    if (body.version !== 1) throw new NaryxEvidenceError('native clearing domain response version is unsupported');
+    const domain = verifiedNativeClearingDomain(body, 'native clearing domain');
+    if (domain.policy.clearingDomainId !== id) throw new NaryxEvidenceError('native clearing domain response is for another domain');
+    return domain;
+  }
+
+  /** Reads every account in one domain and verifies each account against the served policy. */
+  async getNativeClearingAccounts(clearingDomainId: string): Promise<readonly NativeClearingAccount[]> {
+    const id = checkId(clearingDomainId, 'native clearing domain id');
+    const domain = await this.getNativeClearingDomain(id);
+    const body = record(
+      await this.#request('GET', `/v1/native-clearing/domains/${id}/accounts`),
+      'native clearing accounts',
+    );
+    if (body.version !== 1 || body.clearingDomainId !== id) {
+      throw new NaryxEvidenceError('native clearing accounts response is inconsistent');
+    }
+    try {
+      return Object.freeze(list(body.accounts, 'native clearing accounts').map((account) => (
+        nativeClearingAccount(account as NativeClearingAccount, domain.policy)
+      )));
+    } catch (error) {
+      throw new NaryxEvidenceError(`native clearing account failed verification: ${(error as Error).message}`);
+    }
+  }
+
+  /** Reads and verifies the latest signed mark for a native clearing domain. */
+  async getNativeClearingMark(clearingDomainId: string): Promise<NativeClearingMarkObservation> {
+    const id = checkId(clearingDomainId, 'native clearing domain id');
+    const domain = await this.getNativeClearingDomain(id);
+    const body = record(
+      await this.#request('GET', `/v1/native-clearing/domains/${id}/mark`),
+      'native clearing mark',
+    );
+    if (body.version !== 1 || body.clearingDomainId !== id) {
+      throw new NaryxEvidenceError('native clearing mark response is inconsistent');
+    }
+    try {
+      return nativeClearingMarkObservation(body.observation as NativeClearingMarkObservation, domain.policy);
+    } catch (error) {
+      throw new NaryxEvidenceError(`native clearing mark failed verification: ${(error as Error).message}`);
+    }
+  }
+
+  /** Reads bounded append-only clearing events and verifies their identity fields. */
+  async getNativeClearingEvents(
+    clearingDomainId: string,
+    options: { readonly after?: number; readonly limit?: number } = {},
+  ): Promise<readonly NativeClearingEventView[]> {
+    const id = checkId(clearingDomainId, 'native clearing domain id');
+    const after = options.after ?? 0;
+    const limit = options.limit ?? 100;
+    if (!Number.isSafeInteger(after) || after < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+      throw new TypeError('native clearing event cursor or limit is invalid');
+    }
+    const domain = await this.getNativeClearingDomain(id);
+    const body = record(
+      await this.#request('GET', `/v1/native-clearing/domains/${id}/events?after=${after}&limit=${limit}`),
+      'native clearing events',
+    );
+    if (body.version !== 1 || body.clearingDomainId !== id) {
+      throw new NaryxEvidenceError('native clearing events response is inconsistent');
+    }
+    const policyHashHex = toHex(domain.policy.policyHash);
+    return Object.freeze(list(body.events, 'native clearing events').map((value, index) => {
+      const event = record(value, `native clearing events[${index}]`);
+      if (!['RESERVE', 'COLLATERAL', 'MATCH', 'DEFAULT'].includes(String(event.kind))
+        || hashHex(event.policyHashHex, 'native clearing event policy hash') !== policyHashHex) {
+        throw new NaryxEvidenceError('native clearing event identity is inconsistent');
+      }
+      return Object.freeze({
+        kind: event.kind as NativeClearingEventView['kind'],
+        eventHashHex: hashHex(event.eventHashHex, 'native clearing event hash'),
+        policyHashHex,
+        sequence: count(event.sequence, 'native clearing event sequence'),
+        sourceSequence: count(event.sourceSequence, 'native clearing event source sequence'),
+        payload: event.payload,
+        recordedAtMs: count(event.recordedAtMs, 'native clearing event recordedAtMs'),
+      });
+    }));
+  }
+
+  /** Reads a default auction and recomputes the auction and every bid hash. */
+  async getNativeClearingAuction(auctionId: string): Promise<VerifiedNativeClearingAuction> {
+    const id = checkId(auctionId, 'native clearing auction id');
+    const body = record(
+      await this.#request('GET', `/v1/native-clearing/auctions/${id}`),
+      'native clearing auction',
+    );
+    if (body.version !== 1 || (body.status !== 'OPEN' && body.status !== 'SETTLED')) {
+      throw new NaryxEvidenceError('native clearing auction response is malformed');
+    }
+    const auction = record(body.auction, 'native clearing auction payload') as unknown as NativeClearingDefaultAuction;
+    if (auction.auctionId !== id || !bytesEqual(auction.auctionHash, nativeClearingDefaultAuctionHash(auction))) {
+      throw new NaryxEvidenceError('native clearing auction hash is inconsistent');
+    }
+    const bids = Object.freeze(list(body.bids, 'native clearing bids').map((value, index) => {
+      const bid = record(value, `native clearing bids[${index}]`) as unknown as NativeClearingDefaultBid;
+      if (!bytesEqual(bid.auctionHash, auction.auctionHash)
+        || !bytesEqual(bid.bidHash, nativeClearingDefaultBidHash(bid))) {
+        throw new NaryxEvidenceError('native clearing bid hash is inconsistent');
+      }
+      return bid;
+    }));
+    return Object.freeze({ auction, status: body.status, bids });
   }
 
   async #verifiedPreparedNettingBatch(value: unknown, expectedProofHash?: string): Promise<VerifiedPreparedNettingBatch> {

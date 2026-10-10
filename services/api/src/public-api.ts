@@ -114,6 +114,7 @@ import { CoordinationStoreError, type SqliteCoordinationStore } from "./coordina
 import { positionsView, RISK_METHODOLOGY, riskView } from "./position-risk-view.js";
 import { verifyEd25519 } from "./ed25519.js";
 import { StrategyPackageStoreError, type SqliteStrategyPackageStore } from "./strategy-package-store.js";
+import { NativeClearingStoreError, type SqliteNativeClearingStore } from './native-clearing-store.js';
 import {
   GeneralizedStrategyQuoteClientError,
   type GeneralizedStrategyQuotePort,
@@ -328,6 +329,11 @@ export interface PublicApiOptions {
   readonly coordination?: Pick<SqliteCoordinationStore, "coordination" | "incident" | "approve">;
   /** Authority-signed strategy health; without it the health routes answer 503. */
   readonly health?: Pick<SqliteKeeperExecutor, "publishHealth" | "health">;
+  /** Native package clearing state and evidence; mutation remains on the loopback control boundary. */
+  readonly nativeClearing?: Pick<
+    SqliteNativeClearingStore,
+    'domains' | 'domain' | 'accounts' | 'account' | 'latestMark' | 'defaultAuction' | 'events'
+  >;
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
   readonly nowValue: () => bigint;
   readonly rateLimit: { readonly windowMs: number; readonly maxRequests: number };
@@ -537,6 +543,13 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       throw new RequestError(503, "NETTING_EXECUTION_UNAVAILABLE", "Netting residual execution is disabled.");
     }
     return options.nettingExecution;
+  }
+
+  function requireNativeClearing(): NonNullable<PublicApiOptions['nativeClearing']> {
+    if (options.nativeClearing === undefined) {
+      throw new RequestError(503, 'NATIVE_CLEARING_UNAVAILABLE', 'No native clearing state is configured on this server.');
+    }
+    return options.nativeClearing;
   }
 
   function wallClockIn(unit: string): bigint {
@@ -819,6 +832,48 @@ export function createPublicApiHandler(options: PublicApiOptions) {
   function readRoutes(url: URL): unknown {
     const path = url.pathname;
     let match: RegExpExecArray | null;
+    if (path === '/v1/native-clearing/domains') {
+      onlyParams(url, []);
+      return { version: 1, domains: requireNativeClearing().domains() };
+    }
+    if ((match = /^\/v1\/native-clearing\/domains\/([^/]+)(\/accounts|\/events|\/mark)?$/.exec(path)) !== null) {
+      const clearingDomainId = id(match[1], 'Native clearing domain id');
+      const clearing = requireNativeClearing();
+      if (match[2] === '/events') {
+        onlyParams(url, ['after', 'limit']);
+        const rawAfter = url.searchParams.get('after') ?? '0';
+        const rawLimit = url.searchParams.get('limit') ?? '100';
+        if (!/^\d{1,15}$/.test(rawAfter) || !/^(?:[1-9]|[1-9]\d|[1-4]\d{2}|500)$/.test(rawLimit)) {
+          throw new RequestError(400, 'INVALID_REQUEST', 'after must be nonnegative and limit must be between 1 and 500.');
+        }
+        return {
+          version: 1,
+          clearingDomainId,
+          events: clearing.events(clearingDomainId, Number(rawAfter), Number(rawLimit)),
+        };
+      }
+      onlyParams(url, []);
+      const domain = clearing.domain(clearingDomainId);
+      if (domain === undefined) throw new RequestError(404, 'DOMAIN_NOT_FOUND', 'Native clearing domain was not found.');
+      if (match[2] === '/accounts') return { version: 1, clearingDomainId, accounts: clearing.accounts(clearingDomainId) };
+      if (match[2] === '/mark') {
+        const observation = clearing.latestMark(clearingDomainId);
+        if (observation === undefined) throw new RequestError(404, 'MARK_UNAVAILABLE', 'Native clearing mark is unavailable.');
+        return { version: 1, clearingDomainId, observation };
+      }
+      return { version: 1, ...domain };
+    }
+    if ((match = /^\/v1\/native-clearing\/accounts\/([^/]+)$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const accountId = id(match[1], 'Native clearing account id');
+      const account = requireNativeClearing().account(accountId);
+      if (account === undefined) throw new RequestError(404, 'ACCOUNT_NOT_FOUND', 'Native clearing account was not found.');
+      return { version: 1, account };
+    }
+    if ((match = /^\/v1\/native-clearing\/auctions\/([^/]+)$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      return { version: 1, ...requireNativeClearing().defaultAuction(id(match[1], 'Native clearing auction id')) };
+    }
     if (path === "/v1/domains") {
       onlyParams(url, []);
       return { domains: requireRegistry().list("DOMAIN") };
@@ -2584,6 +2639,12 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         }
         if (error instanceof StrategyPackageStoreError) {
           const status = error.code === "CORRUPT_ROW" ? 500 : error.code.endsWith("NOT_FOUND") ? 404 : error.code === "HASH_CONFLICT" ? 409 : 400;
+          return fail(response, status, error.code, error.message);
+        }
+        if (error instanceof NativeClearingStoreError) {
+          const status = error.code.endsWith('NOT_FOUND') || error.code === 'MARK_UNAVAILABLE' ? 404
+            : error.code === 'CORRUPT_ROW' ? 500
+              : error.code === 'INVALID_INPUT' ? 400 : 409;
           return fail(response, status, error.code, error.message);
         }
         if (error instanceof GeneralizedStrategyQuoteClientError) {

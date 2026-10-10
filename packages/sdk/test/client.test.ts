@@ -14,6 +14,8 @@ import {
   nettingExternalExecutionIntent,
   nettingFinalAllocationReceipt,
   nettingPolicyManifest,
+  nativeClearingDomainState,
+  nativeClearingPolicy,
   packageAllocationHash,
   packageBookAmendmentBytes,
   packageBookAmendmentHash,
@@ -27,6 +29,7 @@ import {
   packageSettlementReadiness,
   packageSettlementReadinessHash,
   packageMatchingPolicy,
+  packageMatchingPolicyHash,
   packageReopeningResultHash,
   packageReopeningSettlementHandoff,
   packageReopeningSettlementHandoffHash,
@@ -164,6 +167,45 @@ describe('public API client', () => {
     assert.deepEqual(book.asks, [{ priceTicks: 100n, directQuantity: 10n, impliedQuantity: 20n }]);
     await assert.rejects(client({}).getDepth(CLASS), (error: unknown) => error instanceof NaryxApiError && error.status === 404 && error.code === 'NOT_FOUND');
     await assert.rejects(client({ [`/v1/markets/${CLASS}/package-depth`]: { body: {}, contentType: 'text/html' } }).getDepth(CLASS), NaryxEvidenceError);
+  });
+
+  test('verifies native clearing domain policy and state hashes', async () => {
+    const clearingPolicy = nativeClearingPolicy({
+      version: 1,
+      clearingDomainId: 'sol-carry-clearing',
+      environment: 'local',
+      executionClassId: CLASS,
+      matchingPolicyHash: packageMatchingPolicyHash(policy),
+      strategySeries: versionedManifestRef('sol-carry', 1, id(201)),
+      riskDomainId: 'sol-carry-isolated-risk',
+      markSource: versionedManifestRef('sol-carry-mark', 1, id(202)),
+      markAuthorityId: 'mark-authority',
+      accountingAsset: assetRef('usdc', id(203), 6),
+      packageQuantityIncrementAtoms: 10n,
+      priceTickQuoteAtoms: 1n,
+      initialMarginQuoteAtomsPerIncrement: 200n,
+      maintenanceMarginQuoteAtomsPerIncrement: 100n,
+      maximumPositionAtoms: 1_000n,
+      maximumOpenInterestAtoms: 10_000n,
+      maximumDefaultTransferDiscountBps: 500n,
+      markMaximumStalenessMs: 5_000n,
+    });
+    const state = nativeClearingDomainState({
+      version: 1,
+      policyHash: clearingPolicy.policyHash,
+      openInterestAtoms: 10n,
+      recoveryReserveQuoteAtoms: 300n,
+      sequence: 1n,
+    }, clearingPolicy);
+    const path = '/v1/native-clearing/domains';
+    const domains = await client({ [path]: { body: { version: 1, domains: [{ policy: clearingPolicy, state }] } } })
+      .getNativeClearingDomains();
+    assert.equal(domains[0]?.state.openInterestAtoms, 10n);
+    await assert.rejects(
+      client({ [path]: { body: { version: 1, domains: [{ policy: clearingPolicy, state: { ...state, openInterestAtoms: 20n } }] } } })
+        .getNativeClearingDomains(),
+      NaryxEvidenceError,
+    );
   });
 
   test('rejects a tape whose cursors do not advance', async () => {

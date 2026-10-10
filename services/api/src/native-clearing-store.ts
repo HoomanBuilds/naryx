@@ -229,6 +229,15 @@ export class SqliteNativeClearingStore {
     return Object.freeze({ policy, state: this.#state(policy) });
   }
 
+  domains(): readonly Readonly<{ policy: NativeClearingPolicy; state: NativeClearingDomainState }>[] {
+    const rows = this.#db.prepare('SELECT * FROM native_clearing_policies ORDER BY clearing_domain_id')
+      .all() as PolicyRow[];
+    return Object.freeze(rows.map((row) => {
+      const policy = this.#decodePolicy(row);
+      return Object.freeze({ policy, state: this.#state(policy) });
+    }));
+  }
+
   openAccount(clearingDomainId: string, input: NativeClearingAccountInput | NativeClearingAccount): NativeClearingAccount {
     return this.#db.transaction(() => {
       const { policy } = this.#requiredDomain(clearingDomainId);
@@ -255,6 +264,16 @@ export class SqliteNativeClearingStore {
       .get(id) as AccountRow | undefined;
     if (row === undefined) return undefined;
     return this.#decodeAccount(row, this.#policy(hash(row.policy_hash, 'stored account policy hash')));
+  }
+
+  accounts(clearingDomainId: string): readonly NativeClearingAccount[] {
+    const { policy } = this.#requiredDomain(clearingDomainId);
+    const rows = this.#db.prepare(`
+      SELECT * FROM native_clearing_accounts
+      WHERE policy_hash = ?
+      ORDER BY account_id
+    `).all(policy.policyHash) as AccountRow[];
+    return Object.freeze(rows.map((row) => this.#decodeAccount(row, policy)));
   }
 
   adjustReserve(input: Readonly<{
@@ -448,7 +467,7 @@ export class SqliteNativeClearingStore {
     ownerSignature: NativeClearingControlSignature;
     nowMs: bigint;
   }>): Promise<NativeClearingDefaultBid> {
-    const auctionRecord = this.#auction(input.auctionId);
+    const auctionRecord = this.#auctionRecord(input.auctionId);
     if (auctionRecord.status !== 'OPEN' || input.nowMs >= auctionRecord.auction.bidsCloseAtMs) {
       throw new NativeClearingStoreError('AUCTION_CLOSED', 'Default auction is not accepting bids.');
     }
@@ -464,7 +483,7 @@ export class SqliteNativeClearingStore {
       throw new NativeClearingStoreError('INVALID_SIGNATURE', 'Backstop owner did not sign the default bid.');
     }
     return this.#db.transaction(() => {
-      const currentAuction = this.#auction(input.auctionId);
+      const currentAuction = this.#auctionRecord(input.auctionId);
       if (currentAuction.status !== 'OPEN') {
         throw new NativeClearingStoreError('AUCTION_CLOSED', 'Default auction is not accepting bids.');
       }
@@ -491,7 +510,7 @@ export class SqliteNativeClearingStore {
     nowMs: bigint;
   }>): NativeClearingDefaultResolution {
     return this.#db.transaction(() => {
-      const auctionRecord = this.#auction(input.auctionId);
+      const auctionRecord = this.#auctionRecord(input.auctionId);
       if (auctionRecord.status !== 'OPEN') {
         throw new NativeClearingStoreError('AUCTION_CLOSED', 'Default auction is already settled.');
       }
@@ -543,10 +562,26 @@ export class SqliteNativeClearingStore {
     }).immediate();
   }
 
-  events(clearingDomainId: string): readonly NativeClearingEvent[] {
+  defaultAuction(auctionId: string): Readonly<{
+    auction: NativeClearingDefaultAuction;
+    status: 'OPEN' | 'SETTLED';
+    bids: readonly NativeClearingDefaultBid[];
+  }> {
+    const record = this.#auctionRecord(auctionId);
+    return Object.freeze({ ...record, bids: this.#bids(record.auction) });
+  }
+
+  events(clearingDomainId: string, after = 0, limit = 100): readonly NativeClearingEvent[] {
     const { policy } = this.#requiredDomain(clearingDomainId);
-    const rows = this.#db.prepare('SELECT * FROM native_clearing_events WHERE policy_hash = ? ORDER BY event_sequence')
-      .all(policy.policyHash) as EventRow[];
+    if (!Number.isSafeInteger(after) || after < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+      throw new NativeClearingStoreError('INVALID_INPUT', 'Native clearing event cursor or limit is invalid.');
+    }
+    const rows = this.#db.prepare(`
+      SELECT * FROM native_clearing_events
+      WHERE policy_hash = ? AND event_sequence > ?
+      ORDER BY event_sequence
+      LIMIT ?
+    `).all(policy.policyHash, after, limit) as EventRow[];
     return Object.freeze(rows.map((row) => this.#decodeEvent(row, policy)));
   }
 
@@ -616,7 +651,7 @@ export class SqliteNativeClearingStore {
     }
   }
 
-  #auction(auctionId: string): Readonly<{ auction: NativeClearingDefaultAuction; status: 'OPEN' | 'SETTLED' }> {
+  #auctionRecord(auctionId: string): Readonly<{ auction: NativeClearingDefaultAuction; status: 'OPEN' | 'SETTLED' }> {
     const id = protocolId(auctionId, 'native clearing auction id');
     const row = this.#db.prepare('SELECT * FROM native_clearing_default_auctions WHERE auction_id = ?')
       .get(id) as AuctionRow | undefined;

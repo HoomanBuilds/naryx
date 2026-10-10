@@ -53,6 +53,8 @@ import {
   CrossBatchExternalExecutionRouter,
 } from "./cross-batch-clearing-coordinator.js";
 import { createCrossBatchClearingAdminHandler } from "./cross-batch-clearing-admin.js";
+import { createNativeClearingAdminHandler } from './native-clearing-admin.js';
+import { SqliteNativeClearingStore } from './native-clearing-store.js';
 import { SqliteNettingAllocationAttemptStore } from "./netting-allocation-attempt-store.js";
 import {
   EvmNettingAllocationObservationRoute,
@@ -509,6 +511,18 @@ export function loadPublicMarketRuntime(
       ? undefined
       : new SqliteCoordinationStore(absolute(coordinationPath, "NARYX_COORDINATION_DB"), { environment: publicEnvironment as string, clock: clockMs });
     if (coordination !== undefined) opened.push(coordination);
+    const nativeClearingPath = optional(environment.NARYX_NATIVE_CLEARING_DB);
+    if (nativeClearingPath !== undefined && (
+      publicEnvironment === undefined
+      || !/^[A-Za-z0-9._:-]{1,64}$/.test(publicEnvironment)
+      || publicEnvironment.toLowerCase().includes('mainnet')
+    )) {
+      throw new PublicMarketConfigError('NARYX_NATIVE_CLEARING_DB requires NARYX_PUBLIC_ENVIRONMENT, a non-mainnet environment id.');
+    }
+    const nativeClearing = nativeClearingPath === undefined
+      ? undefined
+      : new SqliteNativeClearingStore(absolute(nativeClearingPath, 'NARYX_NATIVE_CLEARING_DB'), clockMs);
+    if (nativeClearing !== undefined) opened.push(nativeClearing);
     const strategyOrderIntake = strategyPackages === undefined || graphContext === undefined || registry === undefined
       ? undefined
       : createStrategyOrderIntake({
@@ -722,6 +736,7 @@ export function loadPublicMarketRuntime(
       }),
       ...(keeper === undefined ? [] : [createKeeperExecutorHandler({ executor: keeper, nowIn: keeperClock(clockMs) })]),
       ...(coordination === undefined ? [] : [createCoordinationInternalHandler(coordination)]),
+      ...(nativeClearing === undefined ? [] : [createNativeClearingAdminHandler({ clearing: nativeClearing })]),
       ...(strategyPackages === undefined ? [] : [createStrategyPackageInternalHandler(strategyPackages)]),
       ...(nettingAllocationAdmin === undefined ? [] : [nettingAllocationAdmin]),
       ...(solverState === undefined || makerSolverId === undefined ? [] : [createMakerOperationsHandler({
@@ -757,6 +772,7 @@ export function loadPublicMarketRuntime(
       ...(builders === undefined ? {} : { builders }),
       ...(keeper === undefined ? {} : { health: keeper }),
       ...(coordination === undefined ? {} : { coordination }),
+      ...(nativeClearing === undefined ? {} : { nativeClearing }),
       nowValue,
       rateLimit,
       clockMs,

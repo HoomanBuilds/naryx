@@ -75,6 +75,16 @@ export function NetworkView() {
       return new NaryxClient({ baseUrl: publicApiBaseUrl }).listRecentCrossBatchClearings(20);
     },
   });
+  const nativeClearings = useQuery({
+    queryKey: ["native-clearing-domains", publicApiBaseUrl],
+    enabled: publicApiBaseUrl !== null,
+    retry: false,
+    refetchInterval: 15_000,
+    queryFn: () => {
+      if (publicApiBaseUrl === null) throw new Error("Public API not configured.");
+      return new NaryxClient({ baseUrl: publicApiBaseUrl }).getNativeClearingDomains();
+    },
+  });
   const gateUp = domainGateUp(selectedDomain, runtimeHealth);
   const anyTestnetLive = DOMAIN_ORDER.some((domain) => domainLive(domain, runtimeHealth));
   const selectedMeta = DOMAIN_META[selectedDomain];
@@ -134,10 +144,11 @@ export function NetworkView() {
             <button
               type="button"
               className={styles.ghost}
-              disabled={healthState === "checking" || pooledClearings.isFetching}
+              disabled={healthState === "checking" || pooledClearings.isFetching || nativeClearings.isFetching}
               onClick={() => {
                 refreshHealth();
                 void pooledClearings.refetch();
+                void nativeClearings.refetch();
               }}
             >
               Refresh
@@ -259,6 +270,62 @@ export function NetworkView() {
                     </tr>
                   );
                 })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className={styles.card} aria-labelledby="native-clearing-title">
+        <div className={styles.cardHead}>
+          <h2 id="native-clearing-title">Native package clearing</h2>
+          <p>Isolated collateral, open interest, and funded recovery state for standardized package markets.</p>
+          <span className={styles.pill}>{nativeClearings.data?.length ?? 0} DOMAINS</span>
+        </div>
+        {publicApiBaseUrl === null ? (
+          <div className={styles.empty}>
+            <strong>Native clearing evidence is not connected</strong>
+            <p>Configure the public API to inspect verified clearing policy and state.</p>
+          </div>
+        ) : nativeClearings.isPending ? (
+          <div className={styles.empty}>
+            <strong>Reading native clearing state</strong>
+            <p>Policy and state hashes are recomputed before they appear here.</p>
+          </div>
+        ) : nativeClearings.isError ? (
+          <div className={styles.empty}>
+            <strong>Native clearing state unavailable</strong>
+            <p>{nativeClearings.error instanceof Error ? nativeClearings.error.message : "The public API request failed."}</p>
+          </div>
+        ) : nativeClearings.data.length === 0 ? (
+          <div className={styles.empty}>
+            <strong>No native clearing domain activated</strong>
+            <p>The clearing house remains inactive until a reviewed domain policy is registered.</p>
+          </div>
+        ) : (
+          <div className={styles.scroll}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>Domain</th>
+                  <th>Execution class</th>
+                  <th>Risk domain</th>
+                  <th className={styles.num}>Open interest</th>
+                  <th className={styles.num}>Recovery reserve</th>
+                  <th className={styles.num}>Sequence</th>
+                </tr>
+              </thead>
+              <tbody>
+                {nativeClearings.data.map(({ policy, state }) => (
+                  <tr key={policy.clearingDomainId}>
+                    <td className={styles.mono}>{policy.clearingDomainId}</td>
+                    <td className={styles.mono}>{policy.executionClassId}</td>
+                    <td className={styles.mono}>{policy.riskDomainId}</td>
+                    <td className={styles.num}>{state.openInterestAtoms.toLocaleString("en-US")} atoms</td>
+                    <td className={styles.num}>{state.recoveryReserveQuoteAtoms.toLocaleString("en-US")} atoms</td>
+                    <td className={styles.num}>{state.sequence.toLocaleString("en-US")}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

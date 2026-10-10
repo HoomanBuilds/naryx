@@ -731,6 +731,10 @@ export {
   type NativeClearingEvent,
 } from './native-clearing-store.js';
 export {
+  createNativeClearingAdminHandler,
+  type NativeClearingAdminOptions,
+} from './native-clearing-admin.js';
+export {
   verifyNativeClearingControlSignature,
   type NativeClearingControlSignature,
 } from './native-clearing-authorization.js';

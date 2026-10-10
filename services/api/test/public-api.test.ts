@@ -151,6 +151,44 @@ test("depth keeps direct and implied quantity apart within a level", async () =>
   });
 });
 
+test('native clearing reads remain optional and event pages are bounded', async () => {
+  const domain = {
+    policy: { clearingDomainId: 'sol-carry-clearing' },
+    state: { openInterestAtoms: 10n },
+  };
+  const events = [{
+    kind: 'MATCH',
+    eventHashHex: id(200),
+    policyHashHex: id(201),
+    sequence: 1,
+    sourceSequence: 1,
+    payload: {},
+    recordedAtMs: 1,
+  }];
+  const nativeClearing = {
+    domains: () => [domain],
+    domain: (clearingDomainId: string) => clearingDomainId === 'sol-carry-clearing' ? domain : undefined,
+    accounts: () => [],
+    account: () => undefined,
+    latestMark: () => undefined,
+    defaultAuction: () => { throw new Error('unused'); },
+    events: (_clearingDomainId: string, after: number, limit: number) => after === 0 && limit === 1 ? events : [],
+  } as unknown as NonNullable<PublicApiOptions['nativeClearing']>;
+  await withMarket(async (get) => {
+    const domains = await get('/v1/native-clearing/domains');
+    assert.equal(domains.status, 200);
+    assert.deepEqual((domains.body as { domains: unknown[] }).domains, [domain]);
+    const page = await get('/v1/native-clearing/domains/sol-carry-clearing/events?after=0&limit=1');
+    assert.equal(page.status, 200);
+    assert.deepEqual((page.body as { events: unknown[] }).events, events);
+    assert.equal((await get('/v1/native-clearing/domains/sol-carry-clearing/events?limit=501')).status, 400);
+  }, { nativeClearing });
+
+  await withMarket(async (get) => {
+    assert.equal((await get('/v1/native-clearing/domains')).status, 503);
+  });
+});
+
 test("the tape pages by cursor and omits participant and taker order identities", async () => {
   await withMarket(async (get, store) => {
     registerAll(store);
