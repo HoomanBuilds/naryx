@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import { usePersistedFlag, usePersistedSetting } from "../persisted-setting";
+import { MarketAlerts } from "../market-alerts";
 import { usePublicPackageMarkets, usePublicPackageOpportunities, usePublicSeriesCurve } from "../public-market-feed";
 import { useTerminal } from "../shell/terminal-context";
 import styles from "./pages.module.css";
@@ -399,6 +400,8 @@ export function MarketsView() {
           </>
         )}
       </section>
+
+      <MarketAlerts markets={markets} />
     </main>
   );
 }
