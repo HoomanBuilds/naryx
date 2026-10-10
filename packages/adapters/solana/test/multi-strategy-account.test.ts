@@ -41,14 +41,17 @@ const strategyAccount = PublicKey.findProgramAddressSync(
   multiStrategyProgram,
 )[0];
 
-function compiled(stage = 0): CompiledStrategyExecution<SolanaStrategyInstructionPlan> {
+function compiled(
+  stage = 0,
+  data = Buffer.concat([Buffer.from('88c3a5ee7e09042c', 'hex'), Buffer.from([3, 0, 0, 0, 10, 11, 12])]),
+): CompiledStrategyExecution<SolanaStrategyInstructionPlan> {
   const instruction = new TransactionInstruction({
     programId: adapterProgram,
     keys: [
       { pubkey: strategyAccount, isSigner: true, isWritable: false },
       { pubkey: address(9), isSigner: false, isWritable: true },
     ],
-    data: Buffer.from([10, 11, 12]),
+    data,
   });
   return {
     domains: [domain],
@@ -272,6 +275,17 @@ test('compiles owner-only recovery and rejects malformed economic bounds', () =>
       packageId: hash(21),
     }),
     /compiled plan package id mismatch/,
+  );
+  assert.throws(
+    () => compileSolanaMultiStrategyAccountEnvelope({ ...baseInput(), compiled: compiled(0, Buffer.from([10, 11, 12])) }),
+    /not a typed strategy leg instruction/,
+  );
+  assert.throws(
+    () => compileSolanaMultiStrategyAccountEnvelope({
+      ...baseInput(),
+      compiled: compiled(0, Buffer.concat([Buffer.from('88c3a5ee7e09042c', 'hex'), Buffer.from([4, 0, 0, 0, 10, 11, 12])])),
+    }),
+    /typed payload length is inconsistent/,
   );
 });
 

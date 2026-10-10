@@ -216,7 +216,7 @@ function solanaDomainExecution(): PreparedStrategyDomainExecution {
   const instruction = new TransactionInstruction({
     programId: adapter,
     keys: [{ pubkey: strategyAccount, isSigner: true, isWritable: false }],
-    data: Buffer.from([1, 2, 3]),
+    data: Buffer.concat([Buffer.from('88c3a5ee7e09042c', 'hex'), Buffer.from([3, 0, 0, 0, 1, 2, 3])]),
   });
   const compiled: CompiledStrategyExecution<SolanaStrategyInstructionPlan> = {
     domains: [domain],

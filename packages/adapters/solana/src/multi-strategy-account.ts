@@ -16,6 +16,7 @@ import type { SolanaStrategyInstructionPlan } from './strategy-plan.js';
 const EXECUTE_DISCRIMINATOR = Buffer.from('4ca9b2623392f612', 'hex');
 const NETTING_ALLOCATION_DISCRIMINATOR = Buffer.from('7029a21484063beb', 'hex');
 const RECOVERY_DISCRIMINATOR = Buffer.from('b0a04e24e8d78f91', 'hex');
+const TYPED_LEG_DISCRIMINATOR = Buffer.from('88c3a5ee7e09042c', 'hex');
 const EXECUTION_HASH_DOMAIN = Buffer.from('naryx.solana.multi-strategy.execution.v1', 'ascii');
 const CALLS_HASH_DOMAIN = Buffer.from('naryx.solana.multi-strategy.calls.v1', 'ascii');
 const ZERO_HASH = new Uint8Array(32);
@@ -221,6 +222,17 @@ function associatedTokenAddress(owner: PublicKey, mint: PublicKey): PublicKey {
   return pda(ASSOCIATED_TOKEN_PROGRAM_ID, [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()]);
 }
 
+
+// The program wraps each payload in its own package-bound adapter call, so only the inner payload of the
+// materialized typed-leg instruction is carried.
+function adapterPayload(data: Uint8Array, legId: string): Uint8Array {
+  const bytes = Buffer.from(data);
+  requireCondition(bytes.length >= 12 && bytes.subarray(0, 8).equals(TYPED_LEG_DISCRIMINATOR),
+    `leg ${legId} is not a typed strategy leg instruction`);
+  const length = bytes.readUInt32LE(8);
+  requireCondition(bytes.length === 12 + length, `leg ${legId} typed payload length is inconsistent`);
+  return bytes.subarray(12);
+}
 export function deriveSolanaMultiStrategyAccount(input: Readonly<{
   programId: PublicKey | string;
   owner: PublicKey | string;
@@ -355,7 +367,7 @@ export function compileSolanaMultiStrategyAccountEnvelope(input: Readonly<{
       .bool(policy.riskIncreasing)
       .u64(policy.grossNotionalAtoms, `leg ${record.legId} gross notional`)
       .u8(record.instruction.keys.length, `leg ${record.legId} account count`)
-      .vector(record.instruction.data);
+      .vector(adapterPayload(record.instruction.data, record.legId));
     const resourceIndex = pda(coreProgram, [Buffer.from('naryx-resource-index'), Buffer.from('adapter'), adapterSubjectId]);
     const resourceRecord = pda(coreProgram, [Buffer.from('naryx-resource-record'), Buffer.from('adapter'), adapterSubjectId, u32be(policy.adapterManifestVersion)]);
     remainingKeys.push(
