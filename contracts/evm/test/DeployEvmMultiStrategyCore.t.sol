@@ -51,6 +51,15 @@ contract DeployEvmMultiStrategyCoreTest is Test {
         script.deploy(parameters);
     }
 
+    function testRejectsMainnetEvenWhenOperatorExpectsIt() public {
+        vm.chainId(42_161);
+        DeployEvmMultiStrategyCore.Parameters memory parameters = _parameters();
+        parameters.expectedChainId = 42_161;
+
+        vm.expectRevert(DeployEvmMultiStrategyCore.InvalidChain.selector);
+        script.deploy(parameters);
+    }
+
     function _parameters() private view returns (DeployEvmMultiStrategyCore.Parameters memory) {
         return DeployEvmMultiStrategyCore.Parameters({
             expectedChainId: CHAIN_ID,

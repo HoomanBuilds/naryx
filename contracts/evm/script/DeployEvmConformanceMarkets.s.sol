@@ -8,6 +8,7 @@ import {NaryxTestOptionPool} from "../src/conformance/NaryxTestOptionPool.sol";
 import {NaryxTestOracleMarker} from "../src/conformance/NaryxTestOracleMarker.sol";
 import {NaryxTestPerpMarket} from "../src/conformance/NaryxTestPerpMarket.sol";
 import {NaryxTestVault} from "../src/conformance/NaryxTestVault.sol";
+import {TestnetChains} from "./TestnetChains.sol";
 
 contract DeployEvmConformanceMarkets is Script {
     struct Parameters {
@@ -52,7 +53,10 @@ contract DeployEvmConformanceMarkets is Script {
     }
 
     function deploy(Parameters calldata parameters) public returns (Deployment memory deployment) {
-        if (parameters.expectedChainId == 0 || block.chainid != parameters.expectedChainId) revert InvalidChain();
+        if (
+            parameters.expectedChainId == 0 || block.chainid != parameters.expectedChainId
+                || !TestnetChains.isAllowed(block.chainid)
+        ) revert InvalidChain();
         if (
             parameters.maximumBaseFaucetBalanceAtoms == 0 || parameters.maximumQuoteFaucetBalanceAtoms == 0
                 || parameters.optionLiquidityAtomsPerPool == 0

@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {Script} from "forge-std/Script.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {NativePackageClearingHouse} from "../src/NativePackageClearingHouse.sol";
+import {TestnetChains} from "./TestnetChains.sol";
 
 contract DeployNativePackageClearingHouse is Script {
     struct Parameters {
@@ -23,7 +24,10 @@ contract DeployNativePackageClearingHouse is Script {
     }
 
     function deploy(Parameters calldata parameters) public returns (NativePackageClearingHouse clearingHouse) {
-        if (parameters.expectedChainId == 0 || block.chainid != parameters.expectedChainId) revert InvalidChain();
+        if (
+            parameters.expectedChainId == 0 || block.chainid != parameters.expectedChainId
+                || !TestnetChains.isAllowed(block.chainid)
+        ) revert InvalidChain();
         address collateral = address(parameters.collateralToken);
         if (collateral.code.length == 0 || collateral.codehash != parameters.collateralTokenCodeHash) {
             revert DependencyChanged(collateral);

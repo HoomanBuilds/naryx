@@ -16,6 +16,7 @@ import {IPremiaV3Pool} from "../src/interfaces/IPremiaV3Pool.sol";
 import {INaryxMultiStrategyAccountFactory} from "../src/interfaces/INaryxMultiStrategyAccountFactory.sol";
 import {ISynFuturesInstrument} from "../src/interfaces/ISynFuturesInstrument.sol";
 import {ISynFuturesPositionObserver} from "../src/interfaces/ISynFuturesPositionObserver.sol";
+import {TestnetChains} from "./TestnetChains.sol";
 
 contract DeployEvmConformanceAdapterFactories is Script {
     struct Parameters {
@@ -62,7 +63,10 @@ contract DeployEvmConformanceAdapterFactories is Script {
     }
 
     function deploy(Parameters calldata parameters) public returns (Deployment memory deployment) {
-        if (parameters.expectedChainId == 0 || block.chainid != parameters.expectedChainId) revert InvalidChain();
+        if (
+            parameters.expectedChainId == 0 || block.chainid != parameters.expectedChainId
+                || !TestnetChains.isAllowed(block.chainid)
+        ) revert InvalidChain();
         if (
             address(parameters.accountFactory).code.length == 0 || address(parameters.baseAsset).code.length == 0
                 || address(parameters.quoteAsset).code.length == 0

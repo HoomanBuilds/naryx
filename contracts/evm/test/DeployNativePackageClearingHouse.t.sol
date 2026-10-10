@@ -36,6 +36,15 @@ contract DeployNativePackageClearingHouseTest is Test {
         script.deploy(parameters);
     }
 
+    function testRejectsMainnetEvenWhenOperatorExpectsIt() public {
+        vm.chainId(8453);
+        DeployNativePackageClearingHouse.Parameters memory parameters = _parameters();
+        parameters.expectedChainId = 8453;
+
+        vm.expectRevert(DeployNativePackageClearingHouse.InvalidChain.selector);
+        script.deploy(parameters);
+    }
+
     function _parameters() private view returns (DeployNativePackageClearingHouse.Parameters memory) {
         return DeployNativePackageClearingHouse.Parameters({
             expectedChainId: CHAIN_ID,

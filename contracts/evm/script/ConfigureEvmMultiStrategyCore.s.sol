@@ -6,6 +6,7 @@ import {Strings} from "openzeppelin-contracts/utils/Strings.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {StrategyFeePolicyRegistry} from "../src/StrategyFeePolicyRegistry.sol";
 import {TypedStrategyAdapterRegistry} from "../src/TypedStrategyAdapterRegistry.sol";
+import {TestnetChains} from "./TestnetChains.sol";
 
 contract ConfigureEvmMultiStrategyCore is Script {
     using Strings for uint256;
@@ -130,6 +131,7 @@ contract ConfigureEvmMultiStrategyCore is Script {
     }
 
     function _requireConfiguration(ProtocolConfig config, address registry) private view {
+        if (!TestnetChains.isAllowed(block.chainid)) revert InvalidChain();
         if (registry.code.length == 0 || address(config).code.length == 0) revert InvalidConfiguration();
         (string memory domainId,,) = config.domain();
         string memory expectedDomainId = string.concat("eip155:", block.chainid.toString());

@@ -9,6 +9,7 @@ import {RiskDomainRegistry} from "../src/RiskDomainRegistry.sol";
 import {SolverRegistry} from "../src/SolverRegistry.sol";
 import {StrategyFeePolicyRegistry} from "../src/StrategyFeePolicyRegistry.sol";
 import {TypedStrategyAdapterRegistry} from "../src/TypedStrategyAdapterRegistry.sol";
+import {TestnetChains} from "./TestnetChains.sol";
 
 contract DeployEvmMultiStrategyCore is Script {
     using Strings for uint256;
@@ -40,7 +41,10 @@ contract DeployEvmMultiStrategyCore is Script {
     }
 
     function deploy(Parameters calldata parameters) public returns (Deployment memory deployment) {
-        if (parameters.expectedChainId == 0 || block.chainid != parameters.expectedChainId) revert InvalidChain();
+        if (
+            parameters.expectedChainId == 0 || block.chainid != parameters.expectedChainId
+                || !TestnetChains.isAllowed(block.chainid)
+        ) revert InvalidChain();
         if (
             address(parameters.config).code.length == 0 || address(parameters.solverRegistry).code.length == 0
                 || parameters.expectedDomainManifestVersion == 0 || parameters.expectedDomainManifestHash == bytes32(0)
