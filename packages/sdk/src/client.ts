@@ -12,6 +12,8 @@ import {
   type ManualRecoveryIncidentInput,
   type ManualRecoveryState,
   aggregateCandles,
+  activationCondition,
+  activationConditionHash,
   buildExposureGraph,
   bytesEqual,
   CANDLE_INTERVAL_MS,
@@ -22,6 +24,8 @@ import {
   evidenceManifestHash,
   EXPIRY_UNIT,
   executionIntelligence,
+  executionSchedule,
+  executionScheduleHash,
   FIELD_EVIDENCE_GRADE,
   FINALITY_STATUS,
   fromHex,
@@ -80,6 +84,9 @@ import {
   builderManifestHash,
   type BuilderAttributionInput,
   type BuilderManifestInput,
+  type ActivationConditionInput,
+  type ExecutionScheduleInput,
+  type ScheduleProgress,
   strategyState,
   strategyStateHash,
   strategyPackageOrder,
@@ -426,6 +433,35 @@ export interface RegisteredDocumentView<T = unknown> {
  * signature. The key never enters this client; a wallet, an HSM, or a signing service backs it.
  */
 export type OrderSigner = (canonicalOrderBytes: Uint8Array) => Promise<Uint8Array>;
+
+export interface OrderActivationAttemptView {
+  readonly attemptId: string;
+  readonly orderHashHex: string;
+  readonly ordinal: number;
+  readonly sliceIndex?: number;
+  readonly atValue: bigint;
+  readonly maximumQuantityAtoms: bigint;
+  readonly side: 'BID' | 'ASK';
+  readonly limitPriceTicks: bigint;
+  readonly status: 'RESERVED' | 'SUCCEEDED' | 'FAILED';
+  readonly executedQuantityAtoms?: bigint;
+  readonly executionPriceTicks?: bigint;
+  readonly failureReason?: string;
+  readonly reservedAtMs: number;
+  readonly completedAtMs?: number;
+}
+
+export interface OrderActivationView {
+  readonly orderHashHex: string;
+  readonly order: StrategyPackageOrder;
+  readonly condition?: ActivationConditionInput;
+  readonly schedule?: ExecutionScheduleInput;
+  readonly status: 'WAITING' | 'COMPLETED' | 'STOPPED' | 'CANCELLED' | 'EXPIRED';
+  readonly progress: ScheduleProgress;
+  readonly attempts: readonly OrderActivationAttemptView[];
+  readonly registeredAtMs: number;
+  readonly updatedAtMs: number;
+}
 
 export interface SubmittedOrder {
   readonly orderHash: string;
@@ -1028,6 +1064,70 @@ function count(value: unknown, context: string): number {
 function hashHex(value: unknown, context: string): string {
   if (typeof value !== 'string' || !HASH_HEX.test(value)) throw new NaryxEvidenceError(`${context} is not a 32-byte hash`);
   return value;
+}
+
+function orderActivationView(value: unknown, requestedHash: string): OrderActivationView {
+  const body = record(value, 'order activation');
+  if (body.version !== 1 || body.orderHashHex !== requestedHash) throw new NaryxEvidenceError('order activation identity is inconsistent');
+  const order = strategyPackageOrder(body.order as StrategyPackageOrderInput);
+  if (toHex(strategyPackageOrderHash(order)) !== requestedHash) throw new NaryxEvidenceError('order activation contains another strategy order');
+  const condition = body.condition === undefined ? undefined : activationCondition(body.condition as ActivationConditionInput);
+  const schedule = body.schedule === undefined ? undefined : executionSchedule(body.schedule as ExecutionScheduleInput);
+  if ((order.activationConditionHash === undefined) !== (condition === undefined)
+    || (condition !== undefined && toHex(activationConditionHash(condition)) !== toHex(order.activationConditionHash!))) {
+    throw new NaryxEvidenceError('order activation condition is not bound by the strategy order');
+  }
+  if ((order.executionScheduleHash === undefined) !== (schedule === undefined)
+    || (schedule !== undefined && toHex(executionScheduleHash(schedule)) !== toHex(order.executionScheduleHash!))) {
+    throw new NaryxEvidenceError('order activation schedule is not bound by the strategy order');
+  }
+  const status = body.status;
+  if (status !== 'WAITING' && status !== 'COMPLETED' && status !== 'STOPPED' && status !== 'CANCELLED' && status !== 'EXPIRED') {
+    throw new NaryxEvidenceError('order activation status is unknown');
+  }
+  const progressBody = record(body.progress, 'order activation progress');
+  const progress: ScheduleProgress = Object.freeze({
+    executedQuantity: big(progressBody.executedQuantity, 'executedQuantity'),
+    executedNotionalTicks: big(progressBody.executedNotionalTicks, 'executedNotionalTicks'),
+    attemptedSlices: count(progressBody.attemptedSlices, 'attemptedSlices'),
+    failedSlices: count(progressBody.failedSlices, 'failedSlices'),
+    ...(progressBody.lastAttemptedSliceIndex === undefined ? {} : { lastAttemptedSliceIndex: count(progressBody.lastAttemptedSliceIndex, 'lastAttemptedSliceIndex') }),
+  });
+  const attempts = list(body.attempts, 'order activation attempts').map((entry, index): OrderActivationAttemptView => {
+    const attempt = record(entry, `order activation attempt ${index}`);
+    if (typeof attempt.attemptId !== 'string' || !HASH_HEX.test(attempt.attemptId)
+      || attempt.orderHashHex !== requestedHash || (attempt.side !== 'BID' && attempt.side !== 'ASK')
+      || (attempt.status !== 'RESERVED' && attempt.status !== 'SUCCEEDED' && attempt.status !== 'FAILED')) {
+      throw new NaryxEvidenceError('order activation attempt identity is invalid');
+    }
+    return Object.freeze({
+      attemptId: attempt.attemptId,
+      orderHashHex: requestedHash,
+      ordinal: count(attempt.ordinal, 'attempt ordinal'),
+      ...(attempt.sliceIndex === undefined ? {} : { sliceIndex: count(attempt.sliceIndex, 'attempt slice index') }),
+      atValue: big(attempt.atValue, 'attempt time'),
+      maximumQuantityAtoms: big(attempt.maximumQuantityAtoms, 'attempt maximum quantity'),
+      side: attempt.side,
+      limitPriceTicks: big(attempt.limitPriceTicks, 'attempt limit price'),
+      status: attempt.status,
+      ...(attempt.executedQuantityAtoms === undefined ? {} : { executedQuantityAtoms: big(attempt.executedQuantityAtoms, 'attempt executed quantity') }),
+      ...(attempt.executionPriceTicks === undefined ? {} : { executionPriceTicks: big(attempt.executionPriceTicks, 'attempt execution price') }),
+      ...(attempt.failureReason === undefined ? {} : { failureReason: String(attempt.failureReason) }),
+      reservedAtMs: count(attempt.reservedAtMs, 'attempt reservation time'),
+      ...(attempt.completedAtMs === undefined ? {} : { completedAtMs: count(attempt.completedAtMs, 'attempt completion time') }),
+    });
+  });
+  return Object.freeze({
+    orderHashHex: requestedHash,
+    order,
+    ...(condition === undefined ? {} : { condition }),
+    ...(schedule === undefined ? {} : { schedule }),
+    status,
+    progress,
+    attempts: Object.freeze(attempts),
+    registeredAtMs: count(body.registeredAtMs, 'registration time'),
+    updatedAtMs: count(body.updatedAtMs, 'update time'),
+  });
 }
 
 function servedId(value: unknown, context: string): string {
@@ -3466,6 +3566,41 @@ export class NaryxClient {
       ...time,
       stages: graph.stages,
     });
+  }
+
+  /** Registers the exact condition and schedule documents already committed by an admitted advanced order. */
+  async registerOrderActivation(
+    orderInput: StrategyPackageOrderInput,
+    documents: { readonly condition?: ActivationConditionInput; readonly schedule?: ExecutionScheduleInput },
+  ): Promise<{ readonly created: boolean; readonly activation: OrderActivationView }> {
+    const order = strategyPackageOrder(orderInput);
+    if (order.packageOrderType !== 'CONDITIONAL' && order.packageOrderType !== 'SCHEDULED' && order.packageOrderType !== 'PACKAGE_TWAP') {
+      throw new TypeError('only conditional, scheduled, and package TWAP orders use activation');
+    }
+    const condition = documents.condition === undefined ? undefined : activationCondition(documents.condition);
+    const schedule = documents.schedule === undefined ? undefined : executionSchedule(documents.schedule);
+    if ((order.activationConditionHash === undefined) !== (condition === undefined)
+      || (condition !== undefined && toHex(activationConditionHash(condition)) !== toHex(order.activationConditionHash!))) {
+      throw new TypeError('activation condition is not bound by the strategy order');
+    }
+    if ((order.executionScheduleHash === undefined) !== (schedule === undefined)
+      || (schedule !== undefined && toHex(executionScheduleHash(schedule)) !== toHex(order.executionScheduleHash!))) {
+      throw new TypeError('execution schedule is not bound by the strategy order');
+    }
+    const orderHash = toHex(strategyPackageOrderHash(order));
+    const body = record(await this.#request('POST', '/v1/order-activations', {
+      orderHash,
+      ...(condition === undefined ? {} : { condition }),
+      ...(schedule === undefined ? {} : { schedule }),
+    }), 'order activation registration');
+    if (typeof body.created !== 'boolean') throw new NaryxEvidenceError('order activation registration is malformed');
+    return Object.freeze({ created: body.created, activation: orderActivationView(body, orderHash) });
+  }
+
+  /** Reads and verifies durable conditional, scheduled, or TWAP execution progress. */
+  async getOrderActivation(orderHash: string): Promise<OrderActivationView> {
+    const requested = hashHex(orderHash, 'order hash');
+    return orderActivationView(await this.#request('GET', `/v1/order-activations/${requested}`), requested);
   }
 
   /** Requests one signed solver quote for a stored strategy order and verifies its exposed commitments. */
