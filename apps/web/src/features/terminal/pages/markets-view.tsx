@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState, useSyncExternalStore } from "react";
 import { usePersistedFlag, usePersistedSetting } from "../persisted-setting";
-import { usePublicPackageMarkets, usePublicPackageOpportunities } from "../public-market-feed";
+import { usePublicPackageMarkets, usePublicPackageOpportunities, usePublicSeriesCurve } from "../public-market-feed";
 import { useTerminal } from "../shell/terminal-context";
 import styles from "./pages.module.css";
 
@@ -81,6 +81,9 @@ export function MarketsView() {
   const [scanSizeInput, setScanSizeInput] = useState("1");
   const [scanSize, setScanSize] = useState(BigInt(1));
   const { opportunities, status: opportunityStatus } = usePublicPackageOpportunities(publicApiBaseUrl, scanSize);
+  const [curveSeriesId, setCurveSeriesId] = useState("");
+  const [curveSizesInput, setCurveSizesInput] = useState("1,10,100");
+  const [curveSizes, setCurveSizes] = useState<readonly bigint[]>([BigInt(1), BigInt(10), BigInt(100)]);
   const [query, setQuery] = useState("");
   const watchlist = useSyncExternalStore(subscribeWatchlist, watchlistSnapshot, () => EMPTY_WATCHLIST);
   const [watchedOnly, setWatchedOnly] = usePersistedFlag("markets.watchedOnly", false);
@@ -108,6 +111,10 @@ export function MarketsView() {
   const executable = markets.filter((market) => !market.halted && (market.bestBidTicks !== null || market.bestAskTicks !== null)).length;
   const domains = new Set(markets.flatMap((market) => market.domainIds)).size;
   const templates = new Set(markets.flatMap((market) => market.templateId === null ? [] : [market.templateId])).size;
+  const seriesIds = useMemo(() => [...new Set(markets.flatMap((market) => market.seriesId === null ? [] : [market.seriesId]))].sort(), [markets]);
+  const selectedCurveSeriesId = seriesIds.includes(curveSeriesId) ? curveSeriesId : seriesIds[0] ?? null;
+  const { curve, status: curveStatus } = usePublicSeriesCurve(publicApiBaseUrl, selectedCurveSeriesId, curveSizes);
+  const validCurveSizes = /^(?:[1-9][0-9]{0,30})(?:,(?:[1-9][0-9]{0,30})){0,15}$/.test(curveSizesInput);
 
   return (
     <main className={styles.page}>
@@ -318,6 +325,78 @@ export function MarketsView() {
               </tbody>
             </table>
           </div>
+        )}
+      </section>
+
+      <section className={styles.card} aria-labelledby="series-curve-title">
+        <div className={styles.cardHead}>
+          <div>
+            <h2 id="series-curve-title">Package series curve</h2>
+            <p>{curveStatus?.detail ?? "Publish a strategy series to compare its execution classes."}</p>
+          </div>
+          <form
+            className={styles.curveControls}
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!validCurveSizes) return;
+              setCurveSizes(Object.freeze(curveSizesInput.split(",").map((value) => BigInt(value))));
+            }}
+          >
+            <label>
+              <span>Economic series</span>
+              <select value={selectedCurveSeriesId ?? ""} onChange={(event) => setCurveSeriesId(event.target.value)} disabled={seriesIds.length === 0}>
+                {seriesIds.length === 0 ? <option value="">No published series</option> : seriesIds.map((seriesId) => <option key={seriesId} value={seriesId}>{seriesId}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Sizes</span>
+              <input value={curveSizesInput} onChange={(event) => setCurveSizesInput(event.target.value.replaceAll(" ", ""))} aria-invalid={!validCurveSizes} />
+            </label>
+            <button type="submit" className={styles.ghost} disabled={!validCurveSizes || selectedCurveSeriesId === null}>Compare</button>
+          </form>
+        </div>
+        {curve === null ? (
+          <div className={styles.empty}>
+            <strong>{selectedCurveSeriesId === null ? "No strategy series published" : "Curve is not available"}</strong>
+            <p>Open package books under the same economic series to compare executable settlement classes.</p>
+          </div>
+        ) : (
+          <>
+            <div className={styles.evidenceBar}>
+              <span className={styles.pillOk}>Methodology v{curve.methodologyVersion}</span>
+              <p>{human(curve.quoteConvention)} in {curve.quoteAsset}. Prices are direct executable averages at each requested size.</p>
+            </div>
+            <div className={styles.scroll}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th>Execution class</th>
+                    <th>Settlement</th>
+                    <th>Domains</th>
+                    {curveSizes.map((size) => <th key={size.toString()} className={styles.num}>Bid / ask at {size.toString()}</th>)}
+                    <th className={styles.num}>Last observed</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {curve.points.map((point) => (
+                    <tr key={point.executionClassId}>
+                      <td className={styles.mono}>{point.executionClassId}</td>
+                      <td>{human(point.settlementClass)}</td>
+                      <td>{point.domains.join(" + ")}</td>
+                      {curveSizes.map((size, index) => (
+                        <td key={size.toString()} className={styles.num}>
+                          {!point.open ? "-" : `${point.bids[index]?.averagePriceTicks.toString() ?? "-"} / ${point.asks[index]?.averagePriceTicks.toString() ?? "-"}`}
+                        </td>
+                      ))}
+                      <td className={styles.num}>{point.lastTrade?.priceTicks.toString() ?? "-"}</td>
+                      <td><span className={!point.open || point.halted ? styles.pillWarn : styles.pillOk}>{!point.open ? "Closed" : point.halted ? "Halted" : "Open"}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </section>
     </main>

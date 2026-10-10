@@ -94,6 +94,25 @@ export interface PublicPackageOpportunity {
   readonly lastTrade: PublicObservedTrade | null;
 }
 
+export interface PublicSeriesCurvePoint {
+  readonly executionClassId: string;
+  readonly settlementClass: string;
+  readonly domains: readonly string[];
+  readonly open: boolean;
+  readonly halted: boolean;
+  readonly bids: readonly (PublicSizeQuote | null)[];
+  readonly asks: readonly (PublicSizeQuote | null)[];
+  readonly lastTrade: PublicObservedTrade | null;
+}
+
+export interface PublicSeriesCurve {
+  readonly seriesId: string;
+  readonly quoteAsset: string;
+  readonly quoteConvention: string;
+  readonly methodologyVersion: number;
+  readonly points: readonly PublicSeriesCurvePoint[];
+}
+
 function requiredText(value: unknown, context: string): string {
   if (typeof value !== "string" || value.length === 0) throw new PublicApiError(`${context} is not a nonempty string`);
   return value;
@@ -331,6 +350,97 @@ export function usePublicPackageOpportunities(baseUrl: string | null, size: bigi
     };
   }
   return { opportunities, status };
+}
+
+function curveQuotes(value: unknown, sizes: readonly bigint[], context: string): readonly (PublicSizeQuote | null)[] {
+  if (!Array.isArray(value) || value.length !== sizes.length) throw new PublicApiError(`${context} does not answer every size`);
+  return Object.freeze(value.map((candidate, index) => {
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) throw new PublicApiError(`${context}[${index}] is malformed`);
+    const quote = candidate as Record<string, unknown>;
+    if (quote.label !== "EXECUTABLE" || exact(quote.size, `${context}[${index}].size`) !== sizes[index]) {
+      throw new PublicApiError(`${context}[${index}] is not executable at the requested size`);
+    }
+    const fillableQuantity = exact(quote.fillableQuantity, `${context}[${index}].fillableQuantity`);
+    if (fillableQuantity > sizes[index]!) throw new PublicApiError(`${context}[${index}] overstates fillable depth`);
+    if (quote.averagePriceTicks === undefined) {
+      if (fillableQuantity === sizes[index]) throw new PublicApiError(`${context}[${index}] omits a fillable price`);
+      return null;
+    }
+    const averagePriceTicks = exact(quote.averagePriceTicks, `${context}[${index}].averagePriceTicks`);
+    if (fillableQuantity !== sizes[index]) throw new PublicApiError(`${context}[${index}] prices partial depth`);
+    return Object.freeze({ size: sizes[index]!, averagePriceTicks, fillableQuantity });
+  }));
+}
+
+function seriesCurve(body: Record<string, unknown>, seriesId: string, sizes: readonly bigint[]): PublicSeriesCurve {
+  if (body.seriesId !== seriesId || typeof body.quoteAsset !== "string" || typeof body.quoteConvention !== "string" ||
+      typeof body.methodologyVersion !== "number" || !Number.isSafeInteger(body.methodologyVersion) || body.methodologyVersion < 1 ||
+      !Array.isArray(body.points)) throw new PublicApiError("series curve is malformed");
+  exact(body.asOfValue, "curve.asOfValue");
+  const points = body.points.map((candidate, index): PublicSeriesCurvePoint => {
+    const context = `curve.points[${index}]`;
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) throw new PublicApiError(`${context} is malformed`);
+    const point = candidate as Record<string, unknown>;
+    if (typeof point.open !== "boolean") throw new PublicApiError(`${context}.open is malformed`);
+    const common = {
+      executionClassId: requiredText(point.executionClassId, `${context}.executionClassId`),
+      settlementClass: requiredText(point.settlementClass, `${context}.settlementClass`),
+      domains: textList(point.domains, `${context}.domains`),
+    };
+    if (!point.open) {
+      if (point.executable !== undefined || point.lastTrade !== undefined) throw new PublicApiError(`${context} is closed but carries market data`);
+      return Object.freeze({ ...common, open: false, halted: false, bids: Object.freeze([]), asks: Object.freeze([]), lastTrade: null });
+    }
+    if (typeof point.halted !== "boolean" || point.executable === null || typeof point.executable !== "object" || Array.isArray(point.executable)) {
+      throw new PublicApiError(`${context} is malformed`);
+    }
+    const executable = point.executable as Record<string, unknown>;
+    return Object.freeze({
+      ...common,
+      open: true,
+      halted: point.halted,
+      bids: curveQuotes(executable.bids, sizes, `${context}.bids`),
+      asks: curveQuotes(executable.asks, sizes, `${context}.asks`),
+      lastTrade: point.lastTrade === undefined ? null : observedTrade(point.lastTrade, `${context}.lastTrade`),
+    });
+  });
+  if (new Set(points.map((point) => point.executionClassId)).size !== points.length) throw new PublicApiError("series curve repeats an execution class");
+  return Object.freeze({
+    seriesId,
+    quoteAsset: body.quoteAsset,
+    quoteConvention: body.quoteConvention,
+    methodologyVersion: body.methodologyVersion,
+    points: Object.freeze(points),
+  });
+}
+
+/** Compares executable size curves across every settlement class of one economic series. */
+export function usePublicSeriesCurve(baseUrl: string | null, seriesId: string | null, sizes: readonly bigint[]): {
+  readonly curve: PublicSeriesCurve | null;
+  readonly status: PublicMarketCatalogueStatus | null;
+} {
+  const [result, setResult] = useState<Readonly<{ key: string; curve: PublicSeriesCurve }> | null>(null);
+  const [failure, setFailure] = useState<Readonly<{ key: string; detail: string }> | null>(null);
+  const sizesKey = sizes.map((size) => size.toString()).join(",");
+  const requestKey = `${seriesId ?? ""}:${sizesKey}`;
+
+  useEffect(() => {
+    if (baseUrl === null || seriesId === null || sizes.length === 0) return;
+    const base = baseUrl.replace(/\/+$/, "");
+    const controller = new AbortController();
+    void read(base, `/v1/curves/${encodeURIComponent(seriesId)}?sizes=${sizesKey}`, controller.signal)
+      .then((body) => setResult({ key: requestKey, curve: seriesCurve(body, seriesId, sizes) }))
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setFailure({ key: requestKey, detail: error instanceof Error ? error.message : "request failed" });
+      });
+    return () => controller.abort();
+  }, [baseUrl, requestKey, seriesId, sizes, sizesKey]);
+
+  if (baseUrl === null || seriesId === null) return { curve: null, status: null };
+  if (result?.key === requestKey) return { curve: result.curve, status: { state: "live", detail: `${result.curve.points.length} execution class${result.curve.points.length === 1 ? "" : "es"} compared.` } };
+  if (failure?.key === requestKey) return { curve: null, status: { state: "unavailable", detail: `Series curve unavailable (${failure.detail}).` } };
+  return { curve: null, status: { state: "loading", detail: "Loading executable series curve." } };
 }
 
 function exact(value: unknown, context: string): bigint {

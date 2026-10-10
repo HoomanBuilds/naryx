@@ -132,6 +132,42 @@
   outline-offset: 1px;
 }
 
+.curveControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.curveControls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: 10.5px;
+}
+
+.curveControls input,
+.curveControls select {
+  width: 170px;
+  height: 31px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--field);
+  color: var(--text-primary);
+  padding: 0 9px;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 11px;
+}
+
+.curveControls input:focus-visible,
+.curveControls select:focus-visible {
+  border-color: var(--line-strong);
+  outline: 1px solid var(--yellow);
+  outline-offset: 1px;
+}
+
 .evidenceBar {
   display: flex;
   align-items: center;
