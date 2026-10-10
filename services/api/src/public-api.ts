@@ -118,6 +118,7 @@ import { verifyEd25519 } from "./ed25519.js";
 import { StrategyPackageStoreError, type SqliteStrategyPackageStore } from "./strategy-package-store.js";
 import { NativeClearingStoreError, type SqliteNativeClearingStore } from './native-clearing-store.js';
 import { OrderActivationStoreError, type SqliteOrderActivationStore } from "./order-activation-store.js";
+import { AdvancedOrderFactoryError, type AdvancedOrderFactory } from "./advanced-order-factory.js";
 import {
   GeneralizedStrategyQuoteClientError,
   type GeneralizedStrategyQuotePort,
@@ -339,6 +340,8 @@ export interface PublicApiOptions {
   >;
   /** Durable advanced-order registration and progress; execution remains on the loopback controller. */
   readonly orderActivations?: Pick<SqliteOrderActivationStore, "register" | "view">;
+  /** Derives a bound advanced order from a previously admitted immediate strategy order. */
+  readonly advancedOrders?: Pick<AdvancedOrderFactory, "derive">;
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
   readonly nowValue: () => bigint;
   readonly rateLimit: { readonly windowMs: number; readonly maxRequests: number };
@@ -526,6 +529,13 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       throw new RequestError(503, "ORDER_ACTIVATIONS_UNAVAILABLE", "No advanced-order activation runtime is configured on this server.");
     }
     return options.orderActivations;
+  }
+
+  function requireAdvancedOrders() {
+    if (options.advancedOrders === undefined) {
+      throw new RequestError(503, "ADVANCED_ORDERS_UNAVAILABLE", "No advanced-order factory is configured on this server.");
+    }
+    return options.advancedOrders;
   }
 
   function requireDelivery() {
@@ -1727,6 +1737,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/collateral-snapshots",
       "/v1/health-snapshots",
       "/v1/order-activations",
+      "/v1/order-activations/derive",
       "/v1/recovery/approvals",
       "/v1/strategies/commands",
       "/v1/strategies/commands/authorization",
@@ -1761,6 +1772,29 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         }
         throw error;
       }
+    }
+    if (path === "/v1/order-activations/derive") {
+      const keys = Object.keys(body).sort();
+      if (keys.some((key) => key !== "atSlot" && key !== "condition" && key !== "schedule" && key !== "sourceOrderHash")
+        || typeof body.sourceOrderHash !== "string" || !HASH_HEX.test(body.sourceOrderHash)
+        || (body.atSlot !== undefined && typeof body.atSlot !== "bigint")) {
+        throw new RequestError(400, "INVALID_REQUEST", "Advanced-order derivation requires a sourceOrderHash and only bound activation documents or atSlot.");
+      }
+      const derived = requireAdvancedOrders().derive({
+        sourceOrderHashHex: body.sourceOrderHash,
+        ...(body.condition === undefined ? {} : { condition: object(body.condition, "condition") as unknown as ActivationConditionInput }),
+        ...(body.schedule === undefined ? {} : { schedule: object(body.schedule, "schedule") as unknown as ExecutionScheduleInput }),
+        ...(body.atSlot === undefined ? {} : { atSlot: body.atSlot }),
+      });
+      return {
+        version: 1,
+        sourceOrderHash: derived.sourceOrderHashHex,
+        orderHash: derived.intake.orderHashHex,
+        graphHash: derived.intake.graphHashHex,
+        created: derived.intake.created,
+        status: derived.intake.status,
+        activation: derived.activation,
+      };
     }
     if (path === "/v1/order-activations") {
       const keys = Object.keys(body).sort();
@@ -2687,6 +2721,10 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           const status = error.code === "CORRUPT_ROW" ? 500
             : error.code.endsWith("NOT_FOUND") ? 404
               : ["INVALID_HASH", "ORDER_MISMATCH", "ORDER_NOT_ADVANCED", "CONDITION_MISMATCH", "SCHEDULE_MISMATCH", "UNSUPPORTED_ENVIRONMENT"].includes(error.code) ? 400 : 409;
+          return fail(response, status, error.code, error.message);
+        }
+        if (error instanceof AdvancedOrderFactoryError) {
+          const status = error.code === "ORDER_NOT_FOUND" ? 404 : error.code.startsWith("SOURCE_ORDER_") ? 409 : 400;
           return fail(response, status, error.code, error.message);
         }
         if (error instanceof GeneralizedStrategyQuoteClientError) {

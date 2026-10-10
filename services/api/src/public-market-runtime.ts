@@ -30,6 +30,7 @@ import { createCoordinationInternalHandler, SqliteCoordinationStore } from "./co
 import { createStrategyPackageInternalHandler, SqliteStrategyPackageStore } from "./strategy-package-store.js";
 import { SqliteOrderActivationStore } from "./order-activation-store.js";
 import { createOrderActivationAdminHandler } from "./order-activation-admin.js";
+import { AdvancedOrderFactory } from "./advanced-order-factory.js";
 import { createPackageReopeningAdminHandler } from "./package-reopening-admin.js";
 import { HttpGeneralizedStrategyQuoteClient } from "./generalized-strategy-quote-client.js";
 import { HttpPortfolioOptimizationClient } from './portfolio-optimization-client.js';
@@ -545,6 +546,9 @@ export function loadPublicMarketRuntime(
         store: strategyPackages,
         clockMs,
       });
+    const advancedOrders = strategyPackages === undefined || strategyOrderIntake === undefined || orderActivations === undefined
+      ? undefined
+      : new AdvancedOrderFactory({ orders: strategyPackages, intake: strategyOrderIntake, activations: orderActivations });
     const generalizedQuoteSetting = environment.NARYX_GENERALIZED_STRATEGY_QUOTE_ENABLED ?? "false";
     if (generalizedQuoteSetting !== "true" && generalizedQuoteSetting !== "false") {
       throw new PublicMarketConfigError("NARYX_GENERALIZED_STRATEGY_QUOTE_ENABLED must be true or false.");
@@ -788,6 +792,7 @@ export function loadPublicMarketRuntime(
       ...(coordination === undefined ? {} : { coordination }),
       ...(nativeClearing === undefined ? {} : { nativeClearing }),
       ...(orderActivations === undefined ? {} : { orderActivations }),
+      ...(advancedOrders === undefined ? {} : { advancedOrders }),
       nowValue,
       rateLimit,
       clockMs,

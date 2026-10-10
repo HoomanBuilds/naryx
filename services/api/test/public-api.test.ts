@@ -172,6 +172,7 @@ test("advanced-order activation registration and status use the configured durab
     updatedAtMs: 1,
   } as never;
   let registered = false;
+  let derived = false;
   await withMarket(async (request) => {
     const post = await request("/v1/order-activations", {
       method: "POST",
@@ -184,6 +185,15 @@ test("advanced-order activation registration and status use the configured durab
     const read = await request(`/v1/order-activations/${orderHash}`);
     assert.equal(read.status, 200);
     assert.equal((read.body as { orderHashHex: string }).orderHashHex, orderHash);
+    const sourceOrderHash = id(8_002);
+    const derive = await request("/v1/order-activations/derive", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(toProtocolJson({ sourceOrderHash, condition })),
+    });
+    assert.equal(derive.status, 200);
+    assert.equal((derive.body as { sourceOrderHash: string }).sourceOrderHash, sourceOrderHash);
+    assert.equal(derived, true);
   }, {
     orderActivations: {
       register: (input) => {
@@ -191,6 +201,17 @@ test("advanced-order activation registration and status use the configured durab
         return { created: true, view };
       },
       view: (requested) => requested === orderHash ? view : undefined,
+    },
+    advancedOrders: {
+      derive: (input) => {
+        derived = input.sourceOrderHashHex === id(8_002) && input.condition?.metric === "TIME";
+        return {
+          sourceOrderHashHex: input.sourceOrderHashHex,
+          order: {} as never,
+          intake: { orderHashHex: orderHash, graphHashHex: id(8_003), created: true, status: "STORED_FOR_QUOTING" },
+          activation: view,
+        } as never;
+      },
     },
   });
 });

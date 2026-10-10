@@ -9,6 +9,11 @@ export {
 } from "./order-activation-store.js";
 export { createOrderActivationAdminHandler } from "./order-activation-admin.js";
 export {
+  AdvancedOrderFactory,
+  AdvancedOrderFactoryError,
+  type DerivedAdvancedOrder,
+} from "./advanced-order-factory.js";
+export {
   createMakerOperationsHandler,
   makerOperationsSnapshot,
   MAKER_OPERATIONS_PATH,
