@@ -10,6 +10,7 @@ import type {
 
 export interface NettingExternalExecutionStorePort {
   nettingBatch(proofHash: Uint8Array | string): PreparedNettingBatch | undefined;
+  claimNettingExternalExecution(intentHash: Uint8Array | string): void;
   recordVerifiedNettingExternalExecutionEvidence(
     evidence: NettingExternalExecutionEvidence,
   ): { readonly evidence: NettingExternalExecutionEvidence; readonly replayed: boolean };
@@ -66,6 +67,7 @@ export class NettingExecutionCoordinator {
   constructor(store: NettingExternalExecutionStorePort, executor: NettingExternalExecutionPort) {
     if (store === null || typeof store !== 'object'
       || typeof store.nettingBatch !== 'function'
+      || typeof store.claimNettingExternalExecution !== 'function'
       || typeof store.recordVerifiedNettingExternalExecutionEvidence !== 'function') {
       throw new Error('netting execution requires a durable batch store');
     }
@@ -86,6 +88,7 @@ export class NettingExecutionCoordinator {
     for (const record of batch.externalExecutions) {
       if (record.evidence !== undefined || record.crossBatchClearingPlanHashHex !== undefined) continue;
       const idempotencyKey = toHex(record.intent.intentHash);
+      this.#store.claimNettingExternalExecution(record.intent.intentHash);
       const evidence = await this.#executor.execute({ intent: record.intent, idempotencyKey });
       verifyNettingExternalExecutionEvidence(evidence, record.intent);
       this.#store.recordVerifiedNettingExternalExecutionEvidence(evidence);

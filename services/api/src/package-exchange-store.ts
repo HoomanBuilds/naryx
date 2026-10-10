@@ -505,6 +505,10 @@ CREATE TABLE IF NOT EXISTS cross_batch_clearing_plans (
   recorded_at_ms INTEGER NOT NULL,
   CHECK ((external_intent_hash IS NULL) = (external_intent_json IS NULL))
 ) STRICT;
+CREATE TABLE IF NOT EXISTS netting_external_execution_claims (
+  intent_hash BLOB PRIMARY KEY REFERENCES netting_external_execution_intents(intent_hash),
+  claimed_at_ms INTEGER NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS cross_batch_clearing_sources (
   plan_hash BLOB NOT NULL REFERENCES cross_batch_clearing_plans(plan_hash),
   source_intent_hash BLOB NOT NULL UNIQUE REFERENCES netting_external_execution_intents(intent_hash),
@@ -656,6 +660,12 @@ CREATE TRIGGER IF NOT EXISTS reject_netting_external_evidence_change
 CREATE TRIGGER IF NOT EXISTS reject_netting_external_evidence_delete
   BEFORE DELETE ON netting_external_execution_evidence
   BEGIN SELECT RAISE(ABORT, 'netting external execution evidence is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_external_claim_change
+  BEFORE UPDATE ON netting_external_execution_claims
+  BEGIN SELECT RAISE(ABORT, 'netting external execution claims are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_netting_external_claim_delete
+  BEFORE DELETE ON netting_external_execution_claims
+  BEGIN SELECT RAISE(ABORT, 'netting external execution claims are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_cross_batch_clearing_plan_change
   BEFORE UPDATE ON cross_batch_clearing_plans
   BEGIN SELECT RAISE(ABORT, 'cross batch clearing plans are append-only'); END;
@@ -2250,6 +2260,22 @@ export class SqlitePackageExchangeStore {
     return row === undefined ? undefined : this.nettingBatch(hashBytes(row.proof_hash, "proof_hash"));
   }
 
+  /** Durably commits a residual intent to direct execution, so cross-batch clearing can no longer pool it. */
+  claimNettingExternalExecution(intentHashInput: Uint8Array | string): void {
+    this.transaction(() => {
+      const intentHash = commitmentHash(intentHashInput);
+      if (this.db.prepare("SELECT 1 FROM netting_external_execution_intents WHERE intent_hash = ?").get(intentHash) === undefined) {
+        throw new PackageExchangeStoreError("NETTING_INTENT_NOT_FOUND", "External execution intent is not stored.");
+      }
+      if (this.db.prepare("SELECT 1 FROM cross_batch_clearing_sources WHERE source_intent_hash = ?").get(intentHash) !== undefined) {
+        throw new PackageExchangeStoreError("NETTING_INTENT_POOLED", "External execution intent is committed to cross-batch clearing.");
+      }
+      this.db.prepare(`
+        INSERT OR IGNORE INTO netting_external_execution_claims (intent_hash, claimed_at_ms) VALUES (?, ?)
+      `).run(intentHash, this.clock());
+    });
+  }
+
   recordVerifiedNettingExternalExecutionEvidence(
     evidence: NettingExternalExecutionEvidence,
   ): { readonly evidence: NettingExternalExecutionEvidence; readonly replayed: boolean } {
@@ -2315,22 +2341,24 @@ export class SqlitePackageExchangeStore {
       }
       const sourceRows = sourceHashes.map((sourceIntentHash) => {
         const row = this.db.prepare(`
-          SELECT i.proof_hash, i.intent_json, e.evidence_hash, s.plan_hash
+          SELECT i.proof_hash, i.intent_json, e.evidence_hash, s.plan_hash, c.intent_hash AS claimed_intent_hash
           FROM netting_external_execution_intents i
           LEFT JOIN netting_external_execution_evidence e ON e.intent_hash = i.intent_hash
           LEFT JOIN cross_batch_clearing_sources s ON s.source_intent_hash = i.intent_hash
+          LEFT JOIN netting_external_execution_claims c ON c.intent_hash = i.intent_hash
           WHERE i.intent_hash = ?
         `).get(sourceIntentHash) as {
           proof_hash: unknown;
           intent_json: unknown;
           evidence_hash: unknown;
           plan_hash: unknown;
+          claimed_intent_hash: unknown;
         } | undefined;
         if (row === undefined) {
           throw new PackageExchangeStoreError("NETTING_INTENT_NOT_FOUND", "Cross-batch source intent is not stored.");
         }
-        if (row.evidence_hash !== null) {
-          throw new PackageExchangeStoreError("NETTING_INTENT_ALREADY_EXECUTED", "Cross-batch source intent already has direct evidence.");
+        if (row.evidence_hash !== null || row.claimed_intent_hash !== null) {
+          throw new PackageExchangeStoreError("NETTING_INTENT_ALREADY_EXECUTED", "Cross-batch source intent is already claimed for direct execution.");
         }
         return row;
       });
@@ -2407,7 +2435,8 @@ export class SqlitePackageExchangeStore {
       FROM netting_external_execution_intents i
       LEFT JOIN netting_external_execution_evidence e ON e.intent_hash = i.intent_hash
       LEFT JOIN cross_batch_clearing_sources s ON s.source_intent_hash = i.intent_hash
-      WHERE e.intent_hash IS NULL AND s.source_intent_hash IS NULL
+      LEFT JOIN netting_external_execution_claims c ON c.intent_hash = i.intent_hash
+      WHERE e.intent_hash IS NULL AND s.source_intent_hash IS NULL AND c.intent_hash IS NULL
       ORDER BY i.recorded_at_ms, i.intent_hash
     `).iterate() as Iterable<{
       intent_hash: unknown;

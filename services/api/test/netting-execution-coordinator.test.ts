@@ -78,6 +78,7 @@ const intent = nettingExternalExecutionIntent(result, policy, {
 });
 
 class Store implements NettingExternalExecutionStorePort {
+  readonly claims: string[] = [];
   batch: PreparedNettingBatch = Object.freeze({
     status: 'PREPARED',
     proofHashHex: toHex(result.proofHash),
@@ -97,6 +98,10 @@ class Store implements NettingExternalExecutionStorePort {
 
   nettingBatch(): PreparedNettingBatch {
     return this.batch;
+  }
+
+  claimNettingExternalExecution(intentHash: Uint8Array | string): void {
+    this.claims.push(toHex(intentHash as Uint8Array));
   }
 
   recordVerifiedNettingExternalExecutionEvidence(
@@ -139,6 +144,7 @@ test('executes each pending residual once under intent-hash idempotency', async 
   const replay = await coordinator.execute(result.proofHash);
   assert.deepEqual(replay.executedIntentHashes, []);
   assert.deepEqual(calls, [toHex(intent.intentHash)]);
+  assert.deepEqual(store.claims, [toHex(intent.intentHash)]);
 });
 
 test('direct residual execution skips intents committed to cross-batch clearing', async () => {

@@ -528,6 +528,105 @@ test("cross-batch clearing durably settles source batches without direct double 
   });
 });
 
+test("a residual claimed for direct execution is never pooled, and a pooled one is never claimed", () => {
+  withStore((store) => {
+    registerAll(store);
+    const signature = bs58.encode(new Uint8Array(64).fill(9));
+    const instrument = {
+      instrumentId: "sol-spot",
+      domain: domainRef("svm:solana-devnet", 1, id(801)),
+      adapter: adapterRef({ adapterId: "spot-adapter", adapterManifestVersion: 1, adapterManifestHash: id(802) }),
+      venue: versionedManifestRef("spot-venue", 1, id(803)),
+      market: versionedManifestRef("sol-usdc", 1, id(804)),
+      quantityAsset: assetRef("sol", id(805), 9),
+      quoteAsset: assetRef("usdc", id(806), 6),
+      legFamily: "SPOT_SWAP" as const,
+      quantityIncrementAtoms: 10n,
+      priceTickQuoteAtoms: 1n,
+    };
+    const policy: NettingPolicyManifestInput = {
+      schemaVersion: 1,
+      manifestVersion: 1,
+      nettingPolicyVersion: 2,
+      environment: "local",
+      executionClassId: CLASS,
+      executionClassVersion: 1,
+      executionClassManifestHash: seriesExecutionClassHash(executionClass(), CLASS_SUPPORT),
+      settlementClass: "ATOMIC_POSTCONDITION",
+      allocationRule: "PRO_RATA_SEQUENCE",
+      externalExecutionMode: "EXACT_NET_ONLY",
+      clearingRule: "LIMIT_MIDPOINT_BUYER_FAVOR",
+      maximumObligations: 4,
+      maximumBatchWindowMilliseconds: 1_000n,
+      instruments: [instrument],
+    };
+    const intents = [[5, 10n, 12n], [7, 10n, 12n], [9, -10n, 8n]].map(([orderId, quantity, limit], index) => {
+      const maker = order(orderId as number);
+      const taker = order((orderId as number) + 1, { side: "BID", timeInForce: "IOC" });
+      store.submitOrder(CLASS, maker, NOW, settlement(maker), { scheme: "ED25519", signature });
+      store.submitOrder(CLASS, taker, NOW, settlement(taker), { scheme: "ED25519", signature });
+      const progress = store.settlementProgress(maker.orderId)!;
+      const result = netObligations([{
+        ownerId: maker.participantId,
+        strategyOrderHash: settlement(maker).strategyOrderHash,
+        packageOrderId: maker.orderId,
+        settlementReadinessHash: progress.readinessHashHex,
+        legId: `spot-${index}`,
+        instrumentId: instrument.instrumentId,
+        signedQuantityAtoms: quantity as bigint,
+        limitPriceTicks: limit as bigint,
+        sequence: BigInt(index + 1),
+      }], policy);
+      const intent = nettingExternalExecutionIntent(result, policy, {
+        instrumentId: instrument.instrumentId,
+        validUntilUnit: "SOLANA_SLOT",
+        validUntilValue: 2_000n,
+        sourceFeeCaps: [{ obligationId: result.allocations[0]!.obligationId, maximumFeeQuoteAtoms: 2n }],
+      });
+      store.recordPreparedNettingBatch({
+        policy,
+        result,
+        externalIntents: [intent],
+        packages: [{
+          packageOrderIdHex: maker.orderId as string,
+          strategyOrderHashHex: settlement(maker).strategyOrderHash as string,
+          settlementReadinessHashHex: progress.readinessHashHex,
+        }],
+      });
+      return intent;
+    });
+    const clearingPolicy = {
+      version: 1,
+      policyId: "solana-devnet-cross-batch-v1",
+      domain: instrument.domain,
+      adapter: instrument.adapter,
+      expiryUnit: "SOLANA_SLOT" as const,
+      maximumSourceIntents: 8,
+      maximumSourceBatches: 8,
+      maximumExpirySpread: 10n,
+    };
+    store.claimNettingExternalExecution(intents[0]!.intentHash);
+    store.claimNettingExternalExecution(intents[0]!.intentHash);
+    assert.deepEqual(
+      store.pendingCrossBatchSourceIntents(clearingPolicy).map((intent) => toHex(intent.intentHash)),
+      [intents[1]!, intents[2]!].map((intent) => toHex(intent.intentHash)),
+    );
+    assert.throws(
+      () => store.recordPreparedCrossBatchClearing({
+        policy: clearingPolicy,
+        sourceIntentHashes: [intents[0]!.intentHash, intents[2]!.intentHash],
+      }),
+      { code: "NETTING_INTENT_ALREADY_EXECUTED" },
+    );
+    const pooled = store.recordPreparedCrossBatchClearing({
+      policy: clearingPolicy,
+      sourceIntentHashes: [intents[1]!.intentHash, intents[2]!.intentHash],
+    });
+    assert.equal(pooled.replayed, false);
+    assert.throws(() => store.claimNettingExternalExecution(intents[1]!.intentHash), { code: "NETTING_INTENT_POOLED" });
+  });
+});
+
 test("GTC orders expire with their signed settlement lease", () => {
   withStore((store) => {
     registerAll(store);
