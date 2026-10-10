@@ -19,6 +19,7 @@ The protocol owns the package market rather than presenting a thin router:
 - canonical strategy series make economically equivalent package routes one recognizable market;
 - package books, quote shards, firm inventory reservations, and signed solver quotes price the combined outcome;
 - exact package postconditions measure what the trader receives across all legs, including fees and permitted residual exposure;
+- isolated native package clearing supports signed bilateral matches, exact margin accounting, delayed fee governance, bounded open interest, signed marks, funded recovery reserves, and default auctions for selected standardized series;
 - strategy accounts, delayed registries, nonce protection, and immutable domain references preserve authorization and exit liveness;
 - asynchronous coordinators and bounded recovery state machines make partial execution explicit instead of mislabeling it atomic;
 - evidence-graded lifecycle receipts distinguish submitted, completed, recovered, failed, and unresolved attempts;
@@ -46,7 +47,7 @@ The repository keeps compile-time imports, deployment artifacts, network calls, 
 |---|---|
 | `packages/protocol-types` | Canonical manifests, series, orders, quotes, routes, exact integer arithmetic, hashes, readiness policy, and evidence types. |
 | `contracts/solana` | Anchor programs for core verification, package books, quote shards, inventory reservations, typed Orca spot execution, and typed Rise perpetual execution. |
-| `contracts/evm` | Foundry contracts for atomic strategy accounts, package verification and execution, quote shards, reservations, registries, Uniswap V3 spot execution, and bonded asynchronous GMX lifecycle control. |
+| `contracts/evm` | Foundry contracts for atomic strategy accounts, package verification and execution, quote shards, reservations, registries, Uniswap V3 spot execution, bonded asynchronous GMX lifecycle control, and isolated native package clearing. |
 | `packages/adapter-core` | Chain-neutral adapter compilation, simulation, and evidence interfaces. |
 | `packages/adapters/solana` | Authenticated Solana compilation, unsigned simulation, evidence reads, deployment qualification, and signerless mainnet shadow qualification. |
 | `packages/adapters/evm` | Chain-neutral atomic calldata compilation plus atomic and asynchronous read-only lifecycle observation. |
@@ -92,6 +93,8 @@ Adding another instance of an implemented runtime family is manifest registratio
 | Any mainnet write | No deployment, approval, transfer, bridge, deposit, order, recovery, or signed payload for later broadcast is allowed. | Prohibited until explicit authorization and all readiness gates pass. |
 
 Public program identities are not deployment claims. Published conformance IDLs and ABIs identify local test dependencies, not live venue integrations.
+
+The native clearing path is implemented but inactive. Its canonical control layer binds exact package-book allocations, owner-authorized collateral changes, independently signed sequence-monotonic marks, bounded default auctions, and durable evidence. The EVM clearing house adds token custody, owner-signed bilateral matching, exact margin and fee accounting, open-interest and position caps, pause controls, funded recovery reserves, and auction recovery. It has not been deployed or funded on any public network.
 
 The landing page uses third-party fonts under `apps/web/src/features/landing/fonts` and third-party artwork under `apps/web/public/landing` as local design material. Their licenses are unverified, so they must be verified or replaced with assets Naryx can ship before any public release of `apps/web`. Chain, token, and wallet marks in the landing page and terminal come from the pinned `@web3icons/react` package (MIT-licensed code); the marks themselves are trademarks of their owners, used only to name the networks and assets Naryx operates on, and each owner's brand guidelines should be confirmed before public release.
 
