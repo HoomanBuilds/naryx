@@ -84,3 +84,17 @@ test('drains prepared netting batches until the policy becomes idle', async () =
   await new NettingBatchParticipant({ policies: [policy], preparation }).tick();
   assert.equal(calls, 3);
 });
+
+test('a failing policy does not stop the next policy from preparing', async () => {
+  const second = nettingPolicyManifest({ ...policy, maximumObligations: 9 });
+  const prepared: number[] = [];
+  const preparation: NettingBatchPreparationPort = {
+    async prepareNext(input) {
+      prepared.push(input.maximumObligations);
+      if (input.maximumObligations === 8) throw new Error('first policy failed');
+      return { status: 'IDLE' };
+    },
+  };
+  await assert.rejects(new NettingBatchParticipant({ policies: [policy, second], preparation }).tick(), /first policy failed/);
+  assert.deepEqual(prepared, [8, 9]);
+});

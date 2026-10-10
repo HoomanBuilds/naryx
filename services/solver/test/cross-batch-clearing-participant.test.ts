@@ -8,7 +8,9 @@ import {
 } from '@naryx/protocol-types';
 import {
   CrossBatchClearingParticipant,
+  CrossBatchClearingParticipantError,
   HttpCrossBatchClearingControlClient,
+  type CrossBatchClearingControlPort,
 } from '../src/cross-batch-clearing-participant.js';
 
 const id = (value: number): string => value.toString(16).padStart(64, '0');
@@ -70,4 +72,39 @@ test('prepares and executes authoritative cross-batch clearing through loopback 
     `/internal/netting/cross-batch/${planHash}/execute`,
     '/internal/netting/cross-batch/prepare-next',
   ]);
+});
+
+test('an execution with an unknown outcome is not re-fired until its hold passes, and other policies still clear', async () => {
+  const { policyHash: _policyHash, ...fields } = policy;
+  const other = crossBatchClearingPolicy({ ...fields, policyId: 'hypercore-testnet-cross-batch-v2' });
+  const planHash = id(3);
+  const prepared: string[] = [];
+  const executed: string[] = [];
+  let now = 1_000;
+  const controls: CrossBatchClearingControlPort = {
+    async prepareNext(input) {
+      prepared.push(input.policyId);
+      return input.policyId === policy.policyId
+        ? {
+            status: 'PREPARED', planHashHex: planHash, policyHashHex: Buffer.from(policy.policyHash).toString('hex'),
+            sourceIntentHashes: [id(4), id(5)], clearingStatus: 'PENDING', executionRequired: true, replayed: false,
+          }
+        : { status: 'IDLE' };
+    },
+    async execute(hash) {
+      executed.push(hash);
+      throw new CrossBatchClearingParticipantError('UNAVAILABLE', 'cross-batch API request failed');
+    },
+  };
+  const participant = new CrossBatchClearingParticipant({ policies: [policy, other], controls, now: () => now });
+  await assert.rejects(participant.tick(), /request failed/);
+  assert.deepEqual(prepared, [policy.policyId, other.policyId]);
+  assert.equal(executed.length, 1);
+
+  now += 119_999;
+  await participant.tick();
+  assert.equal(executed.length, 1);
+  now += 1;
+  await assert.rejects(participant.tick(), /request failed/);
+  assert.equal(executed.length, 2);
 });

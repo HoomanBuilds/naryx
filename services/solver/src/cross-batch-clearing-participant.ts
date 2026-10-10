@@ -13,6 +13,10 @@ import {
 const HASH = /^[0-9a-f]{64}$/;
 const MAX_CONFIG_BYTES = 1_048_576;
 const MAX_RESPONSE_BYTES = 1_048_576;
+const PREPARE_TIMEOUT_MS = 5_000;
+// The API answers an execution only after its venue calls settle, which on Hyperliquid can take
+// well over the preparation timeout.
+const EXECUTE_TIMEOUT_MS = 120_000;
 
 export type CrossBatchClearingPreparationResult =
   | Readonly<{ status: 'IDLE' }>
@@ -85,7 +89,7 @@ export class HttpCrossBatchClearingControlClient implements CrossBatchClearingCo
     this.#fetch = fetchImplementation;
   }
 
-  async #post(path: string, input: unknown): Promise<Record<string, unknown>> {
+  async #post(path: string, input: unknown, timeoutMs: number): Promise<Record<string, unknown>> {
     let response: Response;
     try {
       response = await this.#fetch(`${this.#origin}${path}`, {
@@ -93,7 +97,7 @@ export class HttpCrossBatchClearingControlClient implements CrossBatchClearingCo
         redirect: 'error',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
         body: JSON.stringify(toProtocolJson(input)),
-        signal: AbortSignal.timeout(5_000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch {
       throw new CrossBatchClearingParticipantError('UNAVAILABLE', 'cross-batch API request failed');
@@ -111,7 +115,7 @@ export class HttpCrossBatchClearingControlClient implements CrossBatchClearingCo
 
   async prepareNext(policyInput: CrossBatchClearingPolicy): Promise<CrossBatchClearingPreparationResult> {
     const policy = crossBatchClearingPolicy(policyInput);
-    const body = await this.#post('/internal/netting/cross-batch/prepare-next', { policy });
+    const body = await this.#post('/internal/netting/cross-batch/prepare-next', { policy }, PREPARE_TIMEOUT_MS);
     if (body.version !== 1 || (body.status !== 'IDLE' && body.status !== 'PREPARED')) {
       throw new CrossBatchClearingParticipantError('INVALID_RESPONSE', 'cross-batch preparation response is malformed');
     }
@@ -144,7 +148,7 @@ export class HttpCrossBatchClearingControlClient implements CrossBatchClearingCo
     if (!HASH.test(planHashHex)) {
       throw new CrossBatchClearingParticipantError('INVALID_PLAN', 'cross-batch plan hash is invalid');
     }
-    const body = await this.#post(`/internal/netting/cross-batch/${planHashHex}/execute`, {});
+    const body = await this.#post(`/internal/netting/cross-batch/${planHashHex}/execute`, {}, EXECUTE_TIMEOUT_MS);
     if (body.version !== 1) {
       throw new CrossBatchClearingParticipantError('INVALID_RESPONSE', 'cross-batch execution response is malformed');
     }
@@ -182,30 +186,64 @@ export function loadCrossBatchClearingPolicies(paths: readonly string[]): readon
 export class CrossBatchClearingParticipant {
   readonly #policies: readonly CrossBatchClearingPolicy[];
   readonly #controls: CrossBatchClearingControlPort;
+  readonly #now: () => number;
+  /**
+   * Plans whose execution request failed in transport or timed out. The API keeps executing such a
+   * plan without deduplication, so it is not re-executed until this time.
+   */
+  readonly #unsettled = new Map<string, number>();
   #running = false;
 
   constructor(input: Readonly<{
     policies: readonly CrossBatchClearingPolicy[];
     controls: CrossBatchClearingControlPort;
+    now?: () => number;
   }>) {
     if (input.policies.length === 0) throw new Error('cross-batch participant requires at least one policy');
     this.#policies = Object.freeze(input.policies.map((policy) => crossBatchClearingPolicy(policy)));
     this.#controls = input.controls;
+    this.#now = input.now ?? Date.now;
   }
 
   async tick(): Promise<void> {
     if (this.#running) return;
     this.#running = true;
+    const errors: unknown[] = [];
     try {
       for (const policy of this.#policies) {
-        for (let plan = 0; plan < 10; plan += 1) {
-          const prepared = await this.#controls.prepareNext(policy);
-          if (prepared.status === 'IDLE') break;
-          if (prepared.executionRequired) await this.#controls.execute(prepared.planHashHex);
+        try {
+          await this.#clear(policy);
+        } catch (error) {
+          errors.push(error);
         }
       }
     } finally {
       this.#running = false;
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, 'cross-batch clearing failed for several policies');
+  }
+
+  async #clear(policy: CrossBatchClearingPolicy): Promise<void> {
+    for (let plan = 0; plan < 10; plan += 1) {
+      const prepared = await this.#controls.prepareNext(policy);
+      if (prepared.status === 'IDLE') break;
+      if (!prepared.executionRequired) continue;
+      const hash = prepared.planHashHex;
+      const until = this.#unsettled.get(hash);
+      // Preparation returns the same pending plan until it settles, so nothing behind it can clear.
+      if (until !== undefined && this.#now() < until) break;
+      try {
+        await this.#controls.execute(hash);
+        this.#unsettled.delete(hash);
+      } catch (error) {
+        if (error instanceof CrossBatchClearingParticipantError && error.code === 'UNAVAILABLE') {
+          this.#unsettled.set(hash, this.#now() + EXECUTE_TIMEOUT_MS);
+        } else {
+          this.#unsettled.delete(hash);
+        }
+        throw error;
+      }
     }
   }
 

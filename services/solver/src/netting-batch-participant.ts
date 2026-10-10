@@ -167,15 +167,22 @@ export class NettingBatchParticipant {
   async tick(): Promise<void> {
     if (this.#running) return;
     this.#running = true;
+    const errors: unknown[] = [];
     try {
       for (const policy of this.#policies) {
-        for (let batch = 0; batch < 10; batch += 1) {
-          if ((await this.#preparation.prepareNext(policy)).status === 'IDLE') break;
+        try {
+          for (let batch = 0; batch < 10; batch += 1) {
+            if ((await this.#preparation.prepareNext(policy)).status === 'IDLE') break;
+          }
+        } catch (error) {
+          errors.push(error);
         }
       }
     } finally {
       this.#running = false;
     }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, 'netting batch preparation failed for several policies');
   }
 
   start(intervalMs: number, onError: (error: unknown) => void): () => void {
