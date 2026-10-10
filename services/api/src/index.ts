@@ -14,6 +14,12 @@ export {
   type DerivedAdvancedOrder,
 } from "./advanced-order-factory.js";
 export {
+  MetricObservationStoreError,
+  SqliteMetricObservationStore,
+  type MetricObservationSource,
+} from "./metric-observation-store.js";
+export { createMetricObservationAdminHandler } from "./metric-observation-admin.js";
+export {
   createMakerOperationsHandler,
   makerOperationsSnapshot,
   MAKER_OPERATIONS_PATH,
