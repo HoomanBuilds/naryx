@@ -731,6 +731,10 @@ export {
   type NativeClearingEvent,
 } from './native-clearing-store.js';
 export {
+  verifyNativeClearingControlSignature,
+  type NativeClearingControlSignature,
+} from './native-clearing-authorization.js';
+export {
   NettingAllocationObservationRouter,
   NettingAllocationSettlementCoordinator,
   type NettingAllocationObservationPort,
