@@ -3,7 +3,12 @@
 import Link from "next/link";
 import { Fragment, useEffect, useState } from "react";
 import bs58 from "bs58";
-import { NaryxClient, type DerivedAdvancedOrderView, type VerifiedPreparedNettingBatch } from "@naryx/sdk";
+import {
+  NaryxClient,
+  type DerivedAdvancedOrderView,
+  type PreparedAdvancedOrderAttemptView,
+  type VerifiedPreparedNettingBatch,
+} from "@naryx/sdk";
 import {
   NARYX_RFQ_HPKE_SUITE_ID,
   decodePrivateRfqQuoteResponse,
@@ -2646,6 +2651,7 @@ export function GeneralizedStrategyPreparationPanel({
         : evmLane && EVM_STRATEGY_TEMPLATES.has(templateId);
   const [orderHash, setOrderHashValue] = useState("");
   const [advancedOrder, setAdvancedOrder] = useState<DerivedAdvancedOrderView | null>(null);
+  const [preparedAdvancedAttempt, setPreparedAdvancedAttempt] = useState<PreparedAdvancedOrderAttemptView | null>(null);
   const [staged, setStaged] = useState<StagedStrategyOrder | null>(null);
   const [packageSide, setPackageSide] = useState<"BID" | "ASK">("BID");
   const [packageLimitTicks, setPackageLimitTicks] = useState("");
@@ -2809,6 +2815,7 @@ export function GeneralizedStrategyPreparationPanel({
   function setOrderHash(value: string) {
     setOrderHashValue(value);
     setAdvancedOrder(null);
+    setPreparedAdvancedAttempt(null);
     setManagedPackageOrder(null);
     setPackageSubmission(null);
     setSettlementReadiness(null);
@@ -5961,6 +5968,17 @@ export function GeneralizedStrategyPreparationPanel({
               setOrderHash(derived.orderHash);
               setPrivateRfqOrderContext(context);
               setAdvancedOrder(derived);
+              setPreparedAdvancedAttempt(null);
+            }}
+            onPrepared={(prepared) => {
+              setOrderHashValue(prepared.orderHash);
+              setPreparedAdvancedAttempt(prepared);
+              setPackageSide(prepared.packageBookRequest.side);
+              setPackageLimitTicks(prepared.packageBookRequest.limitPriceTicks.toString());
+              setManagedPackageOrder(null);
+              setPackageSubmission(null);
+              setSettlementReadiness(null);
+              setError(null);
             }}
             onReset={(sourceHash) => {
               const context = privateRfqOrderContext;
@@ -6031,7 +6049,7 @@ export function GeneralizedStrategyPreparationPanel({
         <button
           type="button"
           className={styles.primaryAction}
-          disabled={advancedOrder !== null || publicApiBaseUrl === null || packageSubmitBusy || packageRefreshBusy || !HASH.test(orderHash)
+          disabled={(advancedOrder !== null && preparedAdvancedAttempt === null) || publicApiBaseUrl === null || packageSubmitBusy || packageRefreshBusy || !HASH.test(orderHash)
             || !SIGNED_TICKS.test(packageLimitTicks)}
           onClick={() => void submitNativePackageOrder()}
         >

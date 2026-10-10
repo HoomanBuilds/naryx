@@ -7,6 +7,7 @@ import {
   type DerivedAdvancedOrderView,
   type ExecutionScheduleInput,
   type OrderActivationView,
+  type PreparedAdvancedOrderAttemptView,
 } from "@naryx/sdk";
 import { getSolanaDevnetSlot } from "./solana-devnet-onboarding";
 import type { DomainId } from "./terminal-view-model";
@@ -36,6 +37,7 @@ export function AdvancedOrderControls({
   expiryValue,
   derivedOrder,
   onDerived,
+  onPrepared,
   onReset,
 }: Readonly<{
   publicApiBaseUrl: string | null;
@@ -45,6 +47,7 @@ export function AdvancedOrderControls({
   expiryValue: string | null;
   derivedOrder: DerivedAdvancedOrderView | null;
   onDerived: (order: DerivedAdvancedOrderView) => void;
+  onPrepared: (attempt: PreparedAdvancedOrderAttemptView) => void;
   onReset: (sourceOrderHash: string) => void;
 }>) {
   const [mode, setMode] = useState<AdvancedMode>("IMMEDIATE");
@@ -61,6 +64,7 @@ export function AdvancedOrderControls({
   const [stopRule, setStopRule] = useState<ExecutionScheduleInput["stopRule"]>("STOP_ON_FIRST_FAILURE");
   const [activation, setActivation] = useState<OrderActivationView | null>(derivedOrder?.activation ?? null);
   const [busy, setBusy] = useState(false);
+  const [prepared, setPrepared] = useState<PreparedAdvancedOrderAttemptView | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -136,7 +140,25 @@ export function AdvancedOrderControls({
     }
   }
 
+  async function prepareReservedAttempt(attemptId: string) {
+    if (publicApiBaseUrl === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const atSlot = executionDomain === "solana" ? BigInt(await getSolanaDevnetSlot()) : undefined;
+      const result = await new NaryxClient({ baseUrl: publicApiBaseUrl })
+        .prepareOrderActivationAttempt(attemptId, atSlot);
+      setPrepared(result);
+      onPrepared(result);
+    } catch (cause) {
+      setError(friendlyError(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (derivedOrder !== null && activation !== null) {
+    const reservedAttempt = activation.attempts.find((attempt) => attempt.status === "RESERVED");
     return (
       <div className={styles.strategyDomainReview}>
         <div className={styles.evidenceHeading}>
@@ -149,12 +171,24 @@ export function AdvancedOrderControls({
           <span>Completed attempts</span><strong>{activation.progress.attemptedSlices}</strong>
           <span>Failed attempts</span><strong>{activation.progress.failedSlices}</strong>
           <span>Advanced order</span><strong title={derivedOrder.orderHash}>{derivedOrder.orderHash.slice(0, 10)}...{derivedOrder.orderHash.slice(-8)}</strong>
+          {prepared === null ? null : <><span>Executable child</span><strong title={prepared.orderHash}>{prepared.orderHash.slice(0, 10)}...{prepared.orderHash.slice(-8)}</strong></>}
         </div>
         <p className={styles.fieldContext} role="status">
-          The activation runtime accepts authoritative observations and creates at most one reserved child attempt. Direct manual routing is disabled for this parent order.
+          The activation runtime accepts authoritative observations and creates at most one reserved child attempt. The exact child still requires the normal owner package-book authorization.
         </p>
+        {reservedAttempt === undefined ? null : (
+          <button
+            type="button"
+            className={styles.primaryAction}
+            disabled={busy}
+            onClick={() => void prepareReservedAttempt(reservedAttempt.attemptId)}
+          >
+            {busy ? "Preparing executable slice" : reservedAttempt.childOrderHashHex === undefined ? "Prepare executable slice" : "Load executable slice"}
+          </button>
+        )}
         <button type="button" className={styles.secondaryAction} disabled={busy} onClick={() => {
           setActivation(null);
+          setPrepared(null);
           setMode("IMMEDIATE");
           setError(null);
           onReset(derivedOrder.sourceOrderHash);
