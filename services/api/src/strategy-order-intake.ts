@@ -1,4 +1,5 @@
 import {
+  compareProtocolIds,
   bytesEqual,
   packageGraph,
   strategyPackageOrderHash,
@@ -95,7 +96,7 @@ function requireStrategyMarket(exchange: Exchange, input: PackageGraphInput) {
   const domains = graph.legs.reduce<DomainRef[]>((values, leg) => {
     if (!values.some((domain) => sameDomain(domain, leg.domain))) values.push(leg.domain);
     return values;
-  }, []).sort((left, right) => left.domainId.localeCompare(right.domainId));
+  }, []).sort((left, right) => compareProtocolIds(left.domainId, right.domainId));
   if (domains.length !== executionClass.document.domains.length
     || domains.some((domain, index) => {
       const expected = executionClass.document.domains[index];

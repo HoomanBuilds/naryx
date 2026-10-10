@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import bs58 from "bs58";
 import {
+  compareProtocolIds,
   admitPrivateRfqEnvelope,
   aggregateCandles,
   CANDLE_INTERVAL_MS,
@@ -650,7 +651,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         && domain.domainManifestVersion === leg.domain.domainManifestVersion
         && bytesEqual(domain.domainManifestHash, leg.domain.domainManifestHash))) domains.push(leg.domain);
       return domains;
-    }, []).sort((left, right) => left.domainId.localeCompare(right.domainId));
+    }, []).sort((left, right) => compareProtocolIds(left.domainId, right.domainId));
     if (
       graphDomains.length !== executionClass.document.domains.length
       || graphDomains.some((domain, index) => {
