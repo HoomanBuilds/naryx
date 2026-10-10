@@ -725,6 +725,12 @@ export {
   type CrossBatchClearingAdminOptions,
 } from "./cross-batch-clearing-admin.js";
 export {
+  SqliteNativeClearingStore,
+  NativeClearingStoreError,
+  type NativeClearingEventKind,
+  type NativeClearingEvent,
+} from './native-clearing-store.js';
+export {
   NettingAllocationObservationRouter,
   NettingAllocationSettlementCoordinator,
   type NettingAllocationObservationPort,
