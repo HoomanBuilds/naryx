@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Fragment, useEffect, useState } from "react";
 import bs58 from "bs58";
-import { NaryxClient, type VerifiedPreparedNettingBatch } from "@naryx/sdk";
+import { NaryxClient, type DerivedAdvancedOrderView, type VerifiedPreparedNettingBatch } from "@naryx/sdk";
 import {
   NARYX_RFQ_HPKE_SUITE_ID,
   decodePrivateRfqQuoteResponse,
@@ -28,6 +28,7 @@ import {
 import { packageOrdersOf, usePackageOrderIndex } from "./shell/package-order-index";
 import type { DomainId } from "./terminal-view-model";
 import styles from "./trading-terminal.module.css";
+import { AdvancedOrderControls } from "./advanced-order-controls";
 
 const HASH = /^[0-9a-f]{64}$/;
 const OWNER = /^0x(?!0{40}$)[0-9a-f]{40}$/;
@@ -2644,6 +2645,7 @@ export function GeneralizedStrategyPreparationPanel({
           && (lifecycleAction === "ENTRY" || lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND")
         : evmLane && EVM_STRATEGY_TEMPLATES.has(templateId);
   const [orderHash, setOrderHashValue] = useState("");
+  const [advancedOrder, setAdvancedOrder] = useState<DerivedAdvancedOrderView | null>(null);
   const [staged, setStaged] = useState<StagedStrategyOrder | null>(null);
   const [packageSide, setPackageSide] = useState<"BID" | "ASK">("BID");
   const [packageLimitTicks, setPackageLimitTicks] = useState("");
@@ -2806,6 +2808,7 @@ export function GeneralizedStrategyPreparationPanel({
 
   function setOrderHash(value: string) {
     setOrderHashValue(value);
+    setAdvancedOrder(null);
     setManagedPackageOrder(null);
     setPackageSubmission(null);
     setSettlementReadiness(null);
@@ -5945,6 +5948,27 @@ export function GeneralizedStrategyPreparationPanel({
             setError(null);
           }}
         />
+        {HASH.test(orderHash) ? (
+          <AdvancedOrderControls
+            publicApiBaseUrl={publicApiBaseUrl}
+            executionDomain={executionDomain}
+            sourceOrderHash={advancedOrder?.sourceOrderHash ?? orderHash}
+            expiryUnit={privateRfqOrderContext?.expiryUnit ?? null}
+            expiryValue={privateRfqOrderContext?.expiryValue ?? null}
+            derivedOrder={advancedOrder}
+            onDerived={(derived) => {
+              const context = privateRfqOrderContext;
+              setOrderHash(derived.orderHash);
+              setPrivateRfqOrderContext(context);
+              setAdvancedOrder(derived);
+            }}
+            onReset={(sourceHash) => {
+              const context = privateRfqOrderContext;
+              setOrderHash(sourceHash);
+              setPrivateRfqOrderContext(context);
+            }}
+          />
+        ) : null}
         {recentPackageOrders.length > 0 ? (
           <>
             <label htmlFor="recent-native-package-order">Recent package order</label>
@@ -6007,7 +6031,7 @@ export function GeneralizedStrategyPreparationPanel({
         <button
           type="button"
           className={styles.primaryAction}
-          disabled={publicApiBaseUrl === null || packageSubmitBusy || packageRefreshBusy || !HASH.test(orderHash)
+          disabled={advancedOrder !== null || publicApiBaseUrl === null || packageSubmitBusy || packageRefreshBusy || !HASH.test(orderHash)
             || !SIGNED_TICKS.test(packageLimitTicks)}
           onClick={() => void submitNativePackageOrder()}
         >
@@ -6094,7 +6118,7 @@ export function GeneralizedStrategyPreparationPanel({
           <button
             type="button"
             className={styles.primaryAction}
-            disabled={publicApiBaseUrl === null || quoteBusyMode !== null}
+            disabled={advancedOrder !== null || publicApiBaseUrl === null || quoteBusyMode !== null}
             onClick={() => void requestQuote(true)}
           >
             {quoteBusyMode === "SETTLEMENT" ? "Requesting post-match route quote" : "Request solver route after full match"}
@@ -6103,7 +6127,7 @@ export function GeneralizedStrategyPreparationPanel({
         <button
           type="button"
           className={styles.secondaryAction}
-          disabled={publicApiBaseUrl === null || quoteBusyMode !== null || !HASH.test(orderHash)}
+          disabled={advancedOrder !== null || publicApiBaseUrl === null || quoteBusyMode !== null || !HASH.test(orderHash)}
           onClick={() => void requestQuote(false)}
         >
           {quoteBusyMode === "DIRECT" ? "Requesting direct solver quote" : "Request direct solver quote"}
@@ -6129,7 +6153,7 @@ export function GeneralizedStrategyPreparationPanel({
             <button
               type="button"
               className={styles.primaryAction}
-              disabled={publicApiBaseUrl === null || privateRfqBusy !== null || !HASH.test(orderHash)
+              disabled={advancedOrder !== null || publicApiBaseUrl === null || privateRfqBusy !== null || !HASH.test(orderHash)
                 || selectedPrivateRfqSolverId === ""
                 || (privateRfqSession !== null && !privateRfqSession.accepted)}
               onClick={() => void requestPrivateRfq()}
@@ -6169,7 +6193,7 @@ export function GeneralizedStrategyPreparationPanel({
             <button
               type="button"
               className={styles.primaryAction}
-              disabled={publicApiBaseUrl === null || sealedAuctionBusy || !HASH.test(orderHash)
+              disabled={advancedOrder !== null || publicApiBaseUrl === null || sealedAuctionBusy || !HASH.test(orderHash)
                 || selectedAuctionSolverIds.length === 0
                 || (sealedAuction !== null && sealedAuction.phase !== "CLOSED")}
               onClick={() => void createSealedAuction()}
