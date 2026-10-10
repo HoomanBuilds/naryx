@@ -100,6 +100,21 @@ function plan(overrides = {}) {
       spotBaseAtomsPerPackageUnit: "1000000",
       perpQuantityAtomsPerPackageUnit: "1000000",
     },
+    riskDomain: {
+      riskDomainId: "99".repeat(32),
+      policyVersion: 1,
+      policyManifestHash: "aa".repeat(32),
+      grossCapQuoteAtoms: "100000000000",
+      netCapQuoteAtoms: "100000000000",
+      minimumMarginFloorQuoteAtoms: "1000000",
+      maximumLeverageBps: "10000",
+      maximumStalenessMs: "300000",
+      maximumTimeToUnwindMs: "3600000",
+      requiredRecoveryReserveQuoteAtoms: "1000000",
+      aggregateHaircutBps: 100,
+      executionObservationAgeMs: "0",
+      executionTimeToUnwindMs: "60000",
+    },
     insuranceVaultTargetAtoms: "1000000000",
     ...overrides,
   };
@@ -133,6 +148,8 @@ test("plan, layout, fragments, and lookup table agree and fail closed on drift",
   const fragments = serviceFragments(parsed, programs, layout, release);
   assert.equal(fragments.solverConfig.accounts.reservationClass, layout.reservationClass.toBase58());
   assert.equal(fragments.solverConfig.resources.spotVenue.subjectAddress, layout.reservationClass.toBase58());
+  assert.equal(fragments.solverConfig.accounts.riskDomainRecord, layout.riskDomainRecord.toBase58());
+  assert.equal(fragments.solverConfig.riskDomain.policyVersion, 1);
   assert.equal(fragments.solverConfig.resources.spotAdapter.adapterClassId, "naryx.solana.spot-firm-reservation");
   assert.equal(fragments.orderContext.spotAdapter.adapterManifestHash.value, layout.identities.spotAdapter.manifestHash.toString("hex"));
   assert.equal(new Set(Object.values(layout.records).map((key) => key.toBase58())).size, 8);
@@ -143,6 +160,7 @@ test("plan, layout, fragments, and lookup table agree and fail closed on drift",
       feeVault: layout.feeVault, insuranceVault: layout.insuranceVault, reservationClass: layout.reservationClass,
       packageBookClass: layout.packageBookClass, packageBookShard: layout.shard, packageBookLevelPage: layout.levelPage,
       seriesIndex: layout.seriesIndex, seriesRecord: layout.seriesRecord, solverQuote: layout.solverQuote,
+      riskDomainIndex: layout.riskDomainIndex, riskDomainRecord: layout.riskDomainRecord,
     }).map(([name, key]) => [name, key.toBase58()])),
     indexes: Object.fromEntries(Object.entries(layout.indexes).map(([name, key]) => [name, key.toBase58()])),
     records: Object.fromEntries(Object.entries(layout.records).map(([name, key]) => [name, key.toBase58()])),
@@ -150,6 +168,7 @@ test("plan, layout, fragments, and lookup table agree and fail closed on drift",
   const fixed = fixedFirmAccounts(record);
   assert.equal(new Set(fixed).size, fixed.length);
   assert.ok(fixed.includes(layout.seriesRecord.toBase58()));
+  assert.ok(fixed.includes(layout.riskDomainRecord.toBase58()));
   assert.deepEqual(missingAddresses(fixed.slice(0, 5), fixed), fixed.slice(5));
   assert.throws(() => missingAddresses([web3.Keypair.generate().publicKey.toBase58()], fixed), /unexpected address/);
 });

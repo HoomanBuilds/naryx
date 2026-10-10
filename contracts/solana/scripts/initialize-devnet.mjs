@@ -139,6 +139,7 @@ export function parsePlan(value) {
   const units = record(plan.spotMarketUnits, "plan.spotMarketUnits");
   const descriptors = record(plan.descriptors, "plan.descriptors");
   const series = record(plan.series, "plan.series");
+  const risk = record(plan.riskDomain, "plan.riskDomain");
   const subjects = { ...DEFAULT_SUBJECTS, ...(plan.protocolSubjectIds ?? {}) };
   for (const [name, subject] of Object.entries(subjects)) protocolSubject(subject, `plan.protocolSubjectIds.${name}`);
   if (new Set(Object.values(subjects)).size !== Object.keys(subjects).length) throw new Error("plan protocol subject ids must be distinct");
@@ -191,12 +192,36 @@ export function parsePlan(value) {
       spotBaseAtomsPerPackageUnit: positiveInteger(String(series.spotBaseAtomsPerPackageUnit), "plan.series.spotBaseAtomsPerPackageUnit", 2n ** 127n),
       perpQuantityAtomsPerPackageUnit: positiveInteger(String(series.perpQuantityAtomsPerPackageUnit), "plan.series.perpQuantityAtomsPerPackageUnit", 2n ** 127n),
     },
+    riskDomain: {
+      riskDomainId: hex32(risk.riskDomainId, "plan.riskDomain.riskDomainId"),
+      policyVersion: Number(positiveInteger(String(risk.policyVersion), "plan.riskDomain.policyVersion", 0xffffffffn)),
+      policyManifestHash: hex32(risk.policyManifestHash, "plan.riskDomain.policyManifestHash"),
+      grossCapQuoteAtoms: positiveInteger(String(risk.grossCapQuoteAtoms), "plan.riskDomain.grossCapQuoteAtoms", 2n ** 127n),
+      netCapQuoteAtoms: positiveInteger(String(risk.netCapQuoteAtoms), "plan.riskDomain.netCapQuoteAtoms", 2n ** 127n),
+      minimumMarginFloorQuoteAtoms: positiveInteger(String(risk.minimumMarginFloorQuoteAtoms), "plan.riskDomain.minimumMarginFloorQuoteAtoms", 2n ** 127n),
+      maximumLeverageBps: positiveInteger(String(risk.maximumLeverageBps), "plan.riskDomain.maximumLeverageBps", 1_000_000n),
+      maximumStalenessMs: positiveInteger(String(risk.maximumStalenessMs), "plan.riskDomain.maximumStalenessMs"),
+      maximumTimeToUnwindMs: positiveInteger(String(risk.maximumTimeToUnwindMs), "plan.riskDomain.maximumTimeToUnwindMs"),
+      requiredRecoveryReserveQuoteAtoms: positiveInteger(String(risk.requiredRecoveryReserveQuoteAtoms), "plan.riskDomain.requiredRecoveryReserveQuoteAtoms", 2n ** 127n),
+      aggregateHaircutBps: smallInteger(risk.aggregateHaircutBps, "plan.riskDomain.aggregateHaircutBps", 10_000),
+      executionObservationAgeMs: BigInt(risk.executionObservationAgeMs ?? 0),
+      executionTimeToUnwindMs: positiveInteger(String(risk.executionTimeToUnwindMs), "plan.riskDomain.executionTimeToUnwindMs"),
+    },
     subjects,
     insuranceVaultTargetAtoms: BigInt(plan.insuranceVaultTargetAtoms ?? 0),
     feeVaultTargetAtoms: BigInt(plan.feeVaultTargetAtoms ?? 0),
   };
   if (parsed.packageBookClass.maxLevelTtlSlots > parsed.packageBookClass.maxHeartbeatTtlSlots) throw new Error("plan level TTL must not exceed heartbeat TTL");
   if (parsed.reservationClass.maxSolverReservedBaseAtoms < parsed.reservationClass.maxBaseAtoms) throw new Error("plan solver reservation cap must cover one reservation");
+  if (parsed.riskDomain.netCapQuoteAtoms > parsed.riskDomain.grossCapQuoteAtoms
+    || parsed.riskDomain.minimumMarginFloorQuoteAtoms > parsed.riskDomain.grossCapQuoteAtoms
+    || parsed.riskDomain.requiredRecoveryReserveQuoteAtoms > parsed.riskDomain.grossCapQuoteAtoms
+    || parsed.maximumNotionalAtoms > parsed.riskDomain.grossCapQuoteAtoms
+    || parsed.riskDomain.executionObservationAgeMs < 0n
+    || parsed.riskDomain.executionObservationAgeMs > parsed.riskDomain.maximumStalenessMs
+    || parsed.riskDomain.executionTimeToUnwindMs > parsed.riskDomain.maximumTimeToUnwindMs) {
+    throw new Error("plan risk domain limits are inconsistent");
+  }
   for (const [name, amount] of [["insuranceVaultTargetAtoms", parsed.insuranceVaultTargetAtoms], ["feeVaultTargetAtoms", parsed.feeVaultTargetAtoms]]) {
     if (amount < 0n || amount > MAX_FUNDING_ATOMS) throw new Error(`plan.${name} must be from 0 to ${MAX_FUNDING_ATOMS} atoms`);
   }
@@ -304,6 +329,34 @@ export function deriveDevnetLayout(plan, programs, keys) {
   const seriesHashes = seriesBindingHashes(binding);
   const seriesIndex = pda([Buffer.from("cash-carry-series-index"), seriesHashes.identityKey], core);
   const seriesRecord = pda([Buffer.from("cash-carry-series-record"), seriesHashes.identityKey, u32be(binding.bindingVersion)], core);
+  const riskDomainIndex = pda([Buffer.from("risk-domain-index"), plan.riskDomain.riskDomainId], core);
+  const riskDomainRecord = pda([
+    Buffer.from("risk-domain-record"), plan.riskDomain.riskDomainId, u32be(plan.riskDomain.policyVersion),
+  ], core);
+  const dependencyLimits = [identities.spotAdapter.subjectId, identities.perpAdapter.subjectId]
+    .sort(Buffer.compare)
+    .map((dependencyId) => ({ dependencyId, maximumGrossQuoteAtoms: plan.riskDomain.grossCapQuoteAtoms }));
+  const riskDomainPolicy = {
+    schemaVersion: 1,
+    manifestVersion: plan.riskDomain.policyVersion,
+    manifestHash: plan.riskDomain.policyManifestHash,
+    domainRefIdentityHash: domainIdentity,
+    accountingAsset: identities.quoteAsset,
+    grossCapQuoteAtoms: plan.riskDomain.grossCapQuoteAtoms,
+    netCapQuoteAtoms: plan.riskDomain.netCapQuoteAtoms,
+    minimumMarginFloorQuoteAtoms: plan.riskDomain.minimumMarginFloorQuoteAtoms,
+    maximumLeverageBps: plan.riskDomain.maximumLeverageBps,
+    maximumStalenessMs: plan.riskDomain.maximumStalenessMs,
+    maximumTimeToUnwindMs: plan.riskDomain.maximumTimeToUnwindMs,
+    requiredRecoveryReserveQuoteAtoms: plan.riskDomain.requiredRecoveryReserveQuoteAtoms,
+    aggregateHaircutBps: plan.riskDomain.aggregateHaircutBps,
+    eligibleSeries: [{
+      seriesId: seriesHashes.identityKey,
+      manifestVersion: binding.bindingVersion,
+      manifestHash: binding.seriesManifestHash,
+    }],
+    dependencyLimits,
+  };
   return Object.freeze({
     domainIdentity,
     config,
@@ -330,6 +383,9 @@ export function deriveDevnetLayout(plan, programs, keys) {
     seriesHashes,
     seriesIndex,
     seriesRecord,
+    riskDomainIndex,
+    riskDomainRecord,
+    riskDomainPolicy,
     solverBase: associatedTokenAddress(plan.solverId, plan.base.mint),
     solverQuote: associatedTokenAddress(plan.solverId, plan.quote.mint),
     resourceAdmissionCommitment: resourceAdmissionCommitment({
@@ -385,6 +441,8 @@ export function serviceFragments(plan, programs, layout, release) {
         reservationClass: layout.reservationClass,
         seriesIndex: layout.seriesIndex,
         seriesRecord: layout.seriesRecord,
+        riskDomainIndex: layout.riskDomainIndex,
+        riskDomainRecord: layout.riskDomainRecord,
         packageBookClass: layout.packageBookClass,
         packageBookShard: layout.shard,
         packageBookLevelPage: layout.levelPage,
@@ -408,6 +466,16 @@ export function serviceFragments(plan, programs, layout, release) {
         settlementClassIdentityHash: layout.binding.settlementClassIdentityHash,
         spotBaseAtomsPerPackageUnit: plan.series.spotBaseAtomsPerPackageUnit,
         perpQuantityAtomsPerPackageUnit: plan.series.perpQuantityAtomsPerPackageUnit,
+      },
+      riskDomain: {
+        riskDomainId: plan.riskDomain.riskDomainId,
+        policyVersion: plan.riskDomain.policyVersion,
+        policyManifestHash: plan.riskDomain.policyManifestHash,
+        minimumMarginFloorQuoteAtoms: plan.riskDomain.minimumMarginFloorQuoteAtoms,
+        maximumLeverageBps: plan.riskDomain.maximumLeverageBps,
+        requiredRecoveryReserveQuoteAtoms: plan.riskDomain.requiredRecoveryReserveQuoteAtoms,
+        observationAgeMs: plan.riskDomain.executionObservationAgeMs,
+        timeToUnwindMs: plan.riskDomain.executionTimeToUnwindMs,
       },
       resourceAdmissionCommitment: layout.resourceAdmissionCommitment,
     },
@@ -846,7 +914,63 @@ async function main() {
     signers: [executor],
   }));
 
-  // 8. The solver's package book shard, signed by the solver key.
+  // 8. Isolated cash-and-carry risk domain for this reviewed series and its two dependencies.
+  const riskDomainIndex = async () => {
+    const info = owned(await fetchAccount(layout.riskDomainIndex), programs.core.programId, "risk domain index");
+    return info === null ? undefined : decode(core, "riskDomainIndex", info);
+  };
+  await run("propose.risk_domain", ["activate.series", "activate.spotAdapter", "activate.perpAdapter"], async () => {
+    const index = await riskDomainIndex();
+    if (index === undefined) return {};
+    if (index.activeRecord.equals(layout.riskDomainRecord) || index.pendingRecord.equals(layout.riskDomainRecord)) return { done: true };
+    throw new Error("risk domain index holds a different policy than the plan");
+  }, async () => {
+    const policy = layout.riskDomainPolicy;
+    return {
+      instructions: [await core.methods.proposeInitialRiskDomain({
+        riskDomainId: Array.from(plan.riskDomain.riskDomainId),
+        policy: {
+          schemaVersion: policy.schemaVersion,
+          manifestVersion: policy.manifestVersion,
+          manifestHash: Array.from(policy.manifestHash),
+          domainRefIdentityHash: Array.from(policy.domainRefIdentityHash),
+          accountingAsset: anchorRef(policy.accountingAsset),
+          grossCapQuoteAtoms: new BN(policy.grossCapQuoteAtoms.toString()),
+          netCapQuoteAtoms: new BN(policy.netCapQuoteAtoms.toString()),
+          minimumMarginFloorQuoteAtoms: new BN(policy.minimumMarginFloorQuoteAtoms.toString()),
+          maximumLeverageBps: new BN(policy.maximumLeverageBps.toString()),
+          maximumStalenessMs: new BN(policy.maximumStalenessMs.toString()),
+          maximumTimeToUnwindMs: new BN(policy.maximumTimeToUnwindMs.toString()),
+          requiredRecoveryReserveQuoteAtoms: new BN(policy.requiredRecoveryReserveQuoteAtoms.toString()),
+          aggregateHaircutBps: policy.aggregateHaircutBps,
+          eligibleSeries: policy.eligibleSeries.map((series) => ({
+            seriesId: Array.from(series.seriesId), manifestVersion: series.manifestVersion, manifestHash: Array.from(series.manifestHash),
+          })),
+          dependencyLimits: policy.dependencyLimits.map((dependency) => ({
+            dependencyId: Array.from(dependency.dependencyId),
+            maximumGrossQuoteAtoms: new BN(dependency.maximumGrossQuoteAtoms.toString()),
+          })),
+        },
+      }).accountsStrict({
+        payer: payer.publicKey, proposer: proposer.publicKey, config: layout.config,
+        index: layout.riskDomainIndex, record: layout.riskDomainRecord, systemProgram: web3.SystemProgram.programId,
+      }).instruction()],
+      signers: [proposer],
+    };
+  });
+  await run("activate.risk_domain", ["propose.risk_domain"], async () => {
+    const index = await riskDomainIndex();
+    if (index.activeRecord.equals(layout.riskDomainRecord)) return { done: true };
+    if (!index.pendingRecord.equals(layout.riskDomainRecord)) throw new Error("risk domain has no pending planned policy");
+    return { waitSlot: BigInt(index.activationSlot.toString()) };
+  }, async () => ({
+    instructions: [await core.methods.activateInitialRiskDomain().accountsStrict({
+      executor: executor.publicKey, config: layout.config, index: layout.riskDomainIndex, record: layout.riskDomainRecord,
+    }).instruction()],
+    signers: [executor],
+  }));
+
+  // 9. The solver's package book shard, signed by the solver key.
   await run("package_book.initialize_shard", ["package_book.initialize_class"], async () => {
     const info = owned(await fetchAccount(layout.shard), programs.package_book.programId, "package book shard");
     return { done: info !== null };
@@ -869,7 +993,7 @@ async function main() {
     };
   });
 
-  // 9. Solver inventory token accounts for both mints.
+  // 10. Solver inventory token accounts for both mints.
   await run("solver.inventory_token_accounts", [], async () => {
     const [base, quote] = await connection.getMultipleAccountsInfo([layout.solverBase, layout.solverQuote], "confirmed");
     for (const [info, mint] of [[base, plan.base.mint], [quote, plan.quote.mint]]) {
@@ -886,7 +1010,7 @@ async function main() {
     signers: [],
   }));
 
-  // 10. Insurance and fee vault top-ups from the funder's quote token account, in exact atoms.
+  // 11. Insurance and fee vault top-ups from the funder's quote token account, in exact atoms.
   for (const [name, vault, target] of [["insurance", layout.insuranceVault, plan.insuranceVaultTargetAtoms], ["fee", layout.feeVault, plan.feeVaultTargetAtoms]]) {
     if (target === 0n) continue;
     await run(`fund.${name}_vault`, ["test_perp.initialize_market"], async () => {
@@ -917,10 +1041,16 @@ async function main() {
       collateralVault: layout.collateralVault, feeVault: layout.feeVault, insuranceVault: layout.insuranceVault,
       reservationClass: layout.reservationClass, packageBookClass: layout.packageBookClass, packageBookShard: layout.shard,
       packageBookLevelPage: layout.levelPage, seriesIndex: layout.seriesIndex, seriesRecord: layout.seriesRecord,
+      riskDomainIndex: layout.riskDomainIndex, riskDomainRecord: layout.riskDomainRecord,
       solverBase: layout.solverBase, solverQuote: layout.solverQuote, indexes: layout.indexes, records: layout.records,
     }),
     resourceManifests: protocolJson(layout.documents),
     series: protocolJson({ identityKey: layout.seriesHashes.identityKey, bindingHash: layout.seriesHashes.bindingHash }),
+    riskDomain: protocolJson({
+      riskDomainId: plan.riskDomain.riskDomainId,
+      policyVersion: plan.riskDomain.policyVersion,
+      policyManifestHash: plan.riskDomain.policyManifestHash,
+    }),
     fragments: serviceFragments(plan, programs, layout, release),
   };
   const text = `${JSON.stringify(output, null, 2)}\n`;

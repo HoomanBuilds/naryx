@@ -879,6 +879,10 @@
           "$input": "init",
           "pointer": "/fragments/solverConfig/series"
         },
+        "riskDomain": {
+          "$input": "init",
+          "pointer": "/fragments/solverConfig/riskDomain"
+        },
         "resourceAdmissionCommitment": {
           "$input": "init",
           "pointer": "/fragments/solverConfig/resourceAdmissionCommitment"

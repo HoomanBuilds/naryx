@@ -46,7 +46,8 @@ export function fixedFirmAccounts(record) {
   if (addresses.length !== 10) throw new Error("initialization record must carry the five reviewed programs");
   for (const name of [
     "config", "solverRegistry", "testPerpMarket", "collateralVault", "feeVault", "insuranceVault", "reservationClass",
-    "packageBookClass", "packageBookShard", "packageBookLevelPage", "seriesIndex", "seriesRecord", "solverQuote",
+    "packageBookClass", "packageBookShard", "packageBookLevelPage", "seriesIndex", "seriesRecord",
+    "riskDomainIndex", "riskDomainRecord", "solverQuote",
   ]) {
     addresses.push(text(accounts[name], `accounts.${name}`));
   }
