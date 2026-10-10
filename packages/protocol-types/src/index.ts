@@ -699,6 +699,14 @@ export {
 } from './native-package-clearing.js';
 
 export {
+  NATIVE_CLEARING_MATCH_AUTHORIZATION_VERSION,
+  nativeClearingMatchAuthorization,
+  nativeClearingExecutionId,
+  type NativeClearingMatchAuthorizationInput,
+  type NativeClearingMatchAuthorization,
+} from './native-clearing-authorization.js';
+
+export {
   NETTING_ALLOCATION_SETTLEMENT_EVIDENCE_VERSION,
   NETTING_SETTLEMENT_COMPLETION_RECEIPT_VERSION,
   NETTING_SETTLEMENT_STATE_KIND,

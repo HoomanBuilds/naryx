@@ -11,11 +11,14 @@ import {
 import {
   assetRef,
   encodeAssetRef,
+  encodeManifestHash,
   encodeProtocolId,
   encodeVersionedManifestRef,
+  manifestHash,
   protocolId,
   versionedManifestRef,
   type AssetRef,
+  type ManifestHash,
   type ProtocolId,
   type VersionedManifestRef,
 } from './primitives.js';
@@ -45,6 +48,9 @@ export type NativeClearingAccountStatus = keyof typeof NATIVE_CLEARING_ACCOUNT_S
 export interface NativeClearingPolicyInput {
   readonly version: number;
   readonly clearingDomainId: string;
+  readonly environment: string;
+  readonly executionClassId: string;
+  readonly matchingPolicyHash: Uint8Array | string;
   readonly strategySeries: VersionedManifestRef;
   readonly riskDomainId: string;
   readonly accountingAsset: AssetRef;
@@ -60,10 +66,20 @@ export interface NativeClearingPolicyInput {
 
 export interface NativeClearingPolicy extends Omit<
   NativeClearingPolicyInput,
-  'version' | 'clearingDomainId' | 'strategySeries' | 'riskDomainId' | 'accountingAsset'
+  | 'version'
+  | 'clearingDomainId'
+  | 'environment'
+  | 'executionClassId'
+  | 'matchingPolicyHash'
+  | 'strategySeries'
+  | 'riskDomainId'
+  | 'accountingAsset'
 > {
   readonly version: 1;
   readonly clearingDomainId: ProtocolId;
+  readonly environment: ProtocolId;
+  readonly executionClassId: ProtocolId;
+  readonly matchingPolicyHash: ManifestHash;
   readonly strategySeries: VersionedManifestRef;
   readonly riskDomainId: ProtocolId;
   readonly accountingAsset: AssetRef;
@@ -215,6 +231,9 @@ function policyPayload(input: NativeClearingPolicyInput | NativeClearingPolicy):
   return Object.freeze({
     version: version(input.version, NATIVE_CLEARING_POLICY_VERSION, 'nativeClearingPolicy.version'),
     clearingDomainId: protocolId(input.clearingDomainId, 'nativeClearingPolicy.clearingDomainId'),
+    environment: protocolId(input.environment, 'nativeClearingPolicy.environment'),
+    executionClassId: protocolId(input.executionClassId, 'nativeClearingPolicy.executionClassId'),
+    matchingPolicyHash: manifestHash(input.matchingPolicyHash, 'nativeClearingPolicy.matchingPolicyHash'),
     strategySeries: versionedManifestRef(
       input.strategySeries.subjectId,
       input.strategySeries.manifestVersion,
@@ -243,6 +262,9 @@ function policyBytes(input: Omit<NativeClearingPolicy, 'policyHash'>): Uint8Arra
   return canonicalBytes((writer) => {
     writer.writeU32(input.version, 'version');
     encodeProtocolId(writer, input.clearingDomainId, 'clearingDomainId');
+    encodeProtocolId(writer, input.environment, 'environment');
+    encodeProtocolId(writer, input.executionClassId, 'executionClassId');
+    encodeManifestHash(writer, input.matchingPolicyHash, 'matchingPolicyHash');
     encodeVersionedManifestRef(writer, input.strategySeries);
     encodeProtocolId(writer, input.riskDomainId, 'riskDomainId');
     encodeAssetRef(writer, input.accountingAsset);

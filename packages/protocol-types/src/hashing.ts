@@ -85,6 +85,7 @@ export const HASH_DOMAIN = Object.freeze({
   NATIVE_CLEARING_POLICY: 'CON/v1/native-clearing-policy',
   NATIVE_CLEARING_DOMAIN_STATE: 'CON/v1/native-clearing-domain-state',
   NATIVE_CLEARING_ACCOUNT: 'CON/v1/native-clearing-account',
+  NATIVE_CLEARING_MATCH_AUTHORIZATION: 'CON/v1/native-clearing-match-authorization',
   NATIVE_CLEARING_MATCH: 'CON/v1/native-clearing-match',
   NATIVE_CLEARING_DEFAULT: 'CON/v1/native-clearing-default',
   RISK_DOMAIN_MANIFEST: 'CON/v1/risk-domain-manifest',

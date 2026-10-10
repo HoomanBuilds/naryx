@@ -21,6 +21,9 @@ function policyInput(overrides: Partial<NativeClearingPolicyInput> = {}): Native
   return {
     version: 1,
     clearingDomainId: 'sol-carry-clearing',
+    environment: 'devnet',
+    executionClassId: 'sol-carry-package',
+    matchingPolicyHash: id(3),
     strategySeries: versionedManifestRef('sol-carry', 1, id(1)),
     riskDomainId: 'sol-carry-isolated-risk',
     accountingAsset: assetRef('usdc', id(2), 6),
