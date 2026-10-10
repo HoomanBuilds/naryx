@@ -1260,6 +1260,23 @@ function Ticket({
         </div>
       </details>
 
+      {selectedTemplate ? (
+        <details className={styles.templateSpecification}>
+          <summary>
+            <span>Template specification</span>
+            <strong>{selectedTemplate.templateId}</strong>
+          </summary>
+          <dl>
+            <div><dt>Quote</dt><dd>{selectedTemplate.quoteConventionId.replaceAll("-", " ")}</dd></div>
+            <div><dt>Risk model</dt><dd>{selectedTemplate.riskClassId.replaceAll("-", " ")}</dd></div>
+            <div><dt>Lifecycle</dt><dd>{selectedTemplate.lifecycleConventionId.replaceAll("-", " ")}</dd></div>
+            <div><dt>Settlement</dt><dd>{[...new Set(selectedTemplate.actions.flatMap((item) => item.settlementClasses))].join(" / ").replaceAll("_", " ")}</dd></div>
+            <div><dt>Outputs</dt><dd>{selectedTemplate.metricIds.length === 0 ? "No template-specific metrics" : selectedTemplate.metricIds.join(" / ").replaceAll("-", " ")}</dd></div>
+            <div><dt>Qualified lanes</dt><dd>{selectedTemplate.qualifiedLanes.length === 0 ? "None currently reported" : selectedTemplate.qualifiedLanes.join(" / ")}</dd></div>
+          </dl>
+        </details>
+      ) : null}
+
       {selectedTemplate && selectedTemplate.actions.length > 0 ? (
         <div className={styles.lifecycleSelector} role="group" aria-label="Strategy lifecycle action">
           {selectedTemplate.actions.map((item) => (

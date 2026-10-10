@@ -430,6 +430,55 @@
   text-transform: lowercase;
 }
 
+.templateSpecification {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-small);
+  padding: 7px 8px;
+}
+
+.templateSpecification summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.templateSpecification summary strong {
+  overflow: hidden;
+  color: var(--text-dim);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.templateSpecification dl {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.templateSpecification dl > div {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 8px;
+  font-size: 9.5px;
+}
+
+.templateSpecification dt {
+  color: var(--text-dim);
+}
+
+.templateSpecification dd {
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  text-transform: lowercase;
+}
+
 .strategyPresets {
   border: 1px solid var(--line);
   border-radius: var(--radius-small);
