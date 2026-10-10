@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { MetricObservation } from "@naryx/protocol-types";
 import { internalCaller, readInternalBody, sendError, sendJson } from "./internal-http.js";
 import { OrderActivationStoreError, type SqliteOrderActivationStore } from "./order-activation-store.js";
+import type { SqliteMetricObservationStore } from "./metric-observation-store.js";
 
 function failure(response: ServerResponse, error: unknown): true {
   if (error instanceof OrderActivationStoreError) {
@@ -15,6 +16,7 @@ function failure(response: ServerResponse, error: unknown): true {
 
 export function createOrderActivationAdminHandler(options: {
   readonly activations: Pick<SqliteOrderActivationStore, "reserve" | "complete" | "cancel">;
+  readonly observations?: Pick<SqliteMetricObservationStore, "observations">;
 }): (request: IncomingMessage, response: ServerResponse) => boolean {
   return (request, response) => {
     const url = new URL(request.url ?? "/", "http://internal.local");
@@ -33,14 +35,16 @@ export function createOrderActivationAdminHandler(options: {
     readInternalBody(request, response, (body) => {
       try {
         if (url.pathname === "/internal/order-activations/reserve") {
-          if (typeof body.orderHash !== "string" || !Array.isArray(body.observations)
+          if (typeof body.orderHash !== "string"
+            || (options.observations === undefined ? !Array.isArray(body.observations) : body.observations !== undefined)
             || typeof body.atValue !== "bigint" || (body.side !== "BID" && body.side !== "ASK")
             || typeof body.limitPriceTicks !== "bigint") {
             throw new TypeError("Reserve requires orderHash, observations, atValue, side, and limitPriceTicks.");
           }
           return sendJson(response, 200, options.activations.reserve({
             orderHashHex: body.orderHash,
-            observations: body.observations as readonly MetricObservation[],
+            observations: options.observations?.observations(body.orderHash, body.atValue)
+              ?? body.observations as readonly MetricObservation[],
             atValue: body.atValue,
             side: body.side,
             limitPriceTicks: body.limitPriceTicks,

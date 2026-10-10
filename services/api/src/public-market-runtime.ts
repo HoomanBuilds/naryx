@@ -31,6 +31,8 @@ import { createStrategyPackageInternalHandler, SqliteStrategyPackageStore } from
 import { SqliteOrderActivationStore } from "./order-activation-store.js";
 import { createOrderActivationAdminHandler } from "./order-activation-admin.js";
 import { AdvancedOrderFactory } from "./advanced-order-factory.js";
+import { loadMetricObservationSources, SqliteMetricObservationStore } from "./metric-observation-store.js";
+import { createMetricObservationAdminHandler } from "./metric-observation-admin.js";
 import { createPackageReopeningAdminHandler } from "./package-reopening-admin.js";
 import { HttpGeneralizedStrategyQuoteClient } from "./generalized-strategy-quote-client.js";
 import { HttpPortfolioOptimizationClient } from './portfolio-optimization-client.js';
@@ -468,6 +470,7 @@ export function loadPublicMarketRuntime(
       ? undefined
       : new SqliteStrategyPackageStore(absolute(strategyPackagePath, "NARYX_STRATEGY_PACKAGE_DB"), { clock: clockMs });
     if (strategyPackages !== undefined) opened.push(strategyPackages);
+    const publicEnvironment = environment.NARYX_PUBLIC_ENVIRONMENT;
     const orderActivationPath = optional(environment.NARYX_ORDER_ACTIVATION_DB);
     if (orderActivationPath !== undefined && strategyPackages === undefined) {
       throw new PublicMarketConfigError("NARYX_ORDER_ACTIVATION_DB requires NARYX_STRATEGY_PACKAGE_DB.");
@@ -479,11 +482,26 @@ export function loadPublicMarketRuntime(
         clock: clockMs,
       });
     if (orderActivations !== undefined) opened.push(orderActivations);
+    const metricObservationPath = optional(environment.NARYX_METRIC_OBSERVATION_DB);
+    const metricSourcePath = optional(environment.NARYX_METRIC_OBSERVATION_SOURCES);
+    if ((metricObservationPath === undefined) !== (metricSourcePath === undefined)
+      || (metricObservationPath !== undefined && (strategyPackages === undefined || publicEnvironment === undefined))) {
+      throw new PublicMarketConfigError("Metric observations require both database and source config, strategy packages, and NARYX_PUBLIC_ENVIRONMENT.");
+    }
+    const metricObservations = metricObservationPath === undefined || metricSourcePath === undefined
+      || strategyPackages === undefined || publicEnvironment === undefined
+      ? undefined
+      : new SqliteMetricObservationStore(absolute(metricObservationPath, "NARYX_METRIC_OBSERVATION_DB"), {
+        environment: publicEnvironment,
+        orders: strategyPackages,
+        sourcesByMetric: loadMetricObservationSources(absolute(metricSourcePath, "NARYX_METRIC_OBSERVATION_SOURCES")),
+        clock: clockMs,
+      });
+    if (metricObservations !== undefined) opened.push(metricObservations);
     const strategyPath = optional(environment.NARYX_STRATEGY_DB);
     if (strategyPath !== undefined && evidence === undefined) {
       throw new PublicMarketConfigError("NARYX_STRATEGY_DB requires NARYX_EVIDENCE_DB, whose settled receipts found strategies.");
     }
-    const publicEnvironment = environment.NARYX_PUBLIC_ENVIRONMENT;
     if (strategyPath !== undefined && (publicEnvironment === undefined || !/^[A-Za-z0-9._:-]{1,64}$/.test(publicEnvironment) || publicEnvironment.toLowerCase().includes("mainnet"))) {
       throw new PublicMarketConfigError("NARYX_STRATEGY_DB requires NARYX_PUBLIC_ENVIRONMENT, a non-mainnet environment id.");
     }
@@ -754,7 +772,11 @@ export function loadPublicMarketRuntime(
       ...(keeper === undefined ? [] : [createKeeperExecutorHandler({ executor: keeper, nowIn: keeperClock(clockMs) })]),
       ...(coordination === undefined ? [] : [createCoordinationInternalHandler(coordination)]),
       ...(nativeClearing === undefined ? [] : [createNativeClearingAdminHandler({ clearing: nativeClearing })]),
-      ...(orderActivations === undefined ? [] : [createOrderActivationAdminHandler({ activations: orderActivations })]),
+      ...(orderActivations === undefined ? [] : [createOrderActivationAdminHandler({
+        activations: orderActivations,
+        ...(metricObservations === undefined ? {} : { observations: metricObservations }),
+      })]),
+      ...(metricObservations === undefined ? [] : [createMetricObservationAdminHandler({ observations: metricObservations })]),
       ...(strategyPackages === undefined ? [] : [createStrategyPackageInternalHandler(strategyPackages)]),
       ...(nettingAllocationAdmin === undefined ? [] : [nettingAllocationAdmin]),
       ...(solverState === undefined || makerSolverId === undefined ? [] : [createMakerOperationsHandler({

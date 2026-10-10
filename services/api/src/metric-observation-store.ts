@@ -1,5 +1,9 @@
 import type Database from "better-sqlite3";
+import { readFileSync, statSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
+import bs58 from "bs58";
 import {
+  CONDITION_METRIC,
   metricObservationAttestation,
   metricObservationAttestationHash,
   parseProtocolJson,
@@ -50,6 +54,44 @@ export interface MetricObservationSource {
   readonly sourceId: string;
   readonly manifestHashHex: string;
   readonly verificationKey: Uint8Array;
+}
+
+export function loadMetricObservationSources(path: string): ReadonlyMap<ConditionMetric, MetricObservationSource> {
+  if (!isAbsolute(path)) throw new MetricObservationStoreError("INVALID_CONFIGURATION", "Metric source config path must be absolute.");
+  const resolved = resolve(path);
+  if (statSync(resolved).size > 65_536) throw new MetricObservationStoreError("INVALID_CONFIGURATION", "Metric source config is too large.");
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(resolved, "utf8"));
+  } catch {
+    throw new MetricObservationStoreError("INVALID_CONFIGURATION", "Metric source config is not valid JSON.");
+  }
+  if (typeof value !== "object" || value === null || !Array.isArray((value as { sources?: unknown }).sources)) {
+    throw new MetricObservationStoreError("INVALID_CONFIGURATION", "Metric source config needs a sources array.");
+  }
+  const result = new Map<ConditionMetric, MetricObservationSource>();
+  for (const entry of (value as { sources: unknown[] }).sources) {
+    if (typeof entry !== "object" || entry === null) throw new MetricObservationStoreError("INVALID_CONFIGURATION", "Metric source entries must be objects.");
+    const source = entry as Record<string, unknown>;
+    if (typeof source.metric !== "string" || !(source.metric in CONDITION_METRIC) || source.metric === "TIME"
+      || typeof source.sourceId !== "string" || typeof source.manifestHash !== "string" || !HASH.test(source.manifestHash)
+      || typeof source.verificationKey !== "string") {
+      throw new MetricObservationStoreError("INVALID_CONFIGURATION", "Metric source identity fields are invalid.");
+    }
+    let verificationKey: Uint8Array;
+    try {
+      verificationKey = bs58.decode(source.verificationKey);
+    } catch {
+      throw new MetricObservationStoreError("INVALID_CONFIGURATION", "Metric source verification key is not base58.");
+    }
+    const metric = source.metric as ConditionMetric;
+    if (verificationKey.length !== 32 || result.has(metric)) {
+      throw new MetricObservationStoreError("INVALID_CONFIGURATION", "Metric source keys must be Ed25519 and metrics cannot repeat.");
+    }
+    result.set(metric, Object.freeze({ sourceId: source.sourceId, manifestHashHex: source.manifestHash, verificationKey }));
+  }
+  if (result.size === 0) throw new MetricObservationStoreError("INVALID_CONFIGURATION", "At least one metric source is required.");
+  return result;
 }
 
 type OrderSource = Pick<{ order(orderHashHex: string): StoredStrategyPackageOrder | undefined }, "order">;

@@ -16,6 +16,7 @@ export {
 export {
   MetricObservationStoreError,
   SqliteMetricObservationStore,
+  loadMetricObservationSources,
   type MetricObservationSource,
 } from "./metric-observation-store.js";
 export { createMetricObservationAdminHandler } from "./metric-observation-admin.js";
