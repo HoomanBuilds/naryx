@@ -174,7 +174,7 @@ export function allocateHyperliquidTrustedNonce(
 ): bigint {
   requireCondition(trustedTimeMs > 0n && previousNonce >= 0n && maximumFutureNonceLeadMs > 0n,
     'trusted nonce inputs are invalid');
-  requireCondition(previousNonce <= trustedTimeMs + maximumFutureNonceLeadMs,
+  requireCondition(previousNonce < trustedTimeMs + maximumFutureNonceLeadMs,
     'durable nonce is beyond trusted time policy; fresh agent replacement is required');
   const nonce = trustedTimeMs > previousNonce ? trustedTimeMs : previousNonce + 1n;
   requireCondition(nonce <= BigInt(Number.MAX_SAFE_INTEGER),
