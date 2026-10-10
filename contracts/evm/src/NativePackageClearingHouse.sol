@@ -74,6 +74,7 @@ contract NativePackageClearingHouse is ReentrancyGuard {
         uint128 markPriceTicks;
         uint128 minimumPriceTicks;
         uint128 maximumPriceTicks;
+        uint64 markValidUntil;
         uint64 closeAt;
         bytes32 bestBackstopAccountId;
         bytes32 bestBackstopAccountHash;
@@ -402,6 +403,7 @@ contract NativePackageClearingHouse is ReentrancyGuard {
             markPriceTicks: currentMark.priceTicks,
             minimumPriceTicks: minimumPrice,
             maximumPriceTicks: maximumPrice,
+            markValidUntil: currentMark.validUntil,
             closeAt: closeAt,
             bestBackstopAccountId: bytes32(0),
             bestBackstopAccountHash: bytes32(0),
@@ -448,10 +450,11 @@ contract NativePackageClearingHouse is ReentrancyGuard {
 
     function settleDefaultAuction(bytes32 auctionId) external {
         DefaultAuction storage auction_ = _auctions[auctionId];
+        _requireLiveMark();
         if (
             auction_.defaultedAccountId == bytes32(0) || auction_.settled || block.timestamp < auction_.closeAt
-                || block.timestamp > auction_.bestBidValidUntil || currentMark.observationHash != auction_.markObservationHash
-                || block.timestamp > currentMark.validUntil || auction_.bestBackstopAccountId == bytes32(0)
+                || block.timestamp > auction_.bestBidValidUntil || block.timestamp > auction_.markValidUntil
+                || auction_.bestBackstopAccountId == bytes32(0)
         ) revert AuctionUnavailable();
         if (accountHash(auction_.defaultedAccountId) != auction_.defaultedAccountHash
             || accountHash(auction_.bestBackstopAccountId) != auction_.bestBackstopAccountHash) revert InvalidAuction();
@@ -463,7 +466,7 @@ contract NativePackageClearingHouse is ReentrancyGuard {
         backstop.positionAtoms += transferred;
         backstop.cashBalanceQuoteAtoms -= transferValue;
         backstop.sequence += 1;
-        if (_status(backstop, auction_.markPriceTicks) != 1) revert MarginViolation();
+        if (_status(backstop, currentMark.priceTicks) != 1) revert MarginViolation();
 
         int256 closedEquity = int256(defaulted.collateralQuoteAtoms) + defaulted.cashBalanceQuoteAtoms + transferValue;
         uint256 deficit = closedEquity < 0 ? uint256(-closedEquity) : 0;
@@ -491,7 +494,7 @@ contract NativePackageClearingHouse is ReentrancyGuard {
         DefaultAuction storage auction_ = _auctions[auctionId];
         if (
             auction_.defaultedAccountId == bytes32(0) || auction_.settled
-                || block.timestamp <= currentMark.validUntil
+                || block.timestamp <= auction_.markValidUntil
         ) revert AuctionUnavailable();
         auction_.settled = true;
         delete accountLock[auction_.defaultedAccountId];

@@ -83,6 +83,7 @@ contract NativePackageClearingHouseTest is Test {
         clearing.openDefaultAuction(auctionId, LONG_ACCOUNT);
         vm.prank(vm.addr(BACKSTOP_KEY));
         clearing.bidDefaultAuction(auctionId, BACKSTOP_ACCOUNT, 1, uint64(block.timestamp + 600));
+        clearing.publishMark(keccak256("mark-2-current"), 2, 3, uint64(block.timestamp + 600));
         vm.warp(block.timestamp + 60);
         clearing.settleDefaultAuction(auctionId);
 
