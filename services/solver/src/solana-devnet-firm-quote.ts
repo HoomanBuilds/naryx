@@ -198,6 +198,11 @@ export function deriveSolanaDevnetFirmAccounts(input: Readonly<{
     trader: trader.toBase58(),
     config: pda([Buffer.from('naryx-protocol-config')], core),
     solverRegistry: pda([Buffer.from('conformance-solver')], core),
+    riskDomainIndex: pda([Buffer.from('risk-domain-index'), config.riskDomain.riskDomainId], core),
+    riskDomainRecord: pda([
+      Buffer.from('risk-domain-record'), config.riskDomain.riskDomainId,
+      bigEndian(BigInt(config.riskDomain.policyVersion), 4),
+    ], core),
     solver: solver.toBase58(),
     receipt: pda([Buffer.from('cash-carry-receipt'), trader.toBuffer(), input.orderHash], core),
     nonceMarker: pda([Buffer.from('cash-carry-nonce'), trader.toBuffer(), bigEndian(input.nonce, 8)], core),
@@ -245,8 +250,10 @@ export function deriveSolanaDevnetFirmAccounts(input: Readonly<{
     accounts[`${name}Record`] = config.accounts.records[name];
   }
   if (accounts.config !== new PublicKey(config.accounts.config).toBase58()
-    || accounts.solverRegistry !== new PublicKey(config.accounts.solverRegistry).toBase58()) {
-    fail('configured core config or solver registry is not the core PDA');
+    || accounts.solverRegistry !== new PublicKey(config.accounts.solverRegistry).toBase58()
+    || accounts.riskDomainIndex !== new PublicKey(config.accounts.riskDomainIndex).toBase58()
+    || accounts.riskDomainRecord !== new PublicKey(config.accounts.riskDomainRecord).toBase58()) {
+    fail('configured core config, solver registry, or risk domain is not the derived PDA');
   }
   return Object.freeze(accounts);
 }

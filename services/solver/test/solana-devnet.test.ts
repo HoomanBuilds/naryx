@@ -184,7 +184,7 @@ test('refuses a quote TTL below the minimum with a clear error', () => {
   try {
     const path = join(directory, 'solver.json');
     const write = (quoteTtlSlots: bigint) => writeFileSync(path, JSON.stringify(toProtocolJson({
-      schemaVersion: 1, runtimeManifestPath: '/unused', accounts: {}, resources: {}, series: {}, route: {}, inventorySpreadBps: 0,
+      schemaVersion: 1, runtimeManifestPath: '/unused', accounts: {}, resources: {}, series: {}, riskDomain: {}, route: {}, inventorySpreadBps: 0,
       perpLimitToleranceBps: 0, computeUnitLimit: 1, solverId: '11111111111111111111111111111112', quoteTtlSlots,
     })));
     write(SOLANA_DEVNET_MIN_QUOTE_TTL_SLOTS - 1n);

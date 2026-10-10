@@ -47,6 +47,7 @@ import {
   decodeFirmReservation,
   decodePackageQuoteShard,
   decodeQuoteLevelPage,
+  decodeRiskDomainIndexActiveRecord,
   decodeResourceIndexActiveRecord,
   decodeSeriesIndexActiveRecord,
   decodeTestPerpPosition,
@@ -369,6 +370,11 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
       const perpLimit = perLot(route.legs[1]!.limitPrice, state.market.baseLotAtoms, exit ? 'CEIL' : 'FLOOR');
       const spotNotional = (quantity / config.spotBaseLotAtoms) * spotLimit;
       const perpNotional = (quantity / state.market.baseLotAtoms) * perpLimit;
+      const packageNotional = spotNotional > perpNotional ? spotNotional : perpNotional;
+      const leveragedMargin = (packageNotional * 10_000n + config.riskDomain.maximumLeverageBps - 1n)
+        / config.riskDomain.maximumLeverageBps;
+      const riskMargin = leveragedMargin > config.riskDomain.minimumMarginFloorQuoteAtoms
+        ? leveragedMargin : config.riskDomain.minimumMarginFloorQuoteAtoms;
       const entries = Object.entries(accounts).map(([name, address]) => [name, { address, routeBindingId: firmRouteBindingId(name) }]);
       return {
         ...(exit ? { action: 'EXIT' as const } : {}),
@@ -449,7 +455,15 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
           perpQuantityAtoms: quantity,
           spotLimitQuoteAtomsPerBaseLot: spotLimit,
           perpLimitQuoteAtomsPerBaseLot: perpLimit,
-          packageNotionalAtoms: spotNotional > perpNotional ? spotNotional : perpNotional,
+          packageNotionalAtoms: packageNotional,
+          riskDomainId: config.riskDomain.riskDomainId,
+          riskPolicyVersion: config.riskDomain.policyVersion,
+          riskSeriesIndex: 0,
+          riskNetQuoteAtoms: 0n,
+          riskMarginQuoteAtoms: riskMargin,
+          riskRecoveryReserveQuoteAtoms: config.riskDomain.requiredRecoveryReserveQuoteAtoms,
+          riskObservationAgeMs: config.riskDomain.observationAgeMs,
+          riskTimeToUnwindMs: config.riskDomain.timeToUnwindMs,
           spotSqrtPriceLimit: 1n,
           minimumRiseCollateralQuoteLots: minimumCollateral,
           clientOrderId: BigInt(`0x${hex(admission.orderHash).slice(0, 32)}`),
@@ -495,7 +509,8 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
     const slot = await rpc.getFinalizedSlot();
     const [finalReservationAccount, finalLockAccount, ...registry] = await read([
       accounts.reservation!, accounts.quoteLock!,
-      ...SOLANA_DEVNET_RESOURCE_NAMES.map((name) => config.accounts.indexes[name]), config.accounts.seriesIndex,
+      ...SOLANA_DEVNET_RESOURCE_NAMES.map((name) => config.accounts.indexes[name]),
+      config.accounts.seriesIndex, config.accounts.riskDomainIndex,
     ], slot);
     if (finalReservationAccount === null || finalReservationAccount === undefined || finalReservationAccount.owner !== reservationProgram.programId) notReady('reservation is absent');
     if (finalLockAccount === null || finalLockAccount === undefined || finalLockAccount.owner !== core.programId) notReady('quote lock is absent');
@@ -516,6 +531,11 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
     if (seriesIndex === null || seriesIndex === undefined || seriesIndex.owner !== core.programId
       || decodeSeriesIndexActiveRecord(seriesIndex.data) !== new PublicKey(config.accounts.seriesRecord).toBase58()) {
       mismatch('series index does not point at the reviewed active record');
+    }
+    const riskDomainIndex = registry[SOLANA_DEVNET_RESOURCE_NAMES.length + 1];
+    if (riskDomainIndex === null || riskDomainIndex === undefined || riskDomainIndex.owner !== core.programId
+      || decodeRiskDomainIndexActiveRecord(riskDomainIndex.data) !== new PublicKey(config.accounts.riskDomainRecord).toBase58()) {
+      mismatch('risk domain index does not point at the reviewed active policy');
     }
     const tokens = await readTokens(slot);
     const unsigned = assemble(slot, finalReservation, tokens, new Uint8Array(64));

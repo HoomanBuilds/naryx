@@ -157,10 +157,13 @@ const ORACLE_PRICE_PER_LOT = 150_000n;
 const solver = Keypair.generate();
 const reservationPolicyHash = bytes(18);
 const settlementClassIdentityHash = bytes(19);
+const riskDomainId = bytes(40);
 const accounts = {
   config: pda('core', Buffer.from('naryx-protocol-config')).toBase58(),
   solverRegistry: pda('core', Buffer.from('conformance-solver')).toBase58(),
   reservationClass: key().toBase58(), seriesIndex: key().toBase58(), seriesRecord: key().toBase58(),
+  riskDomainIndex: PublicKey.findProgramAddressSync([Buffer.from('risk-domain-index'), Buffer.from(riskDomainId)], new PublicKey(programs.core!.programId))[0].toBase58(),
+  riskDomainRecord: PublicKey.findProgramAddressSync([Buffer.from('risk-domain-record'), Buffer.from(riskDomainId), Buffer.from([0, 0, 0, 1])], new PublicKey(programs.core!.programId))[0].toBase58(),
   packageBookClass: key().toBase58(), packageBookShard: key().toBase58(), packageBookLevelPage: key().toBase58(),
   indexes: Object.fromEntries(SOLANA_DEVNET_RESOURCE_NAMES.map((name) => [name, key().toBase58()])),
   records: Object.fromEntries(SOLANA_DEVNET_RESOURCE_NAMES.map((name) => [name, key().toBase58()])),
@@ -173,7 +176,10 @@ const resources = Object.fromEntries(SOLANA_DEVNET_RESOURCE_NAMES.map((name) => 
 /** The reviewed route commitments: every firm account binding is named by one of the two leg actions. */
 function routeCommitments(): SolanaDevnetSolverConfig['route'] {
   const names = Object.keys(deriveSolanaDevnetFirmAccounts({
-    manifest, config: { solverId: solver.publicKey.toBase58(), accounts, resources } as SolanaDevnetSolverConfig, market,
+    manifest, config: {
+      solverId: solver.publicKey.toBase58(), accounts, resources,
+      riskDomain: { riskDomainId, policyVersion: 1 },
+    } as SolanaDevnetSolverConfig, market,
     owner: key().toBase58(), orderHash: bytes(21), nonce: 1n, reservationId: bytes(22),
   }));
   const payload = Uint8Array.from([1, 2, 3]);
@@ -226,6 +232,11 @@ function solverConfig(feePolicy: FeePolicyManifestInput): SolanaDevnetSolverConf
     series: {
       seriesManifestHash: bytes(27), executionClassManifestHash: bytes(28), settlementClassIdentityHash,
       spotBaseAtomsPerPackageUnit: 100_000_000n, perpQuantityAtomsPerPackageUnit: 100_000_000n,
+    },
+    riskDomain: {
+      riskDomainId, policyVersion: 1, policyManifestHash: bytes(41), minimumMarginFloorQuoteAtoms: 1_000_000n,
+      maximumLeverageBps: 100_000n, requiredRecoveryReserveQuoteAtoms: 1_000_000n,
+      observationAgeMs: 0n, timeToUnwindMs: 60_000n,
     },
     resourceAdmissionCommitment: bytes(29),
     route: routeCommitments(),

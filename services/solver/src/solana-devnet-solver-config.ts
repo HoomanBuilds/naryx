@@ -113,6 +113,8 @@ export type SolanaDevnetSolverConfig = Readonly<{
     reservationClass: string;
     seriesIndex: string;
     seriesRecord: string;
+    riskDomainIndex: string;
+    riskDomainRecord: string;
     packageBookClass: string;
     packageBookShard: string;
     packageBookLevelPage: string;
@@ -127,6 +129,16 @@ export type SolanaDevnetSolverConfig = Readonly<{
     settlementClassIdentityHash: Uint8Array;
     spotBaseAtomsPerPackageUnit: bigint;
     perpQuantityAtomsPerPackageUnit: bigint;
+  }>;
+  riskDomain: Readonly<{
+    riskDomainId: Uint8Array;
+    policyVersion: number;
+    policyManifestHash: Uint8Array;
+    minimumMarginFloorQuoteAtoms: bigint;
+    maximumLeverageBps: bigint;
+    requiredRecoveryReserveQuoteAtoms: bigint;
+    observationAgeMs: bigint;
+    timeToUnwindMs: bigint;
   }>;
   resourceAdmissionCommitment: Uint8Array;
   route: Readonly<{
@@ -164,7 +176,7 @@ export function loadSolanaDevnetSolverConfig(path: string): SolanaDevnetSolverCo
   if (!isAbsolute(path)) fail('NARYX_SOLANA_DEVNET_SOLVER_CONFIG must be an absolute path');
   const value = parseProtocolJson(readFileSync(resolve(path), 'utf8'), 'solanaDevnetSolverConfig') as SolanaDevnetSolverConfig;
   if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.runtimeManifestPath !== 'string'
-    || !isRecord(value.accounts) || !isRecord(value.resources) || !isRecord(value.series) || !isRecord(value.route)
+    || !isRecord(value.accounts) || !isRecord(value.resources) || !isRecord(value.series) || !isRecord(value.riskDomain) || !isRecord(value.route)
     || !Number.isSafeInteger(value.inventorySpreadBps) || value.inventorySpreadBps < 0 || value.inventorySpreadBps > 1_000
     || !Number.isSafeInteger(value.perpLimitToleranceBps) || value.perpLimitToleranceBps < 0 || value.perpLimitToleranceBps > 500
     || !Number.isSafeInteger(value.computeUnitLimit) || value.computeUnitLimit <= 0 || value.computeUnitLimit > 1_260_000) {
@@ -180,8 +192,16 @@ export function loadSolanaDevnetSolverConfig(path: string): SolanaDevnetSolverCo
   positive(value.spotBaseLotAtoms, 'spotBaseLotAtoms');
   positive(value.series.spotBaseAtomsPerPackageUnit, 'series.spotBaseAtomsPerPackageUnit');
   positive(value.series.perpQuantityAtomsPerPackageUnit, 'series.perpQuantityAtomsPerPackageUnit');
+  hash32(value.riskDomain.riskDomainId, 'riskDomain.riskDomainId');
+  if (!Number.isSafeInteger(value.riskDomain.policyVersion) || value.riskDomain.policyVersion <= 0) fail('riskDomain.policyVersion must be positive');
+  hash32(value.riskDomain.policyManifestHash, 'riskDomain.policyManifestHash');
+  positive(value.riskDomain.minimumMarginFloorQuoteAtoms, 'riskDomain.minimumMarginFloorQuoteAtoms');
+  positive(value.riskDomain.maximumLeverageBps, 'riskDomain.maximumLeverageBps');
+  positive(value.riskDomain.requiredRecoveryReserveQuoteAtoms, 'riskDomain.requiredRecoveryReserveQuoteAtoms');
+  if (typeof value.riskDomain.observationAgeMs !== 'bigint' || value.riskDomain.observationAgeMs < 0n) fail('riskDomain.observationAgeMs must be nonnegative');
+  positive(value.riskDomain.timeToUnwindMs, 'riskDomain.timeToUnwindMs');
   hash32(value.resourceAdmissionCommitment, 'resourceAdmissionCommitment');
-  for (const name of ['config', 'solverRegistry', 'reservationClass', 'seriesIndex', 'seriesRecord', 'packageBookClass', 'packageBookShard', 'packageBookLevelPage'] as const) {
+  for (const name of ['config', 'solverRegistry', 'reservationClass', 'seriesIndex', 'seriesRecord', 'riskDomainIndex', 'riskDomainRecord', 'packageBookClass', 'packageBookShard', 'packageBookLevelPage'] as const) {
     address(value.accounts[name], `accounts.${name}`);
   }
   for (const name of SOLANA_DEVNET_RESOURCE_NAMES) {

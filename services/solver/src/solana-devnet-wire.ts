@@ -346,6 +346,12 @@ export function decodeSeriesIndexActiveRecord(data: Uint8Array): string {
   return r.key();
 }
 
+export function decodeRiskDomainIndexActiveRecord(data: Uint8Array): string {
+  const r = new BorshReader(data, accountDiscriminator('RiskDomainIndex'), 'RiskDomainIndex');
+  r.hash(); r.u32();
+  return r.key();
+}
+
 export function decodeTokenAccount(data: Uint8Array): Readonly<{ mint: string; owner: string; amount: bigint }> {
   const buffer = Buffer.from(data);
   if (buffer.length !== 165) fail('token account layout is invalid');
