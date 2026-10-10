@@ -61,6 +61,7 @@ export {
   type VerifiedStrategyCommand,
   type StrategyCommandSigner,
   type StrategyCommandAuthorizationSigner,
+  type SignedStrategyCommandAuthorization,
   type VerifiedRouteDecision,
   type VerifiedSolverManifest,
   type VerifiedOutcome,
@@ -86,6 +87,7 @@ export {
   type VerifiedNativeClearingAuction,
   type VerifiedTerminalEvidence,
 } from './client.js';
+export { authorizeStrategyCommand } from './client.js';
 export {
   NaryxSolverClient,
   type EligibleAuctionPage,
@@ -107,6 +109,9 @@ export {
   replayRouteDecision,
   replaySealedAuction,
   strategyStateHash,
+  strategyCommandHash,
+  toHex,
+  toProtocolJson,
   type StrategyCommandInput,
   type StrategyState,
   terminalOutcomeHash,

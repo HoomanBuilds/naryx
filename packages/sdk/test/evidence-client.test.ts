@@ -77,7 +77,7 @@ import {
   type TerminalOutcomeInput,
   type TypedStrategyRoute,
 } from '@naryx/protocol-types';
-import { NaryxClient, NaryxSolverClient, base58Decode, base58Encode, type FetchLike } from '../src/index.js';
+import { NaryxClient, NaryxSolverClient, authorizeStrategyCommand, base58Decode, base58Encode, type FetchLike } from '../src/index.js';
 
 const ORDER = fromProtocolJson(
   JSON.parse(readFileSync(new URL('../../test/fixtures/solana-entry-order.json', import.meta.url), 'utf8')),
@@ -1825,6 +1825,19 @@ describe('order intake and terminal evidence', () => {
     });
     assert.equal(evmSubmitted.commandHash, toHex(strategyCommandHash(evmCommand)));
     assert.equal((evmSeen[0]?.body as { authorization?: { scheme?: string } }).authorization?.scheme, 'EIP712_SECP256K1');
+    const preparedAuthorization = await authorizeStrategyCommand(assign, {
+      scheme: 'ED25519',
+      signerId: ownerId,
+      sign: async (hash) => new Uint8Array(sign(null, hash, privateKey)),
+    });
+    const preparedSeen: { method: string; path: string; body?: unknown }[] = [];
+    const preparedAck = client({ 'POST /v1/strategies/commands': { body: { accepted: true, replayed: false, commandHashHex: preparedAuthorization.commandHash, states: [] } } }, preparedSeen);
+    assert.equal((await preparedAck.submitPreparedStrategyCommand(assign, preparedAuthorization)).commandHash, preparedAuthorization.commandHash);
+    assert.equal((preparedSeen[0]?.body as { authorization?: { scheme?: string } }).authorization?.scheme, 'ED25519');
+    await assert.rejects(
+      preparedAck.submitPreparedStrategyCommand(assign, { ...preparedAuthorization, commandHash: 'ef'.repeat(32) }),
+      /bind the submitted command hash/,
+    );
     const wrong = client({ 'POST /v1/strategies/commands': { body: { accepted: true, replayed: false, commandHashHex: 'ef'.repeat(32), states: [] } } });
     await assert.rejects(wrong.submitStrategyCommand(assign, async (hash) => new Uint8Array(sign(null, hash, privateKey))), /different strategy command/);
   });

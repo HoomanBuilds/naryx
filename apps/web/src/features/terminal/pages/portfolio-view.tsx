@@ -15,6 +15,7 @@ import { formatAtomicAmount, formatScaledInteger } from "../format";
 import { usePortfolioIntelligence } from "./use-portfolio-intelligence";
 import { PortfolioScenarioLab } from "./portfolio-scenario-lab";
 import { StrategyEntryManager, StrategyLifecycleManager } from "./strategy-lifecycle-manager";
+import { StrategyNovation } from "./strategy-novation";
 import { usePositions } from "./use-positions";
 import { GAS_FAUCETS, TEST_USDC_GRANT, useTestUsdcFaucets } from "./use-test-usdc";
 import styles from "./pages.module.css";
@@ -120,14 +121,17 @@ function StrategyManagement({
         />
       ) : null}
       {strategies.length > 0 ? (
-        <StrategyLifecycleManager
-          key={`lifecycle-${validReceipt}-${validState}`}
-          baseUrl={baseUrl}
-          strategies={strategies}
-          refresh={refresh}
-          initialReceiptHash={validState === "" ? "" : validReceipt}
-          initialStateHash={validState}
-        />
+        <>
+          <StrategyLifecycleManager
+            key={`lifecycle-${validReceipt}-${validState}`}
+            baseUrl={baseUrl}
+            strategies={strategies}
+            refresh={refresh}
+            initialReceiptHash={validState === "" ? "" : validReceipt}
+            initialStateHash={validState}
+          />
+          <StrategyNovation baseUrl={baseUrl} strategies={strategies} refresh={refresh} />
+        </>
       ) : null}
     </>
   );

@@ -2061,19 +2061,27 @@ export type StrategyCommandAuthorizationSigner =
     readonly sign: (typedData: ReturnType<typeof strategyCommandAuthorizationTypedData>) => Promise<string>;
   };
 
-async function createStrategyCommandAuthorization(
+export type SignedStrategyCommandAuthorization = Readonly<{
+  signerId: string;
+  commandHash: string;
+  scheme: 'ED25519' | 'EIP712_SECP256K1';
+  signature: string;
+}>;
+
+export async function authorizeStrategyCommand(
   command: StrategyCommandInput,
   signer: StrategyCommandAuthorizationSigner,
-) {
+): Promise<SignedStrategyCommandAuthorization> {
+  const commandHash = toHex(strategyCommandHash(command));
   if (signer.scheme === 'ED25519') {
     const signature = await signer.sign(strategyCommandHash(command));
     if (!(signature instanceof Uint8Array) || signature.length !== 64) throw new TypeError('the Ed25519 signer must return a 64-byte signature');
-    return Object.freeze({ scheme: signer.scheme, signature: base58Encode(signature) });
+    return Object.freeze({ signerId: signer.signerId, commandHash, scheme: signer.scheme, signature: base58Encode(signature) });
   }
   if (!isEvmStrategyActor(signer.signerId)) throw new TypeError('the EVM signer id must be a canonical lowercase address');
   const signature = (await signer.sign(strategyCommandAuthorizationTypedData(command, signer.signerId))).toLowerCase();
   if (!/^0x[0-9a-f]{130}$/.test(signature)) throw new TypeError('the EVM signer must return a 65-byte hex signature');
-  return Object.freeze({ scheme: signer.scheme, signature });
+  return Object.freeze({ signerId: signer.signerId, commandHash, scheme: signer.scheme, signature });
 }
 
 export interface VerifiedStrategyCommand {
@@ -3678,18 +3686,38 @@ export class NaryxClient {
     if (signer.signerId !== command.actorId) throw new TypeError('the primary signer must be the command actor');
     if (!Array.isArray(consents) || consents.length > 3) throw new TypeError('at most three consents');
     const commandHash = strategyCommandHash(command);
-    const authorization = await createStrategyCommandAuthorization(command, signer);
+    const authorization = await authorizeStrategyCommand(command, signer);
     const consentBodies = [];
     for (const consent of consents) {
-      consentBodies.push({ signerId: consent.signerId, ...await createStrategyCommandAuthorization(command, consent) });
+      consentBodies.push(await authorizeStrategyCommand(command, consent));
     }
     const body = record(await this.#request('POST', '/v1/strategies/commands', {
       command,
-      authorization,
-      ...(consentBodies.length === 0 ? {} : { consents: consentBodies }),
+      authorization: { scheme: authorization.scheme, signature: authorization.signature },
+      ...(consentBodies.length === 0 ? {} : { consents: consentBodies.map(({ signerId, scheme, signature }) => ({ signerId, scheme, signature })) }),
     }), 'strategy command');
     if (body.accepted !== true || body.commandHashHex !== toHex(commandHash)) throw new NaryxEvidenceError('the server acknowledged a different strategy command');
     return Object.freeze({ commandHash: toHex(commandHash), replayed: body.replayed === true, ...(body.receipt === undefined ? {} : { receipt: body.receipt as StrategyTransitionReceipt }) });
+  }
+
+  async submitPreparedStrategyCommand(
+    command: StrategyCommandInput,
+    authorization: SignedStrategyCommandAuthorization,
+    consents: readonly SignedStrategyCommandAuthorization[] = [],
+  ) {
+    if (authorization.signerId !== command.actorId) throw new TypeError('the primary authorization must be from the command actor');
+    if (!Array.isArray(consents) || consents.length > 3) throw new TypeError('at most three consents');
+    const commandHash = toHex(strategyCommandHash(command));
+    const all = [authorization, ...consents];
+    if (all.some((entry) => entry.commandHash !== commandHash)) throw new TypeError('every authorization must bind the submitted command hash');
+    if (new Set(consents.map((entry) => entry.signerId)).size !== consents.length) throw new TypeError('consent signers must be unique');
+    const body = record(await this.#request('POST', '/v1/strategies/commands', {
+      command,
+      authorization: { scheme: authorization.scheme, signature: authorization.signature },
+      ...(consents.length === 0 ? {} : { consents: consents.map(({ signerId, scheme, signature }) => ({ signerId, scheme, signature })) }),
+    }), 'strategy command');
+    if (body.accepted !== true || body.commandHashHex !== commandHash) throw new NaryxEvidenceError('the server acknowledged a different strategy command');
+    return Object.freeze({ commandHash, replayed: body.replayed === true, ...(body.receipt === undefined ? {} : { receipt: body.receipt as StrategyTransitionReceipt }) });
   }
 
   /**
