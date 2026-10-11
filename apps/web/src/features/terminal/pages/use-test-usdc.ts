@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { encodeFunctionData, parseAbi } from "viem";
 import { useSimulateContract } from "wagmi";
 import { EVM_CHAINS, type EvmDomain } from "@/features/wallet/evm-config";
@@ -39,15 +39,31 @@ export type FaucetState = Readonly<{
   busy: string | null;
   message: string | null;
   error: string | null;
+  /** The claim's latest submitted transaction, for its explorer link. */
+  hash: string | null;
   claim(): Promise<void>;
 }>;
 
-type Progress = Readonly<{ busy: string | null; message: string | null; error: string | null }>;
-const IDLE: Progress = { busy: null, message: null, error: null };
+type Progress = Readonly<{ busy: string | null; message: string | null; error: string | null; hash: string | null }>;
+const IDLE: Progress = { busy: null, message: null, error: null, hash: null };
+
+/** A claim keeps running after the user leaves Portfolio; its result is then posted as a notice. */
+function useNoticeWhenAway() {
+  const { notify } = useTerminal();
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  return useCallback((ok: boolean, text: string) => {
+    if (!mounted.current) notify(ok ? "ok" : "bad", text, { href: "/portfolio", label: "View balances" });
+  }, [notify]);
+}
 
 function useEvmFaucet(domain: EvmDomain): FaucetState {
   const evm = useEvmWallet();
   const queryClient = useQueryClient();
+  const noticeWhenAway = useNoticeWhenAway();
   const [progress, setProgress] = useState<Progress>(IDLE);
   const account = evm.account;
   const token = EVM_QUOTE_TOKEN[domain];
@@ -69,21 +85,26 @@ function useEvmFaucet(domain: EvmDomain): FaucetState {
       await evm.switchNetwork(domain);
       return;
     }
-    setProgress({ busy: "Approve in your wallet", message: null, error: null });
+    setProgress({ busy: "Confirm in your wallet", message: null, error: null, hash: null });
+    let hash: string | null = null;
     try {
-      const hash = await evm.sendTransaction(domain, {
+      hash = await evm.sendTransaction(domain, {
         to: token,
         data: encodeFunctionData({ abi: FAUCET_ABI, functionName: "mint", args: [account, GRANT_ATOMS] }),
         value: "0",
       });
-      setProgress({ busy: `Confirming on ${EVM_CHAINS[domain].name}`, message: null, error: null });
+      setProgress({ busy: `Submitted. Confirming on ${EVM_CHAINS[domain].name}`, message: null, error: null, hash });
       if (!(await evm.waitForReceipt(domain, hash))) throw new Error("The faucet transaction reverted. The wallet may already hold the faucet maximum.");
       await queryClient.invalidateQueries();
-      setProgress({ busy: null, message: `${TEST_USDC_GRANT} test USDC added on ${EVM_CHAINS[domain].name}.`, error: null });
+      const message = `${TEST_USDC_GRANT} test USDC added on ${EVM_CHAINS[domain].name}.`;
+      setProgress({ busy: null, message, error: null, hash });
+      noticeWhenAway(true, message);
     } catch (cause) {
-      setProgress({ busy: null, message: null, error: cause instanceof Error ? cause.message : "The faucet request failed." });
+      const error = cause instanceof Error ? cause.message : "The faucet request failed.";
+      setProgress({ busy: null, message: null, error, hash });
+      if (hash !== null) noticeWhenAway(false, `Test USDC on ${EVM_CHAINS[domain].name}: ${error}`);
     }
-  }, [account, available, domain, evm, progress.busy, queryClient, token]);
+  }, [account, available, domain, evm, noticeWhenAway, progress.busy, queryClient, token]);
 
   return { available, needsSwitch, ...progress, claim };
 }
@@ -92,6 +113,7 @@ function useSolanaFaucet(): FaucetState {
   const solana = useSolanaWallet();
   const { privateProvider } = useTerminal();
   const queryClient = useQueryClient();
+  const noticeWhenAway = useNoticeWhenAway();
   const [progress, setProgress] = useState<Progress>(IDLE);
   const owner = solana.selectedAccount?.address ?? null;
   const status = useQuery({
@@ -105,27 +127,36 @@ function useSolanaFaucet(): FaucetState {
     },
   });
   const available = owner !== null && status.data?.testCollateralFaucet != null && solana.canSignAndSendV0;
+  const signAndSend = solana.signAndSend;
 
   const claim = useCallback(async () => {
     if (!owner || !privateProvider || !available || progress.busy) return;
-    setProgress({ busy: "Preparing the claim", message: null, error: null });
+    setProgress({ busy: "Preparing the claim", message: null, error: null, hash: null });
+    let hash: string | null = null;
     try {
       const claimed = await claimSolanaDevnetTestUsdc({
         owner,
         readStatus: (wallet, sizeAtoms, signal, claimTestCollateral) =>
           privateProvider.getSolanaDevnetAccountStatus(wallet, sizeAtoms, signal, claimTestCollateral),
-        signAndSend: solana.signAndSend,
-        onProgress: (busy) => setProgress({ busy, message: null, error: null }),
+        signAndSend: async (transaction) => {
+          hash = await signAndSend(transaction);
+          return hash;
+        },
+        onProgress: (busy) => setProgress({ busy, message: null, error: null, hash }),
       });
       await queryClient.invalidateQueries({ queryKey: ["solana-devnet-balance"] });
+      const message = `${TEST_USDC_GRANT} test USDC added on Solana Devnet.`;
       setProgress(claimed
-        ? { busy: null, message: `${TEST_USDC_GRANT} test USDC added on Solana Devnet.`, error: null }
-        : { busy: null, message: null, error: "This wallet already holds the faucet maximum." });
+        ? { busy: null, message, error: null, hash }
+        : { busy: null, message: null, error: "This wallet already holds the faucet maximum.", hash });
+      if (claimed) noticeWhenAway(true, message);
     } catch (cause) {
       const text = cause instanceof Error ? cause.message : "The faucet request failed.";
-      setProgress({ busy: null, message: null, error: /reject|denied|cancel/i.test(text) ? "Claim cancelled in the wallet." : text });
+      const error = /reject|denied|cancel/i.test(text) ? "Claim cancelled in the wallet." : text;
+      setProgress({ busy: null, message: null, error, hash });
+      if (hash !== null) noticeWhenAway(false, `Test USDC on Solana Devnet: ${error}`);
     }
-  }, [available, owner, privateProvider, progress.busy, queryClient, solana.signAndSend]);
+  }, [available, noticeWhenAway, owner, privateProvider, progress.busy, queryClient, signAndSend]);
 
   return { available, needsSwitch: false, ...progress, claim };
 }

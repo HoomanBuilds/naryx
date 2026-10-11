@@ -7,7 +7,9 @@ import type { DomainId, PackageMode } from "../terminal-view-model";
  * The packages this browser has started, newest first. The private lifecycle API reads one attempt
  * at a time, so the Activity page needs to know which attempts to ask about. Only identifiers and
  * ticket parameters are kept; lifecycle state always comes from the service. Each entry names the
- * wallet that started it, so a browser shared by several wallets shows each only its own.
+ * wallet that started it, so a browser shared by several wallets shows each only its own. Once the
+ * wallet submits, the entry also keeps the transaction reference and the observation key, so the
+ * terminal can resume reading its status after a reload.
  */
 export type RecordedAttempt = Readonly<{
   attemptId: string;
@@ -17,6 +19,10 @@ export type RecordedAttempt = Readonly<{
   size: string;
   flow: "devnet" | "conformance" | "hyperliquid" | "base" | "arbitrum";
   createdAt: number;
+  /** The submitted transaction: an EVM hash or a Solana signature. */
+  transactionHash?: string;
+  /** The idempotency key the service binds this attempt's status reads to. */
+  idempotencyKey?: string;
 }>;
 
 const KEY = "naryx.terminal.attempts";
@@ -26,6 +32,8 @@ const EMPTY: readonly RecordedAttempt[] = Object.freeze([]);
 const DOMAINS: readonly string[] = ["solana", "base", "arbitrum", "hyperliquid"];
 const FLOWS: readonly string[] = ["devnet", "conformance", "hyperliquid", "base", "arbitrum"];
 const OWNER = /^(?:0x[0-9a-fA-F]{40}|[1-9A-HJ-NP-Za-km-z]{32,44})$/;
+const TRANSACTION = /^(?:0x[0-9a-f]{64}|[1-9A-HJ-NP-Za-km-z]{80,90})$/;
+const IDEMPOTENCY_KEY = /^[A-Za-z0-9:_-]{1,128}$/;
 
 // Set only while browser storage rejects writes, so other tabs' records are otherwise read from storage.
 let memory: string | null = null;
@@ -56,7 +64,9 @@ function isAttempt(value: unknown): value is RecordedAttempt {
     // Sizes are in each lane's base asset, up to its full precision (18 decimals for WETH).
     typeof entry.size === "string" && /^\d{1,12}(?:\.\d{1,18})?$/.test(entry.size) &&
     typeof entry.flow === "string" && FLOWS.includes(entry.flow) &&
-    typeof entry.createdAt === "number" && Number.isSafeInteger(entry.createdAt);
+    typeof entry.createdAt === "number" && Number.isSafeInteger(entry.createdAt) &&
+    (entry.transactionHash === undefined || (typeof entry.transactionHash === "string" && TRANSACTION.test(entry.transactionHash))) &&
+    (entry.idempotencyKey === undefined || (typeof entry.idempotencyKey === "string" && IDEMPOTENCY_KEY.test(entry.idempotencyKey)));
 }
 
 function readRaw(): string | null {
@@ -90,6 +100,27 @@ function subscribe(callback: () => void) {
   };
 }
 
+function write(raw: string) {
+  try {
+    window.localStorage.setItem(KEY, raw);
+    memory = null;
+  } catch {
+    // Storage can be unavailable; the in-memory copy keeps this session's list.
+    memory = raw;
+  }
+  window.dispatchEvent(new Event(CHANGE_EVENT));
+}
+
+/** Adds the submitted transaction and its observation key to an attempt this browser recorded. */
+export function annotateAttempt(attemptId: string, submitted: Readonly<{ transactionHash?: string; idempotencyKey?: string }>) {
+  const current = snapshot();
+  const known = current.find((entry) => entry.attemptId === attemptId);
+  if (known === undefined) return;
+  const next: RecordedAttempt = { ...known, ...submitted };
+  if (!isAttempt(next)) return;
+  write(JSON.stringify(current.map((entry) => entry === known ? next : entry)));
+}
+
 export function useAttemptIndex(): [
   readonly RecordedAttempt[],
   (attempt: RecordedAttempt) => void,
@@ -100,27 +131,13 @@ export function useAttemptIndex(): [
     if (!isAttempt(attempt)) return;
     const next = [attempt, ...snapshot().filter((entry) => entry.attemptId !== attempt.attemptId)].slice(0, LIMIT);
     const raw = JSON.stringify(next);
-    try {
-      window.localStorage.setItem(KEY, raw);
-      memory = null;
-    } catch {
-      // Storage can be unavailable; the in-memory copy keeps this session's list.
-      memory = raw;
-    }
-    window.dispatchEvent(new Event(CHANGE_EVENT));
+    write(raw);
   }, []);
   // Clears only the given wallets' attempts; other wallets' entries in this browser are kept.
   const clear = useCallback((owners: readonly string[]) => {
     const keys = new Set(owners.map(ownerKey));
     const raw = JSON.stringify(snapshot().filter((entry) => !keys.has(ownerKey(entry.owner))));
-    try {
-      window.localStorage.setItem(KEY, raw);
-      memory = null;
-    } catch {
-      // Storage can be unavailable; the in-memory copy keeps this session's list.
-      memory = raw;
-    }
-    window.dispatchEvent(new Event(CHANGE_EVENT));
+    write(raw);
   }, []);
   return [attempts, record, clear];
 }

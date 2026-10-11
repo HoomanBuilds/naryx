@@ -13,6 +13,7 @@ import { DOMAIN_META, DOMAIN_ORDER, EXIT_UNAVAILABLE, domainLive, useTerminal } 
 import { attemptsOf } from "../shell/attempt-index";
 import { useEvmBalances, useHyperliquidBalance, useSolanaBalance, type Amount, type ChainBalance } from "./use-balances";
 import { formatAtomicAmount, formatScaledInteger } from "../format";
+import { TransactionLink } from "../transaction-status";
 import { usePortfolioIntelligence } from "./use-portfolio-intelligence";
 import { PortfolioScenarioLab } from "./portfolio-scenario-lab";
 import { StrategyEntryManager, StrategyLifecycleManager } from "./strategy-lifecycle-manager";
@@ -169,7 +170,7 @@ export function PortfolioView() {
   const faucetNotices = DOMAIN_ORDER.flatMap((domain) => {
     const faucet = faucets[domain];
     const text = faucet.busy ?? faucet.error ?? faucet.message;
-    return text ? [{ domain, text, error: faucet.error !== null && faucet.busy === null }] : [];
+    return text ? [{ domain, text, error: faucet.error !== null && faucet.busy === null, hash: faucet.hash }] : [];
   });
 
   return (
@@ -295,6 +296,7 @@ export function PortfolioView() {
             {faucetNotices.map((notice) => (
               <p key={notice.domain} className={notice.error ? styles.noticeError : styles.noticeOk}>
                 {DOMAIN_META[notice.domain].label}: {notice.text}
+                {notice.hash ? <> <TransactionLink domain={notice.domain} hash={notice.hash}>View transaction</TransactionLink></> : null}
               </p>
             ))}
           </div>

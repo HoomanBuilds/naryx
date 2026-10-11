@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useEffectEvent, useRef, useState } from "react";
 import bs58 from "bs58";
 import {
   NaryxClient,
@@ -32,6 +32,7 @@ import {
 } from "./solana-devnet-onboarding";
 import { packageOrdersOf, usePackageOrderIndex } from "./shell/package-order-index";
 import type { DomainId } from "./terminal-view-model";
+import { TransactionLink, refreshOnReturn } from "./transaction-status";
 import styles from "./trading-terminal.module.css";
 import { AdvancedOrderControls } from "./advanced-order-controls";
 
@@ -2614,6 +2615,7 @@ export function GeneralizedStrategyPreparationPanel({
   sendEvmTransaction,
   waitForEvmReceipt,
   sendSolanaTransaction,
+  walletAwaiting = false,
 }: {
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
@@ -2630,6 +2632,8 @@ export function GeneralizedStrategyPreparationPanel({
   sendEvmTransaction?: (chainId: number, transaction: Readonly<{ to: string; data: string; value: string }>) => Promise<string>;
   waitForEvmReceipt?: (chainId: number, hash: string) => Promise<boolean>;
   sendSolanaTransaction?: (transaction: Uint8Array) => Promise<string>;
+  /** A signature or transaction request is open in the connected wallet. */
+  walletAwaiting?: boolean;
 }) {
   const hyperliquidLane = executionDomain === "hyperliquid";
   const solanaLane = executionDomain === "solana";
@@ -2749,6 +2753,9 @@ export function GeneralizedStrategyPreparationPanel({
   const [evmExecutionBusy, setEvmExecutionBusy] = useState(false);
   const [evmExecutionHash, setEvmExecutionHash] = useState<string | null>(null);
   const [evmExecutionConfirmed, setEvmExecutionConfirmed] = useState(false);
+  const [evmRevertedHash, setEvmRevertedHash] = useState<string | null>(null);
+  // The setup transaction a multi-step wallet sequence is waiting on, so its hash shows while it confirms.
+  const [pendingTransaction, setPendingTransaction] = useState<Readonly<{ chain: DomainId | number; hash: string; label: string }> | null>(null);
   const [nativeCreateBusy, setNativeCreateBusy] = useState(false);
   const [stageBusy, setStageBusy] = useState(false);
   const [packageSubmitBusy, setPackageSubmitBusy] = useState(false);
@@ -3527,10 +3534,11 @@ export function GeneralizedStrategyPreparationPanel({
         return parseSolanaProvisioning(await response.json(), expectedPackageId, solanaOwner);
       };
       let plan = await loadPlan();
-      for (const step of plan.steps) {
+      for (const [index, step] of plan.steps.entries()) {
         const { blockhash, lastValidBlockHeight } = await getSolanaDevnetBlockhash();
         const transaction = buildSolanaWalletTransaction(step, solanaOwner, blockhash);
         const signature = await sendSolanaTransaction(transaction);
+        setPendingTransaction({ chain: "solana", hash: signature, label: `Account setup ${index + 1} of ${plan.steps.length}` });
         await waitForSolanaDevnetFinality(signature, lastValidBlockHeight);
       }
       plan = await loadPlan();
@@ -3541,6 +3549,7 @@ export function GeneralizedStrategyPreparationPanel({
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Solana treasury hedge provisioning failed closed.");
     } finally {
+      setPendingTransaction(null);
       setSolanaProvisionBusy(false);
     }
   }
@@ -3577,25 +3586,30 @@ export function GeneralizedStrategyPreparationPanel({
     }
   }
 
+  async function readSolanaObservation() {
+    if (privateApiBaseUrl === null || review === null || solanaExecutionSignature === null) return;
+    const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/observe-solana`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ quoteHash: review.quoteHash, signature: solanaExecutionSignature }),
+    });
+    if (!response.ok) throw new Error(await failureMessage(response));
+    setSolanaObservation(parseSolanaExecutionObservation(
+      await response.json(),
+      solanaExecutionSignature,
+      review,
+    ));
+  }
+
   async function refreshSolanaObservation() {
     if (privateApiBaseUrl === null || review === null || solanaExecutionSignature === null) return;
     setSolanaExecutionBusy(true);
     setError(null);
     try {
-      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/observe-solana`, {
-        method: "POST",
-        cache: "no-store",
-        credentials: "omit",
-        referrerPolicy: "no-referrer",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ quoteHash: review.quoteHash, signature: solanaExecutionSignature }),
-      });
-      if (!response.ok) throw new Error(await failureMessage(response));
-      setSolanaObservation(parseSolanaExecutionObservation(
-        await response.json(),
-        solanaExecutionSignature,
-        review,
-      ));
+      await readSolanaObservation();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Solana execution observation failed closed.");
     } finally {
@@ -3851,8 +3865,9 @@ export function GeneralizedStrategyPreparationPanel({
         return parseEvmProvisioning(await response.json(), selectedEvmProfile.chainId, strategyOwner ?? "");
       };
       let plan = await loadPlan();
-      for (const transaction of plan.transactions) {
+      for (const [index, transaction] of plan.transactions.entries()) {
         const transactionHash = await sendEvmTransaction(plan.chainId, transaction);
+        setPendingTransaction({ chain: plan.chainId, hash: transactionHash, label: `Setup ${index + 1} of ${plan.transactions.length}, ${transaction.kind.replaceAll("_", " ").toLowerCase()}` });
         if (!await waitForEvmReceipt(plan.chainId, transactionHash)) {
           throw new Error(`${transaction.kind.replaceAll("_", " ").toLowerCase()} reverted on the testnet.`);
         }
@@ -3863,6 +3878,7 @@ export function GeneralizedStrategyPreparationPanel({
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "EVM strategy provisioning failed closed.");
     } finally {
+      setPendingTransaction(null);
       setEvmProvisionBusy(false);
     }
   }
@@ -3892,8 +3908,9 @@ export function GeneralizedStrategyPreparationPanel({
         quoteHash,
         action,
       );
-      for (const transaction of plan.transactions) {
+      for (const [index, transaction] of plan.transactions.entries()) {
         const transactionHash = await sendEvmTransaction(plan.chainId, transaction);
+        setPendingTransaction({ chain: plan.chainId, hash: transactionHash, label: `Collateral ${index + 1} of ${plan.transactions.length}, ${transaction.kind.replaceAll("_", " ").toLowerCase()}` });
         if (!await waitForEvmReceipt(plan.chainId, transactionHash)) {
           throw new Error(`${transaction.kind.replaceAll("_", " ").toLowerCase()} reverted on the testnet.`);
         }
@@ -3903,6 +3920,7 @@ export function GeneralizedStrategyPreparationPanel({
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "EVM collateral management failed closed.");
     } finally {
+      setPendingTransaction(null);
       setEvmCollateralBusy(false);
     }
   }
@@ -3930,7 +3948,10 @@ export function GeneralizedStrategyPreparationPanel({
       const transactionHash = await sendEvmTransaction(transaction.chainId, transaction);
       setEvmExecutionHash(transactionHash);
       const confirmed = await waitForEvmReceipt(transaction.chainId, transactionHash);
-      if (!confirmed) throw new Error("The strategy package transaction reverted on the testnet.");
+      if (!confirmed) {
+        setEvmRevertedHash(transactionHash);
+        throw new Error("The strategy package transaction reverted on the testnet.");
+      }
       await observeEvmStrategy(transactionHash, review.quoteHash);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "EVM strategy execution failed closed.");
@@ -5001,43 +5022,78 @@ export function GeneralizedStrategyPreparationPanel({
     }
   }
 
+  async function readExecutionStatus() {
+    if (privateApiBaseUrl === null || executionAttempt === null) return;
+    const idempotencyKey = executionKey || `strategy-exec-${executionAttempt.attemptId.slice(-40)}`;
+    if (executionKey === "") setExecutionKey(idempotencyKey);
+    const response = await fetch(`${privateApiBaseUrl}/internal/terminal/hyperliquid-testnet/attempt-status`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ attemptId: executionAttempt.attemptId, idempotencyKey }),
+    });
+    if (!response.ok) throw new Error(await failureMessage(response));
+    const next = parseExecutionProgress(await response.json(), executionAttempt.attemptId, idempotencyKey);
+    setExecutionProgress(next.progress);
+    if (next.result !== null) {
+      setExecutionResult(next.result);
+      if (hasTerminalStrategyReceipt(next.result) && publicApiBaseUrl !== null) {
+        const receiptResponse = await fetch(`${publicApiBaseUrl}/v1/strategy-receipts/by-quote/${executionAttempt.quoteHash}`, {
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+        });
+        if (!receiptResponse.ok) throw new Error("Execution finalized, but its canonical strategy receipt is unavailable.");
+        setStrategyReceipt(parseStrategyReceipt(await receiptResponse.json(), executionAttempt.quoteHash));
+      }
+    }
+  }
+
   async function refreshExecutionStatus() {
     if (privateApiBaseUrl === null || executionAttempt === null) return;
     setExecutionBusy(true);
     setError(null);
-    const idempotencyKey = executionKey || `strategy-exec-${executionAttempt.attemptId.slice(-40)}`;
-    if (executionKey === "") setExecutionKey(idempotencyKey);
     try {
-      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/hyperliquid-testnet/attempt-status`, {
-        method: "POST",
-        cache: "no-store",
-        credentials: "omit",
-        referrerPolicy: "no-referrer",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ attemptId: executionAttempt.attemptId, idempotencyKey }),
-      });
-      if (!response.ok) throw new Error(await failureMessage(response));
-      const next = parseExecutionProgress(await response.json(), executionAttempt.attemptId, idempotencyKey);
-      setExecutionProgress(next.progress);
-      if (next.result !== null) {
-        setExecutionResult(next.result);
-        if (hasTerminalStrategyReceipt(next.result) && publicApiBaseUrl !== null) {
-          const receiptResponse = await fetch(`${publicApiBaseUrl}/v1/strategy-receipts/by-quote/${executionAttempt.quoteHash}`, {
-            headers: { Accept: "application/json" },
-            cache: "no-store",
-            credentials: "omit",
-            referrerPolicy: "no-referrer",
-          });
-          if (!receiptResponse.ok) throw new Error("Execution finalized, but its canonical strategy receipt is unavailable.");
-          setStrategyReceipt(parseStrategyReceipt(await receiptResponse.json(), executionAttempt.quoteHash));
-        }
-      }
+      await readExecutionStatus();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy execution status failed closed.");
     } finally {
       setExecutionBusy(false);
     }
   }
+
+  // A submitted execution keeps reading its own status until it is final, and reads again the moment
+  // the tab is back in view. A failed read is retried on the next tick; Refresh shows its reason.
+  const solanaObservationOpen = solanaExecutionSignature !== null && !solanaExecutionBusy
+    && solanaObservation?.status !== "FINALIZED" && solanaObservation?.status !== "FAILED";
+  const evmExecutionReverted = evmExecutionHash !== null && evmExecutionHash === evmRevertedHash;
+  const evmObservationOpen = evmExecutionHash !== null && !evmExecutionConfirmed && !evmExecutionReverted && !evmExecutionBusy;
+  const executionStatusOpen = executionAttempt !== null && executionProgress !== null && !executionBusy
+    && executionProgress.state !== "COMPLETED" && (executionResult === null || !isFinalStrategyResult(executionResult));
+  const pollSubmittedExecution = useEffectEvent(async () => {
+    if (solanaObservationOpen) await readSolanaObservation();
+    else if (evmObservationOpen) await observeEvmStrategy();
+    else if (executionStatusOpen) await readExecutionStatus();
+  });
+  const executionPollOpen = solanaObservationOpen || evmObservationOpen || executionStatusOpen;
+  useEffect(() => {
+    if (!executionPollOpen) return;
+    let inFlight = false;
+    const poll = () => {
+      if (inFlight) return;
+      inFlight = true;
+      void pollSubmittedExecution().catch(() => undefined).finally(() => { inFlight = false; });
+    };
+    const timer = window.setInterval(poll, 5_000);
+    const stopReturnRefresh = refreshOnReturn(poll);
+    return () => {
+      window.clearInterval(timer);
+      stopReturnRefresh();
+    };
+  }, [executionPollOpen]);
 
   const nativeOrderFieldsReady = selectedNativeProfile !== null
     && nativeLifecycleSupported
@@ -5145,6 +5201,7 @@ export function GeneralizedStrategyPreparationPanel({
         <h3 id="generalized-strategy-review-title">Package quote and execution</h3>
         <span>{evmExecutionConfirmed || solanaObservation?.status === "FINALIZED" ? "ONCHAIN CONFIRMED"
           : solanaObservation?.status === "FAILED" ? "FAILED"
+          : evmExecutionReverted ? "REVERTED"
           : evmExecutionHash || solanaExecutionSignature ? "SUBMITTED"
           : review && authorizedOrderHash === review.orderHash ? "OWNER AUTHORIZED"
           : review ? "UNSIGNED PLAN" : quoteReview ? "SIGNED QUOTE"
@@ -6558,7 +6615,11 @@ export function GeneralizedStrategyPreparationPanel({
                 </strong>
                 <span>Execution reference</span>
                 <strong title={nettingExecutionReference || undefined}>
-                  {nettingExecutionReference === "" ? "Not submitted" : compact(nettingExecutionReference, 10, 8)}
+                  {nettingExecutionReference === "" ? "Not submitted" : (
+                    <TransactionLink domain={solanaLane ? "solana" : executionDomain} hash={nettingExecutionReference}>
+                      {compact(nettingExecutionReference, 10, 8)}
+                    </TransactionLink>
+                  )}
                 </strong>
               </div>
               <button
@@ -6594,8 +6655,15 @@ export function GeneralizedStrategyPreparationPanel({
           ) : null}
         </div>
       ) : null}
+      {pendingTransaction ? (
+        <p className={styles.fieldContext} role="status">
+          {pendingTransaction.label} submitted:{" "}
+          <TransactionLink domain={pendingTransaction.chain} hash={pendingTransaction.hash}>{compact(pendingTransaction.hash, 12, 10)}</TransactionLink>.
+          Waiting for confirmation.
+        </p>
+      ) : null}
       <p className={styles.fieldContext} role="status">
-        {error ?? (privateApiBaseUrl === null
+        {walletAwaiting ? "Confirm the request in your wallet. Rejecting it cancels this step and you can retry." : error ?? (privateApiBaseUrl === null
           ? "Configure the private terminal API to prepare an admitted package."
           : quoteOrigin === "POST_MATCH"
             ? nettingSelection === null
@@ -6648,10 +6716,11 @@ export function GeneralizedStrategyPreparationPanel({
               >
                 {evmExecutionBusy ? `Confirming atomic ${evmPackageLabel}`
                   : evmExecutionConfirmed ? `Atomic ${evmPackageLabel} finalized`
+                    : evmExecutionReverted ? `Atomic ${evmPackageLabel} reverted`
                     : evmExecutionHash ? `Atomic ${evmPackageLabel} submitted`
                       : `Sign and execute atomic ${evmPackageLabel}`}
               </button>
-              {evmExecutionHash !== null && !evmExecutionConfirmed ? (
+              {evmExecutionHash !== null && !evmExecutionConfirmed && !evmExecutionReverted ? (
                 <button
                   type="button"
                   className={styles.secondaryAction}
@@ -6676,9 +6745,13 @@ export function GeneralizedStrategyPreparationPanel({
                 </button>
               ) : null}
               <p className={styles.fieldContext} role="status">
-                {evmExecutionHash
-                  ? `${evmExecutionConfirmed ? "Finalized with canonical receipt" : "Submitted and awaiting finality"} transaction ${compact(evmExecutionHash, 12, 10)} on chain ${evmReview.chainId}.`
-                  : `The owner and solver sign the same ${review.domains[0]?.summary ?? "atomic package"}. The wallet submits one transaction.`}
+                {evmExecutionHash ? (
+                  <>
+                    {evmExecutionConfirmed ? "Finalized with canonical receipt:" : evmExecutionReverted ? "Reverted, so nothing settled:" : "Submitted, awaiting finality:"} transaction{" "}
+                    <TransactionLink domain={evmReview.chainId} hash={evmExecutionHash}>{compact(evmExecutionHash, 12, 10)}</TransactionLink> on chain {evmReview.chainId}.
+                    {evmExecutionConfirmed || evmExecutionReverted ? "" : " This updates on its own."}
+                  </>
+                ) : `The owner and solver sign the same ${review.domains[0]?.summary ?? "atomic package"}. The wallet submits one transaction.`}
               </p>
             </>
           ) : solanaReview ? (
@@ -6706,13 +6779,18 @@ export function GeneralizedStrategyPreparationPanel({
                 </button>
               ) : null}
               <p className={styles.fieldContext} role="status">
-                {solanaExecutionSignature
-                  ? solanaObservation?.status === "FINALIZED"
-                    ? `Finalized Devnet transaction ${compact(solanaExecutionSignature, 12, 10)} at slot ${solanaObservation.slot}.`
-                    : solanaObservation?.status === "FAILED"
-                      ? `Devnet transaction ${compact(solanaExecutionSignature, 12, 10)} failed onchain.`
-                      : `Submitted Devnet transaction ${compact(solanaExecutionSignature, 12, 10)}. Finalized package observation is pending.`
-                  : `The solver has signed the reviewed ${solanaReview.summary}. Your wallet supplies the owner signature and submits it.`}
+                {solanaExecutionSignature ? (
+                  <>
+                    {solanaObservation?.status === "FINALIZED" ? "Finalized Devnet transaction"
+                      : solanaObservation?.status === "FAILED" ? "Devnet transaction" : "Submitted Devnet transaction"}{" "}
+                    <TransactionLink domain="solana" hash={solanaExecutionSignature}>{compact(solanaExecutionSignature, 12, 10)}</TransactionLink>
+                    {solanaObservation?.status === "FINALIZED"
+                      ? ` at slot ${solanaObservation.slot}.`
+                      : solanaObservation?.status === "FAILED"
+                        ? " failed onchain."
+                        : ". Finalized package observation is pending and updates on its own."}
+                  </>
+                ) : `The solver has signed the reviewed ${solanaReview.summary}. Your wallet supplies the owner signature and submits it.`}
               </p>
               {solanaObservation?.status === "FINALIZED" ? (
                 <div className={styles.quoteReview}>
@@ -6853,6 +6931,10 @@ export function GeneralizedStrategyPreparationPanel({
                 ? "The submitted Solana transaction failed. No successful package execution is claimed."
               : solanaExecutionSignature
                 ? "The owner and solver signed one atomic Solana Devnet transaction. Finalized onchain receipt evidence remains separate."
+              : evmExecutionReverted
+                ? "The submitted package transaction reverted. No package execution is claimed."
+              : evmExecutionHash
+                ? "The owner signed and submitted one atomic testnet transaction. Finalized receipt evidence remains separate."
               : executionResult
               ? "The testnet executor independently revalidated the selected package before submission."
               : solanaReview

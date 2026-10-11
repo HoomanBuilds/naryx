@@ -130,7 +130,7 @@ export function StrategyEntryManager({
           {prepared === null ? (
             <button type="submit" className={styles.connect} disabled={busy}>{busy ? "Reviewing" : "Review receipt"}</button>
           ) : (
-            <button type="button" className={styles.connect} disabled={busy} onClick={() => void open()}>{busy ? "Signing" : "Sign and record"}</button>
+            <button type="button" className={styles.connect} disabled={busy} onClick={() => void open()}>{busy ? (evm.awaitingWallet || solana.awaitingWallet ? "Confirm in your wallet" : "Signing") : "Sign and record"}</button>
           )}
         </div>
         {notice ? <p className={notice.kind === "ok" ? styles.noticeOk : styles.noticeError} role="status">{notice.text}</p> : null}
@@ -368,7 +368,7 @@ export function StrategyLifecycleManager({
           <p>{action === "APPLY_EXECUTION"
             ? "The service derives the exact next state from the finalized receipt and rejects any unexplained position delta."
             : `Owner ${short(selected.state.ownerId)}. The command binds state hash ${selected.stateHash.slice(0, 12)}...`}</p>
-          <button type="submit" className={styles.connect} disabled={busy}>{busy ? "Signing" : "Review and sign"}</button>
+          <button type="submit" className={styles.connect} disabled={busy}>{busy ? (evm.awaitingWallet || solana.awaitingWallet ? "Confirm in your wallet" : "Signing") : "Review and sign"}</button>
         </div>
         {notice ? <p className={notice.kind === "ok" ? styles.noticeOk : styles.noticeError} role="status">{notice.text}</p> : null}
       </form>

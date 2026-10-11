@@ -14,6 +14,8 @@ import {
   type ArbitrumSolverQuote,
   type PrivateHttpTerminalProvider,
 } from "./private-http-terminal-provider";
+import { annotateAttempt } from "./shell/attempt-index";
+import { TransactionLink, refreshOnReturn } from "./transaction-status";
 import styles from "./trading-terminal.module.css";
 
 /**
@@ -33,6 +35,8 @@ const BASE_DECIMALS = 18;
 export type ArbitrumExitStep = "account" | "create" | "quote" | "select" | "prepare" | "sign" | "takeSpot" | "restart";
 
 const TAKE_SPOT_IN_KIND_ABI = parseAbi(["function takeSpotInKind(bytes32 requestKey) returns (bool)"]);
+/** The numbered steps up to the signed exit; the solver and GMX carry it from there. */
+const EXIT_SEQUENCE: readonly ArbitrumExitStep[] = ["create", "quote", "select", "prepare", "sign"];
 
 type ExitFlow = {
   owner: string;
@@ -185,9 +189,11 @@ export function useArbitrumSepoliaExit(input: Readonly<{
     };
     void poll();
     const timer = window.setInterval(() => void poll(), POLL_INTERVAL_MS);
+    const stopReturnRefresh = refreshOnReturn(() => void poll());
     return () => {
       controller.abort();
       window.clearInterval(timer);
+      stopReturnRefresh();
     };
   }, [attemptId, idempotencyKey, observing, provider]);
 
@@ -210,8 +216,12 @@ export function useArbitrumSepoliaExit(input: Readonly<{
 
   const action = useMemo<ArbitrumExitAction>(() => {
     const none = (label: string, reason: string): ArbitrumExitAction => ({ kind: "none", label, reason, disabled: true });
+    const position = nextStep === null ? -1 : EXIT_SEQUENCE.indexOf(nextStep);
     const step = (label: string, reason: string): ArbitrumExitAction => ({
-      kind: "arbitrum-exit", label, reason: current?.error ?? reason, disabled: false,
+      kind: "arbitrum-exit",
+      label,
+      reason: `${position >= 0 ? `Step ${position + 1} of ${EXIT_SEQUENCE.length}. ` : ""}${current?.error ?? reason}`,
+      disabled: false,
     });
     if (!current) return none("Loading strategy account", "Reading your Arbitrum Sepolia strategy account and open package from chain.");
     if (current.busy) return none("Working", current.error ?? "Waiting for the current exit step.");
@@ -325,6 +335,8 @@ export function useArbitrumSepoliaExit(input: Readonly<{
       }
       const signature = await signTypedData(arbitrumExitWalletTypedData(authorization));
       done({ authorization: await provider.authorizeArbitrumExit(authorization, attempt, signature) });
+      // The signed exit is now observable by attempt and key, so the terminal can follow it after a reload.
+      annotateAttempt(attempt.attemptId, { idempotencyKey: flowAtStart.idempotencyKey });
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Arbitrum Sepolia exit step failed.";
       // An expired quote or authorization cannot be reused for the same order: start a fresh exit order.
@@ -401,6 +413,13 @@ function ArbitrumSepoliaExitPanel({ flow }: { flow: ExitFlow }) {
             <span>GMX execution fee</span><strong>{formatEther(BigInt(String(message.executionFeeWei)))} ETH, paid by the solver</strong>
             <span>Submit before</span><strong>{unixTimeText(message.authorizationExpiry)}</strong>
             <span>Cancellable after</span><strong>{unixTimeText(message.cancelAfter)}</strong>
+          </div>
+        ) : null}
+        {flow.takeSpotHash ? (
+          <div className={styles.submissionReceipt} role="status">
+            <span>In-kind spot transaction</span>
+            <strong><TransactionLink domain="arbitrum" hash={flow.takeSpotHash}>{compact(flow.takeSpotHash, 14, 12)}</TransactionLink></strong>
+            <small>Sent from your wallet. Waiting for confirmation on Arbitrum Sepolia.</small>
           </div>
         ) : null}
         {flow.authorization?.signed ? (

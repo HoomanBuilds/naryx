@@ -10,6 +10,7 @@ import { useSolanaWallet } from "@/features/wallet/solana-wallet";
 import type { OwnerPackageEntry, PackageLifecycleResponse, PackageLifecycleState } from "../private-http-terminal-provider";
 import { DOMAIN_META, useTerminal } from "../shell/terminal-context";
 import { attemptsOf, type RecordedAttempt } from "../shell/attempt-index";
+import { TransactionLink } from "../transaction-status";
 import styles from "./pages.module.css";
 
 const FLOW_LABEL: Readonly<Record<RecordedAttempt["flow"], string>> = {
@@ -18,12 +19,6 @@ const FLOW_LABEL: Readonly<Record<RecordedAttempt["flow"], string>> = {
   hyperliquid: "Hyperliquid testnet",
   base: "Base Sepolia",
   arbitrum: "Arbitrum Sepolia",
-};
-
-/** Public block explorers for the EVM test networks whose outcomes the service records. */
-const EXPLORER_TX: Readonly<Partial<Record<RecordedAttempt["domain"], string>>> = {
-  base: "https://sepolia.basescan.org/tx/",
-  arbitrum: "https://sepolia.arbiscan.io/tx/",
 };
 
 const TERMINAL_LIFECYCLE_STATES: ReadonlySet<PackageLifecycleState> = new Set(["CLOSED", "FAILED", "EXPIRED", "CANCELLED"]);
@@ -206,12 +201,12 @@ async function ownerStrategyReceipts(baseUrl: string, owner: string, signal: Abo
 }
 
 /** Lifecycle reads cover Solana Devnet and local conformance attempts. */
-function readable(attempt: RecordedAttempt) {
+function readable(attempt: Pick<RecordedAttempt, "flow">) {
   return attempt.flow === "devnet" || attempt.flow === "conformance";
 }
 
 /** Base and Arbitrum attempts carry the outcome the service observed on chain. */
-function observed(attempt: RecordedAttempt) {
+function observed(attempt: Pick<RecordedAttempt, "flow">) {
   return attempt.flow === "base" || attempt.flow === "arbitrum";
 }
 
@@ -273,7 +268,7 @@ function exportStrategyReceipts(receipts: readonly StrategyReceiptHistoryRow[]) 
 }
 
 /** A package the service recorded for a connected wallet, as an Activity row with its service state and evidence. */
-type Row = RecordedAttempt & Readonly<{
+type Row = Omit<RecordedAttempt, "transactionHash"> & Readonly<{
   listed?: true;
   serviceState?: string | null;
   transactionHash?: string | null;
@@ -314,6 +309,8 @@ export function ActivityView() {
       queryKey: ["owner-packages", owner],
       enabled: privateProvider !== null,
       refetchInterval: 30_000,
+      // Returning to the tab shows packages that settled meanwhile without a manual refresh.
+      refetchOnWindowFocus: true,
       queryFn: ({ signal }: { signal: AbortSignal }) => {
         if (!privateProvider) throw new Error("Private service not configured.");
         return privateProvider.listOwnerPackages(owner, signal);
@@ -385,6 +382,8 @@ export function ActivityView() {
       enabled: privateProvider !== null && readable(attempt),
       refetchInterval: (query: { state: { data?: PackageLifecycleResponse } }) =>
         query.state.data !== undefined && TERMINAL_LIFECYCLE_STATES.has(query.state.data.attempt.state) ? false : 15_000,
+      refetchOnWindowFocus: (query: { state: { data?: PackageLifecycleResponse } }) =>
+        query.state.data === undefined || !TERMINAL_LIFECYCLE_STATES.has(query.state.data.attempt.state),
       queryFn: ({ signal }: { signal: AbortSignal }): Promise<PackageLifecycleResponse> => {
         if (!privateProvider) throw new Error("Private service not configured.");
         return privateProvider.getPackageLifecycle(attempt.attemptId, signal);
@@ -394,7 +393,6 @@ export function ActivityView() {
   const openIndex = attempts.findIndex((attempt) => attempt.attemptId === openId);
   const openAttempt = openIndex >= 0 ? attempts[openIndex] : undefined;
   const openLifecycle = openIndex >= 0 ? lifecycles[openIndex]?.data ?? null : null;
-  const explorer = openAttempt === undefined ? undefined : EXPLORER_TX[openAttempt.domain];
 
   return (
     <main className={styles.page}>
@@ -653,6 +651,11 @@ export function ActivityView() {
             <p className={styles.mono} title={openId}>{compact(openId, 18, 8)}</p>
           </div>
           <div className={styles.cardBody}>
+            {openAttempt?.flow === "devnet" && openAttempt.transactionHash ? (
+              <p className={styles.dim} style={{ fontSize: 12.5 }}>
+                Devnet transaction: <TransactionLink domain="solana" hash={openAttempt.transactionHash}>{compact(openAttempt.transactionHash, 12, 8)}</TransactionLink>
+              </p>
+            ) : null}
             {openAttempt !== undefined && observed(openAttempt) ? (
               openAttempt.serviceState ? (
                 <dl className={styles.facts}>
@@ -660,10 +663,10 @@ export function ActivityView() {
                   <dd>{stateText(openAttempt.serviceState)}</dd>
                   <dt>Transaction</dt>
                   <dd className={styles.mono}>
-                    {openAttempt.transactionHash && explorer ? (
-                      <a href={`${explorer}${openAttempt.transactionHash}`} target="_blank" rel="noopener noreferrer" title={openAttempt.transactionHash}>
+                    {openAttempt.transactionHash ? (
+                      <TransactionLink domain={openAttempt.domain} hash={openAttempt.transactionHash}>
                         {compact(openAttempt.transactionHash, 12, 8)}
-                      </a>
+                      </TransactionLink>
                     ) : "-"}
                   </dd>
                   <dt>Block</dt>
@@ -678,6 +681,9 @@ export function ActivityView() {
                   {openAttempt.listed
                     ? "The service has not observed a transaction for this package on chain, so it has no state or receipt."
                     : "The service did not list this package, so its on-chain state cannot be shown here."}
+                  {openAttempt.transactionHash ? (
+                    <> Submitted transaction: <TransactionLink domain={openAttempt.domain} hash={openAttempt.transactionHash}>{compact(openAttempt.transactionHash, 12, 8)}</TransactionLink>.</>
+                  ) : null}
                 </p>
               )
             ) : openLifecycle && openLifecycle.receipts.length > 0 ? (

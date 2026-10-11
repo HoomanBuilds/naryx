@@ -489,6 +489,8 @@ type OnboardingState = Readonly<{
   status: SolanaDevnetAccountStatus | null;
   error: string | null;
   busy: string | null;
+  /** The setup transaction submitted and awaiting finality. */
+  signature?: string;
 }>;
 
 export type SolanaDevnetOnboarding = Readonly<{
@@ -499,6 +501,8 @@ export type SolanaDevnetOnboarding = Readonly<{
   nextStep: SolanaDevnetOnboardingStep | null;
   error: string | null;
   busy: string | null;
+  /** The setup transaction waiting for Devnet finality, while one is. */
+  signature: string | null;
   advance(): Promise<void>;
 }>;
 
@@ -550,7 +554,7 @@ export function useSolanaDevnetOnboarding(input: Readonly<{
       update({ busy: "Waiting for wallet approval", error: null });
       const { blockhash, lastValidBlockHeight } = await getSolanaDevnetBlockhash();
       const signature = await signAndSend(buildOnboardingTransaction(nextStep, owner, blockhash));
-      update({ busy: "Waiting for Devnet finality" });
+      update({ busy: "Waiting for Devnet finality", signature });
       await waitForSolanaDevnetFinality(signature, lastValidBlockHeight);
       update({ busy: "Refreshing account" });
       const status = await readStatus(owner, sizeAtoms);
@@ -574,6 +578,7 @@ export function useSolanaDevnetOnboarding(input: Readonly<{
     nextStep,
     error: current?.error ?? null,
     busy: current?.busy ?? null,
+    signature: current?.busy ? current.signature ?? null : null,
     advance,
   };
 }

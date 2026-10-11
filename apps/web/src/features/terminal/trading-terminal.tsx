@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { encodeFunctionData, erc20Abi, formatEther, parseAbi } from "viem";
+import { useBalance, useReadContract } from "wagmi";
 import { fixtureMarketFeed } from "./market-feed";
 import { usePublicMarketFeed, usePublicPackageMarkets } from "./public-market-feed";
 import { useReferenceMarketFeed } from "./reference-market-feed";
@@ -54,6 +55,8 @@ import type {
   WorkspaceTab,
 } from "./terminal-view-model";
 import { DOMAIN_META, EXIT_UNAVAILABLE, domainHealth, domainLive, useTerminal } from "./shell/terminal-context";
+import { annotateAttempt } from "./shell/attempt-index";
+import { TransactionLink, refreshOnReturn } from "./transaction-status";
 import { EVM_CHAINS, type EvmDomain } from "@/features/wallet/evm-config";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
@@ -251,7 +254,12 @@ type BaseFlowState = {
   error: string | null;
 };
 
-type BaseStep = "setup" | "create" | "quote" | "select" | "execute" | "withdraw";
+type BaseStep = "setup" | "create" | "quote" | "select" | "execute" | "withdraw" | "restart";
+
+// The numbered main sequence of each lane's ticket; setup and recovery steps sit outside it.
+const BASE_SEQUENCE: readonly string[] = ["create", "quote", "select", "execute"];
+const ARBITRUM_SEQUENCE: readonly string[] = ["create", "quote", "select", "prepare", "sign", "approve", "fund"];
+const HYPERLIQUID_SEQUENCE: readonly string[] = ["create", "quote", "select", "execute"];
 
 const BASE_SETUP_TIMEOUT_MS = 180_000;
 
@@ -286,6 +294,18 @@ function quoteAtomsText(atoms: string, decimals: number): string {
   const padded = atoms.padStart(decimals + 1, "0");
   const fraction = padded.slice(-decimals).replace(/0+$/, "");
   return `${padded.slice(0, -decimals)}${fraction ? `.${fraction}` : ""} USDC`;
+}
+
+/** When a signed quote stops being selectable, in wall-clock milliseconds; null for a unit the browser cannot judge. */
+function quoteExpiresAtMs(quote: LocalSolverQuote | null | undefined): number | null {
+  const value = quote ? protocolScalar(quote.quote.validUntilValue) : "";
+  if (!/^[1-9][0-9]{0,15}$/.test(value)) return null;
+  const unit = protocolScalar(quote?.quote.validUntilUnit);
+  return unit === "EVM_UNIX_SECONDS" ? Number(value) * 1000 : unit === "HYPERLIQUID_UNIX_MILLISECONDS" ? Number(value) : null;
+}
+
+function clockText(ms: number): string {
+  return new Date(ms).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 }
 
 type ArbitrumFlowState = {
@@ -833,14 +853,14 @@ function ExecutionReviewPanel({
       {submission && !observation && !unavailable ? (
         <div className={styles.submissionReceipt} role="status">
           <span>Transaction submitted</span>
-          <strong title={submission.signature}>{compact(submission.signature, 14, 12)}</strong>
+          <strong><TransactionLink domain="solana" hash={submission.signature}>{compact(submission.signature, 14, 12)}</TransactionLink></strong>
           <small>Waiting for network observation on Solana Devnet. No slot observed yet. Submission is not finality and does not mean the package completed.</small>
         </div>
       ) : null}
       {submission && observation?.lifecycle === "SUBMITTED" && !unavailable ? (
         <div className={styles.submissionReceipt} role="status">
           <span>Transaction submitted</span>
-          <strong title={submission.signature}>{compact(submission.signature, 14, 12)}</strong>
+          <strong><TransactionLink domain="solana" hash={submission.signature}>{compact(submission.signature, 14, 12)}</TransactionLink></strong>
           <small>
             {observation.observedSlot === null
               ? "Waiting for network observation on Solana Devnet. No slot observed yet. Submission is not confirmation and does not mean the package completed."
@@ -851,7 +871,7 @@ function ExecutionReviewPanel({
       {submission && observation?.lifecycle === "FINALIZED" ? (
         <div className={styles.submissionReceipt} role="status">
           <span>Finalized on Solana Devnet</span>
-          <strong title={submission.signature}>{compact(submission.signature, 14, 12)}</strong>
+          <strong><TransactionLink domain="solana" hash={submission.signature}>{compact(submission.signature, 14, 12)}</TransactionLink></strong>
           <small>
             {`Finalized at slot ${observation.finalizedSlot.toLocaleString()}. Network finality only. This does not mean the package is open, closed, or complete.`}
           </small>
@@ -860,7 +880,7 @@ function ExecutionReviewPanel({
       {submission && observation?.lifecycle === "FAILED" ? (
         <div className={styles.submissionReceipt} role="status">
           <span>Failed on Solana Devnet</span>
-          <strong title={submission.signature}>{compact(submission.signature, 14, 12)}</strong>
+          <strong><TransactionLink domain="solana" hash={submission.signature}>{compact(submission.signature, 14, 12)}</TransactionLink></strong>
           <small>
             {observation.failedSlot === null
               ? `Failure code ${observation.failureCode}. No slot reported. The transaction did not finalize.`
@@ -871,7 +891,7 @@ function ExecutionReviewPanel({
       {submission && observation?.lifecycle === "EXPIRED" ? (
         <div className={styles.submissionReceipt} role="status">
           <span>Expired before finality</span>
-          <strong title={submission.signature}>{compact(submission.signature, 14, 12)}</strong>
+          <strong><TransactionLink domain="solana" hash={submission.signature}>{compact(submission.signature, 14, 12)}</TransactionLink></strong>
           <small>
             {`Last valid block height ${observation.lastValidBlockHeight.toLocaleString()}, observed block height ${observation.observedBlockHeight.toLocaleString()}. The transaction did not finalize.`}
           </small>
@@ -880,7 +900,7 @@ function ExecutionReviewPanel({
       {submission && unavailable && !isObservationTerminal(observation) ? (
         <div className={styles.submissionReceipt} role="status">
           <span>Observation unavailable</span>
-          <strong title={submission.signature}>{compact(submission.signature, 14, 12)}</strong>
+          <strong><TransactionLink domain="solana" hash={submission.signature}>{compact(submission.signature, 14, 12)}</TransactionLink></strong>
           <small>Observation temporarily unavailable. The transaction was submitted and network state is unknown. Finality is not asserted.</small>
           <button
             type="button"
@@ -944,10 +964,17 @@ function BaseSepoliaPanel({ flow }: { flow: BaseFlowState | null }) {
           <strong title={flow.attempt.attemptId}>{compact(flow.attempt.attemptId, 20, 12)}</strong>
         </div>
       ) : null}
+      {flow?.pendingSetup ? (
+        <div className={styles.submissionReceipt} role="status">
+          <span>{flow.pendingSetup.kind.replace(/_/g, " ").toLowerCase()} transaction</span>
+          <strong><TransactionLink domain="base" hash={flow.pendingSetup.hash}>{compact(flow.pendingSetup.hash, 14, 12)}</TransactionLink></strong>
+          <small>Sent from your wallet. Waiting for it to land on Base Sepolia.</small>
+        </div>
+      ) : null}
       {flow?.transactionHash ? (
         <div className={styles.submissionReceipt} role="status">
           <span>Package transaction</span>
-          <strong title={flow.transactionHash}>{compact(flow.transactionHash, 14, 12)}</strong>
+          <strong><TransactionLink domain="base" hash={flow.transactionHash}>{compact(flow.transactionHash, 14, 12)}</TransactionLink></strong>
           <small>
             {observation
               ? `${observation.lifecycle.replace(/_/g, " ").toLowerCase()}${observation.blockNumber ? ` at block ${observation.blockNumber}` : ""}; evidence ${observation.evidenceGrade}.${observation.reason ? ` ${observation.reason}` : ""}`
@@ -1006,6 +1033,7 @@ function ArbitrumSepoliaPanel({ flow, nowMs }: { flow: ArbitrumFlowState; nowMs:
     ["USDC approval", flow.approveHash, flow.approved],
     ["Request funding", flow.fundHash, flow.funded],
     ["Funding reclaim", flow.reclaimHash, flow.reclaimed],
+    ["In-kind spot", flow.spotInKindHash, flow.spotTakenInKind],
   ];
   return (
     <section className={styles.executionReview} aria-labelledby="arbitrum-execution-title">
@@ -1063,8 +1091,8 @@ function ArbitrumSepoliaPanel({ flow, nowMs }: { flow: ArbitrumFlowState; nowMs:
       {transactions.filter(([, hash]) => hash !== null).map(([label, hash, confirmed]) => (
         <div className={styles.submissionReceipt} role="status" key={label}>
           <span>{label}</span>
-          <strong title={hash ?? undefined}>{compact(hash ?? "", 14, 12)}</strong>
-          <small>{confirmed ? "Confirmed on Arbitrum Sepolia." : "Waiting for confirmation."}</small>
+          <strong><TransactionLink domain="arbitrum" hash={hash ?? ""}>{compact(hash ?? "", 14, 12)}</TransactionLink></strong>
+          <small>{confirmed ? "Confirmed on Arbitrum Sepolia." : "Waiting for confirmation on Arbitrum Sepolia."}</small>
         </div>
       ))}
       {flow.funded ? (
@@ -1111,6 +1139,9 @@ function Ticket({
   executionReview,
   submission,
   confirming,
+  walletPrompt,
+  walletAwaiting,
+  submittedTransaction,
   action,
   actionBusy,
   strategyTemplates,
@@ -1164,6 +1195,12 @@ function Ticket({
   executionReview: ExecutionReview | null;
   submission: SubmissionState | null;
   confirming: boolean;
+  /** A request from this ticket's current step is open in the wallet. */
+  walletPrompt: boolean;
+  /** Any request is open in a connected wallet, including one from the strategy panel. */
+  walletAwaiting: boolean;
+  /** The ticket's latest wallet transaction while it is still confirming. */
+  submittedTransaction: Readonly<{ domain: DomainId; hash: string }> | null;
   action: PrimaryAction;
   actionBusy: boolean;
   strategyTemplates: readonly StrategyProgramTemplate[];
@@ -1435,13 +1472,17 @@ function Ticket({
           className={action.kind === "connect" || action.kind === "switch" ? styles.connectCta : styles.primaryCta}
           type="button"
           disabled={action.disabled || actionBusy}
+          aria-busy={actionBusy}
           aria-describedby="execution-note"
           onClick={onPrimaryAction}
         >
-          {confirming ? "Confirm in wallet" : actionBusy ? "Working" : action.label}
+          {confirming || walletPrompt ? "Confirm in your wallet" : actionBusy && !action.disabled ? "Working" : action.label}
         </button>
         <p id="execution-note" role="status">
           {action.reason}
+          {submittedTransaction ? (
+            <> <TransactionLink domain={submittedTransaction.domain} hash={submittedTransaction.hash}>View transaction</TransactionLink></>
+          ) : null}
           {canRefreshReview ? (
             <button type="button" className={styles.inlineRetry} disabled={actionBusy} onClick={onRefreshReview}>
               Refresh review
@@ -1478,6 +1519,7 @@ function Ticket({
           signEvmStrategyExecution={signEvmStrategyExecution}
           sendEvmTransaction={sendEvmStrategyTransaction}
           waitForEvmReceipt={waitForEvmStrategyReceipt}
+          walletAwaiting={walletAwaiting}
         />
       ) : null}
 
@@ -1783,7 +1825,14 @@ export function TradingTerminal({
     publicApiBaseUrl,
     packageMarketId,
     recordAttempt,
+    notify,
   } = useTerminal();
+  // Steps keep running after the user leaves Trade; a result that lands then is posted as a notice.
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [snapshotDomain, setSnapshotDomain] = useState<DomainId>(initialSnapshot.selectedDomain);
   const [strategyTemplates, setStrategyTemplates] = useState<readonly StrategyProgramTemplate[]>([FALLBACK_CASH_TEMPLATE]);
@@ -2270,6 +2319,19 @@ export function TradingTerminal({
     (mode === "exit" || preview?.source === "PRIVATE_TERMINAL_BFF") && quoteMode === "coordinated_limits";
   const baseOwner = baseFlowEnabled && evmTarget === "base" && evmOnTarget ? evmWallet.account : null;
   const baseSetupSteps = currentBaseFlow?.account?.steps ?? [];
+  // A signed quote not yet accepted can lapse while the ticket waits; past its validity it is never
+  // offered for acceptance, only a fresh order. The clock is woken exactly at the expiry.
+  const awaitingQuote = selectedDomain === "base" ? (currentBaseFlow?.attempt ? null : currentBaseFlow?.quote)
+    : selectedDomain === "arbitrum" ? (currentArbitrumFlow?.attempt ? null : currentArbitrumFlow?.quote)
+      : selectedDomain === "hyperliquid" ? (currentHyperliquidFlow?.attempt ? null : currentHyperliquidFlow?.quote) : null;
+  const quoteExpiry = quoteExpiresAtMs(awaitingQuote);
+  useEffect(() => {
+    if (quoteExpiry === null) return;
+    const timer = window.setTimeout(() => setNowMs(Date.now()), Math.max(0, quoteExpiry - Date.now()) + 50);
+    return () => window.clearTimeout(timer);
+  }, [quoteExpiry]);
+  const quoteExpired = quoteExpiry !== null && nowMs >= quoteExpiry;
+  const quoteValidity = quoteExpiry === null ? "" : ` The quote is valid until ${clockText(quoteExpiry)}.`;
   // Once the package is closed, by this exit or an earlier one, only owner withdrawals remain.
   const baseExitClosed = mode === "exit" && currentBaseFlow?.account != null && currentBaseFlow.account.openPackage === null &&
     (!currentBaseFlow.transactionHash || currentBaseFlow.observation?.lifecycle === "FINALIZED");
@@ -2278,12 +2340,12 @@ export function TradingTerminal({
     : baseExitClosed ? (currentBaseFlow.account.withdrawals.length > 0 ? "withdraw" : null)
     : currentBaseFlow.transactionHash ? null
     : mode === "exit"
-      ? !currentBaseFlow.order ? "create" : !currentBaseFlow.quote ? "quote" : !currentBaseFlow.attempt ? "select" : "execute"
+      ? !currentBaseFlow.order ? "create" : !currentBaseFlow.quote ? "quote" : !currentBaseFlow.attempt ? (quoteExpired ? "restart" : "select") : "execute"
     : baseSetupSteps.some((step) => step.kind === "CREATE_ACCOUNT") ? "setup"
     : !currentBaseFlow.order ? "create"
     : !currentBaseFlow.quote ? "quote"
     : baseSetupSteps.length > 0 ? "setup"
-    : !currentBaseFlow.attempt ? "select"
+    : !currentBaseFlow.attempt ? (quoteExpired ? "restart" : "select")
     : "execute";
   const arbitrumFlowEnabled = selectedDomain === "arbitrum" && mode === "entry" &&
     privateProvider !== null && providerConnection === "connected" &&
@@ -2321,13 +2383,33 @@ export function TradingTerminal({
   const arbitrumFunding = currentArbitrumFlow?.authorization?.funding ?? null;
   const arbitrumWindowClosed = arbitrumFunding !== null &&
     Math.floor(nowMs / 1000) >= Number(arbitrumFunding.reclaimAfterUnixSeconds);
+  // What the wallet holds before it is asked to approve or fund, so a shortfall is said up front
+  // instead of surfacing as a reverted or refused transaction. An unread balance blocks nothing.
+  const arbitrumPreFunding = arbitrumFunding !== null && currentArbitrumFlow?.funded !== true && evmWallet.account !== null;
+  const arbitrumCollateralBalance = useReadContract({
+    address: arbitrumFunding?.token as `0x${string}` | undefined,
+    abi: erc20Abi,
+    functionName: "balanceOf",
+    args: evmWallet.account ? [evmWallet.account] : undefined,
+    chainId: EVM_CHAINS.arbitrum.id,
+    query: { enabled: arbitrumPreFunding, refetchInterval: 15_000 },
+  }).data;
+  const arbitrumGasBalance = useBalance({
+    address: evmWallet.account ?? undefined,
+    chainId: EVM_CHAINS.arbitrum.id,
+    query: { enabled: arbitrumPreFunding, refetchInterval: 15_000 },
+  }).data?.value;
+  const arbitrumCollateralShort = arbitrumFunding !== null && arbitrumCollateralBalance !== undefined &&
+    arbitrumCollateralBalance < BigInt(arbitrumFunding.approveAtoms);
+  const arbitrumFeeShort = arbitrumFunding !== null && arbitrumGasBalance !== undefined &&
+    arbitrumGasBalance <= BigInt(arbitrumFunding.executionFeeWei);
   const nextArbitrumStep: ArbitrumStep | null = (() => {
     const flow = currentArbitrumFlow;
     if (!flow?.account || flow.accountTx) return null;
     if (!flow.account.deployed) return "account";
     if (!flow.order) return "create";
     if (!flow.quote) return "quote";
-    if (!flow.attempt) return "select";
+    if (!flow.attempt) return quoteExpired ? "restart" : "select";
     if (!flow.authorization) return "prepare";
     if (!flow.funded) {
       if (flow.fundHash) return "fund";
@@ -2340,11 +2422,11 @@ export function TradingTerminal({
     if (arbitrumWindowClosed && isArbitrumUnreserved(flow.observation)) return "reclaim";
     return flow.spotInKindHash || isArbitrumSpotInKindAvailable(flow, nowMs) ? "takeSpot" : null;
   })();
-  const nextHyperliquidStep: "create" | "quote" | "select" | "execute" | null = !currentHyperliquidFlow?.context || currentHyperliquidFlow.execution
+  const nextHyperliquidStep: "create" | "quote" | "select" | "execute" | "restart" | null = !currentHyperliquidFlow?.context || currentHyperliquidFlow.execution
     ? null
     : !currentHyperliquidFlow.order ? "create"
     : !currentHyperliquidFlow.quote ? "quote"
-    : !currentHyperliquidFlow.attempt ? "select"
+    : !currentHyperliquidFlow.attempt ? (quoteExpired ? "restart" : "select")
     : "execute";
 
   // Devnet entry needs the wallet's own strategy accounts; missing ones are created step by step first.
@@ -2410,7 +2492,8 @@ export function TradingTerminal({
         if (nextBaseStep === "create" && mode === "exit") return { kind: "base", label: "Create exit order", reason: reason ?? "Creates the canonical exit order for your open package. Its size, entry receipt, and minimums come from chain.", disabled: false };
         if (nextBaseStep === "create") return { kind: "base", label: "Create order", reason: reason ?? "Creates the canonical package order for your strategy account.", disabled: false };
         if (nextBaseStep === "quote") return { kind: "base", label: "Request quote", reason: reason ?? "Asks the solver for a signed quote priced from the live pool and oracle.", disabled: false };
-        if (nextBaseStep === "select") return { kind: "base", label: "Accept quote", reason: reason ?? "Review the signed terms and fees in the package review before accepting.", disabled: false };
+        if (nextBaseStep === "select") return { kind: "base", label: "Accept quote", reason: reason ?? `Review the signed terms and fees in the package review before accepting.${quoteValidity}`, disabled: false };
+        if (nextBaseStep === "restart") return { kind: "base", label: "Start a fresh order", reason: "The signed quote expired before you accepted it. Nothing was signed or sent. Start a fresh order to re-quote.", disabled: false };
         if (nextBaseStep === "execute") return { kind: "base", label: "Sign and submit", reason: reason ?? "Your wallet signs the package permit, then submits the one transaction that settles both legs or neither.", disabled: false };
       }
       if (evmTarget === "arbitrum" && arbitrumExitEnabled) return arbitrumExit.action;
@@ -2421,6 +2504,13 @@ export function TradingTerminal({
         }
         if (flow.accountTx) {
           return none("Confirming account", "Waiting for the account creation transaction to land on Arbitrum Sepolia.");
+        }
+        // The adapter holds one active package per strategy account, so a second entry would only revert.
+        const active = flow.account.openPackage;
+        if (!flow.attempt && active) {
+          return active.exitable
+            ? none("Package already open", "Your strategy account holds one open package. Exit it before entering another.")
+            : none("Package in progress", "Your strategy account already has a package in flight. Its status updates on the Activity page.");
         }
         const reason = flow.error;
         const funding = flow.authorization?.funding ?? null;
@@ -2433,21 +2523,34 @@ export function TradingTerminal({
           case "quote":
             return { kind: "arbitrum", label: "Request quote", reason: reason ?? "Asks the bonded solver for a signed quote on the whole package.", disabled: false };
           case "select":
-            return { kind: "arbitrum", label: "Accept quote", reason: reason ?? "Review the signed terms and fees in the package review before accepting.", disabled: false };
+            return { kind: "arbitrum", label: "Accept quote", reason: reason ?? `Review the signed terms and fees in the package review before accepting.${quoteValidity}`, disabled: false };
           case "prepare":
             return { kind: "arbitrum", label: "Review reservation", reason: reason ?? "Prepares the bonded reservation and the exact funding for your review. Nothing is signed or sent.", disabled: false };
           case "sign":
             return { kind: "arbitrum", label: "Sign reservation", reason: reason ?? `Your wallet signs the reviewed reservation (EIP-712 message, no transaction). ${deadline}`, disabled: false };
           case "approve":
+            if (!flow.approveHash && arbitrumCollateralShort) {
+              return none("Insufficient testnet USDC", `Your wallet holds less than the ${funding?.approveAtoms ?? "-"} collateral token atoms this package needs. Claim free test USDC on the Portfolio page, then retry. ${deadline}`);
+            }
             return { kind: "arbitrum", label: flow.approveHash ? "Confirm approval" : "Approve USDC (testnet tx)", reason: reason ?? `Testnet transaction: approve the adapter to pull exactly ${funding?.approveAtoms ?? "-"} token atoms. ${deadline}`, disabled: false };
           case "fund":
+            if (!flow.fundHash && arbitrumFeeShort) {
+              return none("Insufficient testnet ETH", `Funding pays the ${funding ? formatEther(BigInt(funding.executionFeeWei)) : "-"} ETH GMX execution fee plus gas, and your wallet holds less. Get Arbitrum Sepolia ETH from the Gas link on the Portfolio page, then retry. ${deadline}`);
+            }
             return { kind: "arbitrum", label: flow.fundHash ? "Confirm funding" : "Fund request (testnet tx)", reason: reason ?? `Testnet transaction: the adapter pulls the approved collateral and your wallet pays the ${funding ? formatEther(BigInt(funding.executionFeeWei)) : "-"} ETH GMX execution fee. ${deadline}`, disabled: false };
           case "reclaim":
             return { kind: "arbitrum", label: flow.reclaimHash ? "Confirm reclaim" : "Reclaim funding (testnet tx)", reason: reason ?? "The funding deadline passed without a reservation. This testnet transaction returns your collateral and execution fee from the adapter.", disabled: false };
           case "takeSpot":
             return { kind: "arbitrum", label: flow.spotInKindHash ? "Confirm in-kind spot" : "Take WETH in kind (testnet tx)", reason: reason ?? `GMX did not open the short, and the spot leg has not sold back for your signed minimum of ${quoteAtomsText(flow.authorization?.summary.rollbackMinQuoteAtoms ?? "", 6)} by the recovery deadline. This testnet transaction from your wallet takes the WETH itself instead; the bonded solver then closes the package. Only the package owner can do this.`, disabled: false };
           case "restart":
-            return { kind: "arbitrum", label: "Start a fresh order", reason: reason ?? "The funding window closed before funding, so nothing was pulled from your wallet. Create a fresh order to re-quote.", disabled: false };
+            return {
+              kind: "arbitrum",
+              label: "Start a fresh order",
+              reason: reason ?? (flow.attempt
+                ? "The funding window closed before funding, so nothing was pulled from your wallet. Create a fresh order to re-quote."
+                : "The signed quote expired before you accepted it. Nothing was signed or sent. Start a fresh order to re-quote."),
+              disabled: false,
+            };
           default:
             break;
         }
@@ -2535,7 +2638,8 @@ export function TradingTerminal({
           : { kind: "hyperliquid", label: "Create order", reason: reason ?? "Creates the canonical package order owned by your wallet.", disabled: false };
       }
       if (nextHyperliquidStep === "quote") return { kind: "hyperliquid", label: "Request quote", reason: reason ?? "Asks the solver for a signed quote on the whole package.", disabled: false };
-      if (nextHyperliquidStep === "select") return { kind: "hyperliquid", label: "Accept quote", reason: reason ?? "Review the signed terms and fees in the testnet order review before accepting.", disabled: false };
+      if (nextHyperliquidStep === "select") return { kind: "hyperliquid", label: "Accept quote", reason: reason ?? `Review the signed terms and fees in the testnet order review before accepting.${quoteValidity}`, disabled: false };
+      if (nextHyperliquidStep === "restart") return { kind: "hyperliquid", label: "Start a fresh order", reason: "The signed quote expired before you accepted it. Nothing was signed. Start a fresh order to re-quote.", disabled: false };
       return { kind: "hyperliquid", label: currentHyperliquidFlow.signed ? "Execute on testnet" : "Sign and execute", reason: reason ?? "Your wallet signs the package authorization; Naryx's Hyperliquid testnet account executes it on your behalf.", disabled: false };
     }
     const exitUnavailable = EXIT_UNAVAILABLE[selectedDomain];
@@ -2626,7 +2730,9 @@ export function TradingTerminal({
     return { kind: "sign", label: "Sign and submit", reason: "Your wallet shows the exact reviewed Devnet transaction before signing.", disabled: false };
   }, [
     arbitrumExit.action,
+    arbitrumCollateralShort,
     arbitrumExitEnabled,
+    arbitrumFeeShort,
     arbitrumFlowEnabled,
     baseFlowEnabled,
     currentArbitrumFlow,
@@ -2653,6 +2759,7 @@ export function TradingTerminal({
     privateProvider,
     providerConnection,
     quoteMode,
+    quoteValidity,
     reviewExpired,
     runtimeHealth,
     selectedDomain,
@@ -2721,6 +2828,7 @@ export function TradingTerminal({
       setConfirmingInWallet(true);
       try {
         const signature = await wallet.signAndSend(next.transactionBytes);
+        annotateAttempt(next.lifecycleAttemptId, { transactionHash: signature, idempotencyKey: key });
         setSubmission({
           signature,
           idempotencyKey: key,
@@ -2878,9 +2986,11 @@ export function TradingTerminal({
     const interval = window.setInterval(() => {
       void poll();
     }, OBSERVATION_POLL_INTERVAL_MS);
+    const stopReturnRefresh = refreshOnReturn(() => void poll());
     return () => {
       active = false;
       window.clearInterval(interval);
+      stopReturnRefresh();
       controller.abort();
     };
   }, [
@@ -2981,13 +3091,17 @@ export function TradingTerminal({
   }
 
   async function handleHyperliquidStep(
-    step: "create" | "quote" | "select" | "execute",
+    step: "create" | "quote" | "select" | "execute" | "restart",
   ) {
     if (!privateProvider || !currentHyperliquidFlow?.context || !currentHyperliquidFlow.owner ||
         !runtimeHealth?.hyperliquidTestnet.available) return;
     let base = currentHyperliquidFlow;
     const context = currentHyperliquidFlow.context;
     const owner = currentHyperliquidFlow.owner;
+    if (step === "restart") {
+      setHyperliquidFlow({ ...base, order: null, quote: null, attempt: null, signed: false, executeKey: crypto.randomUUID(), busy: null, error: null });
+      return;
+    }
     setHyperliquidFlow({ ...base, busy: step, error: null });
     try {
       if (step === "create") {
@@ -3064,12 +3178,19 @@ export function TradingTerminal({
       }
       const account = await privateProvider.getHyperliquidAccount(context, owner).catch(() => base.account);
       setHyperliquidFlow({ ...base, account, execution, progress: null, busy: null, error: null });
+      if (!mounted.current) {
+        const filled = execution.packageStatus === "COMPLETED_EXACT" || execution.packageStatus === "COMPLETED_BOUNDED";
+        notify(filled ? "ok" : "bad", `Hyperliquid testnet ${mode}: ${filled ? (mode === "exit" ? "package exited." : "package filled.") : `executed, ${(execution.packageStatus ?? execution.status).replace(/_/g, " ").toLowerCase()}.`}`,
+          { href: "/activity", label: "View activity" });
+      }
     } catch (cause) {
+      const message = cause instanceof Error ? cause.message : "Hyperliquid Testnet action failed.";
       setHyperliquidFlow((previous) => ({
         ...(previous?.executeKey === base.executeKey ? previous : base),
         busy: null,
-        error: cause instanceof Error ? cause.message : "Hyperliquid Testnet action failed.",
+        error: message,
       }));
+      if (step === "execute" && !mounted.current) notify("bad", `Hyperliquid testnet ${mode}: ${message}`, { href: "/activity", label: "View activity" });
     }
   }
 
@@ -3110,7 +3231,7 @@ export function TradingTerminal({
   useEffect(() => {
     if (!privateProvider || !basePending || !basePollOwner) return;
     let active = true;
-    const timer = window.setInterval(() => {
+    const check = () => {
       void privateProvider.getBaseAccountStatus(basePollOwner, {
         orderHash: basePollOrderHash,
         marginAtoms: basePollMargin,
@@ -3129,10 +3250,13 @@ export function TradingTerminal({
           };
         });
       }).catch(() => undefined);
-    }, OBSERVATION_POLL_INTERVAL_MS);
+    };
+    const timer = window.setInterval(check, OBSERVATION_POLL_INTERVAL_MS);
+    const stopReturnRefresh = refreshOnReturn(check);
     return () => {
       active = false;
       window.clearInterval(timer);
+      stopReturnRefresh();
     };
   }, [basePending, basePollMargin, basePollOrderHash, basePollOwner, privateProvider]);
 
@@ -3168,9 +3292,11 @@ export function TradingTerminal({
     };
     void poll();
     const timer = window.setInterval(() => void poll(), OBSERVATION_POLL_INTERVAL_MS);
+    const stopReturnRefresh = refreshOnReturn(() => void poll());
     return () => {
       controller.abort();
       window.clearInterval(timer);
+      stopReturnRefresh();
     };
   }, [baseAttemptId, baseIdempotencyKey, baseObservationDone, baseObservedHash, privateProvider]);
 
@@ -3196,6 +3322,10 @@ export function TradingTerminal({
       marginAtoms: quoteMarginAtoms(flow.quote),
     });
     try {
+      if (step === "restart") {
+        setBaseFlow({ ...base, order: null, quote: null, attempt: null, preparation: null, idempotencyKey: crypto.randomUUID(), busy: null, error: null });
+        return;
+      }
       if (step === "setup" || step === "withdraw") {
         const setup = step === "setup" ? account.steps[0] : account.withdrawals[0];
         if (!setup) throw new Error("The strategy account needs no setup.");
@@ -3255,6 +3385,7 @@ export function TradingTerminal({
         data: preparation.data,
         value: "0",
       });
+      annotateAttempt(base.attempt.attemptId, { transactionHash, idempotencyKey: base.idempotencyKey });
       setBaseFlow({ ...base, preparation, transactionHash, busy: null, error: null });
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "Base Sepolia action failed.";
@@ -3322,7 +3453,7 @@ export function TradingTerminal({
   useEffect(() => {
     if (!privateProvider || !arbitrumAccountTx || !arbitrumPollOwner) return;
     let active = true;
-    const timer = window.setInterval(() => {
+    const check = () => {
       void privateProvider.getArbitrumAccountStatus(arbitrumPollOwner).then((account) => {
         if (!active) return;
         setArbitrumFlow((current) => {
@@ -3337,10 +3468,13 @@ export function TradingTerminal({
           };
         });
       }).catch(() => undefined);
-    }, OBSERVATION_POLL_INTERVAL_MS);
+    };
+    const timer = window.setInterval(check, OBSERVATION_POLL_INTERVAL_MS);
+    const stopReturnRefresh = refreshOnReturn(check);
     return () => {
       active = false;
       window.clearInterval(timer);
+      stopReturnRefresh();
     };
   }, [arbitrumAccountTx, arbitrumPollOwner, privateProvider]);
 
@@ -3382,9 +3516,11 @@ export function TradingTerminal({
     };
     void poll();
     const timer = window.setInterval(() => void poll(), OBSERVATION_POLL_INTERVAL_MS);
+    const stopReturnRefresh = refreshOnReturn(() => void poll());
     return () => {
       controller.abort();
       window.clearInterval(timer);
+      stopReturnRefresh();
     };
   }, [arbitrumAttemptId, arbitrumIdempotencyKey, arbitrumObserve, privateProvider]);
 
@@ -3484,6 +3620,7 @@ export function TradingTerminal({
           throw new Error("The funding transaction reverted, so nothing was pulled. Fund again before the deadline.");
         }
         done({ fundHash: hash, funded: true });
+        if (flow.attempt) annotateAttempt(flow.attempt.attemptId, { transactionHash: hash, idempotencyKey: flow.idempotencyKey });
         return;
       }
       if (step === "takeSpot") {
@@ -3608,9 +3745,33 @@ export function TradingTerminal({
     document.getElementById("package-ticket")?.scrollIntoView({ block: "start", behavior: reduceMotion ? "auto" : "smooth" });
   }
 
+  const actionBusy = executionBusy || solanaOnboarding.busy !== null || currentHyperliquidFlow?.busy != null || currentBaseFlow?.busy != null || currentArbitrumFlow?.busy != null || arbitrumExit.busy;
+  const walletPrompt = actionBusy && (evmWallet.awaitingWallet || wallet.awaitingWallet);
+  const arbitrumPendingHash = currentArbitrumFlow === null ? null
+    : currentArbitrumFlow.accountTx?.hash
+      ?? (currentArbitrumFlow.approved ? null : currentArbitrumFlow.approveHash)
+      ?? (currentArbitrumFlow.funded ? null : currentArbitrumFlow.fundHash)
+      ?? (currentArbitrumFlow.reclaimed ? null : currentArbitrumFlow.reclaimHash)
+      ?? currentArbitrumFlow.spotInKindHash;
+  const basePendingHash = currentBaseFlow === null ? null
+    : currentBaseFlow.pendingSetup?.hash ?? (baseObservationDone ? null : currentBaseFlow.transactionHash);
+  const submittedTransaction = selectedDomain === "solana"
+    ? (solanaOnboarding.signature === null ? null : { domain: selectedDomain, hash: solanaOnboarding.signature })
+    : selectedDomain === "base" ? (basePendingHash === null ? null : { domain: selectedDomain, hash: basePendingHash })
+      : selectedDomain === "arbitrum" && !arbitrumExitEnabled ? (arbitrumPendingHash === null ? null : { domain: selectedDomain, hash: arbitrumPendingHash })
+        : null;
+  const stepSequence = displayedPrimaryAction.kind === "base" ? [BASE_SEQUENCE, nextBaseStep] as const
+    : displayedPrimaryAction.kind === "arbitrum" ? [ARBITRUM_SEQUENCE, nextArbitrumStep] as const
+      : displayedPrimaryAction.kind === "hyperliquid" ? [HYPERLIQUID_SEQUENCE, nextHyperliquidStep] as const
+        : displayedPrimaryAction.kind === "prepare" || displayedPrimaryAction.kind === "sign"
+          ? [["prepare", "sign"], displayedPrimaryAction.kind] as const : null;
+  const stepIndex = stepSequence === null || stepSequence[1] === null ? -1 : stepSequence[0].indexOf(stepSequence[1]);
+  const stepPrefix = stepSequence !== null && stepIndex >= 0 ? `Step ${stepIndex + 1} of ${stepSequence[0].length}. ` : "";
   const actionReason = confirmingInWallet && !currentSubmission
-    ? "Approve the exact reviewed Devnet transaction in your wallet."
-    : currentExecutionError ?? displayedPrimaryAction.reason;
+    ? "Approve the exact reviewed Devnet transaction in your wallet. Rejecting it cancels the submission."
+    : walletPrompt
+      ? "Approve the request in your wallet. Rejecting it cancels this step and you can retry."
+      : `${stepPrefix}${currentExecutionError ?? displayedPrimaryAction.reason}`;
 
   return (
     <div className={styles.terminalShell}>
@@ -3662,8 +3823,11 @@ export function TradingTerminal({
             executionReview={currentExecutionReview}
             submission={currentSubmission}
             confirming={confirmingInWallet}
+            walletPrompt={walletPrompt}
+            walletAwaiting={evmWallet.awaitingWallet || wallet.awaitingWallet}
+            submittedTransaction={submittedTransaction}
             action={{ ...displayedPrimaryAction, reason: actionReason }}
-            actionBusy={executionBusy || solanaOnboarding.busy !== null || currentHyperliquidFlow?.busy != null || currentBaseFlow?.busy != null || currentArbitrumFlow?.busy != null || arbitrumExit.busy}
+            actionBusy={actionBusy}
             strategyTemplates={strategyTemplates}
             selectedStrategyTemplateId={selectedStrategyTemplateId}
             selectedLifecycleAction={selectedLifecycleAction}

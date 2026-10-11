@@ -29,7 +29,7 @@ export function MakerControlPanel({
   const validToken = operatorToken.length >= 32 && operatorToken.length <= 256;
 
   const apply = async (action: "cancel-all" | "kill-switch") => {
-    if (shard === null || !validToken) return;
+    if (shard === null || !validToken || operation.status === "pending") return;
     const description = action === "cancel-all"
       ? `Cancel every quote in ${shard.shardId}? Existing fills are unaffected.`
       : `Activate the kill switch for ${shard.shardId}? The web console cannot re-arm it.`;
@@ -111,7 +111,7 @@ export function MakerControlPanel({
           </button>
         </div>
       )}
-      {operation.message ? <p className={operation.status === "success" ? styles.noticeOk : operation.status === "error" ? styles.noticeError : styles.notice}>{operation.message}</p> : null}
+      {operation.message ? <p className={operation.status === "success" ? styles.noticeOk : operation.status === "error" ? styles.noticeError : styles.notice} role="status">{operation.message}</p> : null}
     </section>
   );
 }

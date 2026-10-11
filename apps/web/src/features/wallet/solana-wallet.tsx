@@ -73,6 +73,8 @@ export type SolanaWalletSession = {
   accounts: readonly WalletAccount[];
   selectedAccount: WalletAccount | null;
   connecting: boolean;
+  /** A signature or transaction request is open in the wallet and waits for the user. */
+  awaitingWallet: boolean;
   error: string | null;
   canSignAndSendV0: boolean;
   canSignMessage: boolean;
@@ -85,12 +87,17 @@ export type SolanaWalletSession = {
 
 const SolanaWalletContext = createContext<SolanaWalletSession | null>(null);
 
+function rejected(cause: unknown): boolean {
+  return cause instanceof Error && /reject|denied|cancel/i.test(cause.message);
+}
+
 export function SolanaWalletProvider({ children }: { children: ReactNode }) {
   const [wallets, setWallets] = useState<readonly DevnetWallet[]>([]);
   const [selectedWalletName, setSelectedWalletName] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<readonly WalletAccount[]>([]);
   const [selectedAccountAddress, setSelectedAccountAddress] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
+  const [walletRequests, setWalletRequests] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const silentTried = useRef(false);
 
@@ -161,7 +168,7 @@ export function SolanaWalletProvider({ children }: { children: ReactNode }) {
       remember(wallet.name);
       return true;
     } catch (cause) {
-      setError(cause instanceof Error && /reject|denied|cancel/i.test(cause.message) ? "Connection cancelled." : "Wallet connection failed.");
+      setError(rejected(cause) ? "Connection cancelled." : "Wallet connection failed.");
       return false;
     } finally {
       setConnecting(false);
@@ -196,6 +203,7 @@ export function SolanaWalletProvider({ children }: { children: ReactNode }) {
       throw new Error("A Wallet Standard account with Devnet v0 signing is required.");
     }
     let output;
+    setWalletRequests((count) => count + 1);
     try {
       [output] = await sender.signAndSendTransaction({
         transaction,
@@ -209,7 +217,10 @@ export function SolanaWalletProvider({ children }: { children: ReactNode }) {
       if (/no record of a prior credit|insufficient (funds|lamports)|insufficient.*fee/i.test(message)) {
         throw new Error("Not enough Devnet SOL for fees. Get some from the Gas link on the Portfolio page, then retry.");
       }
+      if (rejected(cause)) throw new Error("Transaction cancelled in your wallet. Nothing was sent.");
       throw cause;
+    } finally {
+      setWalletRequests((count) => count - 1);
     }
     if (!output || output.signature.length !== 64) throw new Error("Wallet submission returned an invalid signature.");
     return bs58.encode(output.signature);
@@ -220,7 +231,16 @@ export function SolanaWalletProvider({ children }: { children: ReactNode }) {
     if (!selectedWallet || !selectedAccount || !canSignMessage || !signer) {
       throw new Error("A Wallet Standard account with Solana message signing is required.");
     }
-    const [output] = await signer.signMessage({ message, account: selectedAccount });
+    let output;
+    setWalletRequests((count) => count + 1);
+    try {
+      [output] = await signer.signMessage({ message, account: selectedAccount });
+    } catch (cause) {
+      if (rejected(cause)) throw new Error("Signature cancelled in your wallet.");
+      throw cause;
+    } finally {
+      setWalletRequests((count) => count - 1);
+    }
     if (!output || output.signature.length !== 64 || !bytesEqual(output.signedMessage, message)) {
       throw new Error("Wallet did not sign the exact canonical order bytes.");
     }
@@ -233,6 +253,7 @@ export function SolanaWalletProvider({ children }: { children: ReactNode }) {
     accounts: activeAccounts,
     selectedAccount,
     connecting,
+    awaitingWallet: walletRequests > 0,
     error,
     canSignAndSendV0,
     canSignMessage,
@@ -241,7 +262,7 @@ export function SolanaWalletProvider({ children }: { children: ReactNode }) {
     disconnect,
     signAndSend,
     signMessage,
-  }), [activeAccounts, canSignAndSendV0, canSignMessage, connect, connecting, disconnect, error, selectedAccount, selectedWallet, signAndSend, signMessage, wallets]);
+  }), [activeAccounts, canSignAndSendV0, canSignMessage, connect, connecting, disconnect, error, selectedAccount, selectedWallet, signAndSend, signMessage, walletRequests, wallets]);
 
   return <SolanaWalletContext.Provider value={value}>{children}</SolanaWalletContext.Provider>;
 }

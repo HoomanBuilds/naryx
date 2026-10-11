@@ -213,7 +213,7 @@ export function StrategyNovation({
               <input className={styles.mono} value={evidence[venueId] ?? ""} onChange={(event) => setEvidence({ ...evidence, [venueId]: event.target.value })} placeholder="64 lowercase hexadecimal characters" spellCheck={false} />
             </label>
           ))}
-          <button type="button" className={styles.connect} disabled={busy !== "idle" || !transferable} onClick={() => void createProposal()}>{busy === "signing" ? "Awaiting owner signature..." : "Sign novation proposal"}</button>
+          <button type="button" className={styles.connect} disabled={busy !== "idle" || !transferable} onClick={() => void createProposal()}>{busy === "signing" ? (evm.awaitingWallet || solana.awaitingWallet ? "Confirm in your wallet" : "Awaiting owner signature...") : "Sign novation proposal"}</button>
         </div> : null}
         <div className={styles.novationPane}>
           <h3>2. Incoming owner reviews and consents</h3>
@@ -223,7 +223,7 @@ export function StrategyNovation({
           </label>
           <div className={styles.lifecycleActions}>
             <button type="button" className={styles.ghost} disabled={proposalText.trim() === "" || busy !== "idle"} onClick={() => void reviewProposal()}>Check proposal</button>
-            <button type="button" className={styles.connect} disabled={reviewedNewOwner === null || busy !== "idle"} onClick={() => void consentAndSubmit()}>{busy === "submitting" ? "Signing and submitting..." : "Consent and submit"}</button>
+            <button type="button" className={styles.connect} disabled={reviewedNewOwner === null || busy !== "idle"} onClick={() => void consentAndSubmit()}>{busy === "submitting" ? (evm.awaitingWallet || solana.awaitingWallet ? "Confirm in your wallet" : "Signing and submitting...") : "Consent and submit"}</button>
           </div>
           {reviewed ? (
             <dl className={styles.novationReview}>

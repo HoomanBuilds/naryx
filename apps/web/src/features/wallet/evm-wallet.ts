@@ -36,6 +36,8 @@ export type EvmWalletSession = {
   connector: Connector | null;
   connecting: boolean;
   switching: boolean;
+  /** A signature or transaction request is open in the wallet and waits for the user. */
+  awaitingWallet: boolean;
   error: string | null;
   connect(connector: Connector): Promise<boolean>;
   disconnect(): Promise<void>;
@@ -222,6 +224,7 @@ export function useEvmWallet(): EvmWalletSession {
     connector: connection.isConnected ? connection.connector ?? null : null,
     connecting: connectMutation.isPending || connection.status === "connecting" || connection.status === "reconnecting",
     switching: switchMutation.isPending,
+    awaitingWallet: typedDataMutation.isPending || transactionMutation.isPending,
     error,
     connect,
     disconnect,

@@ -18,6 +18,14 @@ export type TerminalServiceConfig = Readonly<{
 
 export type HealthState = "unconfigured" | "checking" | "ok" | "unavailable";
 
+/** A short in-app notice about a transaction that settled while its page was not in view. */
+export type TerminalNotice = Readonly<{
+  id: number;
+  tone: "ok" | "bad" | "info";
+  text: string;
+  link?: Readonly<{ href: "/activity" | "/portfolio"; label: string }>;
+}>;
+
 type TerminalContextValue = TerminalServiceConfig & {
   selectedDomain: DomainId;
   setSelectedDomain(domain: DomainId): void;
@@ -29,7 +37,13 @@ type TerminalContextValue = TerminalServiceConfig & {
   recordAttempt(attempt: RecordedAttempt): void;
   /** Removes the given wallets' local attempts from this browser's list. */
   clearAttempts(owners: readonly string[]): void;
+  notices: readonly TerminalNotice[];
+  notify(tone: TerminalNotice["tone"], text: string, link?: TerminalNotice["link"]): void;
+  dismissNotice(id: number): void;
 };
+
+const NOTICE_LIMIT = 3;
+let noticeId = 0;
 
 export const DOMAIN_ORDER: readonly DomainId[] = ["solana", "base", "arbitrum", "hyperliquid"];
 
@@ -95,6 +109,15 @@ export function TerminalProvider({ config, children }: { config: TerminalService
   );
   const [healthRequest, setHealthRequest] = useState(0);
   const [attempts, recordAttempt, clearAttempts] = useAttemptIndex();
+  const [notices, setNotices] = useState<readonly TerminalNotice[]>([]);
+  const notify = useCallback((tone: TerminalNotice["tone"], text: string, link?: TerminalNotice["link"]) => {
+    noticeId += 1;
+    const notice = { id: noticeId, tone, text, link };
+    setNotices((current) => [...current.filter((entry) => entry.text !== text), notice].slice(-NOTICE_LIMIT));
+  }, []);
+  const dismissNotice = useCallback((id: number) => {
+    setNotices((current) => current.filter((entry) => entry.id !== id));
+  }, []);
 
   useEffect(() => {
     if (!privateProvider) return;
@@ -140,7 +163,10 @@ export function TerminalProvider({ config, children }: { config: TerminalService
     attempts,
     recordAttempt,
     clearAttempts,
-  }), [attempts, clearAttempts, health, packageMarketId, privateApiBaseUrl, privateProvider, publicApiBaseUrl, recordAttempt, refreshHealth, selectedDomain, setSelectedDomain]);
+    notices,
+    notify,
+    dismissNotice,
+  }), [attempts, clearAttempts, dismissNotice, health, notices, notify, packageMarketId, privateApiBaseUrl, privateProvider, publicApiBaseUrl, recordAttempt, refreshHealth, selectedDomain, setSelectedDomain]);
 
   return <TerminalContext.Provider value={value}>{children}</TerminalContext.Provider>;
 }
