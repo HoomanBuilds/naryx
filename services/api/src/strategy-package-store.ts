@@ -506,6 +506,7 @@ export interface StrategyPackageAdmissionSummary {
   readonly orderHashHex: string;
   readonly quoteHashHex: string;
   readonly routeHashHex: string;
+  readonly owner: string;
   readonly templateId: string;
   readonly templateVersion: number;
   readonly lifecycleAction: StrategyPackageOrder["lifecycleAction"];
@@ -2142,6 +2143,7 @@ export class SqliteStrategyPackageStore {
         orderHashHex: toHex(row.order_hash),
         quoteHashHex: toHex(row.quote_hash),
         routeHashHex: toHex(row.route_hash),
+        owner: order.owner,
         templateId: order.templateId,
         templateVersion: order.templateVersion,
         lifecycleAction: order.lifecycleAction,

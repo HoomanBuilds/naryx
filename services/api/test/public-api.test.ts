@@ -868,6 +868,7 @@ test("recent admitted strategy packages are exposed as bounded read-only summari
     orderHashHex: "11".repeat(32),
     quoteHashHex: "22".repeat(32),
     routeHashHex: "33".repeat(32),
+    owner: "0x" + "ab".repeat(20),
     templateId: "funding-spread-v1",
     templateVersion: 1,
     lifecycleAction: "ENTRY" as const,
