@@ -345,6 +345,14 @@ contract NaryxTestPerpMarketTest is Test {
         market.getPosition(address(market), EXPIRY, alice);
     }
 
+    function testDeploysOnArbitrumSepolia() public {
+        vm.chainId(421_614);
+
+        NaryxTestPerpMarket arbitrumMarket = new NaryxTestPerpMarket(_parameters());
+
+        assertEq(arbitrumMarket.deploymentChainId(), 421_614);
+    }
+
     function _parameters() private view returns (NaryxTestPerpMarket.Parameters memory) {
         return NaryxTestPerpMarket.Parameters({
             owner: owner,
