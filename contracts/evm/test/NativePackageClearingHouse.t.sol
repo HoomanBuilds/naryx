@@ -44,6 +44,12 @@ contract NativePackageClearingHouseTest is Test {
         clearing.setEntryPaused(false);
     }
 
+    function testRejectsTheClearingHouseAsItsOwnFeeRecipient() public {
+        vm.expectRevert(NativePackageClearingHouse.InvalidConfiguration.selector);
+        clearing.scheduleFeeUpdate(10, address(clearing));
+        clearing.scheduleFeeUpdate(10, address(this));
+    }
+
     function testExecutesOwnerSignedMatchAndChargesDelayedFee() public {
         clearing.scheduleFeeUpdate(10, address(this));
         vm.warp(block.timestamp + 30);

@@ -532,7 +532,10 @@ contract NativePackageClearingHouse is ReentrancyGuard {
 
     function scheduleFeeUpdate(uint16 nextFeeBps, address nextRecipient) external {
         if (msg.sender != governor) revert Unauthorized();
-        if (nextFeeBps > maximumFeeBps || nextRecipient == address(0)) revert InvalidConfiguration();
+        // Only the recipient can withdraw accrued fees, so this contract can never be one.
+        if (nextFeeBps > maximumFeeBps || nextRecipient == address(0) || nextRecipient == address(this)) {
+            revert InvalidConfiguration();
+        }
         uint64 activateAt = uint64(block.timestamp) + feeUpdateDelaySeconds;
         pendingFeeUpdate = FeeUpdate({feeBps: nextFeeBps, recipient: nextRecipient, activateAt: activateAt});
         emit FeeUpdateScheduled(nextFeeBps, nextRecipient, activateAt);

@@ -171,6 +171,9 @@ contract StrategyFeePolicyRegistry {
                 || active.token != token
         ) revert PolicyMismatch();
         if (token.codehash != active.expectedTokenCodeHash) revert TokenCodeMismatch();
+        // A pause stops fee collection, not execution: solver executions always cite the policy, so a
+        // fee-free one (an exit among them) stays allowed. Solana matches this by letting a fee-free
+        // execution omit the policy accounts entirely.
         if (active.paused && (protocolFeeAtoms != 0 || solverFeeAtoms != 0)) revert PolicyPaused();
         if (
             protocolFeeAtoms > Math.mulDiv(grossNotionalAtoms, active.maximumProtocolFeeBps, 10_000)
