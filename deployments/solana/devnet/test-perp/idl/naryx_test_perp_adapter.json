@@ -8,6 +8,110 @@
   },
   "instructions": [
     {
+      "name": "execute_bound_strategy_leg",
+      "discriminator": [
+        114,
+        151,
+        205,
+        77,
+        190,
+        197,
+        181,
+        132
+      ],
+      "accounts": [
+        {
+          "name": "strategy",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  115,
+                  116,
+                  45,
+                  112,
+                  101,
+                  114,
+                  112,
+                  45,
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "strategy.owner",
+                "account": "TestPerpStrategy"
+              },
+              {
+                "kind": "account",
+                "path": "strategy.strategy_id",
+                "account": "TestPerpStrategy"
+              }
+            ]
+          }
+        },
+        {
+          "name": "controller",
+          "signer": true
+        },
+        {
+          "name": "test_perp_program",
+          "address": "CpAqHqcpegSm8NCedsDVvwg85jozNa46Qz1TGNyVyLTr"
+        },
+        {
+          "name": "market",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "collateral_vault",
+          "writable": true
+        },
+        {
+          "name": "fee_vault",
+          "writable": true
+        },
+        {
+          "name": "insurance_vault",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "context",
+          "type": {
+            "defined": {
+              "name": "StrategyLegContext"
+            }
+          }
+        },
+        {
+          "name": "payload",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
       "name": "execute_typed_strategy_leg",
       "discriminator": [
         136,
@@ -689,6 +793,11 @@
       "code": 6016,
       "name": "TypedPayloadInvalid",
       "msg": "Typed strategy payload is not a supported test perp adapter instruction"
+    },
+    {
+      "code": 6017,
+      "name": "RiskDirectionMismatch",
+      "msg": "A risk-increasing test perp order was labelled non-increasing"
     }
   ],
   "types": [
@@ -713,6 +822,30 @@
           {
             "name": "max_base_lots",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "StrategyLegContext",
+      "docs": [
+        "Supplied by the multi-strategy program from its own validated execution, never by the payload."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "package_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "risk_increasing",
+            "type": "bool"
           }
         ]
       }

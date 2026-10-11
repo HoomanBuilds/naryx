@@ -1,0 +1,3469 @@
+{
+  "address": "CDaUbFWSG6rh5mgjAr63157Ha7upZmza5SF47xgSaxqj",
+  "metadata": {
+    "name": "naryx_multi_strategy",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "instructions": [
+    {
+      "name": "execute_multi_strategy",
+      "discriminator": [
+        76,
+        169,
+        178,
+        98,
+        51,
+        146,
+        246,
+        18
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "strategy_account"
+          ]
+        },
+        {
+          "name": "solver",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                187,
+                140,
+                181,
+                44,
+                105,
+                174,
+                132,
+                139,
+                76,
+                246,
+                142,
+                0,
+                113,
+                128,
+                143,
+                127,
+                107,
+                150,
+                123,
+                55,
+                220,
+                69,
+                234,
+                26,
+                223,
+                50,
+                120,
+                56,
+                249,
+                190,
+                100,
+                217
+              ]
+            }
+          },
+          "relations": [
+            "strategy_account"
+          ]
+        },
+        {
+          "name": "solver_registry",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  111,
+                  114,
+                  109,
+                  97,
+                  110,
+                  99,
+                  101,
+                  45,
+                  115,
+                  111,
+                  108,
+                  118,
+                  101,
+                  114
+                ]
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                187,
+                140,
+                181,
+                44,
+                105,
+                174,
+                132,
+                139,
+                76,
+                246,
+                142,
+                0,
+                113,
+                128,
+                143,
+                127,
+                107,
+                150,
+                123,
+                55,
+                220,
+                69,
+                234,
+                26,
+                223,
+                50,
+                120,
+                56,
+                249,
+                190,
+                100,
+                217
+              ]
+            }
+          }
+        },
+        {
+          "name": "fee_policy",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  45,
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "fee_policy.domain_identity_hash",
+                "account": "FeePolicyRecord"
+              },
+              {
+                "kind": "account",
+                "path": "fee_policy.direction",
+                "account": "FeePolicyRecord"
+              },
+              {
+                "kind": "account",
+                "path": "fee_policy.quote_asset.subject_id",
+                "account": "FeePolicyRecord"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                187,
+                140,
+                181,
+                44,
+                105,
+                174,
+                132,
+                139,
+                76,
+                246,
+                142,
+                0,
+                113,
+                128,
+                143,
+                127,
+                107,
+                150,
+                123,
+                55,
+                220,
+                69,
+                234,
+                26,
+                223,
+                50,
+                120,
+                56,
+                249,
+                190,
+                100,
+                217
+              ]
+            }
+          }
+        },
+        {
+          "name": "quote_asset_index",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "execution.fees.quote_asset.subject_id"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                187,
+                140,
+                181,
+                44,
+                105,
+                174,
+                132,
+                139,
+                76,
+                246,
+                142,
+                0,
+                113,
+                128,
+                143,
+                127,
+                107,
+                150,
+                123,
+                55,
+                220,
+                69,
+                234,
+                26,
+                223,
+                50,
+                120,
+                56,
+                249,
+                190,
+                100,
+                217
+              ]
+            }
+          }
+        },
+        {
+          "name": "quote_asset_record",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "execution.fees.quote_asset.subject_id"
+              },
+              {
+                "kind": "arg",
+                "path": "execution.fees.quote_asset.manifest_version"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                187,
+                140,
+                181,
+                44,
+                105,
+                174,
+                132,
+                139,
+                76,
+                246,
+                142,
+                0,
+                113,
+                128,
+                143,
+                127,
+                107,
+                150,
+                123,
+                55,
+                220,
+                69,
+                234,
+                26,
+                223,
+                50,
+                120,
+                56,
+                249,
+                190,
+                100,
+                217
+              ]
+            }
+          }
+        },
+        {
+          "name": "quote_mint"
+        },
+        {
+          "name": "owner_fee_token",
+          "writable": true
+        },
+        {
+          "name": "protocol_fee_token",
+          "writable": true
+        },
+        {
+          "name": "solver_fee_token",
+          "writable": true
+        },
+        {
+          "name": "strategy_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  117,
+                  108,
+                  116,
+                  105,
+                  45,
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121,
+                  45,
+                  97,
+                  99,
+                  99,
+                  111,
+                  117,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121,
+                  45,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "strategy_account"
+              },
+              {
+                "kind": "arg",
+                "path": "execution.package_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "receipt",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121,
+                  45,
+                  114,
+                  101,
+                  99,
+                  101,
+                  105,
+                  112,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "strategy_account"
+              },
+              {
+                "kind": "arg",
+                "path": "execution.nonce"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "execution",
+          "type": {
+            "defined": {
+              "name": "StrategyExecutionArgs"
+            }
+          }
+        },
+        {
+          "name": "calls",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "StrategyCallArgs"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "execute_multi_strategy_recovery",
+      "discriminator": [
+        176,
+        160,
+        78,
+        36,
+        232,
+        215,
+        143,
+        145
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "strategy_account"
+          ]
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                187,
+                140,
+                181,
+                44,
+                105,
+                174,
+                132,
+                139,
+                76,
+                246,
+                142,
+                0,
+                113,
+                128,
+                143,
+                127,
+                107,
+                150,
+                123,
+                55,
+                220,
+                69,
+                234,
+                26,
+                223,
+                50,
+                120,
+                56,
+                249,
+                190,
+                100,
+                217
+              ]
+            }
+          },
+          "relations": [
+            "strategy_account"
+          ]
+        },
+        {
+          "name": "strategy_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  117,
+                  108,
+                  116,
+                  105,
+                  45,
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121,
+                  45,
+                  97,
+                  99,
+                  99,
+                  111,
+                  117,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121,
+                  45,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "strategy_account"
+              },
+              {
+                "kind": "arg",
+                "path": "execution.package_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "receipt",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121,
+                  45,
+                  114,
+                  101,
+                  99,
+                  101,
+                  105,
+                  112,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "strategy_account"
+              },
+              {
+                "kind": "arg",
+                "path": "execution.nonce"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "execution",
+          "type": {
+            "defined": {
+              "name": "StrategyExecutionArgs"
+            }
+          }
+        },
+        {
+          "name": "calls",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "StrategyCallArgs"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "execute_netting_allocation",
+      "discriminator": [
+        112,
+        41,
+        162,
+        20,
+        132,
+        6,
+        59,
+        235
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "strategy_account"
+          ]
+        },
+        {
+          "name": "solver",
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                187,
+                140,
+                181,
+                44,
+                105,
+                174,
+                132,
+                139,
+                76,
+                246,
+                142,
+                0,
+                113,
+                128,
+                143,
+                127,
+                107,
+                150,
+                123,
+                55,
+                220,
+                69,
+                234,
+                26,
+                223,
+                50,
+                120,
+                56,
+                249,
+                190,
+                100,
+                217
+              ]
+            }
+          },
+          "relations": [
+            "strategy_account"
+          ]
+        },
+        {
+          "name": "solver_registry",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  111,
+                  114,
+                  109,
+                  97,
+                  110,
+                  99,
+                  101,
+                  45,
+                  115,
+                  111,
+                  108,
+                  118,
+                  101,
+                  114
+                ]
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                187,
+                140,
+                181,
+                44,
+                105,
+                174,
+                132,
+                139,
+                76,
+                246,
+                142,
+                0,
+                113,
+                128,
+                143,
+                127,
+                107,
+                150,
+                123,
+                55,
+                220,
+                69,
+                234,
+                26,
+                223,
+                50,
+                120,
+                56,
+                249,
+                190,
+                100,
+                217
+              ]
+            }
+          }
+        },
+        {
+          "name": "fee_policy",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  102,
+                  101,
+                  101,
+                  45,
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "fee_policy.domain_identity_hash",
+                "account": "FeePolicyRecord"
+              },
+              {
+                "kind": "account",
+                "path": "fee_policy.direction",
+                "account": "FeePolicyRecord"
+              },
+              {
+                "kind": "account",
+                "path": "fee_policy.quote_asset.subject_id",
+                "account": "FeePolicyRecord"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                187,
+                140,
+                181,
+                44,
+                105,
+                174,
+                132,
+                139,
+                76,
+                246,
+                142,
+                0,
+                113,
+                128,
+                143,
+                127,
+                107,
+                150,
+                123,
+                55,
+                220,
+                69,
+                234,
+                26,
+                223,
+                50,
+                120,
+                56,
+                249,
+                190,
+                100,
+                217
+              ]
+            }
+          }
+        },
+        {
+          "name": "quote_asset_index",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  105,
+                  110,
+                  100,
+                  101,
+                  120
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "execution.fees.quote_asset.subject_id"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                187,
+                140,
+                181,
+                44,
+                105,
+                174,
+                132,
+                139,
+                76,
+                246,
+                142,
+                0,
+                113,
+                128,
+                143,
+                127,
+                107,
+                150,
+                123,
+                55,
+                220,
+                69,
+                234,
+                26,
+                223,
+                50,
+                120,
+                56,
+                249,
+                190,
+                100,
+                217
+              ]
+            }
+          }
+        },
+        {
+          "name": "quote_asset_record",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  114,
+                  101,
+                  115,
+                  111,
+                  117,
+                  114,
+                  99,
+                  101,
+                  45,
+                  114,
+                  101,
+                  99,
+                  111,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  115,
+                  115,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "execution.fees.quote_asset.subject_id"
+              },
+              {
+                "kind": "arg",
+                "path": "execution.fees.quote_asset.manifest_version"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                187,
+                140,
+                181,
+                44,
+                105,
+                174,
+                132,
+                139,
+                76,
+                246,
+                142,
+                0,
+                113,
+                128,
+                143,
+                127,
+                107,
+                150,
+                123,
+                55,
+                220,
+                69,
+                234,
+                26,
+                223,
+                50,
+                120,
+                56,
+                249,
+                190,
+                100,
+                217
+              ]
+            }
+          }
+        },
+        {
+          "name": "quote_mint"
+        },
+        {
+          "name": "owner_fee_token",
+          "writable": true
+        },
+        {
+          "name": "protocol_fee_token",
+          "writable": true
+        },
+        {
+          "name": "solver_fee_token",
+          "writable": true
+        },
+        {
+          "name": "strategy_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  117,
+                  108,
+                  116,
+                  105,
+                  45,
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121,
+                  45,
+                  97,
+                  99,
+                  99,
+                  111,
+                  117,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121,
+                  45,
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "strategy_account"
+              },
+              {
+                "kind": "arg",
+                "path": "execution.package_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "receipt",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121,
+                  45,
+                  114,
+                  101,
+                  99,
+                  101,
+                  105,
+                  112,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "strategy_account"
+              },
+              {
+                "kind": "arg",
+                "path": "execution.nonce"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "execution",
+          "type": {
+            "defined": {
+              "name": "StrategyExecutionArgs"
+            }
+          }
+        },
+        {
+          "name": "calls",
+          "type": {
+            "vec": {
+              "defined": {
+                "name": "StrategyCallArgs"
+              }
+            }
+          }
+        },
+        {
+          "name": "authorization_hash",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "initialize_multi_strategy_account",
+      "discriminator": [
+        170,
+        6,
+        233,
+        120,
+        63,
+        135,
+        217,
+        45
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  110,
+                  97,
+                  114,
+                  121,
+                  120,
+                  45,
+                  112,
+                  114,
+                  111,
+                  116,
+                  111,
+                  99,
+                  111,
+                  108,
+                  45,
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                187,
+                140,
+                181,
+                44,
+                105,
+                174,
+                132,
+                139,
+                76,
+                246,
+                142,
+                0,
+                113,
+                128,
+                143,
+                127,
+                107,
+                150,
+                123,
+                55,
+                220,
+                69,
+                234,
+                26,
+                223,
+                50,
+                120,
+                56,
+                249,
+                190,
+                100,
+                217
+              ]
+            }
+          }
+        },
+        {
+          "name": "strategy_account",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  117,
+                  108,
+                  116,
+                  105,
+                  45,
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121,
+                  45,
+                  97,
+                  99,
+                  99,
+                  111,
+                  117,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "withdraw_idle_token",
+      "discriminator": [
+        177,
+        45,
+        183,
+        201,
+        125,
+        83,
+        119,
+        236
+      ],
+      "accounts": [
+        {
+          "name": "owner",
+          "signer": true,
+          "relations": [
+            "strategy_account"
+          ]
+        },
+        {
+          "name": "strategy_account",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  117,
+                  108,
+                  116,
+                  105,
+                  45,
+                  115,
+                  116,
+                  114,
+                  97,
+                  116,
+                  101,
+                  103,
+                  121,
+                  45,
+                  97,
+                  99,
+                  99,
+                  111,
+                  117,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "source",
+          "writable": true
+        },
+        {
+          "name": "destination",
+          "writable": true
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "MultiStrategyAccount",
+      "discriminator": [
+        254,
+        101,
+        241,
+        160,
+        57,
+        123,
+        97,
+        244
+      ]
+    },
+    {
+      "name": "StrategyPosition",
+      "discriminator": [
+        39,
+        177,
+        202,
+        35,
+        88,
+        177,
+        104,
+        129
+      ]
+    },
+    {
+      "name": "StrategyReceipt",
+      "discriminator": [
+        113,
+        251,
+        158,
+        32,
+        162,
+        150,
+        109,
+        167
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "IdleTokenWithdrawn",
+      "discriminator": [
+        65,
+        135,
+        109,
+        206,
+        91,
+        40,
+        228,
+        104
+      ]
+    },
+    {
+      "name": "MultiStrategyAccountInitialized",
+      "discriminator": [
+        200,
+        216,
+        6,
+        147,
+        113,
+        25,
+        243,
+        27
+      ]
+    },
+    {
+      "name": "MultiStrategyExecuted",
+      "discriminator": [
+        0,
+        40,
+        61,
+        178,
+        36,
+        221,
+        150,
+        180
+      ]
+    },
+    {
+      "name": "NettingAllocationExecuted",
+      "discriminator": [
+        177,
+        230,
+        10,
+        85,
+        216,
+        238,
+        204,
+        137
+      ]
+    },
+    {
+      "name": "StrategyAdapterLegExecuted",
+      "discriminator": [
+        132,
+        9,
+        136,
+        68,
+        183,
+        111,
+        133,
+        217
+      ]
+    },
+    {
+      "name": "StrategyFeesCollected",
+      "discriminator": [
+        245,
+        243,
+        80,
+        44,
+        190,
+        10,
+        196,
+        180
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidConfiguration",
+      "msg": "Protocol configuration is invalid"
+    },
+    {
+      "code": 6001,
+      "name": "InvalidStrategyAccount",
+      "msg": "Strategy account is invalid"
+    },
+    {
+      "code": 6002,
+      "name": "InvalidExecution",
+      "msg": "Strategy execution is malformed"
+    },
+    {
+      "code": 6003,
+      "name": "ExecutionExpired",
+      "msg": "Strategy execution is expired"
+    },
+    {
+      "code": 6004,
+      "name": "InvalidNonce",
+      "msg": "Strategy nonce does not match"
+    },
+    {
+      "code": 6005,
+      "name": "InvalidOwner",
+      "msg": "Strategy owner is invalid"
+    },
+    {
+      "code": 6006,
+      "name": "InvalidSolver",
+      "msg": "Strategy solver is invalid"
+    },
+    {
+      "code": 6007,
+      "name": "EntryPaused",
+      "msg": "Strategy entry is paused"
+    },
+    {
+      "code": 6008,
+      "name": "InvalidStateTransition",
+      "msg": "Strategy state transition is invalid"
+    },
+    {
+      "code": 6009,
+      "name": "InvalidStageOrder",
+      "msg": "Strategy call stages are invalid"
+    },
+    {
+      "code": 6010,
+      "name": "InvalidCallAccounts",
+      "msg": "Strategy call account layout is invalid"
+    },
+    {
+      "code": 6011,
+      "name": "InvalidAdapterRecord",
+      "msg": "Strategy adapter record is invalid"
+    },
+    {
+      "code": 6012,
+      "name": "AdapterUnavailable",
+      "msg": "Strategy adapter is unavailable for this action"
+    },
+    {
+      "code": 6013,
+      "name": "AdapterCodeIdentityMismatch",
+      "msg": "Strategy adapter code identity changed"
+    },
+    {
+      "code": 6014,
+      "name": "AdapterExecutionFailed",
+      "msg": "Strategy adapter execution failed"
+    },
+    {
+      "code": 6015,
+      "name": "AdapterEvidenceInvalid",
+      "msg": "Strategy adapter evidence is invalid"
+    },
+    {
+      "code": 6016,
+      "name": "ArithmeticOverflow",
+      "msg": "Strategy arithmetic overflowed"
+    },
+    {
+      "code": 6017,
+      "name": "SerializationFailed",
+      "msg": "Strategy serialization failed"
+    },
+    {
+      "code": 6018,
+      "name": "InvalidFeePolicy",
+      "msg": "Strategy fee policy is invalid"
+    },
+    {
+      "code": 6019,
+      "name": "InvalidFeeAccounts",
+      "msg": "Strategy fee token accounts are invalid"
+    },
+    {
+      "code": 6020,
+      "name": "PackageOpen",
+      "msg": "A strategy package is still open"
+    },
+    {
+      "code": 6021,
+      "name": "InvalidWithdrawal",
+      "msg": "Strategy withdrawal is invalid"
+    }
+  ],
+  "types": [
+    {
+      "name": "DescriptorRef",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "id",
+            "type": {
+              "defined": {
+                "name": "ProtocolId"
+              }
+            }
+          },
+          {
+            "name": "version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "DomainRef",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "domain_id",
+            "type": "string"
+          },
+          {
+            "name": "domain_manifest_version",
+            "type": "u32"
+          },
+          {
+            "name": "domain_manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ExecutionRole",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "None"
+          },
+          {
+            "name": "Spot"
+          },
+          {
+            "name": "Perp"
+          },
+          {
+            "name": "Inventory"
+          },
+          {
+            "name": "Future"
+          },
+          {
+            "name": "Option"
+          },
+          {
+            "name": "Lending"
+          },
+          {
+            "name": "Collateral"
+          },
+          {
+            "name": "Margin"
+          },
+          {
+            "name": "Account"
+          },
+          {
+            "name": "Escrow"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FeePolicyDirection",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Entry"
+          },
+          {
+            "name": "Exit"
+          }
+        ]
+      }
+    },
+    {
+      "name": "FeePolicyRecord",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "domain",
+            "type": {
+              "defined": {
+                "name": "DomainRef"
+              }
+            }
+          },
+          {
+            "name": "domain_identity_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "direction",
+            "type": {
+              "defined": {
+                "name": "FeePolicyDirection"
+              }
+            }
+          },
+          {
+            "name": "quote_asset",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "active_version",
+            "type": "u32"
+          },
+          {
+            "name": "active_manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "maximum_protocol_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "maximum_solver_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "protocol_fee_recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "paused",
+            "type": "bool"
+          },
+          {
+            "name": "pending",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "PendingFeePolicy"
+                }
+              }
+            }
+          },
+          {
+            "name": "pending_resume_slot",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "IdleTokenWithdrawn",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "strategy_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "source",
+            "type": "pubkey"
+          },
+          {
+            "name": "destination",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Lifecycle",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Active"
+          },
+          {
+            "name": "EntryPaused"
+          },
+          {
+            "name": "ExitOnly"
+          },
+          {
+            "name": "AllPaused"
+          },
+          {
+            "name": "Deprecated"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ManifestRef",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "subject_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "manifest_version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "MarketUnits",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "base_decimals",
+            "type": "u8"
+          },
+          {
+            "name": "quote_decimals",
+            "type": "u8"
+          },
+          {
+            "name": "base_lot_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "quote_tick_atoms_per_base_lot",
+            "type": "u64"
+          },
+          {
+            "name": "minimum_quote_notional_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "multiplier_numerator",
+            "type": "u64"
+          },
+          {
+            "name": "multiplier_denominator",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MultiStrategyAccount",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "config",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "next_nonce",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "open_package_count",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MultiStrategyAccountInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "strategy_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "config",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "MultiStrategyExecuted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "strategy_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "receipt",
+            "type": "pubkey"
+          },
+          {
+            "name": "domain",
+            "type": {
+              "defined": {
+                "name": "DomainRef"
+              }
+            }
+          },
+          {
+            "name": "package_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "order_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "graph_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "quote_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "route_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "template",
+            "type": {
+              "defined": {
+                "name": "DescriptorRef"
+              }
+            }
+          },
+          {
+            "name": "operation",
+            "type": {
+              "defined": {
+                "name": "StrategyOperation"
+              }
+            }
+          },
+          {
+            "name": "calls_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "evidence_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "receipt_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "solver",
+            "type": "pubkey"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "execution_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "NettingAllocationExecuted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "receipt",
+            "type": "pubkey"
+          },
+          {
+            "name": "receipt_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "authorization_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "PendingControl",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "control",
+            "type": {
+              "defined": {
+                "name": "ResourceControl"
+              }
+            }
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PendingDomain",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "domain",
+            "type": {
+              "defined": {
+                "name": "DomainRef"
+              }
+            }
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PendingFeePolicy",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "maximum_protocol_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "maximum_solver_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "protocol_fee_recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PendingSolver",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "key",
+            "type": "pubkey"
+          },
+          {
+            "name": "activation_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProtocolConfig",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "config_version",
+            "type": "u16"
+          },
+          {
+            "name": "environment",
+            "type": {
+              "defined": {
+                "name": "ProtocolId"
+              }
+            }
+          },
+          {
+            "name": "domain",
+            "type": {
+              "defined": {
+                "name": "DomainRef"
+              }
+            }
+          },
+          {
+            "name": "pending_domain",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "PendingDomain"
+                }
+              }
+            }
+          },
+          {
+            "name": "proposer",
+            "type": "pubkey"
+          },
+          {
+            "name": "canceller",
+            "type": "pubkey"
+          },
+          {
+            "name": "executor",
+            "type": "pubkey"
+          },
+          {
+            "name": "pauser",
+            "type": "pubkey"
+          },
+          {
+            "name": "config_delay_slots",
+            "type": "u64"
+          },
+          {
+            "name": "entry_paused",
+            "type": "bool"
+          },
+          {
+            "name": "pending_unpause_slot",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProtocolId",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "value",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "name": "QuoteLimit",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "quote_asset",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "quote_decimals",
+            "type": "u8"
+          },
+          {
+            "name": "maximum_notional_atoms",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceControl",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lifecycle",
+            "type": {
+              "defined": {
+                "name": "Lifecycle"
+              }
+            }
+          },
+          {
+            "name": "quote_limit",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "QuoteLimit"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceIndex",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "kind",
+            "type": {
+              "defined": {
+                "name": "ResourceKind"
+              }
+            }
+          },
+          {
+            "name": "subject_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "latest_version",
+            "type": "u32"
+          },
+          {
+            "name": "active_record",
+            "type": "pubkey"
+          },
+          {
+            "name": "active_identity",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "ManifestRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "pending_record",
+            "type": "pubkey"
+          },
+          {
+            "name": "pending_identity",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "ManifestRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "activation_slot",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceKind",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Asset"
+          },
+          {
+            "name": "Venue"
+          },
+          {
+            "name": "Market"
+          },
+          {
+            "name": "Adapter"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceManifest",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "kind",
+            "type": {
+              "defined": {
+                "name": "ResourceKind"
+              }
+            }
+          },
+          {
+            "name": "domain",
+            "type": {
+              "defined": {
+                "name": "DomainRef"
+              }
+            }
+          },
+          {
+            "name": "identity",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "subject_address",
+            "type": "pubkey"
+          },
+          {
+            "name": "program_id",
+            "type": "pubkey"
+          },
+          {
+            "name": "program_data",
+            "type": "pubkey"
+          },
+          {
+            "name": "code_identity",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "decimals",
+            "type": "u8"
+          },
+          {
+            "name": "quote_decimals",
+            "type": "u8"
+          },
+          {
+            "name": "role",
+            "type": {
+              "defined": {
+                "name": "ExecutionRole"
+              }
+            }
+          },
+          {
+            "name": "adapter_class",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "DescriptorRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "venue",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "ManifestRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "market",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "ManifestRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "base_asset",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "ManifestRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "quote_asset",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "ManifestRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "allowed_template",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "DescriptorRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "settlement",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "SettlementRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "market_units",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "MarketUnits"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ResourceRecord",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "manifest",
+            "type": {
+              "defined": {
+                "name": "ResourceManifest"
+              }
+            }
+          },
+          {
+            "name": "control",
+            "type": {
+              "defined": {
+                "name": "ResourceControl"
+              }
+            }
+          },
+          {
+            "name": "pending_control",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "PendingControl"
+                }
+              }
+            }
+          },
+          {
+            "name": "active",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SettlementClass",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "AtomicPostcondition"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SettlementRef",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "class",
+            "type": {
+              "defined": {
+                "name": "SettlementClass"
+              }
+            }
+          },
+          {
+            "name": "version",
+            "type": "u32"
+          },
+          {
+            "name": "manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "SolverRegistry",
+      "docs": [
+        "The solvers whose signatures may authorize settlement. Additions wait out the configuration",
+        "delay after a proposal; the pauser can remove a solver at once, since that only takes authority",
+        "away. With no active solver, every solver-authorized execution fails closed."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "active",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "pending",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "PendingSolver"
+                }
+              }
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "StrategyAdapterLegExecuted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "receipt",
+            "type": "pubkey"
+          },
+          {
+            "name": "call_index",
+            "type": "u8"
+          },
+          {
+            "name": "adapter_subject_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "stage",
+            "type": "u8"
+          },
+          {
+            "name": "evidence_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "StrategyCallArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "adapter",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "stage",
+            "type": "u8"
+          },
+          {
+            "name": "risk_increasing",
+            "type": "bool"
+          },
+          {
+            "name": "gross_notional_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "account_count",
+            "type": "u8"
+          },
+          {
+            "name": "payload",
+            "type": "bytes"
+          }
+        ]
+      }
+    },
+    {
+      "name": "StrategyExecutionArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "domain",
+            "type": {
+              "defined": {
+                "name": "DomainRef"
+              }
+            }
+          },
+          {
+            "name": "package_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "order_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "graph_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "quote_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "route_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "template",
+            "type": {
+              "defined": {
+                "name": "DescriptorRef"
+              }
+            }
+          },
+          {
+            "name": "settlement",
+            "type": {
+              "defined": {
+                "name": "SettlementRef"
+              }
+            }
+          },
+          {
+            "name": "operation",
+            "type": {
+              "defined": {
+                "name": "StrategyOperation"
+              }
+            }
+          },
+          {
+            "name": "previous_state_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "next_state_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "total_gross_notional_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "fees",
+            "type": {
+              "defined": {
+                "name": "StrategyFeeTerms"
+              }
+            }
+          },
+          {
+            "name": "solver",
+            "type": "pubkey"
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "deadline_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "StrategyFeeTerms",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "direction",
+            "type": {
+              "defined": {
+                "name": "FeePolicyDirection"
+              }
+            }
+          },
+          {
+            "name": "quote_asset",
+            "type": {
+              "defined": {
+                "name": "ManifestRef"
+              }
+            }
+          },
+          {
+            "name": "policy_version",
+            "type": "u32"
+          },
+          {
+            "name": "policy_manifest_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "protocol_fee_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "solver_fee_atoms",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "StrategyFeesCollected",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "receipt",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "protocol_recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "solver_recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "protocol_fee_atoms",
+            "type": "u64"
+          },
+          {
+            "name": "solver_fee_atoms",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "StrategyOperation",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Enter"
+          },
+          {
+            "name": "Increase"
+          },
+          {
+            "name": "Decrease"
+          },
+          {
+            "name": "Rebalance"
+          },
+          {
+            "name": "Roll"
+          },
+          {
+            "name": "Migrate"
+          },
+          {
+            "name": "Exit"
+          },
+          {
+            "name": "EmergencyUnwind"
+          }
+        ]
+      }
+    },
+    {
+      "name": "StrategyPosition",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "package_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "domain",
+            "type": {
+              "defined": {
+                "name": "DomainRef"
+              }
+            }
+          },
+          {
+            "name": "template",
+            "type": {
+              "defined": {
+                "name": "DescriptorRef"
+              }
+            }
+          },
+          {
+            "name": "state_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "last_receipt_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "active",
+            "type": "bool"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "StrategyReceipt",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "package_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "order_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "graph_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "quote_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "route_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "operation",
+            "type": {
+              "defined": {
+                "name": "StrategyOperation"
+              }
+            }
+          },
+          {
+            "name": "previous_state_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "next_state_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "calls_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "evidence_root",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "receipt_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "netting_authorization_hash",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "fees",
+            "type": {
+              "defined": {
+                "name": "StrategyFeeTerms"
+              }
+            }
+          },
+          {
+            "name": "nonce",
+            "type": "u64"
+          },
+          {
+            "name": "solver",
+            "type": "pubkey"
+          },
+          {
+            "name": "execution_slot",
+            "type": "u64"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ],
+  "constants": [
+    {
+      "name": "MULTI_STRATEGY_ACCOUNT_SEED",
+      "type": "bytes",
+      "value": "[109, 117, 108, 116, 105, 45, 115, 116, 114, 97, 116, 101, 103, 121, 45, 97, 99, 99, 111, 117, 110, 116]"
+    }
+  ]
+}

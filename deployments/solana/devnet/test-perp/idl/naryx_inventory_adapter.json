@@ -1,0 +1,384 @@
+{
+  "address": "EbY7MezVnmueWnyUb5QXe6jr4Cxe95Znh1FhZiPf633c",
+  "metadata": {
+    "name": "naryx_inventory_adapter",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Created with Anchor"
+  },
+  "instructions": [
+    {
+      "name": "execute_bound_strategy_leg",
+      "discriminator": [
+        114,
+        151,
+        205,
+        77,
+        190,
+        197,
+        181,
+        132
+      ],
+      "accounts": [
+        {
+          "name": "strategy_account",
+          "signer": true
+        },
+        {
+          "name": "inventory",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  99,
+                  107,
+                  97,
+                  103,
+                  101,
+                  45,
+                  105,
+                  110,
+                  118,
+                  101,
+                  110,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "strategy_account"
+              },
+              {
+                "kind": "account",
+                "path": "inventory.package_id",
+                "account": "PackageInventory"
+              },
+              {
+                "kind": "account",
+                "path": "inventory.mint",
+                "account": "PackageInventory"
+              }
+            ]
+          }
+        },
+        {
+          "name": "strategy_token",
+          "writable": true
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  99,
+                  107,
+                  97,
+                  103,
+                  101,
+                  45,
+                  105,
+                  110,
+                  118,
+                  101,
+                  110,
+                  116,
+                  111,
+                  114,
+                  121,
+                  45,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "inventory"
+              }
+            ]
+          }
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "context",
+          "type": {
+            "defined": {
+              "name": "StrategyLegContext"
+            }
+          }
+        },
+        {
+          "name": "payload",
+          "type": "bytes"
+        }
+      ]
+    },
+    {
+      "name": "initialize_package_inventory",
+      "discriminator": [
+        152,
+        218,
+        226,
+        85,
+        54,
+        56,
+        234,
+        32
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "strategy_account"
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "inventory",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  99,
+                  107,
+                  97,
+                  103,
+                  101,
+                  45,
+                  105,
+                  110,
+                  118,
+                  101,
+                  110,
+                  116,
+                  111,
+                  114,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "strategy_account"
+              },
+              {
+                "kind": "arg",
+                "path": "package_id"
+              },
+              {
+                "kind": "account",
+                "path": "mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  99,
+                  107,
+                  97,
+                  103,
+                  101,
+                  45,
+                  105,
+                  110,
+                  118,
+                  101,
+                  110,
+                  116,
+                  111,
+                  114,
+                  121,
+                  45,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "inventory"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "package_id",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "PackageInventory",
+      "discriminator": [
+        224,
+        161,
+        226,
+        136,
+        84,
+        176,
+        84,
+        127
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidConfiguration",
+      "msg": "The package inventory configuration is invalid"
+    },
+    {
+      "code": 6001,
+      "name": "InvalidPayload",
+      "msg": "The typed inventory payload is invalid"
+    },
+    {
+      "code": 6002,
+      "name": "PreconditionFailed",
+      "msg": "The inventory precondition does not match current custody"
+    },
+    {
+      "code": 6003,
+      "name": "PostconditionFailed",
+      "msg": "The inventory transfer did not produce the exact postcondition"
+    },
+    {
+      "code": 6004,
+      "name": "ArithmeticOverflow",
+      "msg": "Inventory arithmetic overflowed"
+    },
+    {
+      "code": 6005,
+      "name": "PackageMismatch",
+      "msg": "The inventory leg is not bound to the executing package"
+    },
+    {
+      "code": 6006,
+      "name": "RiskDirectionMismatch",
+      "msg": "A risk-increasing inventory action was labelled non-increasing"
+    }
+  ],
+  "types": [
+    {
+      "name": "PackageInventory",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "version",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "vault_bump",
+            "type": "u8"
+          },
+          {
+            "name": "strategy_account",
+            "type": "pubkey"
+          },
+          {
+            "name": "package_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "StrategyLegContext",
+      "docs": [
+        "Supplied by the multi-strategy program from its own validated execution, never by the payload."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "package_id",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "risk_increasing",
+            "type": "bool"
+          }
+        ]
+      }
+    }
+  ]
+}
