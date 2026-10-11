@@ -884,6 +884,28 @@ function currentStrategyExecutionCapabilities(): readonly StrategyExecutionLaneC
       }));
     }
   }
+  if (runtime.health.solanaDevnet.available
+    && generalizedStrategyPreparation !== undefined
+    && solanaTreasuryHedgeOrders !== undefined
+    && solanaTreasuryHedgeProvisioning !== undefined
+    && solanaStrategyExecutionAuthorization !== undefined
+    && solanaStrategyExecutionObservation !== undefined) {
+    capabilities.push(Object.freeze({
+      laneId: "solana-devnet-treasury-inventory-hedge",
+      templateId: "treasury-inventory-hedge-v1",
+      templateVersion: 1,
+      actions: Object.freeze(["ENTRY", "INCREASE", "DECREASE", "EXIT", "EMERGENCY_UNWIND"] as const),
+      legs: Object.freeze([
+        Object.freeze({ legFamily: "INVENTORY_TRANSFER" as const, sides: Object.freeze(["NONE"] as const), maximumLegs: 1 }),
+        Object.freeze({ legFamily: "PERP_OPEN" as const, sides: Object.freeze(["SELL"] as const), maximumLegs: 1 }),
+        Object.freeze({ legFamily: "PERP_INCREASE" as const, sides: Object.freeze(["SELL"] as const), maximumLegs: 1 }),
+        Object.freeze({ legFamily: "PERP_DECREASE" as const, sides: Object.freeze(["BUY"] as const), maximumLegs: 1 }),
+        Object.freeze({ legFamily: "PERP_CLOSE" as const, sides: Object.freeze(["BUY"] as const), maximumLegs: 1 }),
+      ]),
+      settlementClasses: Object.freeze(["ATOMIC_POSTCONDITION"] as const),
+      domains: Object.freeze([...new Set(solanaTreasuryHedgeOrders.profiles().map((profile) => profile.domain.domainId))].sort()),
+    }));
+  }
   const evmAtomicExecutionReady = generalizedStrategyPreparation !== undefined
     && evmOptionSpreadProvisioning !== undefined
     && evmStrategyExecutionAuthorization !== undefined
