@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {Test} from "forge-std/Test.sol";
 import {NaryxMultiStrategyAccount} from "../src/NaryxMultiStrategyAccount.sol";
 import {NaryxMultiStrategyAccountFactory} from "../src/NaryxMultiStrategyAccountFactory.sol";
+import {NaryxMultiStrategyAccountDeployer} from "../src/NaryxMultiStrategyAccountDeployer.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {RiskDomainRegistry} from "../src/RiskDomainRegistry.sol";
 import {SolverRegistry} from "../src/SolverRegistry.sol";
@@ -28,8 +29,9 @@ contract NaryxMultiStrategyAccountFactoryTest is Test {
         TypedStrategyAdapterRegistry adapters = new TypedStrategyAdapterRegistry(config);
         StrategyFeePolicyRegistry fees = new StrategyFeePolicyRegistry(config);
         RiskDomainRegistry riskDomains = new RiskDomainRegistry(config);
-        factory =
-            new NaryxMultiStrategyAccountFactory(config, solvers, adapters, fees, riskDomains, FEE_POLICY_SUBJECT_ID);
+        factory = new NaryxMultiStrategyAccountFactory(
+            config, solvers, adapters, fees, riskDomains, new NaryxMultiStrategyAccountDeployer(), FEE_POLICY_SUBJECT_ID
+        );
     }
 
     function testPredictsCreatesAndRecognizesOneAccountPerOwner() public {

@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {Script} from "forge-std/Script.sol";
 import {Strings} from "openzeppelin-contracts/utils/Strings.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
+import {RiskDomainRegistry} from "../src/RiskDomainRegistry.sol";
 import {StrategyFeePolicyRegistry} from "../src/StrategyFeePolicyRegistry.sol";
 import {TypedStrategyAdapterRegistry} from "../src/TypedStrategyAdapterRegistry.sol";
 import {TestnetChains} from "./TestnetChains.sol";
@@ -127,6 +128,60 @@ contract ConfigureEvmMultiStrategyCore is Script {
         _requireOperator(config, operatorAddress, PAUSER);
         vm.startBroadcast(operatorAddress);
         registry.tightenControl(identity, state, maximumApprovalAtoms, maximumGrossNotionalAtoms);
+        vm.stopBroadcast();
+    }
+
+    function runProposeRiskPolicy(
+        RiskDomainRegistry registry,
+        bytes32 riskDomainId,
+        RiskDomainRegistry.PolicyConfig calldata policy,
+        RiskDomainRegistry.SeriesRef[] calldata series,
+        RiskDomainRegistry.DependencyLimit[] calldata dependencies,
+        address operatorAddress
+    ) external {
+        ProtocolConfig config = registry.config();
+        _requireConfiguration(config, address(registry));
+        _requireOperator(config, operatorAddress, PROPOSER);
+        vm.startBroadcast(operatorAddress);
+        registry.proposePolicy(riskDomainId, policy, series, dependencies);
+        vm.stopBroadcast();
+    }
+
+    function runActivateRiskPolicy(RiskDomainRegistry registry, bytes32 riskDomainId, address operatorAddress)
+        external
+    {
+        ProtocolConfig config = registry.config();
+        _requireConfiguration(config, address(registry));
+        _requireOperator(config, operatorAddress, EXECUTOR);
+        vm.startBroadcast(operatorAddress);
+        registry.activate(riskDomainId);
+        vm.stopBroadcast();
+    }
+
+    function runPauseRiskEntry(RiskDomainRegistry registry, bytes32 riskDomainId, address operatorAddress) external {
+        ProtocolConfig config = registry.config();
+        _requireConfiguration(config, address(registry));
+        _requireOperator(config, operatorAddress, PAUSER);
+        vm.startBroadcast(operatorAddress);
+        registry.pauseEntry(riskDomainId);
+        vm.stopBroadcast();
+    }
+
+    function runProposeRiskResume(RiskDomainRegistry registry, bytes32 riskDomainId, address operatorAddress) external {
+        ProtocolConfig config = registry.config();
+        _requireConfiguration(config, address(registry));
+        _requireOperator(config, operatorAddress, PROPOSER);
+        vm.startBroadcast(operatorAddress);
+        registry.proposeResume(riskDomainId);
+        vm.stopBroadcast();
+    }
+
+    function runCancelRiskPolicy(RiskDomainRegistry registry, bytes32 riskDomainId, address operatorAddress) external {
+        ProtocolConfig config = registry.config();
+        _requireConfiguration(config, address(registry));
+        _requireOperator(config, operatorAddress, CANCELLER);
+        vm.startBroadcast(operatorAddress);
+        registry.cancel(riskDomainId);
         vm.stopBroadcast();
     }
 

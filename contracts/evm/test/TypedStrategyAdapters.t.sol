@@ -17,6 +17,7 @@ import {UniswapV3TypedSpotAdapter} from "../src/UniswapV3TypedSpotAdapter.sol";
 import {UniswapV3TypedSpotAdapterFactory} from "../src/UniswapV3TypedSpotAdapterFactory.sol";
 import {NaryxMultiStrategyAccount} from "../src/NaryxMultiStrategyAccount.sol";
 import {NaryxMultiStrategyAccountFactory} from "../src/NaryxMultiStrategyAccountFactory.sol";
+import {NaryxMultiStrategyAccountDeployer} from "../src/NaryxMultiStrategyAccountDeployer.sol";
 import {RiskDomainRegistry} from "../src/RiskDomainRegistry.sol";
 import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {SolverRegistry} from "../src/SolverRegistry.sol";
@@ -402,9 +403,14 @@ contract TypedAdapterPerpVenue is ISynFuturesInstrument, ISynFuturesPositionObse
             adapters = new TypedStrategyAdapterRegistry(config);
             StrategyFeePolicyRegistry fees = new StrategyFeePolicyRegistry(config);
             RiskDomainRegistry riskDomains = new RiskDomainRegistry(config);
-            accountFactory =
-                new NaryxMultiStrategyAccountFactory(
-                config, solvers, adapters, fees, riskDomains, FEE_POLICY_SUBJECT_ID
+            accountFactory = new NaryxMultiStrategyAccountFactory(
+                config,
+                solvers,
+                adapters,
+                fees,
+                riskDomains,
+                new NaryxMultiStrategyAccountDeployer(),
+                FEE_POLICY_SUBJECT_ID
             );
             account = accountFactory.create(address(0xA11CE));
             spotFactory = new UniswapV3TypedSpotAdapterFactory(_spotFactoryDeployment());

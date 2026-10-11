@@ -229,6 +229,7 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
 
     constructor(
         address owner_,
+        address accountFactory_,
         ProtocolConfig config_,
         SolverRegistry solverRegistry_,
         TypedStrategyAdapterRegistry adapterRegistry_,
@@ -237,17 +238,18 @@ contract NaryxMultiStrategyAccount is ReentrancyGuard {
         bytes32 feePolicySubjectId_
     ) {
         if (
-            owner_ == address(0) || owner_ == address(this) || address(config_).code.length == 0
-                || address(solverRegistry_).code.length == 0 || address(adapterRegistry_).code.length == 0
-                || address(feePolicyRegistry_).code.length == 0 || address(riskDomainRegistry_).code.length == 0
-                || feePolicySubjectId_ == bytes32(0) || address(solverRegistry_.config()) != address(config_)
+            owner_ == address(0) || owner_ == address(this) || accountFactory_ == address(0)
+                || address(config_).code.length == 0 || address(solverRegistry_).code.length == 0
+                || address(adapterRegistry_).code.length == 0 || address(feePolicyRegistry_).code.length == 0
+                || address(riskDomainRegistry_).code.length == 0 || feePolicySubjectId_ == bytes32(0)
+                || address(solverRegistry_.config()) != address(config_)
                 || address(adapterRegistry_.config()) != address(config_)
                 || address(feePolicyRegistry_.config()) != address(config_)
                 || address(riskDomainRegistry_.config()) != address(config_)
         ) revert InvalidConfiguration();
         (string memory domainId,,) = config_.domain();
         owner = owner_;
-        accountFactory = msg.sender;
+        accountFactory = accountFactory_;
         config = config_;
         solverRegistry = solverRegistry_;
         adapterRegistry = adapterRegistry_;

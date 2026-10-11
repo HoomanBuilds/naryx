@@ -110,7 +110,7 @@ contract NaryxMultiStrategyAccountTest is Test {
         base = new MultiStrategyToken("Base", "BASE");
         quote = new MultiStrategyToken("Quote", "QUOTE");
         account = new NaryxMultiStrategyAccount(
-            owner, config, solvers, adapters, feePolicies, riskDomains, FEE_POLICY_SUBJECT_ID
+            owner, address(this), config, solvers, adapters, feePolicies, riskDomains, FEE_POLICY_SUBJECT_ID
         );
         adapter = new MultiStrategyAdapter(address(account), base, quote);
 

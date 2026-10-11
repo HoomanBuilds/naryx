@@ -9,7 +9,7 @@ import {SolverRegistry} from "../src/SolverRegistry.sol";
 contract DeployEvmMultiStrategyCoreTest is Test {
     uint256 private constant CHAIN_ID = 84_532;
     bytes32 private constant DOMAIN_MANIFEST_HASH = keccak256("base-sepolia-domain-v1");
-    bytes32 private constant FEE_POLICY_SUBJECT_ID = keccak256("naryx.multi-strategy.fees");
+    bytes32 private constant FEE_POLICY_SUBJECT_ID = keccak256("multi-strategy-fees");
 
     DeployEvmMultiStrategyCore private script;
     ProtocolConfig private config;
@@ -36,6 +36,24 @@ contract DeployEvmMultiStrategyCoreTest is Test {
         assertEq(address(deployment.accountFactory.feePolicyRegistry()), address(deployment.feePolicyRegistry));
         assertEq(deployment.accountFactory.feePolicySubjectId(), FEE_POLICY_SUBJECT_ID);
         assertTrue(deployment.accountFactory.referenceAccount().code.length > 0);
+    }
+
+    function testDeploysFreshSolverRegistryForIndependentSuite() public {
+        address initialSolver = address(0x202);
+        DeployEvmMultiStrategyCore.FreshDeployment memory deployment = script.deployWithNewSolverRegistry(
+            DeployEvmMultiStrategyCore.FreshParameters({
+                expectedChainId: CHAIN_ID,
+                expectedDomainManifestVersion: 1,
+                expectedDomainManifestHash: DOMAIN_MANIFEST_HASH,
+                config: config,
+                initialSolver: initialSolver,
+                feePolicySubjectId: FEE_POLICY_SUBJECT_ID
+            })
+        );
+
+        assertEq(address(deployment.solverRegistry.config()), address(config));
+        assertTrue(deployment.solverRegistry.isActiveSolver(initialSolver));
+        assertEq(address(deployment.core.accountFactory.solverRegistry()), address(deployment.solverRegistry));
     }
 
     function testRejectsDomainThatDoesNotMatchChainIdentity() public {
