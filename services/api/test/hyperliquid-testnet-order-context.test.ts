@@ -819,6 +819,75 @@ test("a Hyperliquid exit sells exactly the owner's package spot and buys back ex
   }
 });
 
+test("a Hyperliquid exit closes the named open package of its owner, else the oldest", async () => {
+  const market = fakeMarket();
+  const feed = priceFeed(market);
+  assert.equal(await feed.refresh(), true);
+  const runtimeConfig = config();
+  const runtime = createHyperliquidTestnetOrderRuntime(runtimeConfig, feed, () => market.now);
+  const owner = "0x2222222222222222222222222222222222222222";
+  const other = "0x3333333333333333333333333333333333333333";
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-exit-pick-"));
+  let clock = 1_000;
+  const ledger = new HyperliquidTestnetOwnerLedger(join(scratch, "execution.db"), () => clock++);
+  const orders = new SqliteInternalOrderStore(join(scratch, "orders.db"));
+  try {
+    const limits = { maxOpenPackagesPerOwner: 3, maxOpenNotionalQuoteAtoms: 10n ** 12n };
+    const hash = `0x${"dd".repeat(32)}`;
+    const open = (attemptId: string, packageOwner: string, orderHash: string, spot: string) => {
+      ledger.reserveEntry({ attemptId, owner: packageOwner, orderHash, notionalAtoms: 1n, limits });
+      ledger.settleEntry(attemptId, {
+        attemptId, idempotencyKey: "idem-0123456789ABCD", domain: "hypercore:testnet",
+        environment: "TESTNET", status: "RECONCILED", submissionStatus: "ACKNOWLEDGED", packageStatus: "COMPLETED_BOUNDED",
+        reasons: [], actionCommitment: hash, requestCommitment: hash, rawEvidenceCommitments: [],
+        observedNetSpotDeltaAtoms: spot, observedPerpetualDeltaAtoms: "-100000",
+      }, 60_010_000_000n);
+    };
+    open("entry-oldest", owner, "10".repeat(32), "99965");
+    open("entry-newer", owner, "11".repeat(32), "99970");
+    open("entry-other", other, "12".repeat(32), "99965");
+    open("entry-closed", owner, "13".repeat(32), "99965");
+    const closed = ledger.openPackage(owner, "entry-closed")!;
+    ledger.bindExitOrder("entry-closed", owner, "14".repeat(32));
+    ledger.beginExit("exit-closed", {
+      owner, orderHash: "14".repeat(32), perpQuantityAtoms: 100_000n, grossSpotQuantityAtoms: 99_965n,
+      spotLotAtoms: 1n, entryReceiptHash: closed.entryReceiptHash!,
+    });
+    ledger.settleExit("exit-closed", {
+      attemptId: "exit-closed", idempotencyKey: "idem-0123456789ABCD", domain: "hypercore:testnet",
+      environment: "TESTNET", status: "RECONCILED", submissionStatus: "ACKNOWLEDGED", packageStatus: "COMPLETED_EXACT",
+      reasons: [], actionCommitment: hash, requestCommitment: hash, rawEvidenceCommitments: [],
+      observedNetSpotDeltaAtoms: "-99965", observedPerpetualDeltaAtoms: "100000",
+    });
+    const exit = createHyperliquidTestnetExitOrderFactory({
+      config: runtimeConfig.orderContext!, spotLotAtoms: 1n, contexts: runtime.contexts, clock: runtime.clock,
+      prices: feed, ledger, orders,
+    });
+    const named = await exit({ owner, slippageBps: 25, idempotencyKey: "hyper-exit-pick-0001", entryAttemptId: "entry-newer" });
+    assert.equal(named.package.entryAttemptId, "entry-newer");
+    assert.equal(orders.getCanonicalOrderByHash(named.record.orderHashHex)?.hyperliquidGrossSpotQuantity?.atoms, 99_970n);
+    assert.equal(ledger.openPackage(owner, "entry-newer")?.exitOrderHash, named.record.orderHashHex);
+    // Another owner's package and a closed package are refused alike.
+    for (const entryAttemptId of ["entry-other", "entry-closed", "entry-unknown"]) {
+      await assert.rejects(
+        exit({ owner, slippageBps: 25, idempotencyKey: "hyper-exit-pick-0002", entryAttemptId }),
+        /no open Hyperliquid testnet package with that entry attempt/,
+      );
+    }
+    await assert.rejects(
+      exit({ owner, slippageBps: 25, idempotencyKey: "hyper-exit-pick-0002", entryAttemptId: "entry/../x" }),
+      /Entry attempt id must use/,
+    );
+    const oldest = await exit({ owner, slippageBps: 25, idempotencyKey: "hyper-exit-pick-0003" });
+    assert.equal(oldest.package.entryAttemptId, "entry-oldest");
+    assert.equal(orders.getCanonicalOrderByHash(oldest.record.orderHashHex)?.hyperliquidGrossSpotQuantity?.atoms, 99_965n);
+  } finally {
+    orders.close();
+    ledger.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("a base asset at its token precision sizes entries in whole lots and exits leave sub-lot fee dust", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-wei-"));
   const path = join(scratch, "runtime.json");

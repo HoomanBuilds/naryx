@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { verifyTypedData, type Hex } from "viem";
 import {
+  bytesEqual,
   canonicalBytes,
   fromProtocolJson,
   hash32,
@@ -9,6 +10,7 @@ import {
   packageOrderHash,
   solverQuote,
   validatePackageOrderProfile,
+  type AssetRef,
   type PackageOrder,
   type PackageOrderInput,
   type SolverQuoteInput,
@@ -40,7 +42,7 @@ import type {
 } from "./hyperliquid-testnet-terminal-execution.js";
 import type { InternalOrderStore } from "./internal-order-store.js";
 import { buildHyperliquidStrategyPackageReceipt } from "./hyperliquid-strategy-receipt.js";
-import type { SqliteStrategyPackageStore } from "./strategy-package-store.js";
+import type { SqliteStrategyPackageStore, StoredStrategyPackageAdmission } from "./strategy-package-store.js";
 import type { InternalOrderClockPort } from "./terminal-orders.js";
 
 export const HYPERLIQUID_TESTNET_ACCOUNT_PATH = "/internal/terminal/hyperliquid-testnet/account";
@@ -54,6 +56,7 @@ const ATTEMPT_ID = /^hyperliquid-testnet-[0-9a-f]{48}$/;
 const STRATEGY_ATTEMPT_ID = /^strategy-hl-[0-9a-f]{48}$/;
 const SIGNATURE = /^0x[0-9a-f]{130}$/;
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{16,64}$/;
+const ENTRY_ATTEMPT_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const U64_MAX = 18446744073709551615n;
 const EXIT_REQUEST_DOMAIN = "NARYX/hyperliquid-testnet-exit-order-request/v1";
 
@@ -203,7 +206,8 @@ function ledgerRefusal(error: unknown): never {
 /**
  * Refuses a handoff unless the order's owner signed it and it settles in the trading account;
  * then reserves the owner's package slot and the account's notional for an entry, or claims the
- * exact open package an exit closes.
+ * exact open package an exit closes. A generalized strategy ENTRY or INCREASE reserves under the
+ * same caps; its risk-reducing actions are never capped and release exposure once completed.
  */
 export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
   ledger: HyperliquidTestnetOwnerLedger;
@@ -216,6 +220,8 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
   >;
   tradingAccount: string;
   limits: HyperliquidOmnibusLimits | undefined;
+  /** The asset the omnibus notional cap is denominated in. */
+  quoteAsset: AssetRef;
   /** Base atoms per spot size unit; an exit sells the package spot floored to it. */
   spotLotAtoms: bigint;
 }>): HyperliquidTestnetExecutionGuard {
@@ -229,7 +235,9 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
       return 0n;
     }
   };
-  const authorized = (request: HyperliquidTestnetTerminalExecutionRequest): AttemptBinding => {
+  const authorized = (request: HyperliquidTestnetTerminalExecutionRequest): AttemptBinding & Readonly<{
+    admission: StoredStrategyPackageAdmission | undefined;
+  }> => {
     const binding = attemptBinding(request.attemptId, options.intents, options.orders, options.strategyAttempts);
     if (binding.strategyOrderHash !== null) {
       const admission = binding.strategyQuoteHash === null
@@ -248,7 +256,7 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
           "The generalized order does not settle in the configured trading account.",
         );
       }
-      return binding;
+      return { ...binding, admission };
     }
     if (binding.order === null || binding.order.settlementAccount !== options.tradingAccount) {
       throw new HyperliquidTestnetTerminalValidationError(
@@ -262,15 +270,64 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
         "The package owner must sign the package authorization before execution.",
       );
     }
-    return binding;
+    return { ...binding, admission: undefined };
+  };
+  const priorStrategyPosition = (admission: StoredStrategyPackageAdmission) => {
+    const position = admission.order.lifecycleAction === "ENTRY" || admission.order.expectedStrategyStateHash === undefined
+      ? undefined
+      : options.strategyReceipts?.nativeStrategyPositionByStateHash(hex(admission.order.expectedStrategyStateHash));
+    if (admission.order.lifecycleAction !== "ENTRY" && position === undefined) {
+      throw new HyperliquidTestnetTerminalValidationError(
+        "STALE_STRATEGY_STATE",
+        "The strategy state committed by the lifecycle order is no longer current.",
+      );
+    }
+    return position;
+  };
+  // The signed quote's gross notional is what the strategy adds to the shared account.
+  const reserveStrategyExposure = (attemptId: string, admission: StoredStrategyPackageAdmission): void => {
+    const { order, quote } = admission;
+    if (order.lifecycleAction !== "ENTRY" && order.lifecycleAction !== "INCREASE") return;
+    if (options.limits === undefined) {
+      throw new HyperliquidTestnetTerminalValidationError(
+        "OMNIBUS_LIMITS_UNCONFIGURED",
+        "Hyperliquid testnet entries are closed until the shared account limits are configured.",
+      );
+    }
+    const notional = quote.totalGrossNotional;
+    if (notional.atoms <= 0n || notional.asset.assetId !== options.quoteAsset.assetId
+      || notional.asset.decimals !== options.quoteAsset.decimals
+      || !bytesEqual(notional.asset.assetManifestHash, options.quoteAsset.assetManifestHash)) {
+      throw new HyperliquidTestnetTerminalValidationError(
+        "STRATEGY_NOTIONAL_UNAVAILABLE",
+        "The strategy quote carries no positive notional in the shared account's quote asset.",
+      );
+    }
+    const strategyKey = order.lifecycleAction === "ENTRY"
+      ? admission.orderHashHex : priorStrategyPosition(admission)!.entryOrderHashHex;
+    try {
+      options.ledger.reserveExposure({
+        attemptId,
+        owner: order.owner,
+        strategyKey,
+        notionalAtoms: notional.atoms,
+        newPackage: order.lifecycleAction === "ENTRY",
+        limits: options.limits,
+      });
+    } catch (error) {
+      ledgerRefusal(error);
+    }
   };
   return Object.freeze({
     requireOwnerAuthorization(request: HyperliquidTestnetTerminalExecutionRequest) {
       authorized(request);
     },
     admit(request: HyperliquidTestnetTerminalExecutionRequest) {
-      const { order, orderHash, strategyOrderHash } = authorized(request);
-      if (strategyOrderHash !== null) return;
+      const { order, orderHash, admission } = authorized(request);
+      if (admission !== undefined) {
+        reserveStrategyExposure(request.attemptId, admission);
+        return;
+      }
       if (order === null) throw new HyperliquidTestnetTerminalValidationError("ATTEMPT_NOT_FOUND", "Hyperliquid order was not found.");
       try {
         if (order.action === "ENTRY") {
@@ -313,17 +370,7 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
             "The selected strategy admission was not found.",
           );
         }
-        const priorPosition = admission.order.lifecycleAction === "ENTRY"
-          ? undefined
-          : admission.order.expectedStrategyStateHash === undefined
-            ? undefined
-            : options.strategyReceipts?.nativeStrategyPositionByStateHash(hex(admission.order.expectedStrategyStateHash));
-        if (admission.order.lifecycleAction !== "ENTRY" && priorPosition === undefined) {
-          throw new HyperliquidTestnetTerminalValidationError(
-            "STALE_STRATEGY_STATE",
-            "The strategy state committed by the lifecycle order is no longer current.",
-          );
-        }
+        const priorPosition = priorStrategyPosition(admission);
         strategyReceipt = buildHyperliquidStrategyPackageReceipt({
           attemptId: request.attemptId,
           admission,
@@ -331,6 +378,19 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
           ...(priorPosition === undefined ? {} : { priorState: priorPosition.state }),
         });
         if (strategyReceipt !== undefined) options.strategyReceipts!.recordReceipt(strategyReceipt);
+        // The exposure ledger follows the recorded receipt, so a receipt that fails keeps exposure held.
+        const action = admission.order.lifecycleAction;
+        if (action === "ENTRY" || action === "INCREASE") {
+          options.ledger.settleExposure(request.attemptId, result);
+        } else if (priorPosition !== undefined && (action === "DECREASE" || action === "EXIT" || action === "EMERGENCY_UNWIND")) {
+          options.ledger.settleReduction({
+            attemptId: request.attemptId,
+            strategyKey: priorPosition.entryOrderHashHex,
+            result,
+            reducedQuantityAtoms: action === "DECREASE" ? admission.order.economicQuantity.atoms : null,
+            priorQuantityAtoms: priorPosition.economicQuantityAtoms,
+          });
+        }
         return;
       }
       const { order } = binding;
@@ -362,7 +422,7 @@ export function createHyperliquidTestnetExitOrderFactory(options: Readonly<{
   orders: Pick<InternalOrderStore, "createOrGet">;
 }>) {
   const { config } = options;
-  return async (request: Readonly<{ owner: string; slippageBps: number; idempotencyKey: string }>) => {
+  return async (request: Readonly<{ owner: string; slippageBps: number; idempotencyKey: string; entryAttemptId?: string }>) => {
     if (!HYPERLIQUID_TESTNET_OWNER_PATTERN.test(request.owner)) {
       throw new OwnerRouteError(400, "INVALID_OWNER", "Owner must be a lowercase nonzero 0x address.");
     }
@@ -373,10 +433,15 @@ export function createHyperliquidTestnetExitOrderFactory(options: Readonly<{
     if (!IDEMPOTENCY_KEY.test(request.idempotencyKey)) {
       throw new OwnerRouteError(400, "INVALID_IDEMPOTENCY_KEY", "Idempotency key must use 16 to 64 URL-safe characters.");
     }
-    const open = options.ledger.openPackage(request.owner);
+    if (request.entryAttemptId !== undefined && !ENTRY_ATTEMPT_ID.test(request.entryAttemptId)) {
+      throw new OwnerRouteError(400, "INVALID_ENTRY_ATTEMPT_ID", "Entry attempt id must use 1 to 128 URL-safe characters.");
+    }
+    const open = options.ledger.openPackage(request.owner, request.entryAttemptId);
     if (open === undefined || open.perpQuantityAtoms === null || open.spotQuantityAtoms === null
       || open.entryNotionalAtoms === null || open.entryReceiptHash === null) {
-      throw new OwnerRouteError(404, "NO_OPEN_PACKAGE", "This wallet has no open Hyperliquid testnet package.");
+      throw new OwnerRouteError(404, "NO_OPEN_PACKAGE", request.entryAttemptId === undefined
+        ? "This wallet has no open Hyperliquid testnet package."
+        : "This wallet has no open Hyperliquid testnet package with that entry attempt.");
     }
     const snapshot = options.prices.latest();
     const context = options.contexts(config.contextId);
@@ -579,7 +644,7 @@ export type HyperliquidTestnetOwnerRoutesOptions = Readonly<{
  * GET  account?owner=0x...                       the wallet's packages in the shared account
  * POST authorization {attemptId}                 the typed data the owner signs
  * POST authorize {attemptId, signature}          records the owner's signature
- * POST exit-order {owner, slippageBps, idempotencyKey}
+ * POST exit-order {owner, slippageBps, idempotencyKey, entryAttemptId?}  the named open package, else the oldest
  * POST attempt-status {attemptId, idempotencyKey}
  */
 export function createHyperliquidTestnetOwnerRoutes(
@@ -651,13 +716,15 @@ export function createHyperliquidTestnetOwnerRoutes(
         throw new OwnerRouteError(503, "EXIT_UNAVAILABLE", "Hyperliquid testnet exits are unavailable.");
       }
       const body = await readJson(request);
-      exactKeys(body, ["idempotencyKey", "owner", "slippageBps"]);
+      exactKeys(body, ["idempotencyKey", "owner", "slippageBps", ...("entryAttemptId" in body ? ["entryAttemptId"] : [])]);
       if (typeof body.owner !== "string" || typeof body.idempotencyKey !== "string"
-        || typeof body.slippageBps !== "number") {
-        throw new OwnerRouteError(400, "INVALID_FIELDS", "owner, slippageBps, and idempotencyKey are required.");
+        || typeof body.slippageBps !== "number"
+        || (body.entryAttemptId !== undefined && typeof body.entryAttemptId !== "string")) {
+        throw new OwnerRouteError(400, "INVALID_FIELDS", "owner, slippageBps, and idempotencyKey are required; entryAttemptId is a string.");
       }
       const created = await options.createExitOrder({
         owner: body.owner, slippageBps: body.slippageBps, idempotencyKey: body.idempotencyKey,
+        ...(body.entryAttemptId === undefined ? {} : { entryAttemptId: body.entryAttemptId }),
       });
       return {
         status: "UNSIGNED_CREATED",

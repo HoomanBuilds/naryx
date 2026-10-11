@@ -583,6 +583,7 @@ if (hyperliquidRuntimeEnabled && hyperliquidExecutorClientEnabled) {
         }),
         tradingAccount: orderContext.tradingAccount,
         limits: hyperliquidConfig?.omnibus,
+        quoteAsset: orderContext.quoteAsset,
         spotLotAtoms: hyperliquidTestnetSpotLotAtoms(hyperliquidConfig!),
       }),
     );

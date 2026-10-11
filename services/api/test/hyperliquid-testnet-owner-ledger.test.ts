@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import type { PackageOrder } from "@naryx/protocol-types";
+import type { AssetRef, PackageOrder } from "@naryx/protocol-types";
 import {
   HyperliquidOwnerLedgerError,
   HyperliquidTestnetOwnerLedger,
@@ -23,6 +23,7 @@ const TRADING = `0x${"c3".repeat(20)}`;
 const LIMITS = { maxOpenPackagesPerOwner: 1, maxOpenNotionalQuoteAtoms: 5_000n };
 const HASH = `0x${"dd".repeat(32)}`;
 const KEY = "idem-0123456789ABCD";
+const QUOTE = { assetId: "usdc", decimals: 6, assetManifestHash: new Uint8Array(32).fill(7) } as unknown as AssetRef;
 
 function reconciled(
   attemptId: string,
@@ -44,6 +45,13 @@ function notSubmitted(attemptId: string): HyperliquidTestnetTerminalExecutionRes
     status: "NOT_SUBMITTED", evidenceStatus: "PRECONDITION_REJECTED",
     actionCommitment: null, requestCommitment: null, errorCommitment: HASH,
   };
+}
+
+function strategyResult(attemptId: string, packageStatus: "COMPLETED" | "NO_EFFECT"): HyperliquidTestnetTerminalExecutionResult {
+  return {
+    attemptId, idempotencyKey: KEY, domain: "hypercore:testnet", environment: "TESTNET",
+    status: "STRATEGY_EXECUTION", packageStatus, completedStages: [], stages: [],
+  } as unknown as HyperliquidTestnetTerminalExecutionResult;
 }
 
 function withLedger(run: (ledger: HyperliquidTestnetOwnerLedger) => void | Promise<void>) {
@@ -138,6 +146,7 @@ test("only the owner wallet's typed-data signature authorizes its package", with
     orders: { getCanonicalOrderByHash: () => order },
     tradingAccount: TRADING,
     limits: LIMITS,
+    quoteAsset: QUOTE,
     spotLotAtoms: 1n,
   });
   const request = { attemptId: `hyperliquid-testnet-${"ab".repeat(24)}`, idempotencyKey: KEY };
@@ -148,7 +157,7 @@ test("only the owner wallet's typed-data signature authorizes its package", with
   assert.equal(ledger.packages(input.owner)[0]?.state, "PENDING_ENTRY");
 }));
 
-test("a generalized strategy attempt requires its own authorization and bypasses the cash ledger", withLedger((ledger) => {
+test("a generalized strategy attempt requires its own authorization and reserves under the cash caps", withLedger((ledger) => {
   const sourceOrderHash = "0c".repeat(32);
   const strategyOrderHash = "0d".repeat(32);
   const sourceAttemptId = `hyperliquid-testnet-${"cd".repeat(24)}`;
@@ -181,7 +190,8 @@ test("a generalized strategy attempt requires its own authorization and bypasses
         : undefined,
       admissionByQuote: () => ({
         orderHashHex: strategyOrderHash,
-        order: { owner: ALICE, settlementAccount: TRADING },
+        order: { owner: ALICE, settlementAccount: TRADING, lifecycleAction: "ENTRY" },
+        quote: { totalGrossNotional: { asset: QUOTE, atoms: 1_000n } },
       }) as never,
       ownerAuthorization: () => generalizedAuthorized
         ? { owner: ALICE } as never : undefined,
@@ -190,6 +200,7 @@ test("a generalized strategy attempt requires its own authorization and bypasses
     },
     tradingAccount: TRADING,
     limits: LIMITS,
+    quoteAsset: QUOTE,
     spotLotAtoms: 1n,
   });
   const request = { attemptId: strategyAttemptId, idempotencyKey: KEY };
@@ -199,6 +210,130 @@ test("a generalized strategy attempt requires its own authorization and bypasses
   generalizedAuthorized = true;
   guard.admit(request);
   assert.deepEqual(ledger.packages(ALICE), []);
+  // The strategy holds the owner's one package slot and its signed notional in the shared account.
+  assert.throws(
+    () => ledger.reserveEntry({ attemptId: "entry-alice-1", owner: ALICE, orderHash: "01".repeat(32), notionalAtoms: 1n, limits: LIMITS }),
+    refused("OWNER_PACKAGE_LIMIT"),
+  );
+  assert.throws(
+    () => ledger.reserveEntry({ attemptId: "entry-bob-1", owner: BOB, orderHash: "02".repeat(32), notionalAtoms: 4_001n, limits: LIMITS }),
+    refused("OMNIBUS_NOTIONAL_LIMIT"),
+  );
+}));
+
+const STRATEGY_ATTEMPT = (n: number) => `strategy-hl-${n.toString(16).padStart(48, "0")}`;
+
+function strategyGuard(
+  ledger: HyperliquidTestnetOwnerLedger,
+  admissions: ReadonlyMap<string, Readonly<{
+    owner: string; action: string; notionalAtoms: bigint; quoteAsset?: typeof QUOTE;
+  }>>,
+  limits: typeof LIMITS | null = LIMITS,
+) {
+  const attempt = (attemptId: string) => admissions.has(attemptId)
+    ? { orderHashHex: attemptId.slice(-32).padStart(64, "0"), quoteHashHex: attemptId.slice(-32).padStart(64, "1") } as never
+    : undefined;
+  return createHyperliquidTestnetExecutionGuard({
+    ledger,
+    intents: { getAttempt: () => undefined, getAttemptForOrder: () => undefined, getSelectedQuote: () => undefined },
+    orders: { getCanonicalOrderByHash: () => undefined },
+    strategyAttempts: { anyStrategyExecutionAttempt: attempt },
+    strategyReceipts: {
+      anyStrategyExecutionAttempt: attempt,
+      admissionByQuote: (quoteHashHex: string) => {
+        const [attemptId, entry] = [...admissions].find(([id]) => id.slice(-32).padStart(64, "1") === quoteHashHex)!;
+        return {
+          orderHashHex: attemptId.slice(-32).padStart(64, "0"),
+          order: {
+            owner: entry.owner, settlementAccount: TRADING, lifecycleAction: entry.action,
+            expectedStrategyStateHash: new Uint8Array(32).fill(9),
+          },
+          quote: { totalGrossNotional: { asset: entry.quoteAsset ?? QUOTE, atoms: entry.notionalAtoms } },
+        } as never;
+      },
+      ownerAuthorization: (orderHashHex: string) => ({
+        owner: [...admissions].find(([id]) => id.slice(-32).padStart(64, "0") === orderHashHex)![1].owner,
+      }) as never,
+      nativeStrategyPositionByStateHash: () => undefined,
+      recordReceipt: () => { throw new Error("no receipt for an unsubmitted attempt"); },
+    },
+    tradingAccount: TRADING,
+    limits: limits ?? undefined,
+    quoteAsset: QUOTE,
+    spotLotAtoms: 1n,
+  });
+}
+
+test("a generalized entry reserves its signed quote notional and is refused at either cap; reducing actions never are", withLedger((ledger) => {
+  const admissions = new Map([
+    [STRATEGY_ATTEMPT(1), { owner: ALICE, action: "ENTRY", notionalAtoms: 1_000n }],
+    [STRATEGY_ATTEMPT(2), { owner: BOB, action: "ENTRY", notionalAtoms: 4_001n }],
+    [STRATEGY_ATTEMPT(3), { owner: BOB, action: "ENTRY", notionalAtoms: 4_000n }],
+    [STRATEGY_ATTEMPT(4), { owner: ALICE, action: "DECREASE", notionalAtoms: 9_000n }],
+    [STRATEGY_ATTEMPT(5), { owner: ALICE, action: "EXIT", notionalAtoms: 9_000n }],
+    [STRATEGY_ATTEMPT(6), { owner: BOB, action: "ENTRY", notionalAtoms: 1n, quoteAsset: { ...QUOTE, decimals: 18 } }],
+  ]);
+  const guard = strategyGuard(ledger, admissions);
+  const admit = (n: number) => guard.admit({ attemptId: STRATEGY_ATTEMPT(n), idempotencyKey: KEY });
+  // Alice's one slot is a cash-and-carry package: her generalized entry is refused.
+  ledger.reserveEntry({ attemptId: "entry-alice-1", owner: ALICE, orderHash: "01".repeat(32), notionalAtoms: 1_000n, limits: LIMITS });
+  assert.throws(() => admit(1), { code: "OWNER_PACKAGE_LIMIT" });
+  // 1000 of 5000 is held; 4001 more exceeds the account, exactly 4000 fits.
+  assert.throws(() => admit(2), { code: "OMNIBUS_NOTIONAL_LIMIT" });
+  assert.throws(() => admit(6), { code: "STRATEGY_NOTIONAL_UNAVAILABLE" });
+  admit(3);
+  // Both caps are now full, and a decrease or exit of a strategy is still admitted.
+  admit(4);
+  admit(5);
+  assert.throws(() => strategyGuard(ledger, admissions, null).admit({ attemptId: STRATEGY_ATTEMPT(3), idempotencyKey: KEY }),
+    { code: "OMNIBUS_LIMITS_UNCONFIGURED" });
+  // An entry that never reached the venue returns its reservation.
+  guard.settle({ attemptId: STRATEGY_ATTEMPT(3), idempotencyKey: KEY }, notSubmitted(STRATEGY_ATTEMPT(3)));
+  ledger.reserveEntry({ attemptId: "entry-bob-1", owner: BOB, orderHash: "02".repeat(32), notionalAtoms: 4_000n, limits: LIMITS });
+}));
+
+test("a strategy reservation is held while unresolved, released on no effect, and kept once completed", withLedger((ledger) => {
+  const reserve = (attemptId: string, owner: string, notionalAtoms: bigint, strategyKey = attemptId, newPackage = true) =>
+    ledger.reserveExposure({ attemptId, owner, strategyKey, notionalAtoms, newPackage, limits: LIMITS });
+  reserve("alice-entry", ALICE, 5_000n);
+  ledger.settleExposure("alice-entry", reconciled("alice-entry", "MANUAL_INTERVENTION", "0", "0"));
+  assert.throws(() => reserve("bob-entry", BOB, 1n), refused("OMNIBUS_NOTIONAL_LIMIT"));
+  ledger.settleExposure("alice-entry", strategyResult("alice-entry", "NO_EFFECT"));
+  // A released attempt admitted again reserves nothing.
+  reserve("alice-entry", ALICE, 5_000n);
+  reserve("bob-entry", BOB, 4_000n);
+  ledger.settleExposure("bob-entry", strategyResult("bob-entry", "COMPLETED"));
+  ledger.settleExposure("bob-entry", strategyResult("bob-entry", "NO_EFFECT"));
+  assert.throws(() => reserve("carol-entry", ALICE, 1_001n), refused("OMNIBUS_NOTIONAL_LIMIT"));
+  // An increase shares its strategy's slot; another entry by the same owner does not.
+  assert.throws(() => reserve("bob-entry-2", BOB, 1n), refused("OWNER_PACKAGE_LIMIT"));
+  reserve("bob-increase", BOB, 1_000n, "bob-entry", false);
+  assert.throws(() => reserve("bob-increase-2", BOB, 1n, "bob-entry", false), refused("OMNIBUS_NOTIONAL_LIMIT"));
+}));
+
+test("a completed strategy decrease or exit releases its exposure exactly once, rounded toward holding", withLedger((ledger) => {
+  const limits = { maxOpenPackagesPerOwner: 2, maxOpenNotionalQuoteAtoms: 10_000n };
+  const reserve = (attemptId: string, owner: string, notionalAtoms: bigint, strategyKey = attemptId, newPackage = true) =>
+    ledger.reserveExposure({ attemptId, owner, strategyKey, notionalAtoms, newPackage, limits });
+  const reduce = (attemptId: string, result: HyperliquidTestnetTerminalExecutionResult, reducedQuantityAtoms: bigint | null) =>
+    ledger.settleReduction({ attemptId, strategyKey: "strategy-k", result, reducedQuantityAtoms, priorQuantityAtoms: 3n });
+  reserve("entry", ALICE, 6_001n, "strategy-k");
+  ledger.settleExposure("entry", strategyResult("entry", "COMPLETED"));
+  reserve("increase", ALICE, 3_000n, "strategy-k", false);
+  ledger.settleExposure("increase", strategyResult("increase", "COMPLETED"));
+  // Unresolved or no-effect reductions hold everything: 9001 of 10000 stays held.
+  reduce("decrease", reconciled("decrease", "MANUAL_INTERVENTION", "0", "0"), 1n);
+  reduce("decrease", strategyResult("decrease", "NO_EFFECT"), 1n);
+  assert.throws(() => reserve("bob-1", BOB, 1_000n), refused("OMNIBUS_NOTIONAL_LIMIT"));
+  // A third closed: 6001 keeps 4001 (2000 released, rounded down) and 3000 keeps 2000. Applied once.
+  reduce("decrease", strategyResult("decrease", "COMPLETED"), 1n);
+  reduce("decrease", strategyResult("decrease", "COMPLETED"), 1n);
+  assert.throws(() => reserve("bob-1", BOB, 4_000n), refused("OMNIBUS_NOTIONAL_LIMIT"));
+  reserve("bob-1", BOB, 3_999n);
+  // A completed exit releases the strategy's slot and every notional it held.
+  reduce("exit", strategyResult("exit", "COMPLETED"), null);
+  reserve("alice-2", ALICE, 3_000n);
+  reserve("alice-3", ALICE, 3_001n);
 }));
 
 test("an UNRESOLVED entry or exit takes its later final outcome, and a later unresolved one changes nothing", withLedger((ledger) => {

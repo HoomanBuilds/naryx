@@ -65,6 +65,7 @@ export type HyperliquidExitOrderTerms = Readonly<{
 }>;
 
 const ACTIVE_STATES = "('PENDING_ENTRY', 'OPEN', 'EXITING', 'UNRESOLVED')";
+const ACTIVE_EXPOSURE_STATES = "('RESERVED', 'OPEN', 'UNRESOLVED')";
 const RECEIPT_DOMAIN = "NARYX/hyperliquid-testnet-entry-receipt/v1";
 
 type PackageRow = Readonly<{
@@ -146,6 +147,16 @@ function completed(result: HyperliquidTestnetTerminalExecutionResult) {
     ? result : undefined;
 }
 
+/** Where a risk-increasing generalized strategy execution leaves its exposure. */
+function exposureOutcome(result: HyperliquidTestnetTerminalExecutionResult): "OPEN" | "RELEASED" | "UNRESOLVED" {
+  if (result.status === "STRATEGY_EXECUTION") {
+    return result.packageStatus === "COMPLETED" ? "OPEN" : result.packageStatus === "NO_EFFECT" ? "RELEASED" : "UNRESOLVED";
+  }
+  if (noEffect(result)) return "RELEASED";
+  return result.status === "RECONCILED"
+    && (result.packageStatus === "COMPLETED_EXACT" || result.packageStatus === "COMPLETED_BOUNDED") ? "OPEN" : "UNRESOLVED";
+}
+
 /** The evidence commitment an EXIT order binds as its entry receipt. */
 export function hyperliquidTestnetEntryReceiptHash(
   attemptId: string,
@@ -217,6 +228,21 @@ export class HyperliquidTestnetOwnerLedger {
       ) STRICT;
       INSERT OR IGNORE INTO hyperliquid_owner_exit_orders (exit_order_hash, entry_attempt_id, owner)
         SELECT exit_order_hash, entry_attempt_id, owner FROM hyperliquid_owner_packages WHERE exit_order_hash IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS hyperliquid_owner_exposures (
+        attempt_id TEXT PRIMARY KEY,
+        owner TEXT NOT NULL,
+        strategy_key TEXT NOT NULL,
+        notional_atoms TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('RESERVED', 'OPEN', 'UNRESOLVED', 'RELEASED')),
+        updated_at_ms INTEGER NOT NULL
+      ) STRICT;
+      CREATE INDEX IF NOT EXISTS hyperliquid_owner_exposures_owner ON hyperliquid_owner_exposures(owner, state);
+      CREATE INDEX IF NOT EXISTS hyperliquid_owner_exposures_strategy ON hyperliquid_owner_exposures(strategy_key, state);
+      CREATE TABLE IF NOT EXISTS hyperliquid_owner_exposure_reductions (
+        attempt_id TEXT PRIMARY KEY,
+        strategy_key TEXT NOT NULL,
+        applied_at_ms INTEGER NOT NULL
+      ) STRICT;
     `);
     const columns = this.#db.prepare("PRAGMA table_info(hyperliquid_owner_packages)").all() as { name: string }[];
     if (!columns.some((column) => column.name === "exit_spot_quantity_atoms")) {
@@ -282,23 +308,96 @@ export class HyperliquidTestnetOwnerLedger {
         }
         return;
       }
-      const open = this.#db.prepare(`
-        SELECT COUNT(*) AS count FROM hyperliquid_owner_packages WHERE owner = ? AND state IN ${ACTIVE_STATES}
-      `).get(input.owner) as { count: number };
-      if (open.count >= input.limits.maxOpenPackagesPerOwner) {
-        throw new HyperliquidOwnerLedgerError("OWNER_PACKAGE_LIMIT", "This wallet already has its maximum open Hyperliquid packages.");
-      }
-      const reserved = (this.#db.prepare(`
-        SELECT reserved_notional_atoms FROM hyperliquid_owner_packages WHERE state IN ${ACTIVE_STATES}
-      `).all() as { reserved_notional_atoms: string }[])
-        .reduce((total, row) => total + BigInt(row.reserved_notional_atoms), 0n);
-      if (reserved + input.notionalAtoms > input.limits.maxOpenNotionalQuoteAtoms) {
-        throw new HyperliquidOwnerLedgerError("OMNIBUS_NOTIONAL_LIMIT", "The shared Hyperliquid testnet account is at its open notional limit.");
-      }
+      this.#requireWithinLimits(input.owner, input.notionalAtoms, true, input.limits);
       this.#db.prepare(`
         INSERT INTO hyperliquid_owner_packages (entry_attempt_id, owner, entry_order_hash, state, reserved_notional_atoms, updated_at_ms)
         VALUES (?, ?, ?, 'PENDING_ENTRY', ?, ?)
       `).run(input.attemptId, input.owner, input.orderHash, input.notionalAtoms.toString(), this.#now());
+    }).immediate();
+  }
+
+  /**
+   * Reserves a risk-increasing generalized strategy execution before handoff, under the same caps as
+   * cash-and-carry packages: an ENTRY takes a package slot, and every reservation counts its signed
+   * notional against the omnibus account until it ends with no effect or the strategy is reduced.
+   */
+  reserveExposure(input: Readonly<{
+    attemptId: string;
+    owner: string;
+    /** The strategy's entry order hash: every reservation of one strategy shares its package slot. */
+    strategyKey: string;
+    notionalAtoms: bigint;
+    newPackage: boolean;
+    limits: HyperliquidOmnibusLimits;
+  }>): void {
+    this.#db.transaction(() => {
+      const existing = this.#db.prepare("SELECT owner, strategy_key FROM hyperliquid_owner_exposures WHERE attempt_id = ?")
+        .get(input.attemptId) as { owner: string; strategy_key: string } | undefined;
+      if (existing !== undefined) {
+        if (existing.owner !== input.owner || existing.strategy_key !== input.strategyKey) {
+          throw new HyperliquidOwnerLedgerError("LEDGER_CONFLICT", "Strategy attempt is bound to a different exposure.");
+        }
+        return;
+      }
+      this.#requireWithinLimits(input.owner, input.notionalAtoms, input.newPackage, input.limits);
+      this.#db.prepare(`
+        INSERT INTO hyperliquid_owner_exposures (attempt_id, owner, strategy_key, notional_atoms, state, updated_at_ms)
+        VALUES (?, ?, ?, ?, 'RESERVED', ?)
+      `).run(input.attemptId, input.owner, input.strategyKey, input.notionalAtoms.toString(), this.#now());
+    }).immediate();
+  }
+
+  /**
+   * Records a reserved strategy execution's outcome: no effect releases it, completion keeps it as
+   * open exposure, and anything else holds it UNRESOLVED until a later final outcome.
+   */
+  settleExposure(attemptId: string, result: HyperliquidTestnetTerminalExecutionResult): void {
+    this.#db.prepare(`
+      UPDATE hyperliquid_owner_exposures SET state = ?, updated_at_ms = ?
+      WHERE attempt_id = ? AND state IN ('RESERVED', 'UNRESOLVED')
+    `).run(exposureOutcome(result), this.#now(), attemptId);
+  }
+
+  /**
+   * Applies a completed risk-reducing strategy execution once: an exit releases the strategy's whole
+   * exposure; a decrease releases the closed fraction of each reservation, rounded down so the
+   * exposure still held is never understated. Any other outcome leaves the exposure held.
+   */
+  settleReduction(input: Readonly<{
+    attemptId: string;
+    strategyKey: string;
+    result: HyperliquidTestnetTerminalExecutionResult;
+    /** The quantity a DECREASE closes; null for an exit of the whole strategy. */
+    reducedQuantityAtoms: bigint | null;
+    priorQuantityAtoms: bigint;
+  }>): void {
+    if (exposureOutcome(input.result) !== "OPEN") return;
+    const { reducedQuantityAtoms: reduced, priorQuantityAtoms: prior } = input;
+    if (reduced !== null && (reduced <= 0n || prior <= 0n)) {
+      throw new HyperliquidOwnerLedgerError("LEDGER_CONFLICT", "The strategy reduction quantity is invalid.");
+    }
+    this.#db.transaction(() => {
+      const applied = this.#db.prepare(`
+        INSERT OR IGNORE INTO hyperliquid_owner_exposure_reductions (attempt_id, strategy_key, applied_at_ms) VALUES (?, ?, ?)
+      `).run(input.attemptId, input.strategyKey, this.#now());
+      if (applied.changes !== 1) return;
+      if (reduced === null || reduced >= prior) {
+        this.#db.prepare(`
+          UPDATE hyperliquid_owner_exposures SET state = 'RELEASED', updated_at_ms = ?
+          WHERE strategy_key = ? AND state IN ${ACTIVE_EXPOSURE_STATES}
+        `).run(this.#now(), input.strategyKey);
+        return;
+      }
+      const rows = this.#db.prepare(`
+        SELECT attempt_id, notional_atoms FROM hyperliquid_owner_exposures WHERE strategy_key = ? AND state IN ('OPEN', 'UNRESOLVED')
+      `).all(input.strategyKey) as { attempt_id: string; notional_atoms: string }[];
+      const update = this.#db.prepare(`
+        UPDATE hyperliquid_owner_exposures SET notional_atoms = ?, updated_at_ms = ? WHERE attempt_id = ?
+      `);
+      for (const row of rows) {
+        const atoms = BigInt(row.notional_atoms);
+        update.run((atoms - atoms * reduced / prior).toString(), this.#now(), row.attempt_id);
+      }
     }).immediate();
   }
 
@@ -338,12 +437,16 @@ export class HyperliquidTestnetOwnerLedger {
     }).immediate();
   }
 
-  /** The owner's oldest open package, which an exit order closes. */
-  openPackage(owner: string): HyperliquidOwnerPackage | undefined {
-    const row = this.#db.prepare(`
-      SELECT * FROM hyperliquid_owner_packages WHERE owner = ? AND state = 'OPEN'
-      ORDER BY opened_at_ms, entry_attempt_id LIMIT 1
-    `).get(owner) as PackageRow | undefined;
+  /** The owner's open package an exit order closes: the named one, or else the oldest. */
+  openPackage(owner: string, entryAttemptId?: string): HyperliquidOwnerPackage | undefined {
+    const row = (entryAttemptId === undefined
+      ? this.#db.prepare(`
+        SELECT * FROM hyperliquid_owner_packages WHERE owner = ? AND state = 'OPEN'
+        ORDER BY opened_at_ms, entry_attempt_id LIMIT 1
+      `).get(owner)
+      : this.#db.prepare(`
+        SELECT * FROM hyperliquid_owner_packages WHERE owner = ? AND state = 'OPEN' AND entry_attempt_id = ?
+      `).get(owner, entryAttemptId)) as PackageRow | undefined;
     return row === undefined ? undefined : decode(row);
   }
 
@@ -429,6 +532,28 @@ export class HyperliquidTestnetOwnerLedger {
     // Package listings carry receipt hashes 0x-prefixed, as every other lane's are.
     const receiptHash = row.entry_receipt_hash === null ? null : `0x${row.entry_receipt_hash}`;
     return Object.freeze({ state, transactionHash: null, blockNumber: null, receiptHash });
+  }
+
+  /**
+   * The caps both package kinds share, read inside the caller's write transaction: an owner's open
+   * cash-and-carry packages plus their distinct generalized strategies, and every held notional.
+   */
+  #requireWithinLimits(owner: string, notionalAtoms: bigint, newPackage: boolean, limits: HyperliquidOmnibusLimits): void {
+    const open = this.#db.prepare(`
+      SELECT (SELECT COUNT(*) FROM hyperliquid_owner_packages WHERE owner = ? AND state IN ${ACTIVE_STATES})
+        + (SELECT COUNT(DISTINCT strategy_key) FROM hyperliquid_owner_exposures WHERE owner = ? AND state IN ${ACTIVE_EXPOSURE_STATES})
+    `).pluck().get(owner, owner) as number;
+    if (newPackage && open >= limits.maxOpenPackagesPerOwner) {
+      throw new HyperliquidOwnerLedgerError("OWNER_PACKAGE_LIMIT", "This wallet already has its maximum open Hyperliquid packages.");
+    }
+    const reserved = (this.#db.prepare(`
+      SELECT reserved_notional_atoms FROM hyperliquid_owner_packages WHERE state IN ${ACTIVE_STATES}
+      UNION ALL
+      SELECT notional_atoms FROM hyperliquid_owner_exposures WHERE state IN ${ACTIVE_EXPOSURE_STATES}
+    `).pluck().all() as string[]).reduce((total, atoms) => total + BigInt(atoms), 0n);
+    if (reserved + notionalAtoms > limits.maxOpenNotionalQuoteAtoms) {
+      throw new HyperliquidOwnerLedgerError("OMNIBUS_NOTIONAL_LIMIT", "The shared Hyperliquid testnet account is at its open notional limit.");
+    }
   }
 
   #row(attemptId: string): PackageRow | undefined {
