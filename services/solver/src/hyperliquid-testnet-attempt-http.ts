@@ -19,6 +19,7 @@ export const API_HYPERLIQUID_TESTNET_ATTEMPT_PATH =
 export const API_HYPERLIQUID_TESTNET_SOURCE_ATTEMPT_PATH =
   '/internal/solver/hyperliquid-testnet/source-attempts/';
 
+const ATTEMPT_ID = /^[A-Za-z0-9_-]{16,64}$/;
 const STRATEGY_ATTEMPT_ID = /^strategy-hl-[0-9a-f]{48}$/;
 const SOURCE_ATTEMPT_ID = /^hyperliquid-testnet-[0-9a-f]{48}$/;
 const HASH = /^[0-9a-f]{64}$/;
@@ -118,18 +119,20 @@ function exactEnvelope(value: unknown): unknown {
 class HttpHyperliquidTestnetAttemptProvider implements HyperliquidTestnetTrustedAttemptProvider {
   readonly #origin: string;
   readonly #path: string;
+  readonly #attemptIdPattern: RegExp;
   readonly #timeoutMs: number;
   readonly #fetch: typeof fetch;
 
-  constructor(options: HyperliquidTestnetAttemptHttpOptions, path: string) {
+  constructor(options: HyperliquidTestnetAttemptHttpOptions, path: string, attemptIdPattern: RegExp) {
     this.#origin = loopbackOrigin(options.apiOrigin);
     this.#path = path;
+    this.#attemptIdPattern = attemptIdPattern;
     this.#timeoutMs = timeout(options.timeoutMs);
     this.#fetch = options.fetchImplementation ?? fetch;
   }
 
   async resolve(attemptId: string) {
-    if (!SOURCE_ATTEMPT_ID.test(attemptId)) throw new Error('attempt ID is invalid');
+    if (!this.#attemptIdPattern.test(attemptId)) throw new Error('attempt ID is invalid');
     let response: Response;
     try {
       response = await this.#fetch(
@@ -155,14 +158,14 @@ class HttpHyperliquidTestnetAttemptProvider implements HyperliquidTestnetTrusted
 export class HttpHyperliquidTestnetTrustedAttemptProvider
 extends HttpHyperliquidTestnetAttemptProvider {
   constructor(options: HyperliquidTestnetAttemptHttpOptions) {
-    super(options, API_HYPERLIQUID_TESTNET_ATTEMPT_PATH);
+    super(options, API_HYPERLIQUID_TESTNET_ATTEMPT_PATH, ATTEMPT_ID);
   }
 }
 
 export class HttpHyperliquidTestnetSelectedSourceProvider
 extends HttpHyperliquidTestnetAttemptProvider {
   constructor(options: HyperliquidTestnetAttemptHttpOptions) {
-    super(options, API_HYPERLIQUID_TESTNET_SOURCE_ATTEMPT_PATH);
+    super(options, API_HYPERLIQUID_TESTNET_SOURCE_ATTEMPT_PATH, SOURCE_ATTEMPT_ID);
   }
 }
 
@@ -397,6 +400,7 @@ implements HyperliquidTestnetTrustedAttemptProvider {
   }
 
   async resolve(attemptId: string): Promise<HyperliquidTestnetAttemptHandoff | undefined> {
+    if (SOURCE_ATTEMPT_ID.test(attemptId)) return this.#sourceAttempts.resolve(attemptId);
     if (!STRATEGY_ATTEMPT_ID.test(attemptId)) return this.#liveAttempts.resolve(attemptId);
     let response: Response;
     try {

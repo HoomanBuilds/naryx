@@ -19,7 +19,7 @@ import {
   type HyperliquidTestnetAttemptHandoff,
 } from '../src/index.js';
 
-const attemptId = `hyperliquid-testnet-${'ab'.repeat(24)}`;
+const attemptId = 'attempt-process-0001';
 const masterAccount = `0x${'11'.repeat(20)}` as const;
 const tradingAccount = `0x${'22'.repeat(20)}` as const;
 const agentWallet = `0x${'33'.repeat(20)}` as const;
@@ -72,17 +72,31 @@ test('fetches one exact attempt from the loopback API contract', async () => {
 });
 
 test('fetches selected source evidence from its non-live loopback route', async () => {
+  const sourceAttemptId = `hyperliquid-testnet-${'ab'.repeat(24)}`;
   let observedUrl = '';
   const provider = new HttpHyperliquidTestnetSelectedSourceProvider({
     apiOrigin: 'http://127.0.0.1:8787',
     fetchImplementation: async (input) => {
       observedUrl = String(input);
-      return jsonResponse({ version: 1, attempt: attempt() });
+      return jsonResponse({ version: 1, attempt: { ...attempt(), attemptId: sourceAttemptId } });
     },
   });
-  assert.equal((await provider.resolve(attemptId))?.attemptId, attemptId);
+  assert.equal((await provider.resolve(sourceAttemptId))?.attemptId, sourceAttemptId);
   assert.equal(observedUrl,
-    `http://127.0.0.1:8787${API_HYPERLIQUID_TESTNET_SOURCE_ATTEMPT_PATH}${attemptId}`);
+    `http://127.0.0.1:8787${API_HYPERLIQUID_TESTNET_SOURCE_ATTEMPT_PATH}${sourceAttemptId}`);
+});
+
+test('routes canonical source attempts through the selected source provider', async () => {
+  const sourceAttemptId = `hyperliquid-testnet-${'ac'.repeat(24)}`;
+  const source = { ...attempt(), attemptId: sourceAttemptId };
+  const provider = new HttpHyperliquidTestnetCompositeAttemptProvider({
+    apiOrigin: 'http://127.0.0.1:8787',
+    liveAttempts: { resolve: async () => { throw new Error('legacy provider called'); } },
+    sourceAttempts: { resolve: async (requested) => requested === sourceAttemptId ? source : undefined },
+    packages: { getByQuote: async () => undefined },
+    preparations: { prepareDocuments: async () => { throw new Error('strategy preparation called'); } },
+  });
+  assert.equal((await provider.resolve(sourceAttemptId))?.attemptId, sourceAttemptId);
 });
 
 test('composes a generalized strategy attempt from exact package and source commitments', async () => {
