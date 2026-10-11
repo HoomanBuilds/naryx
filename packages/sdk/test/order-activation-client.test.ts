@@ -78,13 +78,28 @@ test("registers and verifies a bound advanced order activation", async () => {
     registeredAtMs: 1,
     updatedAtMs: 1,
   };
+  const summary = {
+    version: 1,
+    disclosure: "SUMMARY",
+    orderHashHex: orderHash,
+    kind: "CONDITIONAL",
+    status: "WAITING",
+    quantityAtoms: order.economicQuantity.atoms,
+    executedQuantityAtoms: 0n,
+    remainingQuantityAtoms: order.economicQuantity.atoms,
+    nextActivation: null,
+    reservedAttemptId: null,
+    registeredAtMs: 1,
+    updatedAtMs: 1,
+  };
   const seen: string[] = [];
   const fetch: FetchLike = async (url, init) => {
     seen.push(`${init.method} ${url}`);
+    const body = init.method === "GET" ? summary : { version: 1, created: true, ...view };
     return {
       status: 200,
       headers: { get: () => "application/json" },
-      text: async () => JSON.stringify(toProtocolJson({ version: 1, created: true, ...view })),
+      text: async () => JSON.stringify(toProtocolJson(body)),
     };
   };
   const client = new NaryxClient({ baseUrl: "https://api.example", fetch });
@@ -93,7 +108,9 @@ test("registers and verifies a bound advanced order activation", async () => {
   assert.equal(registered.created, true);
   assert.equal(registered.activation.orderHashHex, orderHash);
   assert.equal(registered.activation.status, "WAITING");
-  assert.equal((await client.getOrderActivation(orderHash)).condition?.metric, "BASIS");
+  const read = await client.getOrderActivation(orderHash);
+  assert.deepEqual([read.disclosure, read.kind, read.remainingQuantityAtoms], ["SUMMARY", "CONDITIONAL", order.economicQuantity.atoms]);
+  assert.equal("condition" in read, false);
   assert.deepEqual(seen, [
     "POST https://api.example/v1/order-activations",
     `GET https://api.example/v1/order-activations/${orderHash}`,

@@ -838,6 +838,7 @@ export function loadPublicMarketRuntime(
       ...(advancedOrders === undefined ? {} : { advancedOrders }),
       ...(advancedOrderExecutions === undefined ? {} : { advancedOrderExecutions }),
       nowValue,
+      clockUnit: support.clockUnit,
       rateLimit,
       clockMs,
     });

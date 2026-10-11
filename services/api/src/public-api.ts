@@ -120,6 +120,7 @@ import { verifyEd25519 } from "./ed25519.js";
 import { StrategyPackageStoreError, type SqliteStrategyPackageStore } from "./strategy-package-store.js";
 import { NativeClearingStoreError, type SqliteNativeClearingStore } from './native-clearing-store.js';
 import { OrderActivationStoreError, type SqliteOrderActivationStore } from "./order-activation-store.js";
+import { orderActivationSummary } from "./order-activation-owner-routes.js";
 import { AdvancedOrderFactoryError, type AdvancedOrderFactory } from "./advanced-order-factory.js";
 import {
   AdvancedOrderExecutionFactoryError,
@@ -345,9 +346,16 @@ export interface PublicApiOptions {
   readonly advancedOrderExecutions?: Pick<AdvancedOrderExecutionFactory, "prepare">;
   /** Current time in the books' expiry unit, so expired entries never appear as depth. */
   readonly nowValue: () => bigint;
+  /** Unit of nowValue. When set, book orders whose expiry uses another clock are refused, so none can outlive the book. */
+  readonly clockUnit?: "UNIX_SECONDS" | "UNIX_MILLISECONDS";
   readonly rateLimit: { readonly windowMs: number; readonly maxRequests: number };
   readonly clockMs?: () => number;
 }
+
+const BOOK_EXPIRY_UNIT = Object.freeze({
+  UNIX_SECONDS: "EVM_UNIX_SECONDS",
+  UNIX_MILLISECONDS: "HYPERLIQUID_UNIX_MILLISECONDS",
+} as const);
 
 class RequestError extends Error {
   readonly status: number;
@@ -466,6 +474,15 @@ function solverSummary(entry: { documentHashHex: string; subjectVersion: number;
  */
 export function createPublicApiHandler(options: PublicApiOptions) {
   const { exchange, registry, solverState, delivery, nowValue } = options;
+  const requireBookClock = (unit: string): void => {
+    if (options.clockUnit !== undefined && unit !== BOOK_EXPIRY_UNIT[options.clockUnit]) {
+      throw new RequestError(
+        409,
+        "CLOCK_UNIT_MISMATCH",
+        `This package book expires orders in ${BOOK_EXPIRY_UNIT[options.clockUnit]}; the order expiry uses ${unit}.`,
+      );
+    }
+  };
   const pinnedSuiteIds = options.pinnedSuiteIds ?? [];
   const { windowMs, maxRequests } = options.rateLimit;
   const clockMs = options.clockMs ?? Date.now;
@@ -860,7 +877,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       onlyParams(url, []);
       const view = requireOrderActivations().view(match[1] as string);
       if (view === undefined) throw new RequestError(404, "ACTIVATION_NOT_FOUND", "No activation is registered for this order.");
-      return { version: 1, ...view };
+      // Unsigned: trigger, schedule, limit, and attempt price terms stay behind the owner's signed read.
+      return { version: 1, disclosure: "SUMMARY", ...orderActivationSummary(view) };
     }
     if (path === '/v1/native-clearing/domains') {
       onlyParams(url, []);
@@ -1949,6 +1967,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       if (strategy.environment !== "local" && strategy.environment !== "testnet") {
         throw new RequestError(409, "UNSUPPORTED_ENVIRONMENT", "Package-book order preparation is limited to local and testnet strategy orders.");
       }
+      requireBookClock(strategy.expiryUnit);
       const draft: PackageTakerOrderInput = {
         orderId: "00".repeat(32),
         executionClassId: strategy.executionClassId,
@@ -2114,6 +2133,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const commitment = packageSettlementCommitment(
         object(body.settlementCommitment, "settlementCommitment") as unknown as PackageSettlementCommitmentInput,
       );
+      requireBookClock(commitment.validUntilUnit);
       if (
         commitment.executionClassId !== order.executionClassId
         || !bytesEqual(commitment.packageOrderId, orderHash)

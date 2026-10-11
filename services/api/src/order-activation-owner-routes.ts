@@ -144,10 +144,12 @@ export function verifyOrderActivationRead(input: OrderActivationRead, signature:
 
 /**
  * What anyone may read about an owner's activation: its identity, type, state, quantities, times,
- * and the earliest next slice window. Trigger conditions, schedule terms, the order's limits, and
- * attempt prices are disclosed only under the owner's signed read.
+ * the earliest next slice window, and the id of a reserved slice so its child can be prepared
+ * (attempt ids derive from the order hash and ordinal, so the id itself discloses nothing more).
+ * Trigger conditions, schedule terms, the order's limits, and attempt prices are disclosed only
+ * under the owner's signed read.
  */
-function activationSummary(view: OrderActivationView) {
+export function orderActivationSummary(view: OrderActivationView) {
   const quantityAtoms = view.schedule?.aggregateQuantityLimit ?? view.order.economicQuantity.atoms;
   const nextSlice = view.progress.lastAttemptedSliceIndex === undefined ? 0 : view.progress.lastAttemptedSliceIndex + 1;
   const schedule = view.schedule;
@@ -162,6 +164,7 @@ function activationSummary(view: OrderActivationView) {
     nextActivation: view.status === "WAITING" && schedule !== undefined && nextSlice < schedule.sliceCount
       ? Object.freeze({ unit: schedule.timeUnit, value: schedule.startValue + schedule.sliceInterval * BigInt(nextSlice) })
       : null,
+    reservedAttemptId: view.attempts.find((attempt) => attempt.status === "RESERVED")?.attemptId ?? null,
     registeredAtMs: view.registeredAtMs,
     updatedAtMs: view.updatedAtMs,
   });
@@ -238,7 +241,7 @@ export function createOrderActivationOwnerHandler(options: Readonly<{
             version: 1,
             owner,
             disclosure: "SUMMARY",
-            activations: options.activations.ownerViews(owner).map(activationSummary),
+            activations: options.activations.ownerViews(owner).map(orderActivationSummary),
           });
         } catch (error) {
           return failure(response, error);

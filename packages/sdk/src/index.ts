@@ -72,6 +72,7 @@ export {
   type OrderStatusView,
   type OrderActivationAttemptView,
   type OrderActivationView,
+  type OrderActivationSummaryView,
   type PackageBookParticipantOrderState,
   type PackageBookParticipantOrderView,
   type DerivedAdvancedOrderView,

@@ -242,7 +242,7 @@ test("an owner's activation list is a summary unless the owner signs a fresh sin
     const byHash = new Map((summary.body.activations as Record<string, any>[]).map((entry) => [entry.orderHashHex, entry]));
     assert.deepEqual(Object.keys(byHash.get(conditionalHash)!).sort(), [
       "executedQuantityAtoms", "kind", "nextActivation", "orderHashHex", "quantityAtoms", "registeredAtMs",
-      "remainingQuantityAtoms", "status", "updatedAtMs",
+      "remainingQuantityAtoms", "reservedAttemptId", "status", "updatedAtMs",
     ]);
     assert.deepEqual(
       [byHash.get(conditionalHash)!.kind, byHash.get(conditionalHash)!.nextActivation, byHash.get(conditionalHash)!.remainingQuantityAtoms],

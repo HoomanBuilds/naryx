@@ -500,6 +500,22 @@ export interface OrderActivationView {
   readonly updatedAtMs: number;
 }
 
+/** The unsigned public read: trigger, schedule, limit, and attempt price terms are withheld. */
+export interface OrderActivationSummaryView {
+  readonly disclosure: 'SUMMARY';
+  readonly orderHashHex: string;
+  readonly sourceOrderHashHex?: string;
+  readonly kind: 'CONDITIONAL' | 'SCHEDULED' | 'PACKAGE_TWAP';
+  readonly status: OrderActivationView['status'];
+  readonly quantityAtoms: bigint;
+  readonly executedQuantityAtoms: bigint;
+  readonly remainingQuantityAtoms: bigint;
+  readonly nextActivation: Readonly<{ unit: string; value: bigint }> | null;
+  readonly reservedAttemptId: string | null;
+  readonly registeredAtMs: number;
+  readonly updatedAtMs: number;
+}
+
 export interface DerivedAdvancedOrderView {
   readonly sourceOrderHash: string;
   readonly orderHash: string;
@@ -1125,6 +1141,42 @@ function count(value: unknown, context: string): number {
 function hashHex(value: unknown, context: string): string {
   if (typeof value !== 'string' || !HASH_HEX.test(value)) throw new NaryxEvidenceError(`${context} is not a 32-byte hash`);
   return value;
+}
+
+function orderActivationSummaryView(value: unknown, requestedHash: string): OrderActivationSummaryView {
+  const body = record(value, 'order activation summary');
+  if (body.version !== 1 || body.disclosure !== 'SUMMARY' || body.orderHashHex !== requestedHash) {
+    throw new NaryxEvidenceError('order activation summary identity is inconsistent');
+  }
+  const kind = body.kind;
+  if (kind !== 'CONDITIONAL' && kind !== 'SCHEDULED' && kind !== 'PACKAGE_TWAP') throw new NaryxEvidenceError('order activation kind is unknown');
+  const status = body.status;
+  if (status !== 'WAITING' && status !== 'COMPLETED' && status !== 'STOPPED' && status !== 'CANCELLED' && status !== 'EXPIRED') {
+    throw new NaryxEvidenceError('order activation status is unknown');
+  }
+  const quantityAtoms = big(body.quantityAtoms, 'activation quantity');
+  const executedQuantityAtoms = big(body.executedQuantityAtoms, 'activation executed quantity');
+  const remainingQuantityAtoms = big(body.remainingQuantityAtoms, 'activation remaining quantity');
+  if (quantityAtoms <= 0n || executedQuantityAtoms < 0n || executedQuantityAtoms > quantityAtoms
+    || remainingQuantityAtoms !== (status === 'WAITING' ? quantityAtoms - executedQuantityAtoms : 0n)) {
+    throw new NaryxEvidenceError('order activation quantities are inconsistent');
+  }
+  const next = body.nextActivation === null ? null : record(body.nextActivation, 'next activation');
+  if (next !== null && typeof next.unit !== 'string') throw new NaryxEvidenceError('next activation unit is invalid');
+  return Object.freeze({
+    disclosure: 'SUMMARY',
+    orderHashHex: requestedHash,
+    ...(body.sourceOrderHashHex === undefined ? {} : { sourceOrderHashHex: hashHex(body.sourceOrderHashHex, 'source order hash') }),
+    kind,
+    status,
+    quantityAtoms,
+    executedQuantityAtoms,
+    remainingQuantityAtoms,
+    nextActivation: next === null ? null : Object.freeze({ unit: next.unit as string, value: big(next.value, 'next activation value') }),
+    reservedAttemptId: body.reservedAttemptId === null ? null : hashHex(body.reservedAttemptId, 'reserved attempt id'),
+    registeredAtMs: count(body.registeredAtMs, 'activation registration time'),
+    updatedAtMs: count(body.updatedAtMs, 'activation update time'),
+  });
 }
 
 function orderActivationView(value: unknown, requestedHash: string): OrderActivationView {
@@ -3834,10 +3886,13 @@ export class NaryxClient {
     return Object.freeze({ sourceOrderHash, orderHash, graphHash, created: body.created, status: body.status, activation });
   }
 
-  /** Reads and verifies durable conditional, scheduled, or TWAP execution progress. */
-  async getOrderActivation(orderHash: string): Promise<OrderActivationView> {
+  /**
+   * Reads the public summary of conditional, scheduled, or TWAP execution progress. Trigger,
+   * schedule, limit, and attempt price terms need the owner's signed read on the terminal origin.
+   */
+  async getOrderActivation(orderHash: string): Promise<OrderActivationSummaryView> {
     const requested = hashHex(orderHash, 'order hash');
-    return orderActivationView(await this.#request('GET', `/v1/order-activations/${requested}`), requested);
+    return orderActivationSummaryView(await this.#request('GET', `/v1/order-activations/${requested}`), requested);
   }
 
   /** Prepares the exact immediate child package for one reserved advanced-order attempt. */

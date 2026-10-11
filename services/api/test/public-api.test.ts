@@ -163,11 +163,11 @@ test("advanced-order activation registration and status use the configured durab
   } as const;
   const view = {
     orderHashHex: orderHash,
-    order: { packageOrderType: "CONDITIONAL" },
+    order: { packageOrderType: "CONDITIONAL", economicQuantity: { atoms: 40n } },
     condition,
     status: "WAITING",
     progress: { executedQuantity: 0n, executedNotionalTicks: 0n, attemptedSlices: 0, failedSlices: 0 },
-    attempts: [],
+    attempts: [{ attemptId: id(8_005), status: "RESERVED", limitPriceTicks: 777n }],
     registeredAtMs: 1,
     updatedAtMs: 1,
   } as never;
@@ -183,9 +183,13 @@ test("advanced-order activation registration and status use the configured durab
     assert.equal(post.status, 200);
     assert.equal((post.body as { created: boolean }).created, true);
     assert.equal(registered, true);
+    // The unsigned read discloses the summary only: no trigger, limits, or attempt prices.
     const read = await request(`/v1/order-activations/${orderHash}`);
     assert.equal(read.status, 200);
-    assert.equal((read.body as { orderHashHex: string }).orderHashHex, orderHash);
+    const summary = read.body as Record<string, unknown>;
+    assert.deepEqual([summary.disclosure, summary.orderHashHex, summary.kind, summary.remainingQuantityAtoms, summary.reservedAttemptId],
+      ["SUMMARY", orderHash, "CONDITIONAL", 40n, id(8_005)]);
+    assert.deepEqual([summary.order, summary.condition, summary.attempts, summary.progress], [undefined, undefined, undefined, undefined]);
     const sourceOrderHash = id(8_002);
     const derive = await request("/v1/order-activations/derive", {
       method: "POST",
@@ -818,6 +822,58 @@ test("EVM owners authorize, amend, and cancel native package-book orders with ch
     const cancelledState = await get(`/v1/package-book/orders/${orderId}/settlement-readiness`);
     assert.equal((cancelledState.body as { restingOrder: unknown }).restingOrder, null);
   }, {
+    strategyPackages: {
+      order: (orderHashHex: string) => strategies.get(orderHashHex),
+      lockPackageExecution: () => undefined,
+    } as never,
+  });
+});
+
+test("package books refuse orders whose expiry clock differs from the book clock", async () => {
+  const owner = privateKeyToAccount(generatePrivateKey());
+  const participantId = owner.address.toLowerCase();
+  const strategies = new Map<string, unknown>();
+  const strategy = (expiryUnit: string, expiryValue: bigint) => ({
+    orderHashHex: id(7_201),
+    graphHashHex: id(7_202),
+    order: {
+      environment: "local",
+      executionClassId: CLASS,
+      graphHash: commitmentHash(id(7_202)),
+      owner: participantId,
+      settlementAccount: participantId,
+      economicQuantity: { atoms: 10n },
+      packageOrderType: "LIMIT",
+      packageTimeInForce: "GTD",
+      expiryUnit,
+      expiryValue,
+    },
+    graph: {},
+    recordedAtMs: 1,
+  });
+  await withMarket(async (get, store) => {
+    registerAll(store);
+    const prepare = () => get("/v1/package-book/orders/prepare", post({ strategyOrderHash: id(7_201), side: "ASK", limitPriceTicks: "101" }));
+    strategies.set(id(7_201), strategy("HYPERLIQUID_UNIX_MILLISECONDS", NOW * 1_000n + 60_000n));
+    const refused = await prepare();
+    assert.equal(refused.status, 409);
+    assert.equal((refused.body as { error: { code: string } }).error.code, "CLOCK_UNIT_MISMATCH");
+
+    strategies.set(id(7_201), strategy("EVM_UNIX_SECONDS", NOW + 60n));
+    const prepared = await prepare();
+    assert.equal(prepared.status, 200, prepared.text);
+    const { order: packageOrder, settlementCommitment } = prepared.body as {
+      order: ReturnType<typeof order>;
+      settlementCommitment: ReturnType<typeof packageSettlementCommitment>;
+    };
+    assert.equal((await get("/v1/package-book/orders/authorization", post({ order: packageOrder, settlementCommitment }))).status, 200);
+    const foreign = { ...settlementCommitment, validUntilUnit: "HYPERLIQUID_UNIX_MILLISECONDS" };
+    for (const path of ["/v1/package-book/orders/authorization", "/v1/package-book/orders"]) {
+      const response = await get(path, post({ order: packageOrder, settlementCommitment: foreign, authorization: { scheme: "EIP712_SECP256K1", signature: "0x00" } }));
+      assert.equal(response.status, 409, `${path} ${response.text}`);
+    }
+  }, {
+    clockUnit: "UNIX_SECONDS",
     strategyPackages: {
       order: (orderHashHex: string) => strategies.get(orderHashHex),
       lockPackageExecution: () => undefined,
