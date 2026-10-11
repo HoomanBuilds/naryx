@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "network": "arbitrum-sepolia",
+  "chainId": 421614,
+  "environment": "testnet",
+  "activationState": "ACTIVE",
+  "governance": {
+    "proposer": "0x43187D45e2D895ff7b9c5cA3f4235F047c2B9cf7",
+    "canceller": "0x3848Cb0125e90FBB5F8C8146d60442C8d7e97B99",
+    "executor": "0x08D070ff272bED4749F263eDd3efa876ba68e854",
+    "pauser": "0x256448A1d872A174867A627A5c8461DE6C4335E7",
+    "delaySeconds": 60
+  },
+  "domain": {
+    "manifestVersion": 2,
+    "manifestHash": "0xfb297f9fcdedf9d82c240cdd8d725a42e37b516b311cdc86199f3d3583ce9094"
+  },
+  "policy": {
+    "feeSubjectId": "0x5739c6fdc0a4de0dba0a196c17066856e0fe22d9bad9480a828baca7292394c6",
+    "feePolicyManifestHash": "0xddd7c44486da8e17b386a698f83dab0661aba7ba396d42b59afedcd249bf8de1",
+    "maximumProtocolFeeBps": 50,
+    "maximumSolverFeeBps": 100,
+    "riskDomainId": "0x381d34218a66ad1818a74108dc4b977da5720632109a1e5b9d8e2d3ae338a852",
+    "riskPolicyManifestHash": "0xa7ce6511ce1ff184dc4d8fcc803ec7fba29316ea86591429f68909340a6dd371",
+    "riskPolicyVersion": 1,
+    "activeSeriesCount": 12,
+    "activeDependencyCount": 1
+  },
+  "contracts": {
+    "protocolConfig": {
+      "address": "0x3B84f399e79a5ccD1eB328ef023a4c0Ec65B6486",
+      "runtimeCodeHash": "0x5e951b11b585cf8f3899e2e81e7a0d508c3ad99972304351ccd5de634d7dd787",
+      "deploymentTransaction": "0xbd500d95b894c319543cc0b1c77e60a42c1936b9525fe53bef4b71ab6b2be1a1"
+    },
+    "solverRegistry": {
+      "address": "0x32e6Da59054c277620759AaF3dd4338337Cc4620",
+      "runtimeCodeHash": "0xbacbfdf95a09d157c3c0bd3c9d33f8fa4a9a97f84f0db789614c6831488f57bf",
+      "deploymentTransaction": "0x4e8c07b28f609c9352124b6980eff0e94b8fb682f582f437c109c8957afd3cda"
+    },
+    "adapterRegistry": {
+      "address": "0xdccAf09E83978b7b6aB74Bc04CCC61D626162910",
+      "runtimeCodeHash": "0x2452fe40ffb63aa793f9c975daa47485d7cf21f893762007f8cfd38a8c7daa93",
+      "deploymentTransaction": "0xafbb92b00e83e624a2ff3ce5036ca4914dfd31df9f1ae78b9549234910583f73"
+    },
+    "feePolicyRegistry": {
+      "address": "0x7AbfD98F3dC0B423cE969CE8314D0c2484860d02",
+      "runtimeCodeHash": "0x73326e08e03f4dd160d1d82f9713acbaa9016cab3e87c3410c883122485317e6",
+      "deploymentTransaction": "0x388167f20c9ca83e9596c746a1faf081471d5120d7a634cdc52f6ba446a8dcff"
+    },
+    "riskDomainRegistry": {
+      "address": "0x32637555FD98e735243F535e2fA54D1f8c9ecDa6",
+      "runtimeCodeHash": "0xd7ccd16035d17e85b4248a4812e46c8c193f5db31962c6161f7e138989fec759",
+      "deploymentTransaction": "0xca1ca761003fa56505c1e600eaab8349bcddc1648118758d34d8934bffcb7594"
+    },
+    "accountDeployer": {
+      "address": "0xc53421F6B13cBc8140176d267317ad4C2259A736",
+      "runtimeCodeHash": "0x19ffee880c35672ca6cf7cc3ddd77de95294e891c5ecfd1d4fd95c0df6545d38",
+      "deploymentTransaction": "0xa76e28352cfde3123cb6e89e5131458f2824b659ba84504b3af606c23bfebe2d"
+    },
+    "accountFactory": {
+      "address": "0x45295C3143e7097980c217b1DD7199f1ac8F7432",
+      "runtimeCodeHash": "0x7639934c0b649b16d15ff04bbd947c21bf163926bd47b8bdb3dc11276d96891e",
+      "deploymentTransaction": "0xb8c29559078333dd93b0261be8eb6706200176538790455a7d2bc915c0189aaf"
+    },
+    "lowerOptionFactory": {
+      "address": "0x91347edDA318F7E90a5A6098823309aD18E9b673",
+      "runtimeCodeHash": "0xf4a4de8bd5a4507b41996c0d5ecb11621079fd0733f1a6b4bd6f4bef2e4660ed",
+      "deploymentTransaction": "0xd6145c91abcb723f5d116039090da98b44ac3f9fc36da69c1fd928b9a319094d"
+    },
+    "upperOptionFactory": {
+      "address": "0x41E3469b84d9B87ED567495100A7b0Ec969ad2f4",
+      "runtimeCodeHash": "0xf4a4de8bd5a4507b41996c0d5ecb11621079fd0733f1a6b4bd6f4bef2e4660ed",
+      "deploymentTransaction": "0x7152bf34f7008233c50c9aa018c72a10b8137c6b493a9a811fc5873b3d8a367f"
+    },
+    "lendingFactory": {
+      "address": "0x2A414286Ba96FA02FA1a849e12cd946d78ab3750",
+      "runtimeCodeHash": "0xc91a79b2ccdb6bb11ba29a1293e94185fbbe1b64c0a3db701870d74e56bb2852",
+      "deploymentTransaction": "0x60057bed72f5797f429afd8b2efea8484cd55bf2003801585b74f5b50f22c0ff"
+    },
+    "vaultFactory": {
+      "address": "0x96Fe09c799Ba18B0dcC025167080C6881D5e0D32",
+      "runtimeCodeHash": "0x61d7b8966a7fa9653895edfa002116ec8ce6f170e0a020e0892b7b0beda475a7",
+      "deploymentTransaction": "0x457253b5378cecb1b450a469fee435467b40597de15c9bc0705907d19cdb93b7"
+    },
+    "inventoryFactory": {
+      "address": "0x9402E7193001e1B8Ac75452D835b911EFd57979d",
+      "runtimeCodeHash": "0x35f27e154271d8964240fb3bdd59f50b4315314b7ab81f263eddcb40a49f10ab",
+      "deploymentTransaction": "0x6ba2101709c6015bdca20d18366c87e195a7664b9d2afcc9a6f2bb63800ea055"
+    },
+    "perpetualFactory": {
+      "address": "0x9DCC2A23D81987ED51D6aDA68f792b87E103aC7b",
+      "runtimeCodeHash": "0x1a107cbb83cd3f3a25ee3914f746d01521ec2a5af818bf25aa6a7aae8999d4b7",
+      "deploymentTransaction": "0x63e4c0cf20d2246769bb83fe3cd266710e6c771392e9ebf8a5902f0d774d40e7"
+    },
+    "nearFutureFactory": {
+      "address": "0x9C50F9d1Ae56484Ba556E2e0F50a02C425a7a3C3",
+      "runtimeCodeHash": "0x80ae6255c3f0eb099833692cc27b4a7b24c25ddfbd83aafd5694bc60a3a2a3b3",
+      "deploymentTransaction": "0x5dcba0b726209473d1726871888e603c82c1579abd17d7d26b1024899e1250c1"
+    },
+    "farFutureFactory": {
+      "address": "0x981b4deE6Fd0aD1F989D91d3299fa211C9318A7f",
+      "runtimeCodeHash": "0x05b17d5cd3fb7394a7ec736f6443f7767a60f845915bd024f6ec6a7f55f2913e",
+      "deploymentTransaction": "0xbed5eda33e9e4828aab38664e6a040e86e3a01bdde4d697576ea02460c0f6122"
+    },
+    "clearingHouse": {
+      "address": "0x13a8A2810e1DaAAA30Af9320F8808763b76437DA",
+      "runtimeCodeHash": "0xd50bc1f952c31e4e719357b47fccac3d6b2e6fd7d5faf3d9c5175d0bfeba00f9",
+      "deploymentTransaction": "0x089b9c98665449992ff630639d332df974b1a644799c1900af74a325701b7ba6"
+    }
+  },
+  "conformance": {
+    "baseAsset": "0x01c45170b5Ad3Bfc9d4c1706626fFBFb1F034393",
+    "quoteAsset": "0x0b69320Cf8EE8749fc8Ff23dbeD7B2C711f33224",
+    "lowerOptionPool": "0x5105Be2B189e32255aC43FF382Ad6Ee9243F3e13",
+    "upperOptionPool": "0x3a272a6F2094c1DC230088aacA5C853BA26370f4",
+    "lendingPool": "0x3B20846F09E1bCCd1cb3ca4d0C6B4520E15b94B3",
+    "vault": "0x74863f062b608A907f20D6318d26F5c2cf9BBeD4",
+    "perpetualMarket": "0xf3b987d6c092A19a0eEa74d87AAA555C57e01c73",
+    "nearFutureMarket": "0x58e7f754c0e6A1d31FEffA333D404A9A4B791635",
+    "farFutureMarket": "0x03A3fe09f33B31A6115032009Af7aDd2700dCf1f"
+  },
+  "activation": {
+    "proposalStartTransaction": "0x2629037155ae067240c544bb1788fa46665e8e7139d6cbad58655d6d99e3b913",
+    "activationStartTransaction": "0xd56eb81cfe666ffc9e31c2f4c115e4c5bfe4748779476858b452c961bbfcf5a8",
+    "configUnpauseTransaction": "0xc70bf9bb9efe5ae25e6374b9e2e955a1d6c637575144b2b2b232409781dab9b6",
+    "clearingUnpauseTransaction": "0x5117fecc494026359ab1cb6dc78e6c6dc61088cb2740a87f693de2c4d4d0788e"
+  }
+}

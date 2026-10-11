@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "network": "solana-devnet",
+  "genesisHash": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+  "environment": "devnet",
+  "activationState": "ACTIVE",
+  "upgradeAuthority": "AP34Y5ufcSSyGJvrCEZtXYYcxqg6aQ9rRkrW92oVSWnb",
+  "programs": {
+    "core": {
+      "programId": "Dd7gZZRLVi6FLSnYdoB9mSWb45yGZNWnE47Wa5JWrWrL",
+      "programDataAddress": "7XRNRs9ixrNGLRa3esSaWziudmsk5sqyyxJDw27R5iLT",
+      "deploymentSlot": 509916426
+    },
+    "inventoryAdapter": {
+      "programId": "EbY7MezVnmueWnyUb5QXe6jr4Cxe95Znh1FhZiPf633c",
+      "programDataAddress": "49FsZNLYzwkmjCEAKWEMJgjbL4zyZKBZutFohNNrwa7J",
+      "deploymentSlot": 509916538
+    },
+    "inventoryReservation": {
+      "programId": "6PhTV2dQczEcPnFdda6jcftTqdUpR8KaNucaCJB6iRHz",
+      "programDataAddress": "3WV9u3iTLYmWtvEEwotvCwYrRbFzHrzbYgS9UCvnK15H",
+      "deploymentSlot": 509916649
+    },
+    "multiStrategy": {
+      "programId": "CDaUbFWSG6rh5mgjAr63157Ha7upZmza5SF47xgSaxqj",
+      "programDataAddress": "4s1rfT6PLcpHSA9jDE31njghKsVz8u6t9mshfKNcR2KN",
+      "deploymentSlot": 509916739
+    },
+    "packageBook": {
+      "programId": "C6PZeuHDqwBPHGGVRavY8NvGx9tcVHxQsLru46bNm85H",
+      "programDataAddress": "8RVmE5kyHNty5vTG14hegRtEby5Q6KPfr3Ge37HqQSHP",
+      "deploymentSlot": 509916828
+    },
+    "testPerp": {
+      "programId": "CpAqHqcpegSm8NCedsDVvwg85jozNa46Qz1TGNyVyLTr",
+      "programDataAddress": "GtkhaLkMSk2idtQQwedaqiVvRnHL6TefhEMBkwAjdG8o",
+      "deploymentSlot": 509916923
+    },
+    "testPerpAdapter": {
+      "programId": "H6YQpuLPKTWq7gVcqTa7c5sax7WubnpgG5cdohgZvxT1",
+      "programDataAddress": "5HMPrUhRNDgL93AHS32ErKEZbmD4rcaoWaMHqJZUtJA4",
+      "deploymentSlot": 509917000
+    }
+  },
+  "accounts": {
+    "config": "CgWrtWVGyYnbFouJunNFiuXZLasqyCbGYbEz95zC1wGF",
+    "solverRegistry": "SjQC1WQ2NYSXeKo4WgaeKtaQqVHjxYTzM54n2LwGqWt",
+    "testPerpMarket": "9XY7Ys6y6VEULxJa9spYJKAUU2n5MjD6qGmijiQnLa5L",
+    "collateralVault": "7b12DVVm2ogeAQ53R71uX2CYcWLC7kWHoUSz7ZrRGabh",
+    "feeVault": "AoVEv2Wxu6qbEpygmLDLkCZ7DasTND4Lb9p5Fmpm2N6m",
+    "insuranceVault": "2MmpKLhvQ1fE2Yx4bx2ak9tMySnys1XRZ3whf1ht5MKM",
+    "reservationClass": "FJVMVUBFADEXsEHa3rjnKrFrXhvM9n4sWJrK3nqUPfwg",
+    "packageBookClass": "yRL7pgxUwCCLoEK6U2DhvvCAanNvrj2DXnrvAoiaFAc",
+    "packageBookShard": "FVDBi1GsbPi8AZzbBimYHbRg1k3u9d3EAxVgd1qpPrew",
+    "packageBookLevelPage": "ASXt3RznCVqxy3z1HHPxGhUBBzG3BvTu8h5NLnoYXAH4",
+    "seriesRecord": "6sSMTXRyjUDDQVojsXJZqe5NSDwasCZ4GUQ7KFiicrJd",
+    "riskDomainRecord": "8mAuAFBJn3HHkr7hyUFkLYJa7deRwATTCrxULPrTnWsk"
+  },
+  "testUsdcMint": "C1nHUYTHx7rrtsy5fdJ1RkAtaYgQxG9VX7jnCJcpBNBf",
+  "lookupTable": {
+    "address": "6tu448Mx6S7N4N9fyxXWy5onZjqJQnavyyXwtH1ershS",
+    "frozen": true,
+    "addressCount": 50,
+    "freezeTransaction": "4MNpRtaPqkRBdeP4sv2XKNWAaFwYP79xbrggjErSQKey9RoepxA3Z7aRRsaqD2PBxLVnXKDPc8yPW39JvqfReXk"
+  },
+  "activation": {
+    "configInitializeTransaction": "23ktd6rKrCkKS9o9ffJRX44VFFEocp174Vqc6mLgs4o3aFGDXKBv5EPTatFzDp7M8AwZkRHQubPjnwx7yh8KjVJv",
+    "solverActivateTransaction": "H2B7wcUbBGbfDY7ki4g942nxzvyaG6Z5zaSuaBqCTn59onQtAyFNqX4P9yUHqaQRYLWvCpmAnzx3KMgMn5PDq27",
+    "configUnpauseTransaction": "4EZUeLVmERFPhPNN3WmHdvJZJWxfsd4DTtvvLiJLTMyhRfT6Ym7e8LvVsLhCXeVju9fxqFxVc31XwYH5VgyRvTA",
+    "seriesActivateTransaction": "2ppj1LCnoMhbMxtfHjwfUAa6HqLhXzN9iJ2M4vncc6CSpkMMiJTHbPznRnZAZ3jtHstPp93GZ31FhocHmow3toFJ",
+    "riskDomainActivateTransaction": "5tP8giTHvAKa3sqWXMEjuzUPQUBKahEaXuqCH4VBXVLBxwVw2v4DyrGYtWJHdvPdXmcqs1McsG9nge3C8Th2WXw1"
+  }
+}
