@@ -3134,6 +3134,8 @@ export function TradingTerminal({
           ? await privateProvider.createHyperliquidExitOrder(context, owner, {
             slippageBps: slippage,
             idempotencyKey: crypto.randomUUID(),
+            // Names the open package this flow offers to exit instead of leaving the oldest to the service.
+            ...(hyperliquidOpenPackage ? { entryAttemptId: hyperliquidOpenPackage.entryAttemptId } : {}),
           })
           : await privateProvider.createHyperliquidOrder(context, owner, {
             size,

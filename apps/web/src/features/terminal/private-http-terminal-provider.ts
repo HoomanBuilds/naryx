@@ -4270,17 +4270,24 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     return requireHyperliquidAccount(await response.json() as unknown, wallet, context);
   }
 
-  /** Builds the canonical EXIT of the wallet's open package: its exact spot and its exact short. */
+  /**
+   * Builds the canonical EXIT of one of the wallet's open packages: its exact spot and its exact
+   * short. `entryAttemptId` names the package; without it the service exits the oldest.
+   */
   async createHyperliquidExitOrder(
     context: HyperliquidTestnetContext,
     owner: string,
-    input: Readonly<{ slippageBps: number; idempotencyKey: string }>,
+    input: Readonly<{ slippageBps: number; idempotencyKey: string; entryAttemptId?: string }>,
     signal?: AbortSignal,
   ): Promise<HyperliquidOrderCreateResponse> {
+    if (input.entryAttemptId !== undefined && !HYPERLIQUID_ATTEMPT_ID_PATTERN.test(input.entryAttemptId)) {
+      throw new Error("Hyperliquid package entry attempt is invalid.");
+    }
     const request = {
       owner: requireEvmAddress(owner, "Hyperliquid package owner").toLowerCase(),
       slippageBps: requireInteger(input.slippageBps, "Hyperliquid exit slippage"),
       idempotencyKey: requireObservationIdempotencyKey(input.idempotencyKey),
+      ...(input.entryAttemptId === undefined ? {} : { entryAttemptId: input.entryAttemptId }),
     };
     const response = await fetch(`${this.#baseUrl}/internal/terminal/hyperliquid-testnet/exit-order`, {
       method: "POST",
