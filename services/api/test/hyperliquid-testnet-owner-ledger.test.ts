@@ -81,6 +81,8 @@ test("an owner exits only their own open package, and exactly it", withLedger((l
   assert.throws(() => ledger.beginExit("exit-alice-1", { ...exact, grossSpotQuantityAtoms: 99n }), refused("EXIT_PACKAGE_MISMATCH"));
   assert.throws(() => ledger.beginExit("exit-alice-1", { ...exact, entryReceiptHash: "ff".repeat(32) }), refused("EXIT_PACKAGE_MISMATCH"));
 
+  // Anyone can build a newer exit order for the package; the owner's earlier one stays valid.
+  ledger.bindExitOrder(open.entryAttemptId, ALICE, "e2".repeat(32));
   ledger.beginExit("exit-alice-1", exact);
   ledger.settleExit("exit-alice-1", notSubmitted("exit-alice-1"));
   assert.equal(ledger.openPackage(ALICE)?.state, "OPEN");

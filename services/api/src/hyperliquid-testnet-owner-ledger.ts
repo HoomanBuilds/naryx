@@ -210,6 +210,13 @@ export class HyperliquidTestnetOwnerLedger {
       ) STRICT;
       ${packagesTable("hyperliquid_owner_packages")}
       CREATE INDEX IF NOT EXISTS hyperliquid_owner_packages_owner ON hyperliquid_owner_packages(owner, state);
+      CREATE TABLE IF NOT EXISTS hyperliquid_owner_exit_orders (
+        exit_order_hash TEXT PRIMARY KEY,
+        entry_attempt_id TEXT NOT NULL,
+        owner TEXT NOT NULL
+      ) STRICT;
+      INSERT OR IGNORE INTO hyperliquid_owner_exit_orders (exit_order_hash, entry_attempt_id, owner)
+        SELECT exit_order_hash, entry_attempt_id, owner FROM hyperliquid_owner_packages WHERE exit_order_hash IS NOT NULL;
     `);
     const columns = this.#db.prepare("PRAGMA table_info(hyperliquid_owner_packages)").all() as { name: string }[];
     if (!columns.some((column) => column.name === "exit_spot_quantity_atoms")) {
@@ -340,13 +347,22 @@ export class HyperliquidTestnetOwnerLedger {
     return row === undefined ? undefined : decode(row);
   }
 
-  /** Binds a freshly built exit order to the owner's open package, replacing an unexecuted one. */
+  /**
+   * Binds a freshly built exit order to the owner's open package. Building an order needs no
+   * signature, so every order built for the package stays valid: a later build never voids an exit
+   * the owner already signed.
+   */
   bindExitOrder(entryAttemptId: string, owner: string, exitOrderHash: string): void {
-    const update = this.#db.prepare(`
-      UPDATE hyperliquid_owner_packages SET exit_order_hash = ?, updated_at_ms = ?
-      WHERE entry_attempt_id = ? AND owner = ? AND state = 'OPEN'
-    `).run(exitOrderHash, this.#now(), entryAttemptId, owner);
-    if (update.changes !== 1) throw new HyperliquidOwnerLedgerError("NO_OPEN_PACKAGE", "The wallet has no open package to exit.");
+    this.#db.transaction(() => {
+      const update = this.#db.prepare(`
+        UPDATE hyperliquid_owner_packages SET exit_order_hash = ?, updated_at_ms = ?
+        WHERE entry_attempt_id = ? AND owner = ? AND state = 'OPEN'
+      `).run(exitOrderHash, this.#now(), entryAttemptId, owner);
+      if (update.changes !== 1) throw new HyperliquidOwnerLedgerError("NO_OPEN_PACKAGE", "The wallet has no open package to exit.");
+      this.#db.prepare(`
+        INSERT OR IGNORE INTO hyperliquid_owner_exit_orders (exit_order_hash, entry_attempt_id, owner) VALUES (?, ?, ?)
+      `).run(exitOrderHash, entryAttemptId, owner);
+    }).immediate();
   }
 
   /**
@@ -357,7 +373,9 @@ export class HyperliquidTestnetOwnerLedger {
   beginExit(attemptId: string, terms: HyperliquidExitOrderTerms): void {
     this.#db.transaction(() => {
       const row = this.#db.prepare(`
-        SELECT * FROM hyperliquid_owner_packages WHERE exit_order_hash = ?
+        SELECT p.* FROM hyperliquid_owner_exit_orders e
+        JOIN hyperliquid_owner_packages p ON p.entry_attempt_id = e.entry_attempt_id AND p.owner = e.owner
+        WHERE e.exit_order_hash = ?
       `).get(terms.orderHash) as PackageRow | undefined;
       if (row === undefined || row.owner !== terms.owner) {
         throw new HyperliquidOwnerLedgerError("EXIT_PACKAGE_MISMATCH", "The exit order does not close a package this wallet owns.");
