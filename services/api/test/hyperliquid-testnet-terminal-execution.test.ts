@@ -256,6 +256,8 @@ test("durable Hyperliquid terminal execution resolves a timed-out handoff from t
     assert.deepEqual(await port.status(REQUEST), { state: "COMPLETED", result: result(REQUEST) });
     assert.deepEqual(resolves, [true]);
     assert.deepEqual(settled, ["RECONCILED"]);
+    assert.deepEqual(await port.status(REQUEST), { state: "COMPLETED", result: result(REQUEST) });
+    assert.deepEqual(settled, ["RECONCILED"]);
     assert.deepEqual(await port.execute(REQUEST), result(REQUEST));
     assert.equal(executions, 1);
 

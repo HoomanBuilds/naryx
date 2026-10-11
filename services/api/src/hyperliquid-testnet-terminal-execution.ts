@@ -614,7 +614,7 @@ implements HyperliquidTestnetTerminalExecutionPort {
     }
     if (row.status === "COMPLETED") {
       const result = await this.#latest(request, this.#stored(request)!, row.result_json as string);
-      this.#settle(request, result);
+      this.#settleIfUnsettled(request, result);
       return Object.freeze({ state: "COMPLETED" as const, result });
     }
     if (this.#executor.attemptStatus === undefined) {
