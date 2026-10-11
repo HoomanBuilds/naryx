@@ -87,7 +87,10 @@ async function inspectNetwork(input) {
   if (await client.getChainId() !== input.chainId) throw new Error(`${input.network} RPC chain differs`);
   const addresses = release.conformance;
   const contracts = release.contracts;
-  const [baseToken, quoteToken, lowerPool, upperPool, oracleAddress, perpMarket, nearMarket, farMarket] = await Promise.all([
+  const [
+    baseToken, quoteToken, lowerPool, upperPool, oracleAddress, perpMarket, nearMarket, farMarket,
+    lendingPool, reverseLendingPool, uniswapFactory, spotPool, spotQuoter,
+  ] = await Promise.all([
     contract(client, addresses.baseAsset),
     contract(client, addresses.quoteAsset),
     contract(client, addresses.lowerOptionPool),
@@ -96,6 +99,11 @@ async function inspectNetwork(input) {
     contract(client, addresses.perpetualMarket),
     contract(client, addresses.nearFutureMarket),
     contract(client, addresses.farFutureMarket),
+    contract(client, addresses.lendingPool),
+    contract(client, addresses.reverseLendingPool),
+    contract(client, addresses.uniswapFactory),
+    contract(client, addresses.spotPool),
+    contract(client, addresses.spotQuoter),
   ]);
   const oracle = await contract(client, oracleAddress);
   const [lowerSettings, upperSettings, perpetualExpiry, nearExpiry, farExpiry, accountCodeHash] = await Promise.all([
@@ -136,10 +144,19 @@ async function inspectNetwork(input) {
     perp: Object.freeze({ contract: perpMarket, expiry: BigInt(perpetualExpiry) }),
     near: Object.freeze({ contract: nearMarket, expiry: BigInt(nearExpiry) }),
     far: Object.freeze({ contract: farMarket, expiry: BigInt(farExpiry) }),
+    lendingPool,
+    reverseLendingPool,
+    uniswapFactory,
+    spotPool,
+    spotQuoter,
+    spotPoolFee: addresses.spotPoolFee,
     accountFactory: factory('accountFactory'),
     accountCodeHash,
     lowerOptionFactory: factory('lowerOptionFactory'),
     upperOptionFactory: factory('upperOptionFactory'),
+    lendingFactory: factory('lendingFactory'),
+    reverseLendingFactory: factory('reverseLendingFactory'),
+    spotFactory: factory('spotFactory'),
     inventoryFactory: factory('inventoryFactory'),
     perpetualFactory: factory('perpetualFactory'),
     nearFutureFactory: factory('nearFutureFactory'),
@@ -175,15 +192,26 @@ const refs = (network) => Object.freeze({
   futureFar: protocol.adapterRef({ adapterId: `adapter:${network.network}:future-far`, adapterManifestVersion: 1, adapterManifestHash: digest(`${network.network}/adapter/future-far`) }),
   inventory: protocol.adapterRef({ adapterId: `adapter:${network.network}:inventory`, adapterManifestVersion: 1, adapterManifestHash: digest(`${network.network}/adapter/inventory`) }),
   perp: protocol.adapterRef({ adapterId: `adapter:${network.network}:perpetual`, adapterManifestVersion: 1, adapterManifestHash: digest(`${network.network}/adapter/perpetual`) }),
+  conversionSpot: protocol.adapterRef({ adapterId: `adapter:${network.network}:conversion-spot`, adapterManifestVersion: 1, adapterManifestHash: digest(`${network.network}/adapter/conversion-spot`) }),
+  conversionLending: protocol.adapterRef({ adapterId: `adapter:${network.network}:conversion-lending`, adapterManifestVersion: 1, adapterManifestHash: digest(`${network.network}/adapter/conversion-lending`) }),
+  conversionPerp: protocol.adapterRef({ adapterId: `adapter:${network.network}:conversion-perpetual`, adapterManifestVersion: 1, adapterManifestHash: digest(`${network.network}/adapter/conversion-perpetual`) }),
+  reverseLending: protocol.adapterRef({ adapterId: `adapter:${network.network}:reverse-lending`, adapterManifestVersion: 1, adapterManifestHash: digest(`${network.network}/adapter/reverse-lending`) }),
+  reverseSpot: protocol.adapterRef({ adapterId: `adapter:${network.network}:reverse-spot`, adapterManifestVersion: 1, adapterManifestHash: digest(`${network.network}/adapter/reverse-spot`) }),
+  reversePerp: protocol.adapterRef({ adapterId: `adapter:${network.network}:reverse-perpetual`, adapterManifestVersion: 1, adapterManifestHash: digest(`${network.network}/adapter/reverse-perpetual`) }),
   optionVenue: protocol.versionedManifestRef(`venue:${network.network}:options`, 1, digest(`${network.network}/venue/options`)),
   futureVenue: protocol.versionedManifestRef(`venue:${network.network}:futures`, 1, digest(`${network.network}/venue/futures`)),
   treasuryVenue: protocol.versionedManifestRef(`venue:${network.network}:treasury`, 1, digest(`${network.network}/venue/treasury`)),
+  spotVenue: protocol.versionedManifestRef(`venue:${network.network}:uniswap-v3`, 1, digest(`${network.network}/venue/uniswap-v3`)),
+  lendingVenue: protocol.versionedManifestRef(`venue:${network.network}:lending`, 1, digest(`${network.network}/venue/lending`)),
   optionLongMarket: protocol.versionedManifestRef(`market:${network.network}:call-lower`, 1, digest(`${network.network}/market/call-lower`)),
   optionShortMarket: protocol.versionedManifestRef(`market:${network.network}:call-upper`, 1, digest(`${network.network}/market/call-upper`)),
   futureNearMarket: protocol.versionedManifestRef(`market:${network.network}:future-near`, 1, digest(`${network.network}/market/future-near`)),
   futureFarMarket: protocol.versionedManifestRef(`market:${network.network}:future-far`, 1, digest(`${network.network}/market/future-far`)),
   inventoryMarket: protocol.versionedManifestRef(`market:${network.network}:inventory`, 1, digest(`${network.network}/market/inventory`)),
   perpMarket: protocol.versionedManifestRef(`market:${network.network}:perpetual`, 1, digest(`${network.network}/market/perpetual`)),
+  spotMarket: protocol.versionedManifestRef(`market:${network.network}:spot-base-quote`, 1, digest(`${network.network}/market/spot-base-quote`)),
+  lendingMarket: protocol.versionedManifestRef(`market:${network.network}:base-collateral`, 1, digest(`${network.network}/market/base-collateral`)),
+  reverseLendingMarket: protocol.versionedManifestRef(`market:${network.network}:quote-collateral`, 1, digest(`${network.network}/market/quote-collateral`)),
 });
 const bindings = new Map(networks.map((network) => [network.network, refs(network)]));
 
@@ -204,6 +232,24 @@ const templateSpecifications = Object.freeze([
     ],
     additionalDomains: [solanaDomain],
   }),
+  Object.freeze({
+    templateId: 'collateral-conversion-hedge-v1',
+    legTypes: ['collateral-swap', 'collateral-transfer', 'conversion-hedge'],
+    adapters: networks.flatMap((network) => [
+      bindings.get(network.network).conversionSpot,
+      bindings.get(network.network).conversionLending,
+      bindings.get(network.network).conversionPerp,
+    ]),
+  }),
+  Object.freeze({
+    templateId: 'reverse-cash-and-carry-v1',
+    legTypes: ['base-borrow', 'spot-sale', 'perp-purchase'],
+    adapters: networks.flatMap((network) => [
+      bindings.get(network.network).reverseLending,
+      bindings.get(network.network).reverseSpot,
+      bindings.get(network.network).reversePerp,
+    ]),
+  }),
 ]);
 const templates = new Map(templateSpecifications.map((specification) => {
   const manifest = protocol.packageTemplateManifest({
@@ -218,7 +264,7 @@ const templates = new Map(templateSpecifications.map((specification) => {
     receiptSchemaHash: digest(`${specification.templateId}/receipt`),
     entryCompilerVersion: 1,
     exitCompilerVersion: 1,
-    legCount: 2,
+    legCount: specification.legTypes.length,
     legTypes: specification.legTypes,
     supportedDirections: ['LONG_SPOT_SHORT_PERP'],
     supportedSettlementClasses: ['ATOMIC_POSTCONDITION'],
@@ -237,17 +283,24 @@ const seriesSupport = {
   supportedLifecycleConventionIds: templateSpecifications.map((value) => protocol.requireStrategyTemplateDefinition(value.templateId).lifecycleConventionId),
 };
 const executionClassSupport = {
-  supportedVenueClassIds: ['naryx-evm-option-v1', 'naryx-evm-future-v1', 'naryx-evm-treasury-v1'],
+  supportedVenueClassIds: [
+    'naryx-evm-option-v1', 'naryx-evm-future-v1', 'naryx-evm-treasury-v1',
+    'naryx-evm-collateral-conversion-v1', 'naryx-evm-reverse-basis-v1',
+  ],
   supportedCollateralModeIds: ['evm-user-owned-strategy-account-v1'],
   supportedSettlementClasses: ['ATOMIC_POSTCONDITION'],
   supportedFirmnessClassIds: ['factory-validated-testnet-v1'],
 };
-const profiles = { option: [], calendar: [], treasury: [] };
-const runtimes = { option: [], calendar: [], treasury: [] };
+const profiles = { option: [], calendar: [], treasury: [], collateralConversion: [], reverseBasis: [] };
+const runtimes = { option: [], calendar: [], treasury: [], collateralConversion: [], reverseBasis: [] };
 const series = [];
 const executionClasses = [];
 const matchingPolicies = [];
 const registryGroups = new Map();
+const orderedTemplates = (values) => [...values].sort((left, right) => Buffer.compare(
+  Buffer.from(protocol.packageTemplateRefKeyBytes(left)),
+  Buffer.from(protocol.packageTemplateRefKeyBytes(right)),
+));
 
 function addRegistry(network, template, kind, ref) {
   const subjectId = kind === 'ASSET' ? ref.assetId : kind === 'ADAPTER' ? ref.adapterId : ref.subjectId;
@@ -449,6 +502,72 @@ for (const network of networks) {
     bounds: commonBounds,
   });
 
+  const conversionId = `${network.network}-collateral-conversion`;
+  const conversionDocuments = economicDocuments(
+    network,
+    'collateral-conversion-hedge-v1',
+    [ref.spotMarket.subjectId, ref.lendingMarket.subjectId, ref.perpMarket.subjectId],
+    [1n, 1n, -1n],
+    'naryx-evm-collateral-conversion-v1',
+    conversionId,
+  );
+  profiles.collateralConversion.push({
+    profileId: conversionId,
+    displayName: `${network.network} collateral conversion hedge`,
+    templateId: 'collateral-conversion-hedge-v1',
+    templateVersion: 1,
+    packageTemplateManifestHash: protocol.packageTemplateManifestHash(conversionDocuments.template),
+    seriesId: conversionDocuments.seriesDocument.seriesId,
+    seriesVersion: 2,
+    seriesManifestHash: conversionDocuments.classDocument.seriesManifestHash,
+    executionClassId: conversionDocuments.classDocument.executionClassId,
+    executionClassVersion: 1,
+    executionClassManifestHash: conversionDocuments.executionClassHash,
+    chainId: network.chainId,
+    domain: network.domain,
+    accountFactory: network.accountFactory.address.toLowerCase(),
+    collateralAsset: network.baseAsset,
+    quoteAsset: network.quoteAsset,
+    swap: { adapter: ref.conversionSpot, venue: ref.spotVenue, market: ref.spotMarket },
+    collateralTransfer: { adapter: ref.conversionLending, venue: ref.lendingVenue, market: ref.lendingMarket },
+    hedge: { adapter: ref.conversionPerp, venue: ref.treasuryVenue, market: ref.perpMarket },
+    metricLimits: [],
+    bounds: commonBounds,
+  });
+
+  const reverseId = `${network.network}-reverse-basis`;
+  const reverseDocuments = economicDocuments(
+    network,
+    'reverse-cash-and-carry-v1',
+    [ref.reverseLendingMarket.subjectId, ref.spotMarket.subjectId, ref.perpMarket.subjectId],
+    [-1n, -1n, 1n],
+    'naryx-evm-reverse-basis-v1',
+    reverseId,
+  );
+  profiles.reverseBasis.push({
+    profileId: reverseId,
+    displayName: `${network.network} reverse cash and carry`,
+    templateId: 'reverse-cash-and-carry-v1',
+    templateVersion: 1,
+    packageTemplateManifestHash: protocol.packageTemplateManifestHash(reverseDocuments.template),
+    seriesId: reverseDocuments.seriesDocument.seriesId,
+    seriesVersion: 2,
+    seriesManifestHash: reverseDocuments.classDocument.seriesManifestHash,
+    executionClassId: reverseDocuments.classDocument.executionClassId,
+    executionClassVersion: 1,
+    executionClassManifestHash: reverseDocuments.executionClassHash,
+    chainId: network.chainId,
+    domain: network.domain,
+    accountFactory: network.accountFactory.address.toLowerCase(),
+    baseAsset: network.baseAsset,
+    quoteAsset: network.quoteAsset,
+    lending: { adapter: ref.reverseLending, venue: ref.lendingVenue, market: ref.reverseLendingMarket },
+    spot: { adapter: ref.reverseSpot, venue: ref.spotVenue, market: ref.spotMarket },
+    hedge: { adapter: ref.reversePerp, venue: ref.treasuryVenue, market: ref.perpMarket },
+    metricLimits: [],
+    bounds: commonBounds,
+  });
+
   const resources = [
     ['ASSET', network.baseAsset], ['ASSET', network.quoteAsset],
     ['ADAPTER', ref.optionLong], ['ADAPTER', ref.optionShort], ['VENUE', ref.optionVenue],
@@ -457,6 +576,10 @@ for (const network of networks) {
     ['MARKET', ref.futureNearMarket], ['MARKET', ref.futureFarMarket],
     ['ADAPTER', ref.inventory], ['ADAPTER', ref.perp], ['VENUE', ref.treasuryVenue],
     ['MARKET', ref.inventoryMarket], ['MARKET', ref.perpMarket],
+    ['ADAPTER', ref.conversionSpot], ['ADAPTER', ref.conversionLending], ['ADAPTER', ref.conversionPerp],
+    ['ADAPTER', ref.reverseLending], ['ADAPTER', ref.reverseSpot], ['ADAPTER', ref.reversePerp],
+    ['VENUE', ref.spotVenue], ['VENUE', ref.lendingVenue], ['MARKET', ref.spotMarket],
+    ['MARKET', ref.lendingMarket], ['MARKET', ref.reverseLendingMarket],
   ];
   for (const [kind, resource] of resources) {
     const relevant = kind === 'ASSET'
@@ -474,6 +597,14 @@ for (const network of networks) {
             || kind === 'VENUE' && resource.subjectId === ref.treasuryVenue.subjectId
             || kind === 'MARKET' && [ref.inventoryMarket.subjectId, ref.perpMarket.subjectId].includes(resource.subjectId)
             ? [templates.get('treasury-inventory-hedge-v1')] : []),
+          ...(kind === 'ADAPTER' && [ref.conversionSpot.adapterId, ref.conversionLending.adapterId, ref.conversionPerp.adapterId].includes(resource.adapterId)
+            || kind === 'VENUE' && [ref.spotVenue.subjectId, ref.lendingVenue.subjectId, ref.treasuryVenue.subjectId].includes(resource.subjectId)
+            || kind === 'MARKET' && [ref.spotMarket.subjectId, ref.lendingMarket.subjectId, ref.perpMarket.subjectId].includes(resource.subjectId)
+            ? [templates.get('collateral-conversion-hedge-v1')] : []),
+          ...(kind === 'ADAPTER' && [ref.reverseLending.adapterId, ref.reverseSpot.adapterId, ref.reversePerp.adapterId].includes(resource.adapterId)
+            || kind === 'VENUE' && [ref.lendingVenue.subjectId, ref.spotVenue.subjectId, ref.treasuryVenue.subjectId].includes(resource.subjectId)
+            || kind === 'MARKET' && [ref.reverseLendingMarket.subjectId, ref.spotMarket.subjectId, ref.perpMarket.subjectId].includes(resource.subjectId)
+            ? [templates.get('reverse-cash-and-carry-v1')] : []),
         ];
     for (const template of relevant) addRegistry(network, template, kind, resource);
   }
@@ -491,7 +622,7 @@ for (const network of networks) {
       subjectManifestHash: group.subjectManifestHash,
       registryState: 'ACTIVE',
       riskLimits: [],
-      allowedTemplates: group.allowedTemplates,
+      allowedTemplates: orderedTemplates(group.allowedTemplates),
       allowedSettlementClasses: ['ATOMIC_POSTCONDITION'],
       activationUnit: 'EVM_UNIX_SECONDS',
       activationValue: 1n,
@@ -584,6 +715,76 @@ for (const network of networks) {
       { role: 'treasury-hedge', factory: network.perpetualFactory, maximumGasLimit: 800_000n },
     ],
   });
+
+  const conversionCommon = laneCommon(conversionDocuments, 'collateral-conversion-hedge-v1', [
+    support(network.domain, ref.conversionSpot, 'SPOT_SWAP', ['BUY', 'SELL'], 'naryx.evm.spot-exact'),
+    support(network.domain, ref.conversionLending, 'MARGIN_DEPOSIT', ['NONE'], 'naryx.evm.aave-v3-lending-exact'),
+    support(network.domain, ref.conversionLending, 'MARGIN_RELEASE', ['NONE'], 'naryx.evm.aave-v3-lending-exact'),
+    support(network.domain, ref.conversionPerp, 'PERP_OPEN', ['SELL'], 'naryx.evm.perp-exact'),
+    support(network.domain, ref.conversionPerp, 'PERP_INCREASE', ['SELL'], 'naryx.evm.perp-exact'),
+    support(network.domain, ref.conversionPerp, 'PERP_DECREASE', ['BUY'], 'naryx.evm.perp-exact'),
+    support(network.domain, ref.conversionPerp, 'PERP_CLOSE', ['BUY'], 'naryx.evm.perp-exact'),
+  ]);
+  delete conversionCommon.baseAsset;
+  delete conversionCommon.baseToken;
+  runtimes.collateralConversion.push({
+    laneId: conversionId,
+    ...conversionCommon,
+    collateralAsset: network.baseAsset,
+    collateralToken: network.baseToken,
+    spotFactory: network.uniswapFactory,
+    spotPool: network.spotPool,
+    spotQuoter: network.spotQuoter,
+    spotPoolFee: network.spotPoolFee,
+    lendingPool: network.lendingPool,
+    perpetualMarket: network.perp.contract,
+    swap: { adapter: ref.conversionSpot, venue: ref.spotVenue, market: ref.spotMarket },
+    collateralTransfer: { adapter: ref.conversionLending, venue: ref.lendingVenue, market: ref.lendingMarket },
+    hedge: { adapter: ref.conversionPerp, venue: ref.treasuryVenue, market: ref.perpMarket },
+    minimumPostHealthFactor: 2n * 10n ** 18n,
+    adapters: [
+      { role: 'collateral-swap', factory: network.spotFactory, maximumGasLimit: 800_000n },
+      { role: 'collateral-transfer', factory: network.lendingFactory, maximumGasLimit: 800_000n },
+      { role: 'conversion-hedge', factory: network.perpetualFactory, maximumGasLimit: 800_000n },
+    ],
+    collateralBaseAtomsPerWholeToken: 2_000_000_000n,
+    collateralBaseToleranceBps: 100n,
+  });
+
+  runtimes.reverseBasis.push({
+    laneId: reverseId,
+    ...laneCommon(reverseDocuments, 'reverse-cash-and-carry-v1', [
+      support(network.domain, ref.reverseLending, 'BORROW', ['NONE'], 'naryx.evm.aave-v3-lending-exact'),
+      support(network.domain, ref.reverseLending, 'REPAY', ['NONE'], 'naryx.evm.aave-v3-lending-exact'),
+      support(network.domain, ref.reverseSpot, 'SPOT_SWAP', ['BUY', 'SELL'], 'naryx.evm.spot-exact'),
+      support(network.domain, ref.reversePerp, 'PERP_OPEN', ['BUY'], 'naryx.evm.perp-exact'),
+      support(network.domain, ref.reversePerp, 'PERP_INCREASE', ['BUY'], 'naryx.evm.perp-exact'),
+      support(network.domain, ref.reversePerp, 'PERP_DECREASE', ['SELL'], 'naryx.evm.perp-exact'),
+      support(network.domain, ref.reversePerp, 'PERP_CLOSE', ['SELL'], 'naryx.evm.perp-exact'),
+    ]),
+    spotFactory: network.uniswapFactory,
+    spotPool: network.spotPool,
+    spotQuoter: network.spotQuoter,
+    spotPoolFee: network.spotPoolFee,
+    lendingPool: network.reverseLendingPool,
+    perpetualMarket: network.perp.contract,
+    lending: { adapter: ref.reverseLending, venue: ref.lendingVenue, market: ref.reverseLendingMarket },
+    spot: { adapter: ref.reverseSpot, venue: ref.spotVenue, market: ref.spotMarket },
+    hedge: { adapter: ref.reversePerp, venue: ref.treasuryVenue, market: ref.perpMarket },
+    minimumPostHealthFactor: 2n * 10n ** 18n,
+    borrowCollateralRatioBps: 15_000n,
+    annualBorrowRatePpm: 100_000n,
+    holdingDurationSeconds: 86_400n,
+    adapters: [
+      { role: 'base-borrow', factory: network.reverseLendingFactory, maximumGasLimit: 800_000n },
+      { role: 'spot-sale', factory: network.spotFactory, maximumGasLimit: 800_000n },
+      { role: 'perp-purchase', factory: network.perpetualFactory, maximumGasLimit: 800_000n },
+    ],
+    debtBaseAtomsPerWholeBaseToken: 10n ** 18n,
+    debtBaseToleranceBps: 100n,
+    collateralBaseAtomsPerWholeQuoteToken: 500_000_000_000_000n,
+    collateralBaseToleranceBps: 100n,
+  });
 }
 
 const activeRegistryRecords = [...registryGroups.values()].map((group) => protocol.domainRegistryRecord({
@@ -596,7 +797,7 @@ const activeRegistryRecords = [...registryGroups.values()].map((group) => protoc
   subjectManifestHash: group.subjectManifestHash,
   registryState: 'ACTIVE',
   riskLimits: [],
-  allowedTemplates: group.allowedTemplates,
+  allowedTemplates: orderedTemplates(group.allowedTemplates),
   allowedSettlementClasses: ['ATOMIC_POSTCONDITION'],
   activationUnit: 'EVM_UNIX_SECONDS',
   activationValue: 1n,
@@ -606,25 +807,41 @@ const activeRegistryRecords = [...registryGroups.values()].map((group) => protoc
 writeProtocol('api/evm-option-spread-order-profiles.json', { version: 1, environment: 'testnet', profiles: profiles.option });
 writeProtocol('api/evm-calendar-spread-order-profiles.json', { version: 1, environment: 'testnet', profiles: profiles.calendar });
 writeProtocol('api/evm-treasury-hedge-order-profiles.json', { version: 1, environment: 'testnet', profiles: profiles.treasury });
+writeProtocol('api/evm-collateral-conversion-order-profiles.json', { version: 1, environment: 'testnet', profiles: profiles.collateralConversion });
+writeProtocol('api/evm-reverse-basis-order-profiles.json', { version: 1, environment: 'testnet', profiles: profiles.reverseBasis });
 writeProtocol('solver/evm-option-spread-runtime.json', { version: 1, environment: 'testnet', rpcUrl: networks[0].rpcUrl, lanes: runtimes.option });
 writeProtocol('solver/evm-calendar-spread-runtime.json', { version: 1, environment: 'testnet', rpcUrl: networks[0].rpcUrl, lanes: runtimes.calendar });
 writeProtocol('solver/evm-treasury-hedge-runtime.json', { version: 1, environment: 'testnet', rpcUrl: networks[0].rpcUrl, lanes: runtimes.treasury });
+writeProtocol('solver/evm-collateral-conversion-runtime.json', { version: 1, environment: 'testnet', rpcUrl: networks[0].rpcUrl, lanes: runtimes.collateralConversion });
+writeProtocol('solver/evm-reverse-basis-runtime.json', { version: 1, environment: 'testnet', rpcUrl: networks[0].rpcUrl, lanes: runtimes.reverseBasis });
 
-const bootstrap = readProtocol('api/hyperliquid-public-market-bootstrap.json');
-const marketSupport = readProtocol('api/hyperliquid-public-market-support.json');
-const graphContext = readProtocol('api/hyperliquid-public-graph-context.json');
+const bootstrap = readProtocol('api/public-market-bootstrap.json');
+const marketSupport = readProtocol('api/public-market-support.json');
+const graphContext = readProtocol('api/public-graph-context.json');
+const replacedDomainIds = new Set(networks.map((network) => network.domain.domainId));
+const replacedTemplateIds = new Set(templates.keys());
+const replacedSeriesIds = new Set(series.map((value) => value.seriesId));
+const replacedExecutionClassIds = new Set(executionClasses.map((value) => value.executionClassId));
 writeProtocol('api/public-market-bootstrap.json', {
   ...bootstrap,
   domainManifests: [
-    ...bootstrap.domainManifests,
+    ...bootstrap.domainManifests.filter((value) => !replacedDomainIds.has(value.domainId)),
     ...networks.map((network) => network.domainManifest),
-    solanaDomainManifest,
   ],
-  packageTemplateManifests: [...bootstrap.packageTemplateManifests, ...templates.values()],
-  matchingPolicies: [...bootstrap.matchingPolicies, ...matchingPolicies],
-  series: [...bootstrap.series, ...series],
-  executionClasses: [...bootstrap.executionClasses, ...executionClasses],
-  books: [...bootstrap.books, ...executionClasses.map((value) => ({
+  packageTemplateManifests: [
+    ...bootstrap.packageTemplateManifests.filter((value) => !replacedTemplateIds.has(value.templateId)),
+    ...templates.values(),
+  ],
+  matchingPolicies: [
+    ...bootstrap.matchingPolicies.filter((value) => !replacedExecutionClassIds.has(value.executionClassId)),
+    ...matchingPolicies,
+  ],
+  series: [...bootstrap.series.filter((value) => !replacedSeriesIds.has(value.seriesId)), ...series],
+  executionClasses: [
+    ...bootstrap.executionClasses.filter((value) => !replacedExecutionClassIds.has(value.executionClassId)),
+    ...executionClasses,
+  ],
+  books: [...bootstrap.books.filter((value) => !replacedExecutionClassIds.has(value.executionClassId)), ...executionClasses.map((value) => ({
     executionClassId: value.executionClassId,
     executionClassVersion: value.executionClassVersion,
   }))],
@@ -646,9 +863,12 @@ writeProtocol('api/public-market-support.json', {
 });
 writeProtocol('api/public-graph-context.json', {
   ...graphContext,
-  activeRegistryRecords: [...graphContext.activeRegistryRecords, ...activeRegistryRecords],
+  activeRegistryRecords: [
+    ...graphContext.activeRegistryRecords.filter((value) => !replacedDomainIds.has(value.domain.domainId)),
+    ...activeRegistryRecords,
+  ],
   resourceLimits: [
-    ...graphContext.resourceLimits,
+    ...graphContext.resourceLimits.filter((value) => !replacedDomainIds.has(value.domainId)),
     ...networks.map((network) => ({ domainId: network.domain.domainId, maximumActionsPerTransaction: 8 })),
   ],
 });

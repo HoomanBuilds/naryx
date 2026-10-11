@@ -76,6 +76,8 @@ const evmPaths = [
   'solver/evm-option-spread-runtime.json',
   'solver/evm-calendar-spread-runtime.json',
   'solver/evm-treasury-hedge-runtime.json',
+  'solver/evm-collateral-conversion-runtime.json',
+  'solver/evm-reverse-basis-runtime.json',
 ];
 const evmDocuments = evmPaths.map((path) => ({ path, document: readProtocol(path) }));
 for (const { document } of evmDocuments) {
