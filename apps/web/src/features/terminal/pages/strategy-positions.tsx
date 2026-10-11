@@ -6,6 +6,7 @@ import { fromProtocolJson } from "@naryx/sdk";
 import { ChainIcon } from "@/features/brand/chain-icons";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
+import { generalizedTemplateOnLane } from "../generalized-strategy-preparation";
 import { DOMAIN_META, DOMAIN_ORDER, useTerminal } from "../shell/terminal-context";
 import type { DomainId } from "../terminal-view-model";
 import styles from "./pages.module.css";
@@ -192,7 +193,27 @@ export function useStrategyPositions(): StrategyPositionsState {
 }
 
 /** The Trade page applies `strategy=1` links as a shared configuration; `lane` and `package` select the position. */
-function tradeHref(position: StrategyPosition, action: "EXIT" | "DECREASE" | "EMERGENCY_UNWIND"): string {
+type TradeAction = "EXIT" | "DECREASE" | "EMERGENCY_UNWIND";
+
+/** Links only the actions the Trade builder can construct for this template on this lane. */
+function PositionActions({ position, onNavigate }: Readonly<{ position: StrategyPosition; onNavigate: () => void }>) {
+  const actions: readonly (readonly [TradeAction, string])[] = position.state === "Open"
+    ? [["DECREASE", "Adjust"], ["EXIT", "Exit"]]
+    : position.state === "Unresolved" ? [["EMERGENCY_UNWIND", "Emergency unwind"]] : [];
+  const available = actions.filter(([action]) => generalizedTemplateOnLane(position.domain, position.templateId, action));
+  if (actions.length > 0 && available.length === 0) {
+    return <span className={styles.dim}>Exit from Trade is not available for this template yet</span>;
+  }
+  return (
+    <span className={styles.rowActions}>
+      {available.map(([action, label]) => (
+        <Link key={action} className={styles.ghost} href={tradeHref(position, action)} onClick={onNavigate}>{label}</Link>
+      ))}
+    </span>
+  );
+}
+
+function tradeHref(position: StrategyPosition, action: TradeAction): string {
   const params = new URLSearchParams();
   if (position.exactSize !== null) {
     params.set("strategy", "1");
@@ -276,16 +297,7 @@ export function StrategyPositionsTable({ state }: { state: StrategyPositionsStat
                   </span>
                 </td>
                 <td className={styles.num}>
-                  <span className={styles.rowActions}>
-                    {position.state === "Open" ? (
-                      <>
-                        <Link className={styles.ghost} href={tradeHref(position, "DECREASE")} onClick={() => setSelectedDomain(position.domain)}>Adjust</Link>
-                        <Link className={styles.ghost} href={tradeHref(position, "EXIT")} onClick={() => setSelectedDomain(position.domain)}>Exit</Link>
-                      </>
-                    ) : position.state === "Unresolved" ? (
-                      <Link className={styles.ghost} href={tradeHref(position, "EMERGENCY_UNWIND")} onClick={() => setSelectedDomain(position.domain)}>Emergency unwind</Link>
-                    ) : null}
-                  </span>
+                  <PositionActions position={position} onNavigate={() => setSelectedDomain(position.domain)} />
                 </td>
               </tr>
             ))}
