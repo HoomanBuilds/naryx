@@ -751,8 +751,13 @@
   cursor: pointer;
 }
 
-.connect:hover {
+.connect:hover:not(:disabled) {
   filter: brightness(0.92);
+}
+
+.connect:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .ghost {
@@ -1080,8 +1085,18 @@ a.ghost {
   font-size: 12px;
 }
 
+.field textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--field);
+  color: var(--text-primary);
+  padding: 8px 10px;
+}
+
 .field input:focus-visible,
-.field select:focus-visible {
+.field select:focus-visible,
+.field textarea:focus-visible {
   border-color: var(--line-strong);
   outline: 1px solid var(--yellow);
   outline-offset: 1px;

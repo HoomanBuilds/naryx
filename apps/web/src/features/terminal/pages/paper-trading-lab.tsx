@@ -244,7 +244,7 @@ export function PaperTradingLab({
           <strong>{entry?.averagePriceTicks.toString() ?? "No executable side"}</strong>
           <small>{scanSize.toString()} package units</small>
         </div>
-        <button type="button" className={styles.primary} disabled={entry === null} onClick={openPaperPosition}>Open paper position</button>
+        <button type="button" className={styles.connect} disabled={entry === null} onClick={openPaperPosition}>Open paper position</button>
         <button type="button" className={styles.ghost} disabled={baseUrl === null || selected === null || replayState === "loading"} onClick={() => void loadReplay()}>
           {replayState === "loading" ? "Loading observed history..." : "Replay last 7 days"}
         </button>
