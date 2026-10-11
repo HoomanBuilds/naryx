@@ -1491,6 +1491,10 @@ export function createHyperliquidTestnetExecutorRequestHandler(
         reject(response, status, error.code, error.message);
         return;
       }
+      console.error(
+        "Hyperliquid Testnet executor request failed:",
+        error instanceof Error ? error.message : "unknown error",
+      );
       reject(response, 502, 'EXECUTION_FAILED', 'Hyperliquid Testnet execution failed closed');
     }
   };
