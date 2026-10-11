@@ -387,6 +387,76 @@
   font-size: 10px;
 }
 
+.subhead {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-top: 1px solid var(--line-soft);
+  padding: 12px 16px 8px;
+}
+
+.lifecycleForm .subhead,
+.strategyEvidence h3 {
+  border-top: 0;
+  padding: 0;
+}
+
+.subhead h3,
+.strategyEvidence h3 {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.subhead p {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.strategyEvidence {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.strategyEvidence > div {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.strategyHistory summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+
+.strategyHistory[open] summary {
+  margin-bottom: 8px;
+}
+
+.deRiskSteps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.deRiskSteps span {
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}
+
+.evidenceNote {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .graphLoadGrid {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) auto minmax(320px, 1.2fr) auto;
@@ -1192,4 +1262,72 @@ a.ghost {
     align-items: stretch;
     flex-direction: column;
   }
+}
+
+/* ---------------------------------------------------------------- lazy drill-downs */
+
+.readNote {
+  color: var(--text-dim);
+  padding: 4px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+}
+
+.detailRow > td {
+  background: var(--panel-raised);
+  padding: 12px 16px;
+  white-space: normal;
+}
+
+.transparencyGrid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+}
+
+.transparencyPanel {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  overflow-x: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 10px 12px;
+}
+
+.transparencyPanel h3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.transparencyPanel .table th,
+.transparencyPanel .table td {
+  padding: 6px 8px;
+}
+
+.registryPayload {
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--field);
+  color: var(--text-secondary);
+  padding: 10px 12px;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.registryBar {
+  flex-wrap: wrap;
+  justify-content: space-between;
 }

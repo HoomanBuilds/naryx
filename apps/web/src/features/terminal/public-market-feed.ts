@@ -1,7 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { settlementPremiumSurface, type SettlementPremiumSurface } from "@naryx/sdk";
+import {
+  NaryxApiError,
+  NaryxClient,
+  NaryxEvidenceError,
+  settlementPremiumSurface,
+  type SettlementPremiumSurface,
+  type VerifiedMarketCatalogue,
+} from "@naryx/sdk";
 import {
   CHART_INTERVALS,
   type Candle,
@@ -22,6 +29,9 @@ const TAPE_PAGE = 100;
 /** How many tape pages a first load reads; older trades are left to the candles endpoint. */
 const INITIAL_TAPE_PAGES = 20;
 const MAX_TRADES = 5_000;
+const MARKET_POLL_MS = 15_000;
+/** The server caches its catalogue for about a minute; a book it has not listed yet triggers an earlier read. */
+const CATALOGUE_REFRESH_MS = 60_000;
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -71,6 +81,15 @@ export interface PublicPackageMarket {
 
 export interface PublicMarketCatalogueStatus {
   readonly state: "loading" | "live" | "stale" | "unavailable";
+  readonly detail: string;
+}
+
+/**
+ * The catalogue only enriches listed books. Its hash is recomputed by the SDK before any field is
+ * used; this browser pins no signing authority, so the signature itself is not checked here.
+ */
+export interface PublicCatalogueVerification {
+  readonly state: "loading" | "verified" | "rejected" | "unavailable";
   readonly detail: string;
 }
 
@@ -145,40 +164,36 @@ function textList(value: unknown, context: string): readonly string[] {
   return Object.freeze(entries);
 }
 
-function catalogueMarkets(body: Record<string, unknown>): readonly PublicPackageMarket[] {
-  const catalogue = body.catalogue;
-  if (catalogue === null || typeof catalogue !== "object" || Array.isArray(catalogue)) {
-    throw new PublicApiError("catalogue is malformed");
-  }
-  const value = catalogue as Record<string, unknown>;
-  if (exact(value.expiresAtMs, "catalogue.expiresAtMs") <= BigInt(Date.now())) {
-    throw new PublicApiError("catalogue is expired");
-  }
-  if (!Array.isArray(value.entries)) throw new PublicApiError("catalogue entries are malformed");
-  const markets = value.entries.map((candidate, index): PublicPackageMarket => {
-    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
-      throw new PublicApiError(`catalogue.entries[${index}] is malformed`);
-    }
-    const entry = candidate as Record<string, unknown>;
-    if (typeof entry.halted !== "boolean") throw new PublicApiError(`catalogue.entries[${index}].halted is malformed`);
+/** Fills catalogue metadata into listed books; a listed book the catalogue omits keeps its live row unenriched. */
+function enrichMarkets(markets: readonly PublicPackageMarket[], catalogue: VerifiedMarketCatalogue | null): readonly PublicPackageMarket[] {
+  if (catalogue === null) return markets;
+  const entries = new Map<string, VerifiedMarketCatalogue["catalogue"]["entries"][number]>(catalogue.catalogue.entries.map((entry) => [entry.packageMarketId, entry]));
+  return Object.freeze(markets.map((market) => {
+    const entry = entries.get(market.packageMarketId);
+    if (entry === undefined) return market;
+    // Halt state and prices stay from the live market list; the catalogue can lag it.
     return Object.freeze({
-      packageMarketId: requiredText(entry.packageMarketId, `catalogue.entries[${index}].packageMarketId`),
-      seriesId: requiredText(entry.seriesId, `catalogue.entries[${index}].seriesId`),
-      templateId: requiredText(entry.templateId, `catalogue.entries[${index}].templateId`),
-      underlyingRefs: textList(entry.underlyingRefs, `catalogue.entries[${index}].underlyingRefs`),
-      quoteAsset: requiredText(entry.quoteAsset, `catalogue.entries[${index}].quoteAsset`),
-      settlementClass: requiredText(entry.settlementClass, `catalogue.entries[${index}].settlementClass`),
-      domainIds: textList(entry.domainIds, `catalogue.entries[${index}].domainIds`),
-      halted: entry.halted,
-      bestBidTicks: null,
-      bestAskTicks: null,
-      spreadTicks: null,
+      ...market,
+      seriesId: entry.seriesId,
+      templateId: entry.templateId,
+      underlyingRefs: Object.freeze([...entry.underlyingRefs]),
+      quoteAsset: entry.quoteAsset,
+      settlementClass: entry.settlementClass,
+      domainIds: Object.freeze([...entry.domainIds]),
     });
-  });
-  if (new Set(markets.map((market) => market.packageMarketId)).size !== markets.length) {
-    throw new PublicApiError("catalogue repeats a package market");
+  }));
+}
+
+function catalogueFailure(error: unknown): PublicCatalogueVerification {
+  if (error instanceof NaryxApiError) {
+    return error.status === 503 || error.status === 404
+      ? { state: "unavailable", detail: "No catalogue authority is configured on this server, so markets show without series metadata." }
+      : { state: "unavailable", detail: `Catalogue unavailable (${error.status} ${error.code}); markets show without series metadata.` };
   }
-  return Object.freeze(markets.sort((left, right) => left.packageMarketId.localeCompare(right.packageMarketId)));
+  if (error instanceof NaryxEvidenceError) {
+    return { state: "rejected", detail: `Catalogue failed verification (${error.message}); markets show without series metadata.` };
+  }
+  return { state: "unavailable", detail: `Catalogue unavailable (${error instanceof Error ? error.message : "request failed"}); markets show without series metadata.` };
 }
 
 function openMarkets(body: Record<string, unknown>): readonly PublicPackageMarket[] {
@@ -211,49 +226,86 @@ function openMarkets(body: Record<string, unknown>): readonly PublicPackageMarke
   return Object.freeze(markets.sort((left, right) => left.packageMarketId.localeCompare(right.packageMarketId)));
 }
 
-/** Discovers the exchange's package markets without sending a search query or trading intent. */
+/**
+ * Discovers the exchange's package markets without sending a search query or trading intent. The
+ * list is always the live /v1/markets answer; the verified catalogue only adds series metadata.
+ */
 export function usePublicPackageMarkets(baseUrl: string | null): {
   readonly markets: readonly PublicPackageMarket[];
   readonly status: PublicMarketCatalogueStatus | null;
+  readonly catalogue: PublicCatalogueVerification | null;
 } {
   const [markets, setMarkets] = useState<readonly PublicPackageMarket[]>([]);
   const [status, setStatus] = useState<PublicMarketCatalogueStatus>({ state: "loading", detail: "Loading package markets." });
+  const [catalogueStatus, setCatalogueStatus] = useState<PublicCatalogueVerification>({ state: "loading", detail: "Reading the market catalogue." });
 
   useEffect(() => {
     if (baseUrl === null) return;
     const base = baseUrl.replace(/\/+$/, "");
     const controller = new AbortController();
+    let client: NaryxClient | null = null;
+    try {
+      client = new NaryxClient({ baseUrl: base });
+    } catch {
+      // The SDK refuses a non-HTTPS remote URL; the raw market list still loads without enrichment.
+    }
+    let catalogue: VerifiedMarketCatalogue | null = null;
+    let verification: PublicCatalogueVerification = { state: "loading", detail: "Reading the market catalogue." };
+    let catalogueReadAtMs: number | null = null;
+    let uncoveredAtRead = "";
     let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const uncovered = (summaries: readonly PublicPackageMarket[]) => {
+      const covered = new Set<string>(catalogue?.catalogue.entries.map((entry) => entry.packageMarketId) ?? []);
+      return summaries.flatMap((market) => covered.has(market.packageMarketId) ? [] : [market.packageMarketId]).join(",");
+    };
+    const refreshCatalogue = async (summaries: readonly PublicPackageMarket[]) => {
+      const unexpired = catalogue !== null && catalogue.catalogue.expiresAtMs > BigInt(Date.now());
+      const fresh = catalogueReadAtMs !== null && Date.now() - catalogueReadAtMs < CATALOGUE_REFRESH_MS && (catalogue === null || unexpired);
+      if (fresh && uncovered(summaries) === uncoveredAtRead) return;
+      if (client === null) {
+        catalogue = null;
+        verification = { state: "unavailable", detail: "The SDK requires an HTTPS public API, so the catalogue cannot be verified and markets show without series metadata." };
+      } else {
+        try {
+          const next = await client.getCatalogue();
+          catalogue = next.current ? next : null;
+          verification = next.current
+            ? { state: "verified", detail: `Catalogue ${next.catalogueHash.slice(0, 12)} hash verified in this browser; its signing authority is not pinned here.` }
+            : { state: "rejected", detail: "The served catalogue has expired; markets show without series metadata." };
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          // A transient read failure keeps the last verified, unexpired catalogue; a failed check never does.
+          if (!unexpired || error instanceof NaryxEvidenceError) {
+            catalogue = null;
+            verification = catalogueFailure(error);
+          }
+        }
+      }
+      catalogueReadAtMs = Date.now();
+      uncoveredAtRead = uncovered(summaries);
+    };
+
     const poll = async () => {
       try {
         const summaries = openMarkets(await read(base, "/v1/markets", controller.signal));
-        let next: readonly PublicPackageMarket[] = summaries;
-        try {
-          const summaryById = new Map(summaries.map((market) => [market.packageMarketId, market]));
-          next = Object.freeze(catalogueMarkets(await read(base, "/v1/catalogue", controller.signal)).map((market) => {
-            const summary = summaryById.get(market.packageMarketId);
-            if (summary === undefined) throw new PublicApiError(`catalogue market ${market.packageMarketId} has no open book`);
-            return Object.freeze({
-              ...market,
-              halted: summary.halted,
-              bestBidTicks: summary.bestBidTicks,
-              bestAskTicks: summary.bestAskTicks,
-              spreadTicks: summary.spreadTicks,
-            });
-          }));
-        } catch (error) {
-          if (!(error instanceof PublicApiError) || error.status !== 503) throw error;
-        }
+        await refreshCatalogue(summaries);
+        if (controller.signal.aborted) return;
+        const next = enrichMarkets(summaries, catalogue);
         setMarkets(next);
-        setStatus({ state: "live", detail: `${next.length} package market${next.length === 1 ? "" : "s"} available.` });
+        setCatalogueStatus(verification);
+        setStatus({
+          state: "live",
+          detail: `${next.length} package market${next.length === 1 ? "" : "s"} available.${verification.state === "verified" ? "" : ` ${verification.detail}`}`,
+        });
       } catch (error) {
         if (controller.signal.aborted) return;
         const detail = error instanceof Error ? error.message : "request failed";
         setStatus((current) => current.state === "live" || current.state === "stale"
-          ? { state: "stale", detail: `Market refresh failed (${detail}); showing the last catalogue.` }
+          ? { state: "stale", detail: `Market refresh failed (${detail}); showing the last market list.` }
           : { state: "unavailable", detail: `Package markets unavailable (${detail}).` });
       }
-      if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 15_000);
+      if (!controller.signal.aborted) timer = setTimeout(() => void poll(), MARKET_POLL_MS);
     };
     void poll();
     return () => {
@@ -262,7 +314,7 @@ export function usePublicPackageMarkets(baseUrl: string | null): {
     };
   }, [baseUrl]);
 
-  return { markets, status: baseUrl === null ? null : status };
+  return { markets, status: baseUrl === null ? null : status, catalogue: baseUrl === null ? null : catalogueStatus };
 }
 
 function executableQuote(value: unknown, size: bigint, context: string): PublicSizeQuote {

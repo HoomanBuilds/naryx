@@ -6,7 +6,9 @@ import { usePersistedFlag, usePersistedSetting } from "../persisted-setting";
 import { MarketAlerts } from "../market-alerts";
 import { usePublicPackageMarkets, usePublicPackageOpportunities, usePublicSeriesCurve } from "../public-market-feed";
 import { useTerminal } from "../shell/terminal-context";
+import { MarketTransparency } from "./market-transparency";
 import { PaperTradingLab } from "./paper-trading-lab";
+import { RegistryBrowser } from "./registry-browser";
 import { StrategyComparison } from "./strategy-comparison";
 import { StrategyGraphStudio } from "./strategy-graph-studio";
 import styles from "./pages.module.css";
@@ -81,7 +83,8 @@ function human(value: string | null): string {
 
 export function MarketsView() {
   const { publicApiBaseUrl } = useTerminal();
-  const { markets, status } = usePublicPackageMarkets(publicApiBaseUrl);
+  const { markets, status, catalogue } = usePublicPackageMarkets(publicApiBaseUrl);
+  const [detailId, setDetailId] = useState<string | null>(null);
   const [scanSizeInput, setScanSizeInput] = useState("1");
   const [scanSize, setScanSize] = useState(BigInt(1));
   const { opportunities, status: opportunityStatus } = usePublicPackageOpportunities(publicApiBaseUrl, scanSize);
@@ -128,10 +131,21 @@ export function MarketsView() {
           <h1>Markets</h1>
           <p>Discover native package markets, inspect executable package prices, and open the complete strategy book. Search stays in this browser.</p>
         </div>
-        <span className={status?.state === "live" ? styles.pillOk : status?.state === "stale" ? styles.pillWarn : styles.pill}>
-          {status?.state === "live" ? "Live catalogue" : status?.state === "stale" ? "Stale catalogue" : "Catalogue unavailable"}
-        </span>
+        <div className={styles.headActions}>
+          <span className={status?.state === "live" ? styles.pillOk : status?.state === "stale" ? styles.pillWarn : styles.pill}>
+            {status?.state === "live" ? "Live markets" : status?.state === "stale" ? "Stale markets" : status?.state === "loading" ? "Loading markets" : "Markets unavailable"}
+          </span>
+          {catalogue === null ? null : (
+            <span className={catalogue.state === "verified" ? styles.pillOk : catalogue.state === "rejected" ? styles.pillBad : styles.pill} title={catalogue.detail}>
+              {catalogue.state === "verified" ? "Catalogue hash verified" : catalogue.state === "rejected" ? "Catalogue rejected" : catalogue.state === "loading" ? "Reading catalogue" : "No catalogue"}
+            </span>
+          )}
+        </div>
       </div>
+
+      {catalogue !== null && (catalogue.state === "rejected" || catalogue.state === "unavailable") ? (
+        <p className={styles.notice} role="status">{catalogue.detail}</p>
+      ) : null}
 
       <section className={styles.summary} aria-label="Package market summary">
         <div><span>Open markets</span><strong>{markets.length}</strong><small>Native package books</small></div>
@@ -290,12 +304,13 @@ export function MarketsView() {
               <tbody>
                 {visible.map((market) => {
                   const state = marketState(market.halted, market.bestBidTicks, market.bestAskTicks);
-                  return (
+                  const detailOpen = detailId === market.packageMarketId;
+                  return [
                     <tr key={market.packageMarketId}>
                       <td>
                         <span className={styles.cellStack}>
                           <strong className={styles.mono}>{market.packageMarketId}</strong>
-                          <small className={styles.cellDetail}>{market.seriesId ?? "Series metadata unavailable"}</small>
+                          <small className={styles.cellDetail}>{market.seriesId ?? (catalogue?.state === "verified" ? "Not in the verified catalogue" : "Series metadata unavailable")}</small>
                         </span>
                       </td>
                       <td>
@@ -340,6 +355,14 @@ export function MarketsView() {
                           >
                             {comparisonIds.includes(market.packageMarketId) ? "Comparing" : "Compare"}
                           </button>
+                          <button
+                            type="button"
+                            className={detailOpen ? styles.watching : styles.ghost}
+                            aria-expanded={detailOpen}
+                            onClick={() => setDetailId(detailOpen ? null : market.packageMarketId)}
+                          >
+                            {detailOpen ? "Hide detail" : "Detail"}
+                          </button>
                           <Link
                             className={styles.ghost}
                             href={`/trade?market=${encodeURIComponent(market.packageMarketId)}`}
@@ -349,14 +372,23 @@ export function MarketsView() {
                           </Link>
                         </div>
                       </td>
-                    </tr>
-                  );
+                    </tr>,
+                    detailOpen ? (
+                      <tr key={`${market.packageMarketId}:detail`} className={styles.detailRow}>
+                        <td colSpan={8}>
+                          <MarketTransparency baseUrl={publicApiBaseUrl} market={market} sizes={curveSizes} />
+                        </td>
+                      </tr>
+                    ) : null,
+                  ];
                 })}
               </tbody>
             </table>
           </div>
         )}
       </section>
+
+      <RegistryBrowser baseUrl={publicApiBaseUrl} />
 
       <section className={styles.card} aria-labelledby="series-curve-title">
         <div className={styles.cardHead}>

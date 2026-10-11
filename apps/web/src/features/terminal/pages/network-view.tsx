@@ -2,12 +2,15 @@
 
 import { NaryxClient, type VerifiedCrossBatchClearing } from "@naryx/sdk";
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { ChainIcon } from "@/features/brand/chain-icons";
 import { SolverMetrics } from "../pro/solver-metrics";
 import type { PrivateTerminalRuntimeHealth, RuntimeBoundaryHealth } from "../private-http-terminal-provider";
 import type { DomainId } from "../terminal-view-model";
 import { DOMAIN_META, DOMAIN_ORDER, domainHealth, domainLive, useTerminal, type HealthState } from "../shell/terminal-context";
 import t from "../trading-terminal.module.css";
+import { CrossBatchDetail } from "./cross-batch-detail";
+import { SolverEvidence } from "./solver-evidence";
 import styles from "./pages.module.css";
 
 type Status = "Available" | "Checking" | "Unavailable" | "Preview";
@@ -65,6 +68,7 @@ function clearingStatusClass(status: VerifiedCrossBatchClearing["status"]): stri
 
 export function NetworkView() {
   const { selectedDomain, setSelectedDomain, runtimeHealth, healthState, refreshHealth, publicApiBaseUrl } = useTerminal();
+  const [openPlanHash, setOpenPlanHash] = useState<string | null>(null);
   const pooledClearings = useQuery({
     queryKey: ["recent-cross-batch-clearings", publicApiBaseUrl],
     enabled: publicApiBaseUrl !== null,
@@ -248,13 +252,15 @@ export function NetworkView() {
                   <th className={styles.num}>Internally matched</th>
                   <th>External residual</th>
                   <th>Recorded</th>
+                  <th aria-label="Action" />
                 </tr>
               </thead>
               <tbody>
                 {pooledClearings.data.map((clearing) => {
                   const planHash = hex(clearing.plan.planHash);
                   const sourceBatches = new Set(clearing.sourceIntents.map((intent) => hex(intent.nettingProofHash))).size;
-                  return (
+                  const open = openPlanHash === planHash;
+                  return [
                     <tr key={planHash}>
                       <td className={styles.mono} title={planHash}>{compact(planHash)}</td>
                       <td>{clearingDomain(clearing)}</td>
@@ -268,8 +274,20 @@ export function NetworkView() {
                           : `${clearing.plan.externalSide} ${clearing.plan.externalQuantityAtoms.toLocaleString("en-US")} atoms`}
                       </td>
                       <td>{new Date(clearing.recordedAtMs).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}</td>
-                    </tr>
-                  );
+                      <td>
+                        <button type="button" className={open ? styles.watching : styles.ghost} aria-expanded={open} onClick={() => setOpenPlanHash(open ? null : planHash)}>
+                          {open ? "Hide" : "Detail"}
+                        </button>
+                      </td>
+                    </tr>,
+                    open ? (
+                      <tr key={`${planHash}:detail`} className={styles.detailRow}>
+                        <td colSpan={9}>
+                          <CrossBatchDetail baseUrl={publicApiBaseUrl} clearing={clearing} />
+                        </td>
+                      </tr>
+                    ) : null,
+                  ];
                 })}
               </tbody>
             </table>
@@ -365,6 +383,14 @@ export function NetworkView() {
           </dl>
         </section>
       </div>
+
+      <section className={styles.card} aria-labelledby="solver-evidence-title">
+        <div className={styles.cardHead}>
+          <h2 id="solver-evidence-title">Solver capacity and qualification</h2>
+          <p>Firm capacity, the verified active manifest, and qualification records per registered solver, read when a row is opened.</p>
+        </div>
+        <SolverEvidence baseUrl={publicApiBaseUrl} />
+      </section>
     </main>
   );
 }
