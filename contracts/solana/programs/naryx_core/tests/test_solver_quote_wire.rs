@@ -237,6 +237,13 @@ fn residual_and_firm_reservation_shapes_fail_closed() {
         Error::from(ErrorCode::WireFirmQuoteShape)
     );
 
+    let mut firm_exit = fixture_input();
+    firm_exit.quote_mode = QuoteMode::FirmSimulated;
+    firm_exit.reservation_id = Some(CommitmentHash::new([0xab; 32]).unwrap());
+    firm_exit.quoted_outcome =
+        QuotedOutcome::ExitQuoteOutcome(AssetAmount::new(usdc.clone(), 1_000));
+    SolverQuote::new(firm_exit).unwrap();
+
     let mut negative_cap = fixture_input();
     negative_cap.expected_terminal_residual_base_quantity = Some(AssetAmount::new(sol.clone(), 1));
     negative_cap.expected_terminal_residual_quote_value = Some(AssetAmount::new(usdc, 1));

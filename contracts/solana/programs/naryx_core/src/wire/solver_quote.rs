@@ -220,11 +220,7 @@ impl SolverQuote {
             ErrorCode::WireReservationRule
         );
         if is_firm {
-            require!(
-                matches!(input.quoted_outcome, QuotedOutcome::EntrySpread(_))
-                    && residual_base.is_none(),
-                ErrorCode::WireFirmQuoteShape
-            );
+            require!(residual_base.is_none(), ErrorCode::WireFirmQuoteShape);
         }
         validate_signature_material(
             input.solver_signature_scheme,
