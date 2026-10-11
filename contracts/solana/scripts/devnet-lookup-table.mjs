@@ -106,7 +106,10 @@ async function main() {
     }
     existing = live.state.addresses.map((key) => key.toBase58());
   } else {
-    const recentSlot = await connection.getSlot("finalized");
+    const currentSlot = await connection.getSlot("confirmed");
+    const recentSlots = await connection.getBlocks(currentSlot - 32, currentSlot, "confirmed");
+    const recentSlot = recentSlots.at(-1);
+    if (recentSlot === undefined) throw new Error("RPC returned no recent confirmed block slots");
     const [instruction, address] = web3.AddressLookupTableProgram.createLookupTable({
       authority: authority.publicKey, payer: payer.publicKey, recentSlot,
     });
