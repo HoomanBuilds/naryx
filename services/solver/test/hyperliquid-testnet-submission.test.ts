@@ -253,13 +253,21 @@ test('submits a durable compiled package through the pinned SDK Testnet path', a
   assert.equal(result.reconciliation.spotClientOrderId, spotClientOrderId);
   assert.deepEqual(events, [
     'journal:prepare', 'journal:durable', 'journal:submitted-unknown',
-    'signer:sign', 'transport:request', 'journal:acknowledged', 'journal:reconciling',
+    'signer:sign', 'transport:request', 'signer:sign', 'transport:request',
+    'journal:acknowledged', 'journal:reconciling',
   ]);
-  assert.equal(transport.requests.length, 1);
+  assert.equal(transport.requests.length, 2);
   assert.deepEqual(transport.requests[0], {
-    action: submissionInput().plan.unsignedRequestFields.action,
+    action: { type: 'order', grouping: 'na', orders: [submissionInput().plan.legs[0]!.order] },
     signature: { r: `0x${'01'.repeat(32)}`, s: `0x${'01'.repeat(32)}`, v: 27 },
     nonce: Number(nonce),
+    vaultAddress: tradingAccount,
+    expiresAfter: Number(expiry),
+  });
+  assert.deepEqual(transport.requests[1], {
+    action: { type: 'order', grouping: 'na', orders: [submissionInput().plan.legs[1]!.order] },
+    signature: { r: `0x${'01'.repeat(32)}`, s: `0x${'01'.repeat(32)}`, v: 27 },
+    nonce: Number(nonce + 1n),
     vaultAddress: tradingAccount,
     expiresAfter: Number(expiry),
   });
@@ -287,6 +295,14 @@ test('rejects wrong network, signer scope, unavailable durability, and signer re
   assert.equal(unavailable.status, 'NOT_SUBMITTED');
   assert.equal(unavailable.evidenceStatus, 'JOURNAL_REJECTED');
   assert.equal(unavailable.settlementStatus, 'NOT_APPLICABLE');
+  assert.equal(transport.requests.length, 0);
+
+  const expiredSecondAction = await new HyperliquidTestnetPackageSubmissionService(
+    new FakeDurableJournal(events),
+    new HyperliquidSdkTestnetOrderSubmitter(goodSigner, transport),
+  ).submitPackage({ ...submissionInput(), nonce: expiry - 1n });
+  assert.equal(expiredSecondAction.status, 'NOT_SUBMITTED');
+  assert.equal(expiredSecondAction.evidenceStatus, 'PRECONDITION_REJECTED');
   assert.equal(transport.requests.length, 0);
 
   events.length = 0;

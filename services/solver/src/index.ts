@@ -521,7 +521,7 @@ function validateInput(input: HyperliquidPackageSubmissionInput): ValidatedSubmi
     throw new Error('attempt or signer lease identity is invalid');
   }
   if (input.expectedVersion < 0n || input.nowMs <= 0n || input.nonce <= 0n
-    || input.nonce > MAX_SAFE_INTEGER) {
+    || input.nonce >= MAX_SAFE_INTEGER) {
     throw new Error('journal version, clock, or nonce is invalid');
   }
   if (input.plan.version !== 1 || input.plan.guarantee !== HYPERCORE_EXECUTION_GUARANTEE
@@ -536,7 +536,7 @@ function validateInput(input: HyperliquidPackageSubmissionInput): ValidatedSubmi
     || !isHash32(input.plan.commitments.routeHash)) {
     throw new Error('only compiled HyperCore Testnet package actions are supported');
   }
-  if (input.plan.requestExpiryMs <= input.nowMs || input.plan.requestExpiryMs <= input.nonce
+  if (input.plan.requestExpiryMs <= input.nowMs || input.plan.requestExpiryMs <= input.nonce + 1n
     || input.plan.requestExpiryMs > MAX_SAFE_INTEGER
     || !Number.isSafeInteger(input.plan.unsignedRequestFields.expiresAfter)
     || BigInt(input.plan.unsignedRequestFields.expiresAfter) !== input.plan.requestExpiryMs) {
@@ -739,13 +739,21 @@ export class HyperliquidTestnetPackageSubmissionService {
     }
 
     try {
-      const response = await this.#submitter.submit({
-        action: receipt.record.action,
-        nonce: receipt.record.nonce,
-        expiresAfterMs: receipt.record.expiresAfterMs,
-        vaultAddress: receipt.record.vaultAddress,
-      });
-      const responseCommitment = commitment(response);
+      const responses: OrderSuccessResponse[] = [];
+      const orderedLegs = [
+        validated.input.plan.legs.find((leg) => leg.role === 'SPOT')!,
+        validated.input.plan.legs.find((leg) => leg.role === 'PERPETUAL')!,
+      ];
+      for (const [index, leg] of orderedLegs.entries()) {
+        // Hyperliquid refuses one order action containing both spot and perpetual asset classes.
+        responses.push(await this.#submitter.submit({
+          action: { type: 'order', grouping: 'na', orders: [leg.order] },
+          nonce: receipt.record.nonce + BigInt(index),
+          expiresAfterMs: receipt.record.expiresAfterMs,
+          vaultAddress: receipt.record.vaultAddress,
+        }));
+      }
+      const responseCommitment = commitment(responses);
       const acknowledged = await this.#journal.acknowledge({
         expectedVersion: receipt.journalVersion,
         attemptId: input.attemptId,
