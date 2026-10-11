@@ -94,6 +94,16 @@
       "runtimeCodeHash": "0xc91a79b2ccdb6bb11ba29a1293e94185fbbe1b64c0a3db701870d74e56bb2852",
       "deploymentTransaction": "0x65196e37e8c73cc00073bbc17ca12155d9956aa2ac2a6769494fc11bdec843b5"
     },
+    "spotFactory": {
+      "address": "0xDad989AB6C6349b3F362476B4D753C8f68B99AB9",
+      "runtimeCodeHash": "0x51669671df033ade2bb5ccbaa5e67e3ee27e1ac6d4323d7201c7bb39d086b106",
+      "deploymentTransaction": "0x652a16aab74907e16a5b4ba4a130e7c85c513f0b048062448edaf840917a3573"
+    },
+    "reverseLendingFactory": {
+      "address": "0xce2eD7c41a79D6b9608E118A480D97933fb10Ab9",
+      "runtimeCodeHash": "0xc91a79b2ccdb6bb11ba29a1293e94185fbbe1b64c0a3db701870d74e56bb2852",
+      "deploymentTransaction": "0x1ee520f1922dfc3d76423247f9f7b14bda3e7c2794020b3ccc3479310a3625bd"
+    },
     "vaultFactory": {
       "address": "0x52581ce932ed60A89683770A4B78E9cC1c5aB667",
       "runtimeCodeHash": "0x272788730c441e1a396cfc4cf0b4b66fdcca3f98ebe36f1540ac7a6527a9fdb1",
@@ -131,7 +141,13 @@
     "lowerOptionPool": "0x9d295541E2CF673Fb430Ae6E46A2766d683Be453",
     "upperOptionPool": "0x826fac1aA60614Ce82D49a1147823E669589b0F6",
     "lendingPool": "0xDb8a15F340E23c169C9A90e5F2cF2513Ac2571f4",
+    "reverseLendingPool": "0x8A012729b8d2516ad6EB134137c87c639118757d",
     "vault": "0xeE046b5CD36350820Cc1089573be2A3b43C82739",
+    "uniswapFactory": "0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24",
+    "spotPool": "0xd8f8CcC3F205eED3de0B325E7a3a1b3c40039553",
+    "spotPoolFee": 3000,
+    "spotQuoter": "0xC5290058841028F1614F3A6F0F5816cAd0df5E27",
+    "liquidityTokenId": 82875,
     "perpetualMarket": "0xb6f411ca7cC81E8E1c221D54990896e7520c8bbf",
     "nearFutureMarket": "0xcD22bf5ad3e24F00047D179be15b7833Dd114Fc3",
     "farFutureMarket": "0x768a4575f3Ba35E105A887eDA473A6FBE12E8B49"
@@ -140,6 +156,34 @@
     "proposalStartTransaction": "0x7d2478a75b105acda1506cb28218ce71e2e24cb66b25379a836bad039bfdfe05",
     "activationStartTransaction": "0x420e281c19441fd47b52771ad4231633225511145220bfb52e0ac459bde6152e",
     "configUnpauseTransaction": "0x067d7cd854450cc258383d0cd8d9bec2d1bda5189402105f7a8d63d147677054",
-    "clearingUnpauseTransaction": "0x07ba0b4d5cfe47697d9a41dca56942879a63a02341405aa33b2c0d0162f7eab6"
+    "clearingUnpauseTransaction": "0x07ba0b4d5cfe47697d9a41dca56942879a63a02341405aa33b2c0d0162f7eab6",
+    "extendedAdapterProposalTransactions": [
+      "0x16300cf205fa4f5cffcba82769f729adae122c913ba825ba01a4c55b7538ecf8",
+      "0xfa6177178ddf0a2c94081a92bd5f08bcf456d8472d497719cfe7c0411799fe44",
+      "0x4bb9185ddf085526eb57ab21b9cd7116349cc019c740a6714997ad5df1bf3f6b",
+      "0x55fb5f5e49430ad99182d7fc881bb67135ae3fc60315fb244769a6de056b1cfd",
+      "0x2df332d11dcb9d12a7b4bb2a3fc4dcc41726919bce70f0e370bf5285812708c0",
+      "0x26319484cb9943c14ffe2ddc8c7e18861b4a8e96c7a9599a8872c91503ba56b6",
+      "0x4010099bb0cfda4ed1220cf465995cf0468d4b408972cc29b773801e4e127e7c",
+      "0xee57c50093d31b122818ba89b2094b05f81032a15818eda73a9c46d1dc011200",
+      "0xdfe85477a73a0c525588634498e6e0ed3b32a235806660beb0f0867f1533cc36",
+      "0x13fea85d1b05070dad3f252b48e12e2741849eb18c975bb6e1e7f8e411512e65",
+      "0xf4c39d3b00a7c34c7db4a4555cc235418bae91a039b8aa2ede92c2af509acdc2",
+      "0x655dfb78070bdf436c3d536dfcdf8b33e2a98891871cd227ded8c5efdf266107"
+    ],
+    "extendedAdapterActivationTransactions": [
+      "0x1a28cfa1ec5dae0dd3b6ad4c41906889740b771f51a684de2802dc7019048deb",
+      "0x530ac1eab89757be7654527d4989329b2cc197929c9e80f07865dd4c8f760e9b",
+      "0x89af580c9e71a18538b525ee5ae216465f151cf158147ec12874701bcab7b3a3",
+      "0x12b07410213a6205b983280573dc1f7dd7f274ca3a2e5eb3cb5fa4570ac38b4d",
+      "0xcfda1db2055e499704d24826152efb2f1133be2b496462ce019f9e129b1282e4",
+      "0xc72a53f7893e94e4da40dfb3064631666fd5975e15e2b6943d83a46be9ff7b12",
+      "0x563c588438841068ca93defbe9cb3981877b895a157845bbab991c4c8d04e292",
+      "0xddf2efaf7be2b12da2ae707fc1b680d2903ed7f43f5e3673243f5310a91ec70b",
+      "0xe33aff32e537fd8ba273b11a2891cd76ff8b732f1e30f0bf771fd28a9eda6827",
+      "0xf37a7fb8aeaf20fea4726501c4bc744728f61f2169e6e0f7d2e46c119bb99670",
+      "0xcb230a0a4d5052bce948206a2c6e72f8d85127d614940d364c90aa6a3e82ef28",
+      "0xb7276cb398d8a252219fc1b9d2b328ede901af79adb8093a4e1148f8718e17b9"
+    ]
   }
 }

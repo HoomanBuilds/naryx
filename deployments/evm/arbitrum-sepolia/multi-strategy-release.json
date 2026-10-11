@@ -94,6 +94,16 @@
       "runtimeCodeHash": "0xc91a79b2ccdb6bb11ba29a1293e94185fbbe1b64c0a3db701870d74e56bb2852",
       "deploymentTransaction": "0x60057bed72f5797f429afd8b2efea8484cd55bf2003801585b74f5b50f22c0ff"
     },
+    "spotFactory": {
+      "address": "0xC0ef6BB794378e08EF6b792ec141b77E9af1cb31",
+      "runtimeCodeHash": "0x9b2cde9d48742a27b3bd1a25d267a55fc24a4fc80c7bb1427bdae191ad0d3a77",
+      "deploymentTransaction": "0xe6ecf4389407a8611596f09ef5a25b3bdeeab83e83ba9a3fff1dbea1c761fd46"
+    },
+    "reverseLendingFactory": {
+      "address": "0xfF25abf825F5049DE0a9097d940e3f19884D45D9",
+      "runtimeCodeHash": "0xc91a79b2ccdb6bb11ba29a1293e94185fbbe1b64c0a3db701870d74e56bb2852",
+      "deploymentTransaction": "0x8bc6cfab7d2c6110843e81b1b210aaa41f0055df18f51b38d300d0b051c1ab8d"
+    },
     "vaultFactory": {
       "address": "0x96Fe09c799Ba18B0dcC025167080C6881D5e0D32",
       "runtimeCodeHash": "0x61d7b8966a7fa9653895edfa002116ec8ce6f170e0a020e0892b7b0beda475a7",
@@ -131,7 +141,13 @@
     "lowerOptionPool": "0x5105Be2B189e32255aC43FF382Ad6Ee9243F3e13",
     "upperOptionPool": "0x3a272a6F2094c1DC230088aacA5C853BA26370f4",
     "lendingPool": "0x3B20846F09E1bCCd1cb3ca4d0C6B4520E15b94B3",
+    "reverseLendingPool": "0x029375E3B296CD2ACb1b6b092D5f9a866792F930",
     "vault": "0x74863f062b608A907f20D6318d26F5c2cf9BBeD4",
+    "uniswapFactory": "0x248AB79Bbb9bC29bB72f7Cd42F17e054Fc40188e",
+    "spotPool": "0x17762e12155374aa7F7E63cDacdF9E8FC6dB9d68",
+    "spotPoolFee": 3000,
+    "spotQuoter": "0x2779a0CC1c3e0E44D2542EC3e79e3864Ae93Ef0B",
+    "liquidityTokenId": 3875,
     "perpetualMarket": "0xf3b987d6c092A19a0eEa74d87AAA555C57e01c73",
     "nearFutureMarket": "0x58e7f754c0e6A1d31FEffA333D404A9A4B791635",
     "farFutureMarket": "0x03A3fe09f33B31A6115032009Af7aDd2700dCf1f"
@@ -140,6 +156,34 @@
     "proposalStartTransaction": "0x2629037155ae067240c544bb1788fa46665e8e7139d6cbad58655d6d99e3b913",
     "activationStartTransaction": "0xd56eb81cfe666ffc9e31c2f4c115e4c5bfe4748779476858b452c961bbfcf5a8",
     "configUnpauseTransaction": "0xc70bf9bb9efe5ae25e6374b9e2e955a1d6c637575144b2b2b232409781dab9b6",
-    "clearingUnpauseTransaction": "0x5117fecc494026359ab1cb6dc78e6c6dc61088cb2740a87f693de2c4d4d0788e"
+    "clearingUnpauseTransaction": "0x5117fecc494026359ab1cb6dc78e6c6dc61088cb2740a87f693de2c4d4d0788e",
+    "extendedAdapterProposalTransactions": [
+      "0x51ac3a51fef9556a314b0a697acbb6b4fa21e0abfc6b44cd0980640983979ef5",
+      "0xea2343e4849f852676f1abfe4a18b95c36b3a8f87c2988979ef88a11ea82af2b",
+      "0xaf7ed4d815eba29fa17fd7e23b29231eccf9d7faa52995eddd8db1df9d041c3d",
+      "0xf72c20d97a2b47cea39c965d7c8a9864f659fed844041f409a292dc88f00128a",
+      "0x86fff49b45745bb97d6ce784a9189e9913bc353ad5ea0c0ecd364e624ab1258b",
+      "0x1f03970e82e89692cd65d70a7a1370283d1ce6ff29c8158fc9449eec0552eb6a",
+      "0xf41a485583a361136a57047fdf351750ea4763ef029ce572b15eaa1e72036c4a",
+      "0xf6e0d3dd4df080fb3a3fcd354747017892b99bdef676c390e826ff8adbb43a18",
+      "0xb2250073cbca0be12dbda66bd0e7fa05cae4a6489bba764387836d8f6bc4f1a6",
+      "0x8cf176cd9b05eed0c177506212277a03f89f281663903c59e9bb4a7d74084388",
+      "0xfd42196ce8af5ba33cd2100d110cb6bc3f91fbba00f2faae91ca4298812fd65d",
+      "0x5752c41d52dab3aa03ff8db9986a36933342d77b30d3ad2ef9ec1e5dbb39cfdd"
+    ],
+    "extendedAdapterActivationTransactions": [
+      "0xee6ca96964a80bb0edcbf4787a378d030e1b6ab36b30cc280fec253f77c430de",
+      "0x4cbddc9394d94b5e6c8d4c8fa176c9ffbfe23bf385f1b83291b62194309c92ac",
+      "0xbea9d52a8582f2caef050df26bedf3f7e715faa555e296bc8282283ef65f0449",
+      "0xdd3bf0fa1db2841cdaab7059fca09b489e0eb005f75d9975f4c9335b3c73dfca",
+      "0xa445ddbe89e3e7f5c3a1c34a49d3c9b0b7123dec3b1f70a3625d9442f5ab5bbb",
+      "0xa0d72d179fc259189594a61d1af5a74e65afcb47792d3ea3e3eb52afd5989478",
+      "0x58a59012c5fd501fdc4390e58d97ef5aaf2f4302c0f97d6d472a2c902f21ac13",
+      "0xdde3a61ddd2bb1f56a586e117e1b860a0c4c199801fcfa8656dfe54f55145c3f",
+      "0x044f4d9a427cbd214a58b3fad2884ff89eb0049d6a9176e52ccfd6a3644d50e1",
+      "0x52b4abf70b86a621bd28a2b47e703969c96fd2c28cc2843da469e10f2de95ef8",
+      "0x363ef2aa267558c5a0fb676ef32341232a399cc8a43113d493ce9c947c998ed9",
+      "0x43abb2eef1ba7b05511c8d6d87578a2d9e7be4fe5fdfaef659f35e3b2c4c41ab"
+    ]
   }
 }
