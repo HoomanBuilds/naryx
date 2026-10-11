@@ -74,19 +74,55 @@ export function loadEvmStrategySolverKey(path: string | undefined, expectedAddre
   return account;
 }
 
+export function loadEvmStrategySolverKeys(path: string | undefined): readonly LocalAccount[] {
+  if (path === undefined || !isAbsolute(path)) {
+    throw new Error('NARYX_EVM_STRATEGY_SOLVER_SIGNERS must be an absolute path');
+  }
+  const status = lstatSync(path);
+  if (status.isSymbolicLink() || !status.isFile() || realpathSync(path) !== path
+    || (status.mode & 0o077) !== 0 || status.size < 1 || status.size > 8_192
+    || (typeof process.getuid === 'function' && status.uid !== process.getuid())) {
+    throw new Error('EVM strategy solver signer config must be a canonical owner-only regular file');
+  }
+  const config = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+  if (Object.keys(config).sort().join(',') !== 'environment,signers,version' || config.version !== 1
+    || config.environment !== 'EVM_TESTNET' || !Array.isArray(config.signers)
+    || config.signers.length === 0 || config.signers.length > 8) {
+    throw new Error('EVM strategy solver signer config fields are invalid');
+  }
+  const accounts = config.signers.map((value, index) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new Error(`EVM strategy solver signer ${index} is invalid`);
+    }
+    const signer = value as Record<string, unknown>;
+    if (Object.keys(signer).sort().join(',') !== 'address,keyPath'
+      || typeof signer.address !== 'string' || typeof signer.keyPath !== 'string') {
+      throw new Error(`EVM strategy solver signer ${index} fields are invalid`);
+    }
+    return loadEvmStrategySolverKey(signer.keyPath, signer.address);
+  });
+  if (new Set(accounts.map((account) => account.address.toLowerCase())).size !== accounts.length) {
+    throw new Error('EVM strategy solver signer addresses repeat');
+  }
+  return Object.freeze(accounts);
+}
+
 export class EvmStrategyExecutionAuthorizationService {
   readonly #packages: Pick<StrategyPackageProvider, 'getByQuote'>;
   readonly #preparations: Pick<StrategyPreparationService, 'prepareDocuments'>;
-  readonly #solver: LocalAccount;
+  readonly #solvers: ReadonlyMap<string, LocalAccount>;
 
   constructor(input: Readonly<{
     packages: Pick<StrategyPackageProvider, 'getByQuote'>;
     preparations: Pick<StrategyPreparationService, 'prepareDocuments'>;
-    solver: LocalAccount;
+    solver: LocalAccount | readonly LocalAccount[];
   }>) {
     this.#packages = input.packages;
     this.#preparations = input.preparations;
-    this.#solver = input.solver;
+    const solvers = 'address' in input.solver ? [input.solver] : input.solver;
+    requireCondition(solvers.length > 0, 'at least one solver signing account is required');
+    this.#solvers = new Map(solvers.map((solver) => [solver.address.toLowerCase(), solver]));
+    requireCondition(this.#solvers.size === solvers.length, 'solver signing accounts repeat');
   }
 
   async authorize(input: Readonly<{
@@ -128,8 +164,8 @@ export class EvmStrategyExecutionAuthorizationService {
       && envelope.execution.domainManifestVersion === domainExecution.domain.domainManifestVersion
       && envelope.execution.domainManifestHash === hex(domainExecution.domain.domainManifestHash),
     'prepared execution domain identity is inconsistent');
-    requireCondition(getAddress(envelope.execution.solver) === this.#solver.address,
-      'prepared solver differs from the configured signing account');
+    const solver = this.#solvers.get(getAddress(envelope.execution.solver).toLowerCase());
+    requireCondition(solver !== undefined, 'prepared solver has no configured signing account');
     const recovered = await recoverTypedDataAddress({
       domain: envelope.ownerTypedData.domain,
       types: envelope.ownerTypedData.types,
@@ -139,7 +175,7 @@ export class EvmStrategyExecutionAuthorizationService {
     });
     requireCondition(recovered.toLowerCase() === documents.order.owner.toLowerCase(),
       'owner signature does not authorize the prepared package');
-    const solverSignature = await this.#solver.signTypedData({
+    const solverSignature = await solver.signTypedData({
       domain: envelope.solverTypedData.domain,
       types: envelope.solverTypedData.types,
       primaryType: envelope.solverTypedData.primaryType,

@@ -471,7 +471,7 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
   const authorization = new EvmStrategyExecutionAuthorizationService({
     packages: { getByQuote: async (requested) => protocolHex(requested) === quoted.quoteHash ? documents : undefined },
     preparations: preparation,
-    solver: SOLVER_ACCOUNT,
+    solver: [privateKeyToAccount(`0x${'55'.repeat(32)}`), SOLVER_ACCOUNT],
   });
   const authorized = await authorization.authorize({ quoteHash, ownerSignature });
   assert.equal(authorized?.to, ACCOUNT);

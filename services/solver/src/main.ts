@@ -68,6 +68,7 @@ import {
   EvmStrategyExecutionAuthorizationService,
   createEvmStrategyExecutionAuthorizationInternalHandler,
   loadEvmStrategySolverKey,
+  loadEvmStrategySolverKeys,
   EvmNettingAllocationAuthorizationService,
   createEvmNettingAllocationAuthorizationInternalHandler,
   SolanaNettingAllocationAuthorizationService,
@@ -610,18 +611,21 @@ const evmReverseBasisCollateralHandler = evmReverseBasisRuntime === undefined
       strategyPackageProvider,
       evmReverseBasisRuntime.preparationLanes,
     ));
-const evmStrategySolver = !evmRuntimeConfigured
+const evmStrategySolvers = !evmRuntimeConfigured
   ? undefined
-  : loadEvmStrategySolverKey(
-      process.env.NARYX_EVM_STRATEGY_SOLVER_KEY_PATH,
-      process.env.NARYX_EVM_STRATEGY_SOLVER_ADDRESS,
-    );
+  : process.env.NARYX_EVM_STRATEGY_SOLVER_SIGNERS === undefined
+    ? [loadEvmStrategySolverKey(
+        process.env.NARYX_EVM_STRATEGY_SOLVER_KEY_PATH,
+        process.env.NARYX_EVM_STRATEGY_SOLVER_ADDRESS,
+      )]
+    : loadEvmStrategySolverKeys(process.env.NARYX_EVM_STRATEGY_SOLVER_SIGNERS);
+const evmStrategySolver = evmStrategySolvers?.[0];
 const evmStrategyAuthorizationHandler = !evmRuntimeConfigured || strategyPreparationService === undefined
   ? undefined
   : createEvmStrategyExecutionAuthorizationInternalHandler(new EvmStrategyExecutionAuthorizationService({
       packages: strategyPackageProvider,
       preparations: strategyPreparationService,
-      solver: evmStrategySolver!,
+      solver: evmStrategySolvers!,
     }));
 const nettingAllocationAuthorizationEnabled = explicitBoolean(
   process.env.NARYX_NETTING_ALLOCATION_AUTHORIZATION_ENABLED,

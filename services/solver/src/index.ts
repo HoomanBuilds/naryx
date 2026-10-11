@@ -1363,6 +1363,7 @@ export { SqliteEvmStrategyPackageIdStore } from './evm-strategy-package-id-store
 export {
   EvmStrategyExecutionAuthorizationService,
   loadEvmStrategySolverKey,
+  loadEvmStrategySolverKeys,
   type AuthorizedEvmStrategyExecution,
 } from './evm-strategy-execution-authorization.js';
 export { createEvmStrategyExecutionAuthorizationInternalHandler } from './evm-strategy-execution-authorization-server.js';
