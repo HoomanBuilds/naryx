@@ -14,18 +14,31 @@ const { values } = parseArgs({
     output: { type: 'string' },
     endpoint: { type: 'string' },
     nonce: { type: 'string', default: '1' },
+    'rfq-solver': { type: 'string' },
+    'rfq-key-id': { type: 'string' },
+    'rfq-public-key': { type: 'string' },
   },
 });
 if (values.release === undefined || values.signer === undefined || values.output === undefined
   || values.endpoint === undefined) {
-  throw new Error('usage: provision-testnet-solver-capabilities.mjs --release <directory> --signer <pem> --output <file> --endpoint <url> [--nonce <positive integer>]');
+  throw new Error('usage: provision-testnet-solver-capabilities.mjs --release <directory> --signer <pem> --output <file> --endpoint <url> [--nonce <positive integer>] [--rfq-solver <id> --rfq-key-id <id> --rfq-public-key <64 hex>]');
 }
 if (!/^[1-9]\d{0,14}$/.test(values.nonce)) throw new Error('nonce must be a positive integer');
+const rfqValues = [values['rfq-solver'], values['rfq-key-id'], values['rfq-public-key']];
+if (rfqValues.some((value) => value !== undefined) && rfqValues.some((value) => value === undefined)) {
+  throw new Error('RFQ solver, key id, and public key must be provided together');
+}
+if (values['rfq-public-key'] !== undefined && !/^[0-9a-f]{64}$/.test(values['rfq-public-key'])) {
+  throw new Error('RFQ public key must be 64 lowercase hex characters');
+}
 const release = resolve(values.release);
 const output = resolve(values.output);
 const manifestNonce = BigInt(values.nonce);
 const validUntilValue = (1n << 64n) - 1n;
 const maximumNotionalAtoms = 10_000_000_000_000_000_000n;
+const rfqPublicKey = values['rfq-public-key'] === undefined
+  ? undefined
+  : Uint8Array.from(Buffer.from(values['rfq-public-key'], 'hex'));
 
 const readProtocol = (relative) => protocol.parseProtocolJson(
   readFileSync(join(release, relative), 'utf8'),
@@ -117,6 +130,9 @@ for (const { document } of hyperliquidDocuments) {
     quoteAsset: document.market.quoteAsset,
   });
 }
+if (values['rfq-solver'] !== undefined && !groups.has(values['rfq-solver'])) {
+  throw new Error(`RFQ solver is not present in the release: ${values['rfq-solver']}`);
+}
 
 const manifests = [];
 const hashBySolver = new Map();
@@ -135,7 +151,15 @@ for (const target of groups.values()) {
       validFromValue: 0n,
       validUntilValue,
     }],
-    rfqEncryptionKeys: [],
+    rfqEncryptionKeys: target.solverId === values['rfq-solver']
+      ? [{
+          keyId: values['rfq-key-id'],
+          encryptionSuiteId: 'hpke-x25519-sha256-aes256gcm',
+          publicKey: rfqPublicKey,
+          validFromValue: 0n,
+          validUntilValue,
+        }]
+      : [],
     supportedDomains: [...target.domains.values()],
     supportedTemplateIds: [...target.templates],
     supportedQuoteModes: ['EXECUTION_COMMITMENT'],
