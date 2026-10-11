@@ -57,6 +57,11 @@ function integer(value: unknown, context: string): number {
   return Number(value);
 }
 
+function nonnegativeInteger(value: unknown, context: string): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) fail(`${context} must be a nonnegative safe integer`);
+  return Number(value);
+}
+
 function natural(value: unknown, context: string): bigint {
   if (typeof value !== 'bigint' || value < 0n) fail(`${context} must be a nonnegative bigint`);
   return value;
@@ -181,8 +186,8 @@ function lane(
     maximumOracleAgeSeconds: positive(input.maximumOracleAgeSeconds, 'lane.maximumOracleAgeSeconds'),
     pools: Object.freeze(pools) as never,
     strikeDecimals: integer(input.strikeDecimals, 'lane.strikeDecimals'),
-    protocolFeeBps: integer(input.protocolFeeBps, 'lane.protocolFeeBps'),
-    solverFeeBps: integer(input.solverFeeBps, 'lane.solverFeeBps'),
+    protocolFeeBps: nonnegativeInteger(input.protocolFeeBps, 'lane.protocolFeeBps'),
+    solverFeeBps: nonnegativeInteger(input.solverFeeBps, 'lane.solverFeeBps'),
     networkFeeQuoteAtoms: natural(input.networkFeeQuoteAtoms, 'lane.networkFeeQuoteAtoms'),
     feePolicyVersion: integer(input.feePolicyVersion, 'lane.feePolicyVersion'),
     feePolicyManifestHash: input.feePolicyManifestHash as Uint8Array | string,
