@@ -40,6 +40,7 @@ import type { EvmTestnetAsyncAttemptContext } from "./evm-testnet-runtime-ports.
 export const ARBITRUM_SEPOLIA_CHAIN_REFERENCE = "421614" as const;
 export const ARBITRUM_SEPOLIA_DOMAIN_ID = "eip155:421614" as const;
 export const ARBITRUM_ASYNC_SETTLEMENT_CLASS = "ASYNC_BONDED_SOLVER" as const;
+const ARBITRUM_EXECUTION_VERIFIER_ID = "async-bonded-package-coordinator-v1" as const;
 
 const CLONE_INIT_PREFIX = "0x3d602d80600a3d3981f3363d3d373d3d3d363d73";
 const CLONE_RUNTIME_PREFIX = "0x363d3d373d3d3d363d73";
@@ -205,7 +206,7 @@ export function validateArbitrumSepoliaAsyncDeploymentConfiguration(
     || manifest.chainReference !== ARBITRUM_SEPOLIA_CHAIN_REFERENCE
     || manifest.runtimeClassId !== EVM_RUNTIME_IDENTITY.runtimeClassId
     || manifest.runtimeClassVersion !== EVM_RUNTIME_IDENTITY.runtimeClassVersion
-    || manifest.executionVerifierId !== EVM_RUNTIME_IDENTITY.executionVerifierId
+    || manifest.executionVerifierId !== ARBITRUM_EXECUTION_VERIFIER_ID
     || manifest.clockModelId !== EVM_RUNTIME_IDENTITY.clockModelId
     || manifest.addressCodecId !== EVM_RUNTIME_IDENTITY.addressCodecId
     || !manifest.supportedSettlementClasses.includes(ARBITRUM_ASYNC_SETTLEMENT_CLASS)) {
