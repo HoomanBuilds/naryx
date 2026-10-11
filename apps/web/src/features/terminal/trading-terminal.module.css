@@ -205,16 +205,21 @@
 }
 
 @media (min-width: 1280px) {
-  /* The shared header is 52px; the trade page fills the rest of the viewport. */
-  .terminalShell {
-    height: calc(100dvh - 52px);
-    min-height: 668px;
+  /* The page scrolls: chart and book take most of the first screen, positions and history sit below,
+     and the ticket stays pinned under the 52px header. */
+  .terminalGrid {
+    grid-template-rows: 60px clamp(540px, calc(100dvh - 262px), 940px) minmax(420px, auto);
   }
 
-  /* A zero basis keeps the grid height definite, so long panel content scrolls instead of growing it. */
-  .terminalGrid {
-    flex: 1 1 0;
-    grid-template-rows: 60px minmax(0, 1fr) clamp(220px, 30vh, 320px);
+  .areaTicket {
+    position: sticky;
+    top: 56px;
+    align-self: start;
+    max-height: calc(100dvh - 60px);
+  }
+
+  .areaBottom .tableScroller {
+    max-height: min(760px, 78vh);
   }
 }
 
@@ -232,7 +237,7 @@
       "book ticket"
       "bottom bottom";
     grid-template-columns: minmax(0, 1fr) 330px;
-    grid-template-rows: 60px 460px 420px minmax(300px, auto);
+    grid-template-rows: 60px 580px 440px minmax(340px, auto);
   }
 }
 
@@ -246,7 +251,7 @@
       "ticket"
       "bottom";
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 60px 400px 460px auto minmax(320px, auto);
+    grid-template-rows: 60px 500px 460px auto minmax(320px, auto);
   }
 
   .areaTicket {
@@ -258,7 +263,7 @@
   .terminalGrid {
     gap: 3px;
     padding: 3px;
-    grid-template-rows: 64px 340px 420px auto minmax(320px, auto);
+    grid-template-rows: 64px 420px 420px auto minmax(320px, auto);
   }
 }
 
