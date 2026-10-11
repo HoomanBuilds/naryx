@@ -19,7 +19,6 @@ export const API_HYPERLIQUID_TESTNET_ATTEMPT_PATH =
 export const API_HYPERLIQUID_TESTNET_SOURCE_ATTEMPT_PATH =
   '/internal/solver/hyperliquid-testnet/source-attempts/';
 
-const ATTEMPT_ID = /^[A-Za-z0-9_-]{16,64}$/;
 const STRATEGY_ATTEMPT_ID = /^strategy-hl-[0-9a-f]{48}$/;
 const SOURCE_ATTEMPT_ID = /^hyperliquid-testnet-[0-9a-f]{48}$/;
 const HASH = /^[0-9a-f]{64}$/;
@@ -130,7 +129,7 @@ class HttpHyperliquidTestnetAttemptProvider implements HyperliquidTestnetTrusted
   }
 
   async resolve(attemptId: string) {
-    if (!ATTEMPT_ID.test(attemptId)) throw new Error('attempt ID is invalid');
+    if (!SOURCE_ATTEMPT_ID.test(attemptId)) throw new Error('attempt ID is invalid');
     let response: Response;
     try {
       response = await this.#fetch(

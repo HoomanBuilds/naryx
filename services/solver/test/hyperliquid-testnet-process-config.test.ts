@@ -19,7 +19,7 @@ import {
   type HyperliquidTestnetAttemptHandoff,
 } from '../src/index.js';
 
-const attemptId = 'attempt-process-0001';
+const attemptId = `hyperliquid-testnet-${'ab'.repeat(24)}`;
 const masterAccount = `0x${'11'.repeat(20)}` as const;
 const tradingAccount = `0x${'22'.repeat(20)}` as const;
 const agentWallet = `0x${'33'.repeat(20)}` as const;
