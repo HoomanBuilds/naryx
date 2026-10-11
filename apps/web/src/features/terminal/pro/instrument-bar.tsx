@@ -102,7 +102,12 @@ export function InstrumentBar({
             {marketStrategy} <b>{underlyings}</b>
           </span>
         </div>
-        <span className={styles.instrumentKind}>{selectedMarket?.halted ? "Halted" : "Package"}</span>
+        <span
+          className={styles.instrumentKind}
+          title={selectedMarket?.halted ? "Continuous matching is stopped. Halt evidence and the reopening-auction queue are in the package book section of the ticket strategy tools." : undefined}
+        >
+          {selectedMarket?.halted ? "Halted" : "Package"}
+        </span>
       </div>
       <div className={styles.instrumentPrice}>
         <strong className={tone}>{stats === null ? "-" : stats.last.toFixed(precision)}</strong>

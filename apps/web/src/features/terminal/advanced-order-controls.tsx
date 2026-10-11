@@ -9,6 +9,7 @@ import {
   type OrderActivationView,
   type PreparedAdvancedOrderAttemptView,
 } from "@naryx/sdk";
+import { publicClient, readFailure } from "./pages/public-read";
 import { getSolanaDevnetSlot } from "./solana-devnet-onboarding";
 import type { DomainId } from "./terminal-view-model";
 import styles from "./trading-terminal.module.css";
@@ -33,8 +34,9 @@ export function AdvancedOrderControls({
   publicApiBaseUrl,
   executionDomain,
   sourceOrderHash,
-  expiryUnit,
-  expiryValue,
+  expiryUnit: stagedExpiryUnit,
+  expiryValue: stagedExpiryValue,
+  quoteHashes = [],
   derivedOrder,
   onDerived,
   onPrepared,
@@ -45,6 +47,8 @@ export function AdvancedOrderControls({
   sourceOrderHash: string;
   expiryUnit: ActivationConditionInput["observationUnit"] | null;
   expiryValue: string | null;
+  /** Stored quotes on the source order; a pasted or restored hash loads its exact clock from their proof. */
+  quoteHashes?: readonly string[];
   derivedOrder: DerivedAdvancedOrderView | null;
   onDerived: (order: DerivedAdvancedOrderView) => void;
   onPrepared: (attempt: PreparedAdvancedOrderAttemptView) => void;
@@ -66,6 +70,44 @@ export function AdvancedOrderControls({
   const [busy, setBusy] = useState(false);
   const [prepared, setPrepared] = useState<PreparedAdvancedOrderAttemptView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadedClock, setLoadedClock] = useState<Readonly<{
+    orderHash: string;
+    unit: ActivationConditionInput["observationUnit"];
+    value: string;
+  }> | null>(null);
+  const [clockState, setClockState] = useState<Readonly<{ orderHash: string; busy: boolean; error: string | null }> | null>(null);
+  const clockLoaded = stagedExpiryUnit === null && loadedClock !== null && loadedClock.orderHash === sourceOrderHash;
+  const expiryUnit = stagedExpiryUnit ?? (clockLoaded ? loadedClock.unit : null);
+  const expiryValue = stagedExpiryValue ?? (clockLoaded ? loadedClock.value : null);
+  const currentClockState = clockState?.orderHash === sourceOrderHash ? clockState : null;
+
+  // The clock is read from a verified strategy quote proof whose order hashes to this exact order;
+  // anything else leaves the controls unavailable rather than guessing the order's expiry.
+  async function loadOrderClock() {
+    const client = publicClient(publicApiBaseUrl);
+    const requested = sourceOrderHash;
+    if (client === null) {
+      setClockState({ orderHash: requested, busy: false, error: "The public API is not configured, so this order's clock cannot be loaded." });
+      return;
+    }
+    setClockState({ orderHash: requested, busy: true, error: null });
+    let failure = "No stored quote for this order could be verified. Request a quote first, then load its clock.";
+    for (const quoteHash of [...quoteHashes].reverse()) {
+      try {
+        const proof = await client.getStrategyQuoteProof(quoteHash);
+        if (proof.orderHash !== requested) {
+          failure = "The quote proof does not bind this order, so its clock was not used.";
+          continue;
+        }
+        setLoadedClock({ orderHash: requested, unit: proof.order.expiryUnit, value: proof.order.expiryValue.toString() });
+        setClockState({ orderHash: requested, busy: false, error: null });
+        return;
+      } catch (cause) {
+        failure = readFailure(cause, "This order's quote proof");
+      }
+    }
+    setClockState({ orderHash: requested, busy: false, error: failure });
+  }
 
   useEffect(() => {
     if (derivedOrder === null || publicApiBaseUrl === null) return;
@@ -277,7 +319,23 @@ export function AdvancedOrderControls({
         <p className={styles.fieldContext}>The stored strategy remains immediately quoteable and owner-authorized through the standard package flow.</p>
       )}
       {expiryUnit === null ? (
-        <p className={styles.fieldContext}>Create or stage the strategy through this terminal to load its exact expiry clock before adding automation.</p>
+        <>
+          <p className={styles.fieldContext}>
+            {publicApiBaseUrl === null
+              ? "The public API is not configured, so this order's exact expiry clock cannot be loaded."
+              : quoteHashes.length === 0
+                ? "Create or stage the strategy through this terminal, or request a quote on this order, to load its exact expiry clock before adding automation."
+                : "This order was pasted or restored. Load its exact expiry clock from a verified quote proof before adding automation."}
+          </p>
+          {publicApiBaseUrl !== null && quoteHashes.length > 0 ? (
+            <button type="button" className={styles.secondaryAction} disabled={currentClockState?.busy === true} onClick={() => void loadOrderClock()}>
+              {currentClockState?.busy ? "Verifying order clock" : "Load order clock"}
+            </button>
+          ) : null}
+          {currentClockState?.error ? <p className={styles.fieldContext} role="alert">{currentClockState.error}</p> : null}
+        </>
+      ) : clockLoaded ? (
+        <p className={styles.fieldContext}>Expiry clock {expiryUnit.replaceAll("_", " ").toLowerCase()} {expiryValue} loaded from a verified quote proof for this order.</p>
       ) : null}
       {error ? <p className={styles.fieldContext} role="alert">{error}</p> : null}
     </div>

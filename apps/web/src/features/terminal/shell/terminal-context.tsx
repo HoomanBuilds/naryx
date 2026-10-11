@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { hasPersistedSetting, usePersistedSetting } from "../persisted-setting";
 import {
   PrivateHttpTerminalProvider,
@@ -43,6 +43,12 @@ type TerminalContextValue = TerminalServiceConfig & {
 };
 
 const NOTICE_LIMIT = 3;
+const HEALTH_POLL_MS = 20_000;
+const HEALTH_STALE_MS = 60_000;
+
+function healthKey(value: PrivateTerminalRuntimeHealth): string {
+  return JSON.stringify(value, (_key, entry: unknown) => typeof entry === "bigint" ? entry.toString() : entry);
+}
 let noticeId = 0;
 
 export const DOMAIN_ORDER: readonly DomainId[] = ["solana", "base", "arbitrum", "hyperliquid"];
@@ -108,6 +114,7 @@ export function TerminalProvider({ config, children }: { config: TerminalService
     { value: null, state: privateProvider ? "checking" : "unconfigured" },
   );
   const [healthRequest, setHealthRequest] = useState(0);
+  const lastHealthOkAt = useRef(0);
   const [attempts, recordAttempt, clearAttempts] = useAttemptIndex();
   const [notices, setNotices] = useState<readonly TerminalNotice[]>([]);
   const notify = useCallback((tone: TerminalNotice["tone"], text: string, link?: TerminalNotice["link"]) => {
@@ -122,12 +129,39 @@ export function TerminalProvider({ config, children }: { config: TerminalService
   useEffect(() => {
     if (!privateProvider) return;
     const controller = new AbortController();
-    privateProvider.getRuntimeHealth(controller.signal)
-      .then((value) => setHealth({ value, state: "ok" }))
-      .catch(() => {
-        if (!controller.signal.aborted) setHealth({ value: null, state: "unavailable" });
-      });
-    return () => controller.abort();
+    let inFlight = false;
+    const poll = () => {
+      if (inFlight || controller.signal.aborted) return;
+      inFlight = true;
+      privateProvider.getRuntimeHealth(controller.signal)
+        .then((value) => {
+          lastHealthOkAt.current = Date.now();
+          // Keep the previous object when nothing changed so consumers do not re-render every poll.
+          setHealth((current) => current.state === "ok" && current.value !== null
+            && healthKey(current.value) === healthKey(value) ? current : { value, state: "ok" });
+        })
+        .catch(() => {
+          if (controller.signal.aborted) return;
+          // A transient failure keeps the last good reading for a bounded window, then fails closed.
+          setHealth((current) => current.value !== null && Date.now() - lastHealthOkAt.current < HEALTH_STALE_MS
+            ? (current.state === "ok" ? current : { ...current, state: "ok" })
+            : { value: null, state: "unavailable" });
+        })
+        .finally(() => { inFlight = false; });
+    };
+    poll();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") poll();
+    }, HEALTH_POLL_MS);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") poll();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [healthRequest, privateProvider]);
 
   // A first visit opens on a lane that executes: when the viewer has never picked a lane and the

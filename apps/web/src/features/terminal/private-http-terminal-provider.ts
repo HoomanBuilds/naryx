@@ -4303,6 +4303,10 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     if (!isRecord(body) || body.executionModel !== "OMNIBUS_TESTNET_ACCOUNT") {
       throw new Error("Hyperliquid exit order response is invalid.");
     }
+    if (input.entryAttemptId !== undefined &&
+        (!isRecord(body.package) || body.package.entryAttemptId !== input.entryAttemptId)) {
+      throw new Error("Hyperliquid exit order does not name the selected package.");
+    }
     return requireHyperliquidOrderCreateResponse({
       status: body.status,
       created: body.created,

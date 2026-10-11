@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { NaryxClient } from "@naryx/sdk";
+import { NaryxClient, toHex } from "@naryx/sdk";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { ChainIcon } from "@/features/brand/chain-icons";
@@ -10,6 +10,8 @@ import { useSolanaWallet } from "@/features/wallet/solana-wallet";
 import type { OwnerPackageEntry, PackageLifecycleResponse, PackageLifecycleState } from "../private-http-terminal-provider";
 import { DOMAIN_META, useTerminal } from "../shell/terminal-context";
 import { attemptsOf, type RecordedAttempt } from "../shell/attempt-index";
+import { packageOrdersOf, usePackageOrderIndex } from "../shell/package-order-index";
+import { ReadState, publicClient } from "./public-read";
 import { TransactionLink } from "../transaction-status";
 import styles from "./pages.module.css";
 
@@ -270,6 +272,8 @@ function exportStrategyReceipts(receipts: readonly StrategyReceiptHistoryRow[]) 
 /** A package the service recorded for a connected wallet, as an Activity row with its service state and evidence. */
 type Row = Omit<RecordedAttempt, "transactionHash"> & Readonly<{
   listed?: true;
+  /** The package's order hash, which recovery incidents and coordination plans bind. */
+  orderHash?: string;
   serviceState?: string | null;
   transactionHash?: string | null;
   blockNumber?: string | null;
@@ -288,6 +292,7 @@ function fromService(entry: OwnerPackageEntry, owner: string): Row | null {
     size: decimalSize(entry.quantityAtoms, entry.quantityDecimals),
     createdAt: entry.createdAtMs,
     listed: true,
+    orderHash: entry.orderHash,
     serviceState: entry.state,
     transactionHash: entry.transactionHash,
     blockNumber: entry.blockNumber,
@@ -295,10 +300,163 @@ function fromService(entry: OwnerPackageEntry, owner: string): Row | null {
   };
 }
 
+const RECOVERY_STATES = /RECOVERY|MANUAL|UNRESOLVED|FROZEN|COMPENSAT/;
+const HEX_HASH = /^[0-9a-f]{64}$/;
+const INCIDENT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+
+function bytesHex(value: Uint8Array | string): string {
+  return typeof value === "string" ? value.toLowerCase() : toHex(value);
+}
+
+/**
+ * Read-only status of a manual recovery incident or a cross-domain coordination for one package.
+ * The package record does not name either, so the trader enters the id the operator gave them; a
+ * record that binds another order hash is refused.
+ */
+function RecoveryCoordinationLookup({ orderHash, publicApiBaseUrl, inRecovery }: {
+  orderHash: string;
+  publicApiBaseUrl: string | null;
+  inRecovery: boolean;
+}) {
+  const [incidentInput, setIncidentInput] = useState("");
+  const [planInput, setPlanInput] = useState("");
+  const [lookup, setLookup] = useState<Readonly<{ incidentId: string | null; planHash: string | null }>>({ incidentId: null, planHash: null });
+  const incident = useQuery({
+    queryKey: ["recovery-incident", publicApiBaseUrl, lookup.incidentId, orderHash],
+    enabled: publicApiBaseUrl !== null && lookup.incidentId !== null,
+    retry: false,
+    queryFn: async () => {
+      const client = publicClient(publicApiBaseUrl);
+      if (client === null || lookup.incidentId === null) throw new Error("The public API is not configured.");
+      const view = await client.getRecoveryIncident(lookup.incidentId);
+      if (bytesHex(view.incident.orderHash) !== orderHash) throw new Error("This incident is for another package and is not shown.");
+      return view;
+    },
+  });
+  const coordination = useQuery({
+    queryKey: ["coordination", publicApiBaseUrl, lookup.planHash, orderHash],
+    enabled: publicApiBaseUrl !== null && lookup.planHash !== null,
+    retry: false,
+    queryFn: async () => {
+      const client = publicClient(publicApiBaseUrl);
+      if (client === null || lookup.planHash === null) throw new Error("The public API is not configured.");
+      const view = await client.getCoordination(lookup.planHash);
+      if (bytesHex(view.plan.orderHash) !== orderHash) throw new Error("This coordination is for another package and is not shown.");
+      return view;
+    },
+  });
+  return (
+    <div className={styles.lifecycleForm}>
+      <p className={styles.readNote}>
+        {inRecovery
+          ? "This package is in recovery. Enter the incident id or coordination plan hash the operator published to read its verified status. Reading it changes nothing."
+          : "Recovery and cross-domain coordination status, read only, by the incident id or plan hash the operator published."}
+      </p>
+      {publicApiBaseUrl === null ? <p className={styles.readNote}>The public API is not configured, so recovery and coordination status cannot be read.</p> : (
+        <div className={styles.lifecycleGrid}>
+          <label className={styles.field}>
+            Recovery incident id
+            <input value={incidentInput} autoComplete="off" onChange={(event) => setIncidentInput(event.target.value.trim())} />
+          </label>
+          <label className={styles.field}>
+            Coordination plan hash
+            <input value={planInput} autoComplete="off" placeholder="64 hex characters" onChange={(event) => setPlanInput(event.target.value.trim().toLowerCase())} />
+          </label>
+          <button
+            type="button"
+            className={styles.ghost}
+            disabled={!INCIDENT_ID.test(incidentInput) && !HEX_HASH.test(planInput)}
+            onClick={() => setLookup({
+              incidentId: INCIDENT_ID.test(incidentInput) ? incidentInput : null,
+              planHash: HEX_HASH.test(planInput) ? planInput : null,
+            })}
+          >
+            Read status
+          </button>
+        </div>
+      )}
+      {lookup.incidentId !== null ? (
+        <ReadState query={incident} subject="The recovery incident">
+          {(view) => (
+            <dl className={styles.facts}>
+              <dt>Incident</dt><dd className={styles.mono} title={view.incidentHash}>{view.incident.incidentId}</dd>
+              <dt>Phase</dt><dd>{stateText(view.state.phase)}</dd>
+              <dt>Approval quorum</dt><dd>{view.incident.approvalQuorum} of {view.incident.approverIds.length}</dd>
+              <dt>Approved actions</dt><dd>{view.state.approvedActions.length}</dd>
+              <dt>Executed actions</dt><dd>{view.state.executedActions.length}</dd>
+              <dt>Automation refused</dt><dd>{view.state.refusedAutomatedActions}</dd>
+              <dt>Violations</dt><dd>{view.state.violations.length === 0 ? "None" : view.state.violations.join("; ")}</dd>
+              <dt>Verification</dt><dd>Incident hash, approver signatures, and phase replayed locally</dd>
+            </dl>
+          )}
+        </ReadState>
+      ) : null}
+      {lookup.planHash !== null ? (
+        <ReadState query={coordination} subject="The coordination">
+          {(view) => (
+            <dl className={styles.facts}>
+              <dt>Plan</dt><dd className={styles.mono} title={view.state.planHash}>{compact(view.state.planHash, 12, 8)}</dd>
+              <dt>Phase</dt><dd>{stateText(view.state.phase)}</dd>
+              {view.state.terminalState ? <><dt>Terminal state</dt><dd>{stateText(view.state.terminalState)}</dd></> : null}
+              <dt>Domains</dt>
+              <dd>{Object.entries(view.state.domains).map(([domainId, status]) => `${domainId}: ${stateText(status)}`).join("; ")}</dd>
+              <dt>Interim exposure</dt><dd className={styles.mono}>{view.state.interimExposureQuoteAtoms.toString()} quote atoms</dd>
+              <dt>Next actions</dt>
+              <dd>{view.state.nextActions.length === 0 ? "None" : view.state.nextActions.map((action) =>
+                action.kind === "ESCALATE" ? `Escalate: ${action.reason}` : `${stateText(action.kind)} ${action.domainId}`).join("; ")}</dd>
+              <dt>Violations</dt><dd>{view.state.violations.length === 0 ? "None" : view.state.violations.join("; ")}</dd>
+              <dt>Verification</dt><dd>Plan hash checked and coordination replayed locally from its evidence</dd>
+            </dl>
+          )}
+        </ReadState>
+      ) : null}
+    </div>
+  );
+}
+
+/** The SDK-verified settlement allocation of one package-book order; nothing is shown unverified. */
+function VerifiedAllocationFacts({ publicApiBaseUrl, packageOrderId }: { publicApiBaseUrl: string | null; packageOrderId: string }) {
+  const allocation = useQuery({
+    queryKey: ["verified-allocation", publicApiBaseUrl, packageOrderId],
+    enabled: publicApiBaseUrl !== null,
+    retry: false,
+    queryFn: () => {
+      const client = publicClient(publicApiBaseUrl);
+      if (client === null) throw new Error("The public API is not configured.");
+      return client.getVerifiedAllocation(packageOrderId);
+    },
+  });
+  if (publicApiBaseUrl === null) return <p className={styles.readNote}>The public API is not configured, so allocations cannot be read.</p>;
+  return (
+    <ReadState query={allocation} subject="The verified allocation">
+      {(view) => {
+        const filled = view.allocation.fills.reduce((sum, fill) => sum + fill.quantity, BigInt(0));
+        return (
+          <dl className={styles.facts}>
+            <dt>Allocation</dt><dd className={styles.mono} title={view.allocationHash}>{compact(view.allocationHash, 12, 8)}</dd>
+            <dt>Filled</dt><dd className={styles.mono}>{filled.toString()} of {view.allocation.requestedQuantity.toString()}</dd>
+            <dt>Resting</dt><dd className={styles.mono}>{view.allocation.restedQuantity.toString()}</dd>
+            <dt>Cancelled</dt><dd className={styles.mono}>{view.allocation.cancelledQuantity.toString()}</dd>
+            <dt>Direct / implied</dt><dd className={styles.mono}>{view.allocation.internalMatchedQuantity.toString()} / {view.allocation.externalImpliedQuantity.toString()}</dd>
+            <dt>Fills</dt>
+            <dd>{view.allocation.fills.length === 0 ? "None" : view.allocation.fills.map((fill) =>
+              `${fill.quantity.toString()} at ${fill.priceTicks.toString()} ticks (${fill.makerSource.toLowerCase()})`).join("; ")}</dd>
+            <dt>Settlement commitment</dt><dd className={styles.mono} title={view.settlementCommitmentHash}>{compact(view.settlementCommitmentHash, 12, 8)}</dd>
+            <dt>Settlement handoff</dt><dd className={styles.mono}>{view.settlementHandoffHash ? compact(view.settlementHandoffHash, 12, 8) : "None yet"}</dd>
+            <dt>Verification</dt><dd>Allocation, matching policy, settlement commitment, and handoff verified by the SDK</dd>
+          </dl>
+        );
+      }}
+    </ReadState>
+  );
+}
+
 export function ActivityView() {
   const { attempts: localAttempts, privateProvider, publicApiBaseUrl, clearAttempts } = useTerminal();
   const [openId, setOpenId] = useState<string | null>(null);
   const [proofReceiptHash, setProofReceiptHash] = useState<string | null>(null);
+  const [allocationOrderId, setAllocationOrderId] = useState<string | null>(null);
+  const [packageOrderRecords] = usePackageOrderIndex();
   const solanaOwner = useSolanaWallet().selectedAccount?.address ?? null;
   const evmOwner = useEvmWallet().account;
   const owners = [solanaOwner, evmOwner].filter((owner): owner is string => owner !== null);
@@ -393,6 +551,9 @@ export function ActivityView() {
   const openIndex = attempts.findIndex((attempt) => attempt.attemptId === openId);
   const openAttempt = openIndex >= 0 ? attempts[openIndex] : undefined;
   const openLifecycle = openIndex >= 0 ? lifecycles[openIndex]?.data ?? null : null;
+  const openState = openAttempt === undefined ? null
+    : (readable(openAttempt) ? openLifecycle?.attempt.state ?? null : openAttempt.serviceState ?? null);
+  const packageOrders = packageOrdersOf(packageOrderRecords, owners);
 
   return (
     <main className={styles.page}>
@@ -708,7 +869,63 @@ export function ActivityView() {
                     : "No receipts recorded yet."}
               </p>
             )}
+            {openAttempt?.orderHash !== undefined ? (
+              <RecoveryCoordinationLookup
+                key={openAttempt.attemptId}
+                orderHash={openAttempt.orderHash}
+                publicApiBaseUrl={publicApiBaseUrl}
+                inRecovery={openState !== null && RECOVERY_STATES.test(openState)}
+              />
+            ) : openState !== null && RECOVERY_STATES.test(openState) ? (
+              <p className={styles.readNote}>This browser&apos;s record of the package has no order hash, so recovery and coordination status cannot be bound to it here.</p>
+            ) : null}
           </div>
+        </section>
+      ) : null}
+
+      {packageOrders.length > 0 ? (
+        <section className={styles.card} aria-labelledby="package-book-orders-title">
+          <div className={styles.cardHead}>
+            <div>
+              <h2 id="package-book-orders-title">Package book orders</h2>
+              <p>Orders this browser submitted to the package book for the connected wallets. Select one to verify its settlement allocation.</p>
+            </div>
+          </div>
+          <div className={styles.scroll}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th scope="col">Submitted</th>
+                  <th scope="col">Package order</th>
+                  <th scope="col">Strategy order</th>
+                  <th scope="col"><span className="sr-only">Allocation</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {packageOrders.map((order) => (
+                  <tr key={order.packageOrderId}>
+                    <td className={styles.mono}>{time(order.createdAt)}</td>
+                    <td className={styles.mono} title={order.packageOrderId}>{compact(order.packageOrderId, 12, 8)}</td>
+                    <td className={styles.mono} title={order.strategyOrderHash}>{compact(order.strategyOrderHash, 12, 8)}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className={styles.ghost}
+                        onClick={() => setAllocationOrderId((current) => current === order.packageOrderId ? null : order.packageOrderId)}
+                      >
+                        {allocationOrderId === order.packageOrderId ? "Hide allocation" : "Verify allocation"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {allocationOrderId !== null && packageOrders.some((order) => order.packageOrderId === allocationOrderId) ? (
+            <div className={styles.cardBody}>
+              <VerifiedAllocationFacts publicApiBaseUrl={publicApiBaseUrl} packageOrderId={allocationOrderId} />
+            </div>
+          ) : null}
         </section>
       ) : null}
     </main>

@@ -35,6 +35,7 @@ import type { DomainId } from "./terminal-view-model";
 import { TransactionLink, refreshOnReturn } from "./transaction-status";
 import styles from "./trading-terminal.module.css";
 import { AdvancedOrderControls } from "./advanced-order-controls";
+import { PackageFillSimulation, PackageHaltEvidence } from "./package-book-insight";
 
 const HASH = /^[0-9a-f]{64}$/;
 const OWNER = /^0x(?!0{40}$)[0-9a-f]{40}$/;
@@ -68,6 +69,16 @@ const NATIVE_HYPERCORE_TEMPLATES = new Set([
   "hedge-migration-v1",
   "delta-neutral-rebalance-v1",
 ]);
+/** Whether this panel builds the template and action on the lane, for a link that names them. */
+export function generalizedTemplateOnLane(domain: DomainId, templateId: string, lifecycleAction: string): boolean {
+  if (domain === "hyperliquid") return NATIVE_HYPERCORE_TEMPLATES.has(templateId);
+  if (domain === "solana") {
+    return templateId === "treasury-inventory-hedge-v1"
+      && (lifecycleAction === "ENTRY" || lifecycleAction === "EXIT" || lifecycleAction === "EMERGENCY_UNWIND");
+  }
+  return EVM_STRATEGY_TEMPLATES.has(templateId);
+}
+
 const EVM_STRATEGY_TEMPLATES = new Set([
   "calendar-spread-v1",
   "option-spread-v1",
@@ -2615,6 +2626,8 @@ export function GeneralizedStrategyPreparationPanel({
   privateApiBaseUrl,
   publicApiBaseUrl,
   packageMarketId = null,
+  packageMarketHalted = false,
+  linkedPackageId = null,
   executionDomain,
   templateId,
   lifecycleAction,
@@ -2632,6 +2645,10 @@ export function GeneralizedStrategyPreparationPanel({
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
   packageMarketId?: string | null;
+  /** The selected package market is halted; a signed order then queues for its reopening auction. */
+  packageMarketHalted?: boolean;
+  /** A position a Portfolio link named; it is preselected only when it is one of the listed positions. */
+  linkedPackageId?: string | null;
   executionDomain: DomainId;
   templateId: string;
   lifecycleAction: string;
@@ -2657,6 +2674,7 @@ export function GeneralizedStrategyPreparationPanel({
     : evmLane
       ? "EVM_UNIX_SECONDS" as const
       : null;
+  const linkedPackage = linkedPackageId?.toLowerCase() ?? null;
   const laneSupportsTemplate = sourceOrderHash !== null
     ? hyperliquidLane
     : hyperliquidLane
@@ -2673,6 +2691,7 @@ export function GeneralizedStrategyPreparationPanel({
   const [packageLimitTicks, setPackageLimitTicks] = useState("");
   const [managedPackageOrder, setManagedPackageOrder] = useState<ManagedPackageBookOrder | null>(null);
   const [packageSubmission, setPackageSubmission] = useState<PackageBookSubmission | null>(null);
+  const [reopeningQueued, setReopeningQueued] = useState<string | null>(null);
   const [settlementReadiness, setSettlementReadiness] = useState<PackageSettlementReadiness | null>(null);
   const [packageAmendQuantity, setPackageAmendQuantity] = useState("");
   const [packageAmendPriceTicks, setPackageAmendPriceTicks] = useState("");
@@ -3364,7 +3383,7 @@ export function GeneralizedStrategyPreparationPanel({
     && position.baseAssetId === selectedSolanaProfile.inventoryAsset.assetId
     && position.baseAssetDecimals === selectedSolanaProfile.inventoryAsset.decimals);
   const selectedSolanaPosition = matchingSolanaPositions.find((position) =>
-    position.packageId === selectedSolanaPackageId) ?? matchingSolanaPositions[0] ?? null;
+    position.packageId === (selectedSolanaPackageId || linkedPackage)) ?? matchingSolanaPositions[0] ?? null;
   const matchingEvmOptionProfiles = (evmOptionProfiles ?? []).filter((profile) => profile.chainId === evmChainId
     && (packageMarketId === null || profile.executionClassId === packageMarketId));
   const selectedEvmOptionProfile = matchingEvmOptionProfiles.find((profile) => profile.profileId === selectedEvmOptionProfileId)
@@ -3394,7 +3413,7 @@ export function GeneralizedStrategyPreparationPanel({
     && position.executionClassId === selectedEvmProfile.executionClassId
     && position.baseAssetId === selectedEvmProfile.baseAsset.assetId
     && position.baseAssetDecimals === selectedEvmProfile.baseAsset.decimals);
-  const selectedEvmPosition = matchingEvmPositions.find((position) => position.packageId === selectedEvmPackageId)
+  const selectedEvmPosition = matchingEvmPositions.find((position) => position.packageId === (selectedEvmPackageId || linkedPackage))
     ?? matchingEvmPositions[0]
     ?? null;
   const evmLifecycleSupported = lifecycleAction === "ENTRY"
@@ -3438,7 +3457,8 @@ export function GeneralizedStrategyPreparationPanel({
       : position.templateId === templateId
         && position.seriesId === selectedNativeProfile.seriesId
         && position.executionClassId === selectedNativeProfile.executionClassId));
-  const selectedNativePosition = matchingNativePositions.find((position) => position.strategyId === selectedNativeStrategyId)
+  const selectedNativePosition = matchingNativePositions.find((position) =>
+    position.strategyId === (selectedNativeStrategyId || linkedPackageId))
     ?? matchingNativePositions[0]
     ?? null;
   const nativeLifecycleSupported = lifecycleAction === "ENTRY" || lifecycleAction === "INCREASE"
@@ -4189,10 +4209,34 @@ export function GeneralizedStrategyPreparationPanel({
     }
   }
 
+  /** The unsigned package-book order for the current side and limit; the service only computes it. */
+  async function preparePackageBookOrder(): Promise<PreparedPackageBookOrder> {
+    if (publicApiBaseUrl === null || !HASH.test(orderHash)) throw new Error("Create or restore the strategy order first.");
+    if (!SIGNED_TICKS.test(packageLimitTicks)) {
+      throw new Error("Enter a signed integer package-market limit in ticks.");
+    }
+    const preparationResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/orders/prepare`, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ strategyOrderHash: orderHash, side: packageSide, limitPriceTicks: packageLimitTicks }),
+    });
+    if (!preparationResponse.ok) throw new Error(await failureMessage(preparationResponse));
+    const prepared = parsePreparedPackageBookOrder(await preparationResponse.json(), orderHash);
+    if (packageMarketId !== null && prepared.executionClassId !== packageMarketId) {
+      throw new Error("The strategy order belongs to another package market. Open its book or create an order for the selected market.");
+    }
+    return prepared;
+  }
+
   async function submitNativePackageOrder() {
     if (publicApiBaseUrl === null || !HASH.test(orderHash)) return;
     setPackageSubmitBusy(true);
     setError(null);
+    // While the market is halted the same signed order goes to the reopening queue instead of the book.
+    const orderPath = packageMarketHalted ? "/v1/package-book/reopening/orders" : "/v1/package-book/orders";
     try {
       if (!SIGNED_TICKS.test(packageLimitTicks)) {
         throw new Error("Enter a signed integer package-market limit in ticks.");
@@ -4200,20 +4244,8 @@ export function GeneralizedStrategyPreparationPanel({
       if (signPackageBookOrder === undefined) {
         throw new Error("Connect the wallet that owns this strategy order.");
       }
-      const preparationResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/orders/prepare`, {
-        method: "POST",
-        cache: "no-store",
-        credentials: "omit",
-        referrerPolicy: "no-referrer",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ strategyOrderHash: orderHash, side: packageSide, limitPriceTicks: packageLimitTicks }),
-      });
-      if (!preparationResponse.ok) throw new Error(await failureMessage(preparationResponse));
-      const prepared = parsePreparedPackageBookOrder(await preparationResponse.json(), orderHash);
-      if (packageMarketId !== null && prepared.executionClassId !== packageMarketId) {
-        throw new Error("The strategy order belongs to another package market. Open its book or create an order for the selected market.");
-      }
-      const challengeResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/orders/authorization`, {
+      const prepared = await preparePackageBookOrder();
+      const challengeResponse = await fetch(`${publicApiBaseUrl}${orderPath}/authorization`, {
         method: "POST",
         cache: "no-store",
         credentials: "omit",
@@ -4224,7 +4256,7 @@ export function GeneralizedStrategyPreparationPanel({
       if (!challengeResponse.ok) throw new Error(await failureMessage(challengeResponse));
       const challenge = parsePackageBookAuthorization(await challengeResponse.json(), prepared);
       const signature = await signPackageBookOrder(challenge);
-      const submissionResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/orders`, {
+      const submissionResponse = await fetch(`${publicApiBaseUrl}${orderPath}`, {
         method: "POST",
         cache: "no-store",
         credentials: "omit",
@@ -4237,7 +4269,13 @@ export function GeneralizedStrategyPreparationPanel({
         }),
       });
       if (!submissionResponse.ok) throw new Error(await failureMessage(submissionResponse));
-      const submission = parsePackageBookSubmission(await submissionResponse.json(), prepared);
+      const submissionBody: unknown = await submissionResponse.json();
+      const submission = parsePackageBookSubmission(submissionBody, prepared);
+      const queuedForReopening = packageMarketHalted;
+      if (queuedForReopening && record(submissionBody, "Reopening submission").queuedForReopening !== true) {
+        throw new Error("The service did not confirm the order is queued for the reopening auction.");
+      }
+      setReopeningQueued(queuedForReopening ? submission.packageOrderId : null);
       setManagedPackageOrder(prepared);
       setPackageSubmission(submission);
       recordPackageOrder({
@@ -4258,6 +4296,8 @@ export function GeneralizedStrategyPreparationPanel({
       setExecutionResult(null);
       setExecutionProgress(null);
       setStrategyReceipt(null);
+      // A queued reopening order has no matching state until the auction clears.
+      if (queuedForReopening) return;
       const readinessResponse = await fetch(`${publicApiBaseUrl}/v1/package-book/orders/${submission.packageOrderId}/settlement-readiness`, {
         headers: { Accept: "application/json" },
         cache: "no-store",
@@ -6039,6 +6079,9 @@ export function GeneralizedStrategyPreparationPanel({
             sourceOrderHash={advancedOrder?.sourceOrderHash ?? orderHash}
             expiryUnit={privateRfqOrderContext?.expiryUnit ?? null}
             expiryValue={privateRfqOrderContext?.expiryValue ?? null}
+            quoteHashes={quoteCandidates
+              .filter((candidate) => candidate.review.orderHash === (advancedOrder?.sourceOrderHash ?? orderHash))
+              .map((candidate) => candidate.review.quoteHash)}
             derivedOrder={advancedOrder}
             onDerived={(derived) => {
               const context = privateRfqOrderContext;
@@ -6123,6 +6166,14 @@ export function GeneralizedStrategyPreparationPanel({
             setError(null);
           }}
         />
+        {packageMarketHalted ? <PackageHaltEvidence publicApiBaseUrl={publicApiBaseUrl} packageMarketId={packageMarketId} /> : null}
+        <PackageFillSimulation
+          publicApiBaseUrl={publicApiBaseUrl}
+          simulationKey={`${orderHash}:${packageSide}:${packageLimitTicks}:${packageMarketId ?? ""}`}
+          disabled={(advancedOrder !== null && preparedAdvancedAttempt === null) || publicApiBaseUrl === null || packageSubmitBusy
+            || !HASH.test(orderHash) || !SIGNED_TICKS.test(packageLimitTicks)}
+          prepare={preparePackageBookOrder}
+        />
         <button
           type="button"
           className={styles.primaryAction}
@@ -6130,11 +6181,17 @@ export function GeneralizedStrategyPreparationPanel({
             || !SIGNED_TICKS.test(packageLimitTicks)}
           onClick={() => void submitNativePackageOrder()}
         >
-          {packageSubmitBusy ? "Submitting native package order" : "Sign and submit native package order"}
+          {packageSubmitBusy ? "Submitting native package order"
+            : packageMarketHalted ? "Sign and queue for reopening auction" : "Sign and submit native package order"}
         </button>
         <p className={styles.fieldContext}>
           One wallet signature binds the side, full strategy quantity, package limit, settlement account, and strategy-order hash. A match is not execution.
         </p>
+        {reopeningQueued !== null && packageSubmission?.packageOrderId === reopeningQueued ? (
+          <p className={styles.fieldContext} role="status">
+            Order {compact(reopeningQueued)} is queued for the reopening auction{packageSubmission.replayed ? " (already queued)" : ""}. It does not match until the auction clears; refresh the matching state after the market reopens.
+          </p>
+        ) : null}
         {packageSubmission && settlementReadiness ? (
           <div className={styles.reviewGrid}>
             <span>Matching state</span><strong>{packageStatusLabel}</strong>

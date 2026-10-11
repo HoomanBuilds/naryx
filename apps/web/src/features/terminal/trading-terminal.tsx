@@ -28,6 +28,7 @@ import type {
   BaseSelectedAttempt,
   BaseSolverQuote,
   HyperliquidAccountStatus,
+  HyperliquidOwnedPackage,
   HyperliquidAttemptProgress,
   HyperliquidOrderCreateResponse,
   HyperliquidSelectedAttempt,
@@ -54,7 +55,7 @@ import type {
   TerminalViewModel,
   WorkspaceTab,
 } from "./terminal-view-model";
-import { DOMAIN_META, EXIT_UNAVAILABLE, domainHealth, domainLive, useTerminal } from "./shell/terminal-context";
+import { DOMAIN_META, DOMAIN_ORDER, EXIT_UNAVAILABLE, domainHealth, domainLive, useTerminal } from "./shell/terminal-context";
 import { annotateAttempt } from "./shell/attempt-index";
 import { TransactionLink, refreshOnReturn } from "./transaction-status";
 import { EVM_CHAINS, type EvmDomain } from "@/features/wallet/evm-config";
@@ -67,6 +68,7 @@ import { usePositions } from "./pages/use-positions";
 import { fetchStrategyProgram, type StrategyProgramTemplate } from "./strategy-program";
 import {
   GeneralizedStrategyPreparationPanel,
+  generalizedTemplateOnLane,
   type PackageBookAuthorizationChallenge,
   type StrategyOrderAuthorizationChallenge,
 } from "./generalized-strategy-preparation";
@@ -219,6 +221,8 @@ type HyperliquidFlowState = {
   signed: boolean;
   progress: HyperliquidAttemptProgress | null;
   execution: HyperliquidTerminalExecutionResult | null;
+  /** The entry attempt of the open package this flow's exit order names, sent explicitly to the service. */
+  exitTarget: string | null;
   busy: string | null;
   error: string | null;
 };
@@ -603,6 +607,68 @@ function LocalExecutionPanel({
   );
 }
 
+/** One line describing an owned Hyperliquid package: when it opened, its size, and its entry notional. */
+function hyperliquidPackageSummary(entry: HyperliquidOwnedPackage, account: HyperliquidAccountStatus | null, baseSymbol: string): string {
+  const opened = entry.openedAtMs === null ? "entry time unavailable" : `opened ${new Date(entry.openedAtMs).toLocaleString()}`;
+  const sizeText = entry.spotQuantityAtoms !== null && account?.baseDecimals != null
+    ? `${atomsDecimal(entry.spotQuantityAtoms, account.baseDecimals)} ${baseSymbol}` : "size unavailable";
+  const notional = entry.entryNotionalAtoms !== null && account?.quoteDecimals != null
+    ? `entry notional ${atomsDecimal(entry.entryNotionalAtoms, account.quoteDecimals)}` : "entry notional unavailable";
+  return `${opened} / ${sizeText} / ${notional} / ${entry.state}`;
+}
+
+/** Chooses which open Hyperliquid package an exit closes; the order names exactly that package. */
+function HyperliquidExitPicker({
+  packages,
+  account,
+  target,
+  baseSymbol,
+  locked,
+  linkedMissing,
+  onChoose,
+}: {
+  packages: readonly HyperliquidOwnedPackage[];
+  account: HyperliquidAccountStatus | null;
+  target: HyperliquidOwnedPackage | null;
+  baseSymbol: string;
+  /** A step is running or an attempt is selected; changing the package then would orphan it. */
+  locked: boolean;
+  linkedMissing: boolean;
+  onChoose: (entryAttemptId: string) => void;
+}) {
+  if (account === null) return null;
+  return (
+    <fieldset className={styles.exitPicker} disabled={locked}>
+      <legend>Package to exit</legend>
+      {linkedMissing ? <p className={styles.reviewNotice}>The linked package is not open for this wallet; the oldest open package is selected instead.</p> : null}
+      {packages.length === 0 ? <p className={styles.reviewNotice}>This wallet has no open Hyperliquid testnet package.</p> : null}
+      {packages.length === 1 && target !== null ? (
+        <p className={styles.exitPickerOne} title={target.entryAttemptId}>
+          Package {compact(target.entryAttemptId, 20, 6)}: {hyperliquidPackageSummary(target, account, baseSymbol)}
+        </p>
+      ) : null}
+      {packages.length > 1 ? packages.map((entry) => (
+        <label key={entry.entryAttemptId} className={styles.exitPickerOption} title={entry.entryAttemptId}>
+          <input
+            type="radio"
+            name="hyperliquid-exit-package"
+            value={entry.entryAttemptId}
+            checked={target?.entryAttemptId === entry.entryAttemptId}
+            onChange={() => onChoose(entry.entryAttemptId)}
+          />
+          <span>
+            <strong>Package {compact(entry.entryAttemptId, 20, 6)}</strong>
+            <small>{hyperliquidPackageSummary(entry, account, baseSymbol)}</small>
+          </span>
+        </label>
+      )) : null}
+      {target !== null && target.state !== "OPEN" ? (
+        <p className={styles.reviewNotice}>Showing the package this exit closed. Choose another open package to start a new exit.</p>
+      ) : null}
+    </fieldset>
+  );
+}
+
 /** What the Hyperliquid testnet order binds at each step; the ticket's primary action advances it. */
 function HyperliquidTestnetPanel({
   flow,
@@ -626,6 +692,7 @@ function HyperliquidTestnetPanel({
   const baseDecimals = account?.baseDecimals ?? null;
   const quoteDecimals = account?.quoteDecimals ?? null;
   const packages = flow?.account?.packages ?? [];
+  const exitTarget = flow?.exitTarget ? packages.find((entry) => entry.entryAttemptId === flow.exitTarget) ?? null : null;
   const executionEvidence = execution?.executionEvidence;
   const commitments = execution
     ? [
@@ -677,6 +744,15 @@ function HyperliquidTestnetPanel({
           <span>Owner</span><strong title={order.owner}>{compact(order.owner, 10, 8)}</strong>
           <span>Settlement account</span><strong title={order.settlementAccount}>{compact(order.settlementAccount, 10, 8)}</strong>
           <span>Action</span><strong>{flow?.order?.note.startsWith("Exit") ? "Exit the whole package" : "Enter package"}</strong>
+          {exitTarget ? (
+            <>
+              <span>Exit target</span>
+              <strong title={exitTarget.entryAttemptId}>Package {compact(exitTarget.entryAttemptId, 20, 6)}</strong>
+              <span>Target detail</span><strong>{hyperliquidPackageSummary(exitTarget, account, baseSymbol)}</strong>
+            </>
+          ) : flow?.exitTarget ? (
+            <><span>Exit target</span><strong title={flow.exitTarget}>Package {compact(flow.exitTarget, 20, 6)}</strong></>
+          ) : null}
           <span>Solver quote</span><strong>{flow?.order?.solverQuoting}</strong>
         </div>
       ) : null}
@@ -1145,6 +1221,7 @@ function Ticket({
   baseFlow,
   arbitrumFlow,
   arbitrumExitPanel,
+  hyperliquidExitPicker,
   nowMs,
   executionReview,
   submission,
@@ -1161,6 +1238,8 @@ function Ticket({
   privateApiBaseUrl,
   publicApiBaseUrl,
   packageMarketId,
+  packageMarketHalted,
+  linkedPackageId,
   connectedSolanaAccount,
   connectedEvmAccount,
   sendSolanaTransaction,
@@ -1201,6 +1280,8 @@ function Ticket({
   arbitrumFlow: ArbitrumFlowState | null;
   /** The Arbitrum exit review, present only in exit mode. */
   arbitrumExitPanel: ReactNode;
+  /** The Hyperliquid exit's package choice, present only in Hyperliquid exit mode. */
+  hyperliquidExitPicker: ReactNode;
   nowMs: number;
   executionReview: ExecutionReview | null;
   submission: SubmissionState | null;
@@ -1220,6 +1301,9 @@ function Ticket({
   privateApiBaseUrl: string | null;
   publicApiBaseUrl: string | null;
   packageMarketId: string | null;
+  packageMarketHalted: boolean;
+  /** A position a Portfolio link named, preselected by the strategy panel when it lists it. */
+  linkedPackageId: string | null;
   connectedSolanaAccount: string | null;
   connectedEvmAccount: string | null;
   sendSolanaTransaction?: (transaction: Uint8Array) => Promise<string>;
@@ -1277,6 +1361,8 @@ function Ticket({
       privateApiBaseUrl={privateApiBaseUrl}
       publicApiBaseUrl={publicApiBaseUrl}
       packageMarketId={packageMarketId}
+      packageMarketHalted={packageMarketHalted}
+      linkedPackageId={linkedPackageId}
       executionDomain={selectedDomain}
       templateId={selectedStrategyTemplateId}
       lifecycleAction={selectedLifecycleAction}
@@ -1445,6 +1531,8 @@ function Ticket({
           </span>
         </div>
       </div>
+
+      {nativeCashFlow ? hyperliquidExitPicker : null}
 
       <div className={styles.presets} role="group" aria-label="Size presets">
         {sizePresets(snapshot.ticket.defaultSize).map((preset) => (
@@ -1861,12 +1949,16 @@ export function TradingTerminal({
   const [strategyTemplates, setStrategyTemplates] = useState<readonly StrategyProgramTemplate[]>([FALLBACK_CASH_TEMPLATE]);
   const [selectedStrategyTemplateId, setSelectedStrategyTemplateId] = useState(FALLBACK_CASH_TEMPLATE.templateId);
   const [selectedLifecycleAction, setSelectedLifecycleAction] = useState("ENTRY");
+  const [strategyProgramSettled, setStrategyProgramSettled] = useState(false);
   useEffect(() => {
     if (!privateApiBaseUrl && !publicApiBaseUrl) return;
     const controller = new AbortController();
     void fetchStrategyProgram(privateApiBaseUrl, publicApiBaseUrl, controller.signal)
       .then((program) => setStrategyTemplates(program.templates))
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        if (!controller.signal.aborted) setStrategyProgramSettled(true);
+      });
     return () => controller.abort();
   }, [privateApiBaseUrl, publicApiBaseUrl]);
   // The lane whose default size the ticket took; a refresh of the same lane keeps the trader's size.
@@ -1889,6 +1981,10 @@ export function TradingTerminal({
     setPreviewRejection(null);
   }
   const [mode, setMode] = useState<PackageMode>("entry");
+  // The Hyperliquid package an exit names: the trader's pick, else the one a Portfolio link named.
+  const [hyperliquidExitChoice, setHyperliquidExitChoice] = useState<string | null>(null);
+  // The package or strategy a Portfolio link named; each flow uses it only when it lists that id.
+  const [linkedPackageId, setLinkedPackageId] = useState<string | null>(null);
   const [size, setSize] = useState(initialSnapshot.ticket.defaultSize);
   const [slippage, setSlippage] = useState<SlippageBps>(
     initialSnapshot.ticket.defaultSlippageBps,
@@ -1986,14 +2082,44 @@ export function TradingTerminal({
     return null;
   }, [packageMarkets, setSelectedDomain, snapshot.ticket.quoteModes, strategyTemplates]);
   const sharedStrategyApplied = useRef(false);
+  const packageMarketLoading = packageMarketStatus?.state === "loading";
   useEffect(() => {
     if (sharedStrategyApplied.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const lane = params.get("lane");
+    const laneDomain = lane !== null && (DOMAIN_ORDER as readonly string[]).includes(lane) ? lane as DomainId : null;
+    const linked = params.get("package");
+    const linkedId = linked !== null && /^[A-Za-z0-9._:-]{1,200}$/.test(linked) ? linked : null;
     const shared = readSharedStrategyConfiguration(window.location.search);
     if (shared === null) {
+      const templateId = params.get("template");
+      const action = params.get("action");
+      // A link naming a template waits for the strategy program so it can be checked against the lane.
+      if (templateId !== null && (privateApiBaseUrl !== null || publicApiBaseUrl !== null) && !strategyProgramSettled) return;
+      // and for the market list, so the linked template is not replaced by the first market's.
+      if (templateId !== null && publicApiBaseUrl !== null && packageMarketLoading) return;
       sharedStrategyApplied.current = true;
-      if (new URLSearchParams(window.location.search).get("mode") === "exit") {
+      const domain = laneDomain ?? selectedDomain;
+      if (laneDomain !== null) setSelectedDomain(laneDomain);
+      if (linkedId !== null) setLinkedPackageId(linkedId);
+      if (params.get("mode") === "exit") {
         setMode("exit");
         setSelectedLifecycleAction("EXIT");
+      }
+      const template = strategyTemplates.find((candidate) => candidate.templateId === templateId);
+      if (template !== undefined && action !== null && template.actions.some((candidate) => candidate.action === action)
+        && (template.templateId === "cash-and-carry-v1"
+          ? action === "ENTRY" || action === "EXIT"
+          : generalizedTemplateOnLane(domain, template.templateId, action))) {
+        setSelectedStrategyTemplateId(template.templateId);
+        setSelectedLifecycleAction(action);
+        if (template.templateId === "cash-and-carry-v1") setMode(action === "EXIT" ? "exit" : "entry");
+        const laneMarket = packageMarkets.find((market) => market.templateId === template.templateId
+          && market.domainIds.some((domainId) => PACKAGE_DOMAIN_TO_TERMINAL[domainId] === domain));
+        if (laneMarket !== undefined) {
+          setActivePackageMarketId(laneMarket.packageMarketId);
+          storePackageMarket(laneMarket.packageMarketId);
+        }
       }
       return;
     }
@@ -2001,7 +2127,9 @@ export function TradingTerminal({
     if (shared.packageMarketId !== null && publicApiBaseUrl !== null && packageMarkets.length === 0) return;
     sharedStrategyApplied.current = true;
     applyStrategyConfiguration(shared);
-  }, [applyStrategyConfiguration, packageMarkets.length, privateApiBaseUrl, publicApiBaseUrl, strategyTemplates]);
+    if (linkedId !== null) setLinkedPackageId(linkedId);
+  }, [applyStrategyConfiguration, packageMarketLoading, packageMarkets, privateApiBaseUrl, publicApiBaseUrl, selectedDomain,
+    setSelectedDomain, strategyProgramSettled, strategyTemplates]);
   const { feed, status: publicFeedStatus } = usePublicMarketFeed(
     publicApiBaseUrl,
     resolvedPackageMarketId,
@@ -2041,6 +2169,26 @@ export function TradingTerminal({
     ? "connecting"
     : loadedConnection;
 
+  const hyperliquidOwner = selectedDomain === "hyperliquid" && evmWallet.account ? evmWallet.account.toLowerCase() : null;
+  // The wallet's last ledger read, kept across ticket changes so the exit picker does not flicker.
+  const hyperliquidAccount = hyperliquidFlow !== null && hyperliquidFlow.owner === hyperliquidOwner ? hyperliquidFlow.account : null;
+  const hyperliquidOpenPackages = useMemo(() => (hyperliquidAccount?.packages ?? [])
+    .filter((entry) => entry.state === "OPEN")
+    .sort((left, right) => (left.openedAtMs ?? Number.MAX_SAFE_INTEGER) - (right.openedAtMs ?? Number.MAX_SAFE_INTEGER)
+      || (left.entryAttemptId < right.entryAttemptId ? -1 : left.entryAttemptId > right.entryAttemptId ? 1 : 0)), [hyperliquidAccount]);
+  // A flow that already selected or executed an exit stays on its package even after the ledger moves it
+  // out of OPEN, so its result is not discarded; otherwise the trader's pick, the linked one, or the oldest.
+  const pinnedExitTarget = hyperliquidFlow !== null && hyperliquidFlow.owner === hyperliquidOwner && hyperliquidFlow.exitTarget !== null &&
+    (hyperliquidFlow.attempt !== null || hyperliquidFlow.execution !== null)
+    ? hyperliquidAccount?.packages.find((entry) => entry.entryAttemptId === hyperliquidFlow.exitTarget) ?? null
+    : null;
+  const hyperliquidExitTarget = selectedDomain !== "hyperliquid" || mode !== "exit" ? null
+    : pinnedExitTarget
+      ?? hyperliquidOpenPackages.find((entry) => entry.entryAttemptId === (hyperliquidExitChoice ?? linkedPackageId))
+      ?? hyperliquidOpenPackages[0] ?? null;
+  const linkedExitMissing = linkedPackageId !== null && hyperliquidExitChoice === null && hyperliquidAccount !== null &&
+    !hyperliquidOpenPackages.some((entry) => entry.entryAttemptId === linkedPackageId);
+
   const ticketKey = JSON.stringify({
     selectedDomain,
     selectedStrategyTemplateId,
@@ -2050,6 +2198,7 @@ export function TradingTerminal({
     slippage,
     quoteMode,
     traderPublicKey: wallet.selectedAccount?.address ?? null,
+    exitPackage: hyperliquidExitTarget?.entryAttemptId ?? null,
   });
 
   const currentExecutionReview = executionReview?.ticketKey === ticketKey
@@ -2057,7 +2206,6 @@ export function TradingTerminal({
     : null;
   const currentSubmission = submission?.ticketKey === ticketKey ? submission : null;
   const currentLocalFlow = localFlow?.ticketKey === ticketKey ? localFlow : null;
-  const hyperliquidOwner = selectedDomain === "hyperliquid" && evmWallet.account ? evmWallet.account.toLowerCase() : null;
   const currentHyperliquidFlow = hyperliquidFlow?.ticketKey === ticketKey && hyperliquidFlow.owner === hyperliquidOwner
     ? hyperliquidFlow
     : null;
@@ -2070,9 +2218,14 @@ export function TradingTerminal({
   const { positions: openPositions } = usePositions();
   const laneOpenPosition = openPositions.find((position) => position.domain === selectedDomain
     && (position.state === "Open" || position.state === "Exiting") && position.exactSize !== null);
+  // Hyperliquid sizes the exit from the package the trader picked, never from another open package.
+  const hyperliquidExitDecimals = hyperliquidAccount?.baseDecimals ?? null;
   const openPackageExitSize = mode !== "exit" ? null
     : selectedDomain === "base" && baseOpenPackage !== null ? atomsDecimal(baseOpenPackage.baseQuantityAtoms, 18)
-      : laneOpenPosition?.exactSize ?? null;
+      : selectedDomain === "hyperliquid"
+        ? hyperliquidExitTarget?.spotQuantityAtoms != null && hyperliquidExitDecimals !== null
+          ? atomsDecimal(hyperliquidExitTarget.spotQuantityAtoms, hyperliquidExitDecimals) : null
+        : laneOpenPosition?.exactSize ?? null;
   useEffect(() => {
     if (openPackageExitSize !== null && openPackageExitSize !== size) setSize(openPackageExitSize);
   }, [openPackageExitSize, size]);
@@ -2180,6 +2333,7 @@ export function TradingTerminal({
       signed: false,
       progress: null,
       execution: null,
+      exitTarget: null,
       busy: null,
       error,
     });
@@ -2330,7 +2484,6 @@ export function TradingTerminal({
     runtimeHealth?.hyperliquidTestnet.available === true && executionGateUp &&
     (mode === "exit" || preview?.source === "PRIVATE_TERMINAL_BFF") && quoteMode === "coordinated_limits";
   const hyperliquidPackages = currentHyperliquidFlow?.account?.packages ?? [];
-  const hyperliquidOpenPackage = hyperliquidPackages.find((entry) => entry.state === "OPEN") ?? null;
   const hyperliquidActivePackages = hyperliquidPackages.filter((entry) => HYPERLIQUID_ACTIVE_PACKAGE_STATES.has(entry.state)).length;
   const hyperliquidLimit = currentHyperliquidFlow?.context?.maxOpenPackagesPerOwner ?? null;
   const evmTarget: EvmDomain | null = selectedDomain === "base" || selectedDomain === "arbitrum" ? selectedDomain : null;
@@ -2651,7 +2804,7 @@ export function TradingTerminal({
         return none("Preparing testnet account", currentHyperliquidFlow?.error ?? "Discovering the active Hyperliquid testnet order context.");
       }
       const reason = currentHyperliquidFlow.error;
-      if (nextHyperliquidStep === "create" && mode === "exit" && !hyperliquidOpenPackage) {
+      if (nextHyperliquidStep === "create" && mode === "exit" && hyperliquidExitTarget?.state !== "OPEN") {
         return none("No open package", reason ?? "This wallet has no open Hyperliquid testnet package to exit.");
       }
       if (nextHyperliquidStep === "create" && mode === "entry" && hyperliquidLimit !== null && hyperliquidActivePackages >= hyperliquidLimit) {
@@ -2773,7 +2926,7 @@ export function TradingTerminal({
     hyperliquidActivePackages,
     hyperliquidFlowEnabled,
     hyperliquidLimit,
-    hyperliquidOpenPackage,
+    hyperliquidExitTarget,
     hyperliquidOwner,
     mode,
     nextArbitrumStep,
@@ -3115,6 +3268,15 @@ export function TradingTerminal({
     }
   }
 
+  function chooseHyperliquidExit(entryAttemptId: string) {
+    setHyperliquidExitChoice(entryAttemptId);
+    // A new pick starts a new exit; the flow re-reads the ledger for the new ticket.
+    setHyperliquidFlow((previous) => previous === null || previous.busy !== null ? previous : {
+      ...previous, order: null, quote: null, attempt: null, signed: false, progress: null, execution: null,
+      exitTarget: null, executeKey: crypto.randomUUID(), error: null,
+    });
+  }
+
   async function handleHyperliquidStep(
     step: "create" | "quote" | "select" | "execute" | "restart",
   ) {
@@ -3124,25 +3286,27 @@ export function TradingTerminal({
     const context = currentHyperliquidFlow.context;
     const owner = currentHyperliquidFlow.owner;
     if (step === "restart") {
-      setHyperliquidFlow({ ...base, order: null, quote: null, attempt: null, signed: false, executeKey: crypto.randomUUID(), busy: null, error: null });
+      setHyperliquidFlow({ ...base, order: null, quote: null, attempt: null, signed: false, exitTarget: null, executeKey: crypto.randomUUID(), busy: null, error: null });
       return;
     }
     setHyperliquidFlow({ ...base, busy: step, error: null });
     try {
       if (step === "create") {
-        const order = mode === "exit"
+        const exitTarget = mode === "exit" ? hyperliquidExitTarget : null;
+        if (mode === "exit" && exitTarget?.state !== "OPEN") throw new Error("Choose an open package to exit.");
+        const order = exitTarget !== null
           ? await privateProvider.createHyperliquidExitOrder(context, owner, {
             slippageBps: slippage,
             idempotencyKey: crypto.randomUUID(),
-            // Names the open package this flow offers to exit instead of leaving the oldest to the service.
-            ...(hyperliquidOpenPackage ? { entryAttemptId: hyperliquidOpenPackage.entryAttemptId } : {}),
+            // Always names the package the trader chose; the service's oldest-package default is never relied on.
+            entryAttemptId: exitTarget.entryAttemptId,
           })
           : await privateProvider.createHyperliquidOrder(context, owner, {
             size,
             slippageBps: slippage,
             idempotencyKey: crypto.randomUUID(),
           });
-        setHyperliquidFlow({ ...base, order, busy: null, error: null });
+        setHyperliquidFlow({ ...base, order, exitTarget: exitTarget?.entryAttemptId ?? null, busy: null, error: null });
         return;
       }
       if (!base.order) throw new Error("Create the Hyperliquid canonical order first.");
@@ -3853,6 +4017,17 @@ export function TradingTerminal({
             baseFlow={currentBaseFlow}
             arbitrumFlow={currentArbitrumFlow}
             arbitrumExitPanel={arbitrumExitEnabled ? arbitrumExit.panel : null}
+            hyperliquidExitPicker={selectedDomain === "hyperliquid" && mode === "exit" ? (
+              <HyperliquidExitPicker
+                packages={hyperliquidOpenPackages}
+                account={hyperliquidAccount}
+                target={hyperliquidExitTarget}
+                baseSymbol={snapshot.market.base}
+                locked={hyperliquidFlow?.busy != null || (hyperliquidFlow?.attempt != null && hyperliquidFlow.execution === null)}
+                linkedMissing={linkedExitMissing}
+                onChoose={chooseHyperliquidExit}
+              />
+            ) : null}
             nowMs={nowMs}
             executionReview={currentExecutionReview}
             submission={currentSubmission}
@@ -3885,6 +4060,8 @@ export function TradingTerminal({
             privateApiBaseUrl={privateApiBaseUrl}
             publicApiBaseUrl={publicApiBaseUrl}
             packageMarketId={resolvedPackageMarketId}
+            packageMarketHalted={selectedPackageMarket?.halted === true}
+            linkedPackageId={linkedPackageId}
             connectedSolanaAccount={wallet.selectedAccount?.address ?? null}
             connectedEvmAccount={evmWallet.account}
             sendSolanaTransaction={wallet.selectedAccount !== null && wallet.canSignAndSendV0
