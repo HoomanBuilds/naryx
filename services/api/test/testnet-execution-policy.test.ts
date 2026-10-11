@@ -23,6 +23,7 @@ function policyText(overrides: Record<string, unknown> = {}) {
       quoteAssetId: USDC,
       maxPrincipalAtomsPerOperation: "1000000000",
       maxPrincipalAtomsPerDay: "2500000000",
+      maxPrincipalAtomsPerOwnerPerDay: "2500000000",
       maxRecoveryLossAtomsPerOperation: "50000000",
       ...overrides,
     }],
@@ -76,6 +77,7 @@ test("policy parsing refuses mainnet domains, unknown fields, and inverted caps"
   assert.throws(() => parseTestnetExecutionPolicy(policyText({ domainId: "eip155:8453" })), /mainnet/);
   assert.throws(() => parseTestnetExecutionPolicy(policyText({ surprise: true })), /unknown fields/);
   assert.throws(() => parseTestnetExecutionPolicy(policyText({ maxPrincipalAtomsPerDay: "10" })), /per operation <= per day/);
+  assert.throws(() => parseTestnetExecutionPolicy(policyText({ maxPrincipalAtomsPerOwnerPerDay: "" })), /requires maxPrincipalAtomsPerOwnerPerDay/);
   assert.throws(() => parseTestnetExecutionPolicy(policyText({ maxPrincipalAtomsPerOperation: "1.5" })), /decimal atom string/);
   assert.equal(parseTestnetExecutionPolicy(policyText()).domains[0]?.maxPrincipalAtomsPerDay, 2_500_000_000n);
 });

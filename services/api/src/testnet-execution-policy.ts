@@ -121,6 +121,8 @@ export function parseTestnetExecutionPolicy(text: string): TestnetExecutionPolic
     const loss = atoms(value.maxRecoveryLossAtomsPerOperation, `domains[${index}].maxRecoveryLossAtomsPerOperation`);
     if (perOperation === 0n) policyFail(`domains[${index}].maxPrincipalAtomsPerOperation must be positive.`);
     if (perDay !== null && perDay < perOperation) policyFail(`domains[${index}] caps must satisfy per operation <= per day.`);
+    // A network-wide daily cap alone lets one wallet use up the day for every other user.
+    if (perDay !== null && perOwner === null) policyFail(`domains[${index}].maxPrincipalAtomsPerDay requires maxPrincipalAtomsPerOwnerPerDay.`);
     if ((perOwner !== null && perOwner < perOperation) || (perDay !== null && perOwner !== null && perOwner > perDay)) {
       policyFail(`domains[${index}] caps must satisfy per operation <= per owner per day <= per day.`);
     }
