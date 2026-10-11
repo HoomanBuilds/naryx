@@ -52,7 +52,9 @@ operator step 2.
 - Base Sepolia: deploy the atomic package with the tUSDC quote route, rotate the domain and set the
   template through the delayed `ProtocolConfig` steps, deploy the firm liquidity layer with
   `runWith`, run every configure wave (propose, wait `configDelaySeconds`, activate), unpause, then
-  mint tUSDC to the test perp owner and `fundInsurance`.
+  mint tUSDC to the test perp owner and `fundInsurance`. Deploy the independent multi-strategy suite,
+  conformance markets, typed adapter factories, and native clearing house, then activate its fee,
+  adapter, and risk policies through the same delayed governance roles.
 - Arbitrum Sepolia: first confirm GMX has not migrated. The pinned ExchangeRouter and OrderHandler
   must still hold GMX's CONTROLLER role (both did on 2026-10-02; GMX's repository already lists newer,
   not yet activated, addresses):
@@ -67,10 +69,12 @@ operator step 2.
   If either prints `false`, update `ARBITRUM_SEPOLIA_GMX_DEPENDENCIES` and the deploy parameters to
   GMX's current contracts before deploying. Then deploy against GMX market
   `0xb6fC4C9eB02C35A134044526C62bb15014Ac0Bcc` and the seeded pool, rotate the domain, run admission
-  and unpause; mint USDC.SG to the solver for its bond and recovery reserve.
-- Solana Devnet: build with the `devnet-test-perp` feature, deploy and verify the five programs,
+  and unpause; mint USDC.SG to the solver for its bond and recovery reserve. Deploy and activate the
+  same independent multi-strategy suite used on Base so both EVM lanes expose the same package types.
+- Solana Devnet: build with the `devnet-test-perp` feature, deploy and verify the seven programs,
   run `initialize-devnet.mjs` (it waits for each activation slot), create the lookup table, fund the
-  solver's SOL inventory.
+  solver's SOL inventory. Before the first deploy, require the payer to hold the measured seven-program
+  rent total plus at least 2 SOL for fees, initialization, lookup-table rent, and retries.
 - Hyperliquid testnet: no contracts. Approve the agent wallet on the trading account and fund it.
 
 ## 4. Generate the service configuration

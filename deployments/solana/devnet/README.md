@@ -16,6 +16,8 @@ The normal `naryx_core` binary is compiled without the `conformance` feature.
 
 Phoenix Rise has no Devnet deployment, so the Devnet perp leg uses the Naryx Devnet test perp lane described in [Naryx Devnet test perp lane](#naryx-devnet-test-perp-lane). That lane adds `naryx_test_perp` and `naryx_test_perp_adapter`, replaces `naryx_rise_adapter` in the Devnet release, and compiles `naryx_core` with `--features devnet-test-perp`.
 
+The generalized strategy lane additionally deploys `naryx_inventory_adapter` and `naryx_multi_strategy`. These programs provide owned inventory execution, typed multi-leg strategy accounts, recovery, and idle-token withdrawal for the Devnet treasury-hedge flow. They are part of the reviewed release identity set even though the cash-and-carry initialization remains independent.
+
 `naryx_conformance_venue` is local deterministic test infrastructure. It is not a Phoenix Rise substitute and the normal core does not call it. The feature-gated conformance core binary must never replace the normal Devnet core at the same program identity. A future Phoenix-compatible public Devnet conformance dependency needs its own reviewed program, identity, deployment record, and `CONFORMANCE_DEPENDENCY` label.
 
 ## Safety gates
@@ -37,7 +39,7 @@ anchor build --ignore-keys
 solana genesis-hash --url https://api.devnet.solana.com
 ```
 
-Generate or retrieve the five Devnet program keypairs from an external secret directory, then copy them into the ignored `target/deploy` paths with mode `600`. Do not place any keypair under `deployments` or stage it in Git.
+Generate or retrieve the seven Devnet program keypairs from an external secret directory, then copy them into the ignored `target/deploy` paths with mode `600`. Do not place any keypair under `deployments` or stage it in Git.
 
 Sync one reviewed normal program at a time:
 
@@ -47,20 +49,24 @@ anchor keys sync -p naryx_rise_adapter
 anchor keys sync -p naryx_inventory_reservation
 anchor keys sync -p naryx_package_book
 anchor keys sync -p naryx_core
+anchor keys sync -p naryx_inventory_adapter
+anchor keys sync -p naryx_multi_strategy
 node scripts/sync-core-program-ids.mjs
 ```
 
 `anchor keys sync` rewrites each program's `declare_id!` and its entry in the `Anchor.toml` section that matches the provider cluster, which is `[programs.localnet]` here. It does not rewrite `PACKAGE_BOOK_PROGRAM_ID` and `INVENTORY_RESERVATION_PROGRAM_ID` in `programs/naryx_core/src/constants.rs`, which `naryx_core` uses as CPI targets and PDA owners and cannot import because both programs depend on `naryx_core`. `scripts/sync-core-program-ids.mjs` rewrites those two constants from the synced `declare_id!` values, and `--check` exits nonzero without writing when they differ. The `naryx_core` unit test `constants::tests::cross_program_ids_match_declared_ids` also fails while they differ.
 
-Do not pass a URL as `--provider.cluster`: Anchor CLI 1.2.0 treats it as a custom cluster that matches no `Anchor.toml` section, so no entry is updated. `anchor keys sync` never creates a section, and `--provider.cluster devnet` also rewrites `[provider] cluster`. Add the Devnet section to `Anchor.toml` by hand with the same five synced IDs that `[programs.localnet]` now lists. `naryx_conformance_venue` is not part of it.
+Do not pass a URL as `--provider.cluster`: Anchor treats it as a custom cluster that matches no `Anchor.toml` section, so no entry is updated. `anchor keys sync` never creates a section, and `--provider.cluster devnet` also rewrites `[provider] cluster`. Add the Devnet section to `Anchor.toml` by hand with the same seven synced IDs that `[programs.localnet]` now lists. `naryx_conformance_venue` is not part of it.
 
 ```toml
 [programs.devnet]
 naryx_core = "<synced naryx_core ID>"
+naryx_inventory_adapter = "<synced naryx_inventory_adapter ID>"
 naryx_inventory_reservation = "<synced naryx_inventory_reservation ID>"
-naryx_orca_adapter = "<synced naryx_orca_adapter ID>"
+naryx_multi_strategy = "<synced naryx_multi_strategy ID>"
 naryx_package_book = "<synced naryx_package_book ID>"
-naryx_rise_adapter = "<synced naryx_rise_adapter ID>"
+naryx_test_perp = "<synced naryx_test_perp ID>"
+naryx_test_perp_adapter = "<synced naryx_test_perp_adapter ID>"
 ```
 
 Then confirm the core constants and rebuild against the injected keypairs:
@@ -81,6 +87,8 @@ solana rent "$(( $(stat -c %s target/deploy/naryx_core.so) + 45 ))" --url https:
 ```
 
 Repeat for every program in the release. The payer balance must cover the complete rent estimate, deployment fees, and a small retry margin before the first deploy begins. Do not partially deploy a coordinated identity set without recording the incomplete state.
+
+The hard release gate is the sum of all seven rent estimates plus at least 2 SOL for deployment fees, initialization accounts, lookup-table rent, and retries. If the payer is below that total, fund it before the first deployment transaction rather than relying on a mid-release airdrop.
 
 ## Deployment
 
@@ -172,7 +180,7 @@ node scripts/build-devnet-test-perp-artifacts.mjs
 
 The first command produces every program, with the default Rise core. The second replaces `target/deploy/naryx_core.so` with the Devnet core; rebuild the default core before any non-Devnet use, because both builds write the same path. A `devnet-test-perp` core must never be registered or deployed under a mainnet identity. Its perp leg keeps the `rise_strategy` account slot for the test perp strategy PDA and replaces the eight Rise venue accounts with `test_perp_market`, `test_perp_position`, `test_perp_oracle`, `test_perp_collateral_vault`, `test_perp_fee_vault`, and `test_perp_insurance_vault`, and it takes no remaining accounts. The firm entry resolves 55 fixed addresses, inside the 64-address limit. The script publishes the ABI-only core, venue, and adapter IDLs to `deployments/solana/devnet/test-perp/idl`. The TypeScript planner selects this shape with `perpVenueKind: 'NARYX_TEST_PERP'`; there is no fallback between kinds.
 
-The Devnet release then contains `naryx_orca_adapter`, `naryx_test_perp`, `naryx_test_perp_adapter`, `naryx_inventory_reservation`, `naryx_package_book`, and the `devnet-test-perp` `naryx_core`. Sync `naryx_test_perp` and `naryx_test_perp_adapter` with `anchor keys sync -p` like the other programs; the adapter imports the venue ID from the venue crate, so no extra constant sync is needed.
+The Devnet release contains `naryx_test_perp`, `naryx_test_perp_adapter`, `naryx_inventory_reservation`, `naryx_inventory_adapter`, `naryx_multi_strategy`, `naryx_package_book`, and the `devnet-test-perp` `naryx_core`. Sync the test perp and generalized strategy programs with `anchor keys sync -p` like the other programs; imported program IDs need no extra constant sync.
 
 ### Initialization, after a reviewed deployment only
 
@@ -211,7 +219,7 @@ The keeper is the only signer of `set_funding_rate`. It accrues the index at the
 
 The services drive a Devnet entry end to end once the release above is deployed, registered, and initialized. Everything is off by default.
 
-- API (`NARYX_SOLANA_DEVNET_ORDER_CONTEXT_ENABLED`, `NARYX_SOLANA_DEVNET_RUNTIME_ENABLED`): the runtime manifest pins `perpVenueKind: "NARYX_TEST_PERP"`, the `devnet-test-perp` core IDL and its hash, the five program identities, and `testPerp` (market, the Pyth account `7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE`, feed `ef0d8b6f...b56d`, and the strategy id every wallet's strategy PDA derives from). Order contexts price from the live PriceUpdateV2 account with the program's own age and confidence rules, at finalized slots; any wallet trades through its own PDAs, and the settlement account is the wallet. Solver quotes for `svm:devnet` must be `FIRM_ONCHAIN` with a reservation id. The postcondition verifier also reads the trader's test perp position and requires the exact short after entry and a flat position after exit.
+- API (`NARYX_SOLANA_DEVNET_ORDER_CONTEXT_ENABLED`, `NARYX_SOLANA_DEVNET_RUNTIME_ENABLED`): the runtime manifest pins `perpVenueKind: "NARYX_TEST_PERP"`, the `devnet-test-perp` core IDL and its hash, the seven program identities, and `testPerp` (market, the Pyth account `7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE`, feed `ef0d8b6f...b56d`, and the strategy id every wallet's strategy PDA derives from). Order contexts price from the live PriceUpdateV2 account with the program's own age and confidence rules, at finalized slots; any wallet trades through its own PDAs, and the settlement account is the wallet. Solver quotes for `svm:devnet` must be `FIRM_ONCHAIN` with a reservation id. The postcondition verifier also reads the trader's test perp position and requires the exact short after entry and a flat position after exit.
 - Solver (`NARYX_SOLANA_DEVNET_SOLVER_ENABLED`): signs `FIRM_ONCHAIN` quotes from the same Pyth price (inventory spot at the oracle plus `inventorySpreadBps`, the perp at the market's spread, impact, and taker fee) against a firm ask level in its own package book shard, and serves `POST /internal/solana-devnet/attempt-binding` on loopback. The binding funds and finalizes the inventory reservation and locks the quote (each finalized) only with `NARYX_SOLANA_DEVNET_SOLVER_WRITES_ENABLED=true`; otherwise it binds only an already live reservation and lock. Its key is a Solana CLI keypair file outside the repository whose public key is the solver id.
 - The API accepts a binding whose finalized slot is at most 32 slots behind or 160 slots ahead of its own admission slot, because the solver reads and writes at later finalized slots; expiry is still enforced at both slots and by the program.
 
@@ -227,7 +235,7 @@ The services drive a Devnet entry end to end once the release above is deployed,
 
 Every script below runs from `contracts/solana`, requires `--cluster devnet`, verifies the Devnet genesis hash from chain data, refuses keypair files inside the repository, the default Solana CLI wallet, or files readable by group or others, and only simulates unless `--send` is given. Each step is idempotent: an existing account is decoded and must match the plan or the run fails.
 
-1. Deploy and verify the release as described above, then write the candidate release manifest for `naryx_core`, `naryx_inventory_reservation`, `naryx_package_book`, `naryx_test_perp`, and `naryx_test_perp_adapter`.
+1. Deploy and verify the release as described above, then write the candidate release manifest for all seven programs named in the release identity set.
 2. Create the test USDC quote mint. Circle's Devnet USDC faucet grants a few tokens per request, so the hosted Devnet deployment settles in a Naryx test USDC mint: six decimals, the `naryx_test_perp` faucet PDA (seed `test-collateral-faucet`) as its only mint authority, and no freeze authority. Any wallet then claims up to 10,000 per `claim_test_collateral` call into its own token account, up to 10,000,000 per account; the terminal's account setup adds the claim step when a wallet cannot cover its deposit, and the Portfolio page claims on request. Fund the vault funder and the solver the same way:
 
    ```bash

@@ -389,6 +389,27 @@ forge script script/ConfigureArbitrumSepoliaAsyncGmx.s.sol:ConfigureArbitrumSepo
   --sig "verifyActiveRoute($ARBITRUM_ROUTE_TYPE)" "$ARBITRUM_ROUTE" --rpc-url "$RPC_URL"
 ```
 
+## Multi-strategy testnet suite
+
+Base Sepolia and Arbitrum Sepolia may each host an independent multi-strategy suite while reusing the lane's reviewed `ProtocolConfig`. The deployment creates its own `SolverRegistry`, typed adapter registry, fee policy registry, risk domain registry, and account factory. This avoids coupling the suite to a legacy lane's solver registry and gives both chains the same deployment shape.
+
+Run these steps first without `--broadcast`. `runWithNewSolverRegistry` takes `(expectedChainId, expectedDomainManifestVersion, expectedDomainManifestHash, config, initialSolver, feePolicySubjectId)`. The fee policy subject must equal `keccak256("multi-strategy-fees")`; the script rejects every other value so an operator cannot deploy a suite under a configuration identity the services do not recognize.
+
+```bash
+forge script script/DeployEvmMultiStrategyCore.s.sol:DeployEvmMultiStrategyCore \
+  --sig "runWithNewSolverRegistry((uint256,uint32,bytes32,address,address,bytes32))" \
+  "($CHAIN_ID,$DOMAIN_MANIFEST_VERSION,$DOMAIN_MANIFEST_HASH,$CONFIG,$SOLVER,$FEE_POLICY_SUBJECT_ID)" \
+  --rpc-url "$RPC_URL" --account "$DEPLOYER_ACCOUNT" --sender "$DEPLOYER"
+```
+
+The returned contracts are, in order, the fresh `SolverRegistry`, `TypedStrategyAdapterRegistry`, `StrategyFeePolicyRegistry`, `RiskDomainRegistry`, `NaryxMultiStrategyAccountDeployer`, and `NaryxMultiStrategyAccountFactory`. The separate deployer keeps both runtime artifacts below the EVM contract-size limit while preserving deterministic per-owner accounts. Record every address and runtime code hash before continuing.
+
+Next simulate `DeployEvmConformanceMarkets`, `DeployEvmConformanceAdapterFactories`, and `DeployNativePackageClearingHouse` with the same chain ID. The conformance deployment supplies test base and quote tokens, two option pools, lending, ERC-4626, perpetual, and dated-future markets. The adapter deployment binds those exact markets to the account factory. Native clearing uses the conformance quote token and its exact runtime code hash. None of these scripts accepts a mainnet chain ID.
+
+After deployment, use `ConfigureEvmMultiStrategyCore` to propose and activate the fee policy, every typed adapter binding, and the risk policy. Fee, adapter, and risk proposals all obey the `ProtocolConfig` delay. Entry remains unavailable until the fee policy, adapter records, and risk domain are active. The pauser can immediately stop fee collection, tighten an adapter, or pause new risk-domain entry without blocking valid exits.
+
+Only after each dry run succeeds and its output has been reviewed should the identical command be rerun with `--broadcast --slow`. Base Sepolia uses chain ID `84532`; Arbitrum Sepolia uses `421614`. The suite is testnet-only and does not authorize any mainnet deployment.
+
 ## Runtime manifests
 
 The API loads one JSON file per lane from `NARYX_BASE_SEPOLIA_RUNTIME_MANIFEST` and `NARYX_ARBITRUM_SEPOLIA_RUNTIME_MANIFEST`. Both are protocol JSON: a bigint is `{"$naryxType":"bigint","value":"<decimal>"}` and a byte string is `{"$naryxType":"bytes","value":"<lowercase hex without 0x>"}`. A contract identity is `{"address":"0x...","expectedCodeHash":"0x..."}` with the code hash read from the chain. At startup and on every attempt the API compares each identity with the live code hash and refuses any mismatch.
