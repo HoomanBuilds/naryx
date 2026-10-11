@@ -10,6 +10,8 @@ contract NativePackageClearingHouse is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     uint256 private constant BPS = 10_000;
+    /// The same 10% ceiling the strategy fee policies enforce; a deployment can only choose lower.
+    uint16 public constant HARD_MAX_FEE_BPS = 1_000;
     bytes32 private constant MATCH_TYPEHASH = keccak256(
         "NativeMatch(bytes32 policyHash,bytes32 authorizationHash,bytes32 longAccountId,bytes32 shortAccountId,bytes32 feePayerAccountId,uint64 longSequence,uint64 shortSequence,uint128 quantityAtoms,uint128 priceTicks,uint16 maxFeeBps,uint64 expiry)"
     );
@@ -177,7 +179,7 @@ contract NativePackageClearingHouse is ReentrancyGuard {
                 || configuration.maximumDefaultTransferDiscountBps > BPS
                 || configuration.markMaximumStalenessSeconds == 0 || configuration.defaultAuctionDurationSeconds == 0
                 || configuration.defaultAuctionDurationSeconds > configuration.markMaximumStalenessSeconds
-                || configuration.feeUpdateDelaySeconds == 0 || configuration.maximumFeeBps > BPS
+                || configuration.feeUpdateDelaySeconds == 0 || configuration.maximumFeeBps > HARD_MAX_FEE_BPS
         ) revert InvalidConfiguration();
         collateralToken = collateralToken_;
         policyHash = configuration.policyHash;

@@ -44,6 +44,30 @@ contract NativePackageClearingHouseTest is Test {
         clearing.setEntryPaused(false);
     }
 
+    function testRejectsAFeeCeilingAboveTheHardMaximum() public {
+        NativePackageClearingHouse.Configuration memory configuration = NativePackageClearingHouse.Configuration({
+            policyHash: keccak256("policy"),
+            governor: address(this),
+            pauser: address(this),
+            markAuthority: address(this),
+            packageQuantityIncrementAtoms: 1,
+            priceTickQuoteAtoms: 1_000,
+            initialMarginQuoteAtomsPerIncrement: 20_000,
+            maintenanceMarginQuoteAtomsPerIncrement: 10_000,
+            maximumPositionAtoms: 10,
+            maximumOpenInterestAtoms: 100,
+            maximumDefaultTransferDiscountBps: 1_000,
+            markMaximumStalenessSeconds: 600,
+            defaultAuctionDurationSeconds: 60,
+            feeUpdateDelaySeconds: 30,
+            maximumFeeBps: 1_001
+        });
+        vm.expectRevert(NativePackageClearingHouse.InvalidConfiguration.selector);
+        new NativePackageClearingHouse(IERC20(address(token)), configuration);
+        configuration.maximumFeeBps = 1_000;
+        new NativePackageClearingHouse(IERC20(address(token)), configuration);
+    }
+
     function testRejectsTheClearingHouseAsItsOwnFeeRecipient() public {
         vm.expectRevert(NativePackageClearingHouse.InvalidConfiguration.selector);
         clearing.scheduleFeeUpdate(10, address(clearing));

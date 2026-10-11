@@ -107,6 +107,19 @@
   },
   {
     "type": "function",
+    "name": "HARD_MAX_FEE_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "account",
     "inputs": [
       {
