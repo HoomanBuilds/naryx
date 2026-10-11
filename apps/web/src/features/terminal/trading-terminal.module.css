@@ -215,7 +215,8 @@
     position: sticky;
     top: 56px;
     align-self: start;
-    max-height: calc(100dvh - 60px);
+    /* Header 52px, the pinned 28px status bar, and the grid gaps. */
+    max-height: calc(100dvh - 92px);
   }
 
   .areaBottom .tableScroller {

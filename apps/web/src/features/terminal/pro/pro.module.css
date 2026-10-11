@@ -1078,6 +1078,15 @@
   overflow: hidden;
 }
 
+/* Pinned to the window bottom on desktop, where the trade page scrolls, so lane state stays in view. */
+@media (min-width: 1280px) {
+  .statusBar {
+    position: sticky;
+    z-index: 20;
+    bottom: 0;
+  }
+}
+
 .statusItem {
   display: inline-flex;
   align-items: center;
