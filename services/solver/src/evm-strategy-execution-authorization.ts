@@ -24,6 +24,7 @@ import type { StrategyPreparationService } from './strategy-preparation-service.
 
 const TEST_CHAIN_IDS = new Set([84_532, 421_614, 31_337, 31_338]);
 const PRIVATE_KEY = /^0x[0-9a-fA-F]{64}$/;
+const TESTNET_KEY_ENVIRONMENTS = new Set(['EVM_TESTNET', 'BASE_SEPOLIA', 'ARBITRUM_SEPOLIA']);
 
 export interface AuthorizedEvmStrategyExecution {
   readonly version: 1;
@@ -63,7 +64,8 @@ export function loadEvmStrategySolverKey(path: string | undefined, expectedAddre
   }
   const record = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
   if (Object.keys(record).sort().join(',') !== 'environment,privateKey,version' || record.version !== 1
-    || record.environment !== 'EVM_TESTNET' || typeof record.privateKey !== 'string'
+    || typeof record.environment !== 'string' || !TESTNET_KEY_ENVIRONMENTS.has(record.environment)
+    || typeof record.privateKey !== 'string'
     || !PRIVATE_KEY.test(record.privateKey) || /^0x0+$/.test(record.privateKey)) {
     throw new Error('EVM strategy solver key file fields are invalid');
   }
