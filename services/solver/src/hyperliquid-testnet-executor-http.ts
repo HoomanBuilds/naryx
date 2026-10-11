@@ -1485,6 +1485,7 @@ export function createHyperliquidTestnetExecutorRequestHandler(
         : await executor.status(parseStatusRequest(body)));
     } catch (error) {
       if (error instanceof HyperliquidTestnetExecutorError) {
+        console.error("Hyperliquid Testnet executor request refused:", error.code, error.message);
         const status = error.code === 'ATTEMPT_NOT_FOUND' ? 404
           : error.code === 'ATTEMPT_IDENTITY_MISMATCH' || error.code === 'ATTEMPT_INTERRUPTED' ? 409
             : error.code === 'INVALID_REQUEST' || error.code === 'INVALID_ATTEMPT' ? 400 : 502;
