@@ -414,7 +414,7 @@ export function parseHyperliquidTestnetLaneReleaseRequest(value: unknown): Hyper
   requireCondition(isRecord(value), 'INVALID_REQUEST', 'request must be an object');
   requireCondition(hasExactKeys(value, ['attemptId', 'disposition', 'reason']), 'INVALID_REQUEST',
     'request must contain only attemptId, disposition, and reason');
-  requireCondition(typeof value.attemptId === 'string' && ID.test(value.attemptId),
+  requireCondition(typeof value.attemptId === 'string' && ATTEMPT_ID.test(value.attemptId),
     'INVALID_REQUEST', 'attemptId is invalid');
   requireCondition(value.disposition === 'FINAL' || value.disposition === 'ABANDONED',
     'INVALID_REQUEST', 'disposition must be FINAL or ABANDONED');

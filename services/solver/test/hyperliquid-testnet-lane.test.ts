@@ -355,7 +355,7 @@ function capturedResponse() {
 
 test('exposes lane release only to direct loopback operators and maps refusals', async () => {
   const subject = lane();
-  const holder = 'attempt-holder-00003';
+  const holder = `hyperliquid-testnet-${'03'.repeat(24)}`;
   await subject.run(holder, KEY, async () => reconciled(holder, 'RECOVERY_REQUIRED'));
   const operator: HyperliquidTestnetLaneOperator = {
     async recover() {
