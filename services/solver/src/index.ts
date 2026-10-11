@@ -641,6 +641,18 @@ function evidenceBase(
   };
 }
 
+function logVenueRejection(attemptId: string, error: unknown): void {
+  if (!(error instanceof ApiRequestError)) return;
+  let detail: string;
+  try {
+    detail = JSON.stringify(error.response);
+  } catch {
+    detail = error.message;
+  }
+  const safe = detail.replace(/[^\x20-\x7e]/g, ' ').slice(0, 2_000);
+  process.stderr.write(`Hyperliquid Testnet venue rejected ${attemptId}: ${safe}\n`);
+}
+
 async function reconcile(
   journal: HyperliquidDurableSubmissionJournalPort,
   receipt: HyperliquidJournalReceipt,
@@ -749,6 +761,7 @@ export class HyperliquidTestnetPackageSubmissionService {
     } catch (error) {
       const knownRejection = error instanceof ApiRequestError
         || error instanceof AbstractWalletError || error instanceof ValidationError;
+      logVenueRejection(input.attemptId, error);
       try {
         if (knownRejection) {
           const rejected = await this.#journal.reject({
