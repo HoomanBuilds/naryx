@@ -43,7 +43,7 @@ test('a HyperCore short perp normalizes to an exact mark, liquidation price, and
     {
       time: 1_790_000_000_000,
       assetPositions: [
-        { position: { coin: 'BTC', szi: '-0.5', positionValue: '30617.25', liquidationPx: '75000.0', marginUsed: '3061.725' } },
+        { position: { coin: 'BTC', szi: '-0.5', positionValue: '30617.25', liquidationPx: '75000.123456789012', marginUsed: '3061.725' } },
         { position: { coin: 'DOGE', szi: '100', positionValue: '12.5', liquidationPx: null, marginUsed: '1.25' } },
         { position: { coin: 'BTC-FLAT', szi: '0', positionValue: '0', liquidationPx: null, marginUsed: '0' } },
       ],
@@ -56,8 +56,8 @@ test('a HyperCore short perp normalizes to an exact mark, liquidation price, and
   assert.equal(position.quantityBaseAtoms, -50_000_000n);
   // 30617.25 USDC over 0.5 BTC is 61234.50 per BTC.
   assert.equal(positionNotional(position), -30_617_250_000n);
-  assert.equal(position.liquidationPrice?.quoteAtoms, 750n);
-  assert.equal(position.liquidationPrice?.baseAtoms, 1n);
+  assert.equal(position.liquidationPrice?.quoteAtoms, 18_750_030_864_197_253n);
+  assert.equal(position.liquidationPrice?.baseAtoms, 25_000_000_000_000n);
   assert.equal(position.collateralQuoteAtoms, 3_061_725_000n);
   assert.deepEqual(position.unknownFields, ['maintenanceRequirementQuoteAtoms']);
   assert.deepEqual(buildExposureGraph(snapshot.positions, usdc).byRiskDomain.map((line) => line.key), ['hypercore-cross']);

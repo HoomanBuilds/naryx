@@ -83,6 +83,27 @@ function reducedPrice(baseAsset: AssetRef, quoteAsset: AssetRef, quoteAtoms: big
   return { baseAsset, quoteAsset, quoteAtoms: quoteAtoms / divisor, baseAtoms: baseAtoms / divisor, roundingDirection: 'AWAY_FROM_ZERO' };
 }
 
+function decimalPrice(
+  value: string,
+  baseAsset: AssetRef,
+  quoteAsset: AssetRef,
+  context: string,
+): ExactPriceInput {
+  const match = DECIMAL.exec(value);
+  if (match === null || match[1] === '-') {
+    throw new MalformedInputError(context, 'expected a nonnegative decimal price');
+  }
+  const whole = match[2]!;
+  const fraction = (match[3] ?? '').replace(/0+$/, '');
+  const significand = BigInt(`${whole}${fraction}`);
+  return reducedPrice(
+    baseAsset,
+    quoteAsset,
+    significand * 10n ** BigInt(quoteAsset.decimals),
+    10n ** BigInt(baseAsset.decimals + fraction.length),
+  );
+}
+
 function bindingsByCoin(context: HyperliquidSnapshotContext): ReadonlyMap<string, HyperliquidPositionBinding> {
   const bindings = new Map<string, HyperliquidPositionBinding>();
   for (const binding of context.bindings) {
@@ -126,7 +147,9 @@ export function normalizeHyperliquidPerpPositions(
     const value = decimalToAtoms(position.positionValue, quoteDecimals, `${at}.positionValue`);
     if (value <= 0n) throw new MalformedInputError(`${at}.positionValue`, 'an open position has a positive value');
     const size = quantity < 0n ? -quantity : quantity;
-    const liquidation = position.liquidationPx === null ? undefined : decimalToAtoms(position.liquidationPx, quoteDecimals, `${at}.liquidationPx`);
+    const liquidation = position.liquidationPx === null
+      ? undefined
+      : decimalPrice(position.liquidationPx, binding.baseAsset, context.quoteAsset, `${at}.liquidationPx`);
     const input: NormalizedPositionInput = {
       adapterVersion: NORMALIZED_POSITION_VERSION,
       snapshotId: `${context.snapshotPrefix}:perp:${position.coin}`,
@@ -139,9 +162,9 @@ export function normalizeHyperliquidPerpPositions(
       positionType: 'PERPETUAL',
       quantityBaseAtoms: quantity,
       markPrice: reducedPrice(binding.baseAsset, context.quoteAsset, value, size),
-      ...(liquidation === undefined || liquidation <= 0n
+      ...(liquidation === undefined || liquidation.quoteAtoms === 0n
         ? {}
-        : { liquidationPrice: reducedPrice(binding.baseAsset, context.quoteAsset, liquidation, 10n ** BigInt(baseDecimals)) }),
+        : { liquidationPrice: liquidation }),
       collateralQuoteAtoms: decimalToAtoms(position.marginUsed, quoteDecimals, `${at}.marginUsed`),
       dependencyIds: binding.dependencyIds,
       riskDomainId: binding.riskDomainId,
