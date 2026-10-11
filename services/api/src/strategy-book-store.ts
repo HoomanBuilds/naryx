@@ -360,6 +360,7 @@ export class SqliteStrategyBookStore {
       }
       const receipt = this.originReceipt(hex);
       if (receipt === undefined) throw new StrategyBookError("RECEIPT_NOT_FOUND", `No settled receipt has hash ${hex}.`);
+      if (receipt.finalityStatus !== "FINALIZED") throw new StrategyBookError("RECEIPT_NOT_FINAL", `Receipt ${hex} is not finalized.`);
       return receipt;
     });
     const prior = states.get(command.strategyId) as StrategyState;
@@ -390,6 +391,8 @@ export class SqliteStrategyBookStore {
   private requireOrigin(originHex: string, state: StrategyState): void {
     const receipt = this.originReceipt(originHex);
     if (receipt === undefined) throw new StrategyBookError("ORIGIN_NOT_FOUND", "No settled receipt has this hash.");
+    // A venue-committed receipt (HyperCore) is tracked as a native position, never founded here too.
+    if (receipt.finalityStatus !== "FINALIZED") throw new StrategyBookError("ORIGIN_NOT_FINAL", "Only a finalized receipt founds a strategy.");
     if (isStrategyPackageReceipt(receipt)) {
       const checked = strategyPackageReceipt(receipt);
       if (

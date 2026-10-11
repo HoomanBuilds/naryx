@@ -205,6 +205,9 @@ function integer(value: unknown, context: string): number {
   return value;
 }
 
+/** The failure recorded for a reserved attempt whose order expired before its child reached the book. */
+export const EXPIRED_UNSETTLED_REASON = "ORDER_EXPIRED_BEFORE_SETTLEMENT";
+
 function storedBigint(value: unknown, context: string): bigint {
   if (typeof value !== "string" || !/^-?(?:0|[1-9][0-9]*)$/.test(value)) {
     throw new OrderActivationStoreError("CORRUPT_ROW", `${context} is not a canonical integer.`);
@@ -773,6 +776,36 @@ export class SqliteOrderActivationStore {
       }
       this.setStatus(orderHashHex, status);
       return { replayed: false, view: this.requireView(orderHashHex) };
+    });
+  }
+
+  /**
+   * Fails a reserved attempt whose child never reached the package book once the order has expired
+   * on its own clock, and expires the activation; the child carries the same expiry, so the book can
+   * no longer accept it. The caller confirms first that the child has no settlement commitment.
+   * Returns undefined while the order is unexpired or its clock has no verified read here.
+   */
+  expireReservedAttempt(attemptIdValue: string): { readonly replayed: boolean; readonly view: OrderActivationView } | undefined {
+    return this.transaction(() => {
+      const attempt = this.attempt(attemptIdValue);
+      if (attempt === undefined) throw new OrderActivationStoreError("ATTEMPT_NOT_FOUND", "No activation attempt has this id.");
+      if (attempt.status !== "RESERVED") {
+        if (attempt.status !== "FAILED" || attempt.failureReason !== EXPIRED_UNSETTLED_REASON || attempt.settlementEvidence !== undefined) {
+          throw new OrderActivationStoreError("ATTEMPT_CONFLICT", "The activation attempt already has another outcome.");
+        }
+        return { replayed: true, view: this.requireView(attempt.orderHashHex) };
+      }
+      const view = this.requireView(attempt.orderHashHex);
+      const unit = view.order.expiryUnit;
+      if (unit !== "EVM_UNIX_SECONDS" && unit !== "HYPERLIQUID_UNIX_MILLISECONDS") return undefined;
+      if (this.activationClockValue(attempt.orderHashHex) < view.order.expiryValue) return undefined;
+      this.db.prepare(`
+        UPDATE order_activation_attempts
+        SET status = 'FAILED', executed_quantity_atoms = '0', execution_price_ticks = NULL, failure_reason = ?, completed_at_ms = ?
+        WHERE attempt_id = ? AND status = 'RESERVED'
+      `).run(EXPIRED_UNSETTLED_REASON, this.clock(), attemptIdValue);
+      this.setStatus(attempt.orderHashHex, "EXPIRED");
+      return { replayed: false, view: this.requireView(attempt.orderHashHex) };
     });
   }
 

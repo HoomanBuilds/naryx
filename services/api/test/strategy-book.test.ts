@@ -212,6 +212,10 @@ test("position moves are accepted only with unclaimed settled receipts that acco
       const full = build(who, parameters);
       return book.submit(full, { scheme: "ED25519", signature: signature(who, full) }, consents);
     };
+    // Only a finalized receipt founds a strategy or accounts for its change.
+    receipts.set("a1".repeat(32), receipt(hash(1), { owner: owner.id, netSpotDelta: 1_000_000_000n, finalityStatus: "VENUE_COMMITTED" }));
+    receipts.set("b5".repeat(32), { ...exitReceipt(owner.id, 500_000_000n), finalityStatus: "VENUE_COMMITTED" });
+    await assert.rejects(() => submit(owner, { kind: "OPEN", originReceiptHash: "a1".repeat(32), state: initial }), { code: "ORIGIN_NOT_FINAL" });
     assert.ok((await submit(owner, { kind: "OPEN", originReceiptHash: "aa".repeat(32), state: initial })).accepted);
 
     const decrease = (hashes: string[]) => submit(owner, { kind: "DECREASE", changeBps: 5_000n, executionReceiptHashes: hashes });
@@ -219,6 +223,7 @@ test("position moves are accepted only with unclaimed settled receipts that acco
     await assert.rejects(() => decrease(["b9".repeat(32)]), { code: "RECEIPT_NOT_FOUND" });
     await assert.rejects(() => decrease(["aa".repeat(32)]), { code: "RECEIPT_CLAIMED" });
     await assert.rejects(() => decrease(["b3".repeat(32)]), { code: "RECEIPT_OWNER_MISMATCH" });
+    await assert.rejects(() => decrease(["b5".repeat(32)]), { code: "RECEIPT_NOT_FINAL" });
     const decreased = await decrease(["b1".repeat(32)]);
     assert.ok(decreased.accepted && decreased.receipt?.externalPositionsMoved === true);
     assert.equal(book.strategy("carry-1")?.state.legs.find((leg) => leg.legId === "spot")?.signedQuantityAtoms, 500_000_000n);

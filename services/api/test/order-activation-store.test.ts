@@ -283,6 +283,36 @@ test("an activation attempt durably binds one exact executable child", () => {
   }
 });
 
+test("a reserved attempt whose child never committed fails only once the order has expired", () => {
+  const dir = mkdtempSync(join(tmpdir(), "naryx-order-expire-"));
+  const executionSchedule = schedule();
+  const { orderHashHex, orders } = source(order({ packageOrderType: "SCHEDULED", executionScheduleHash: executionScheduleHash(executionSchedule) }));
+  let nowMs = 1_000_000;
+  const store = new SqliteOrderActivationStore(join(dir, "activation.sqlite"), { orders, clock: () => nowMs });
+  try {
+    store.register({ orderHashHex, schedule: executionSchedule });
+    const reservation = store.reserve({ orderHashHex, observations: [], atValue: 1_000n, side: "BID", limitPriceTicks: 100n });
+    if (!reservation.active) assert.fail(reservation.reason);
+    const attemptId = reservation.attempt.attemptId;
+    assert.throws(() => store.cancel(orderHashHex), { code: "ATTEMPT_OUTSTANDING" });
+    nowMs = 1_999_999;
+    assert.equal(store.expireReservedAttempt(attemptId), undefined);
+    nowMs = 2_000_000;
+    const expired = store.expireReservedAttempt(attemptId);
+    assert.equal(expired?.replayed, false);
+    assert.equal(expired?.view.status, "EXPIRED");
+    assert.deepEqual(
+      [expired?.view.attempts[0]?.status, expired?.view.attempts[0]?.executedQuantityAtoms, expired?.view.progress.executedQuantity],
+      ["FAILED", 0n, 0n],
+    );
+    assert.equal(store.expireReservedAttempt(attemptId)?.replayed, true);
+    assert.deepEqual(store.reserve({ orderHashHex, observations: [], atValue: 1_060n, side: "BID", limitPriceTicks: 100n }), { active: false, reason: "EXPIRED" });
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("activation time is read from the store clock on the order's own clock and never from a slot clock", () => {
   const dir = mkdtempSync(join(tmpdir(), "naryx-order-clock-"));
   const seconds = source(order({ packageOrderType: "SCHEDULED", executionScheduleHash: executionScheduleHash(schedule()) }));

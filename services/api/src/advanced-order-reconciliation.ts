@@ -6,11 +6,13 @@ import {
   type PackageAllocation,
   type PackageSettlementCommitment,
 } from "@naryx/protocol-types";
-import type {
-  OrderActivationAttempt,
-  OrderActivationView,
-  SqliteOrderActivationStore,
+import {
+  EXPIRED_UNSETTLED_REASON,
+  type OrderActivationAttempt,
+  type OrderActivationView,
+  type SqliteOrderActivationStore,
 } from "./order-activation-store.js";
+import { nativePositionReceiptFinal } from "./native-strategy-position.js";
 import type {
   SqliteStrategyPackageStore,
   StoredStrategyPackageOrder,
@@ -41,7 +43,7 @@ export type AdvancedOrderReconciliationResult =
     activation: OrderActivationView;
   }>;
 
-type ActivationPort = Pick<SqliteOrderActivationStore, "attempt" | "completeWithEvidence">;
+type ActivationPort = Pick<SqliteOrderActivationStore, "attempt" | "completeWithEvidence" | "expireReservedAttempt">;
 type StrategyPort = Pick<SqliteStrategyPackageStore, "order" | "packageExecutionLock" | "receiptByOrder">;
 type ExchangePort = Readonly<{
   getAllocation(packageOrderId: string): PackageAllocation | undefined;
@@ -124,9 +126,31 @@ export class AdvancedOrderReconciliation {
     this.dependencies = dependencies;
   }
 
+  /**
+   * A reserved attempt whose child never committed to the package book stays pending until the
+   * order expires; then it fails without execution so the activation does not stay locked.
+   */
+  private unsettled(
+    stage: "CHILD_NOT_PREPARED" | "PACKAGE_ORDER_NOT_SUBMITTED",
+    attempt: OrderActivationAttempt,
+  ): AdvancedOrderReconciliationResult {
+    const expired = this.dependencies.activations.expireReservedAttempt(attempt.attemptId);
+    if (expired === undefined) return pending(stage, attempt);
+    return Object.freeze({
+      status: "COMPLETED",
+      replayed: expired.replayed,
+      outcome: "FAILED",
+      attempt: expired.view.attempts.find((candidate) => candidate.attemptId === attempt.attemptId)!,
+      activation: expired.view,
+    });
+  }
+
   reconcile(attemptId: string): AdvancedOrderReconciliationResult {
     const attempt = requireAttempt(this.dependencies.activations.attempt(attemptId));
     if (attempt.status !== "RESERVED") {
+      if (attempt.settlementEvidence === undefined && attempt.failureReason === EXPIRED_UNSETTLED_REASON) {
+        return this.unsettled("PACKAGE_ORDER_NOT_SUBMITTED", attempt);
+      }
       if (attempt.settlementEvidence === undefined) {
         throw new AdvancedOrderReconciliationError("ATTEMPT_TERMINAL", "The activation attempt is terminal without settlement evidence.");
       }
@@ -149,19 +173,20 @@ export class AdvancedOrderReconciliation {
         activation: activation.view,
       });
     }
-    if (attempt.childOrderHashHex === undefined) return pending("CHILD_NOT_PREPARED", attempt);
+    if (attempt.childOrderHashHex === undefined) return this.unsettled("CHILD_NOT_PREPARED", attempt);
     const child = requireChildOrder(this.dependencies.strategies.order(attempt.childOrderHashHex), attempt);
     const lock = this.dependencies.strategies.packageExecutionLock(attempt.childOrderHashHex);
-    if (lock === undefined) return pending("PACKAGE_ORDER_NOT_SUBMITTED", attempt);
+    if (lock === undefined) return this.unsettled("PACKAGE_ORDER_NOT_SUBMITTED", attempt);
+    // An unfillable fill-or-kill child is locked to its package order but never commits.
     const commitment = this.dependencies.exchange.settlementCommitment(lock.packageOrderIdHex);
-    if (commitment === undefined) return pending("PACKAGE_ORDER_NOT_SUBMITTED", attempt);
+    if (commitment === undefined) return this.unsettled("PACKAGE_ORDER_NOT_SUBMITTED", attempt);
     const allocation = this.dependencies.exchange.getAllocation(lock.packageOrderIdHex);
     if (allocation === undefined) return pending("ALLOCATION_NOT_AVAILABLE", attempt);
     const totals = requireAllocation(allocation, commitment, child, attempt);
     const receipt = this.dependencies.strategies.receiptByOrder(attempt.childOrderHashHex);
     if (receipt === undefined) return pending("RECEIPT_NOT_AVAILABLE", attempt);
     requireReceipt(receipt, attempt.childOrderHashHex);
-    if (receipt.receipt.finalityStatus !== "FINALIZED") return pending("RECEIPT_NOT_FINAL", attempt);
+    if (!nativePositionReceiptFinal(receipt.receipt)) return pending("RECEIPT_NOT_FINAL", attempt);
     const outcome = requiresSuccessfulReceipt(receipt.receipt.terminalState) ? "SUCCEEDED" : "FAILED";
     const completed = this.dependencies.activations.completeWithEvidence({
       attemptId,
