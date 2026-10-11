@@ -91,3 +91,4 @@ temp/
 *.orig
 *.pid
 *.seed
+.vercel
