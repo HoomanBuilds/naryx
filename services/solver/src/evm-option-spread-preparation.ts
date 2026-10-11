@@ -98,7 +98,6 @@ const OPTION_POSITION_ABI = [{
 export interface EvmOptionSpreadAdapterFactoryBinding {
   readonly role: EvmOptionSpreadRole;
   readonly factory: EvmOptionSpreadContractIdentity;
-  readonly expectedAdapterCodeHash: Hex;
   readonly maximumGasLimit: bigint;
 }
 
@@ -255,9 +254,7 @@ async function readAdapterState(
     chain.readContract({ address: getAddress(pool.pool.address), abi: OPTION_POSITION_ABI, functionName: 'balanceOf', args: [address, 1n] }),
     chain.readContract({ address: getAddress(pool.pool.address), abi: OPTION_POSITION_ABI, functionName: 'balanceOf', args: [address, 0n] }),
   ]);
-  requireCondition(codeHashValue !== undefined
-    && hash(codeHashValue, `${roleId} adapter code hash`) === hash(factory.expectedAdapterCodeHash, `${roleId} expected adapter code hash`),
-  `${roleId} adapter is not provisioned with reviewed code`);
+  requireCondition(codeHashValue !== undefined, `${roleId} adapter is not provisioned`);
   requireCondition(validValue === true, `${roleId} adapter factory rejects the package instance`);
   return Object.freeze({
     role: roleId,

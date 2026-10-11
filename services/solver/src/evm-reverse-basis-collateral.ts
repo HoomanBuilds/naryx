@@ -191,9 +191,8 @@ export class EvmReverseBasisCollateralService {
       chain.readContract({ address: getAddress(lane.pricing.quoteToken.address), abi: TOKEN_ABI,
         functionName: 'allowance', args: [owner, account] }),
     ]);
-    requireCondition(adapterCode !== undefined && hash(adapterCode, 'adapter code')
-      === hash(lendingBinding.expectedAdapterCodeHash, 'expected adapter code') && valid === true,
-    'lending adapter is not the reviewed package instance');
+    requireCondition(adapterCode !== undefined && valid === true,
+      'lending adapter is not the factory-validated package instance');
     requireCondition(tupleField(packageStateValue, 3, 'package state') === false, 'package must be inactive');
     const observed = accountData(accountDataValue);
     requireCondition(observed.totalDebtBase === 0n, 'lending adapter still has debt');

@@ -141,7 +141,6 @@ type AdapterRole = 'base-borrow' | 'spot-sale' | 'perp-purchase';
 export interface EvmReverseBasisAdapterFactoryBinding {
   readonly role: AdapterRole;
   readonly factory: EvmOptionSpreadContractIdentity;
-  readonly expectedAdapterCodeHash: Hex;
   readonly maximumGasLimit: bigint;
 }
 
@@ -327,9 +326,7 @@ async function readAdapter(
     lane.pricing.chain.readContract({ address: factory, abi: ADAPTER_FACTORY_ABI,
       functionName: 'validateInstance', args: [address, account, packageId] }),
   ]);
-  requireCondition(code !== undefined && hash(code, `${roleId} adapter code`)
-    === hash(binding.expectedAdapterCodeHash, `${roleId} expected adapter code`) && valid === true,
-  `${roleId} adapter is not a reviewed package instance`);
+  requireCondition(code !== undefined && valid === true, `${roleId} adapter is not a factory-validated package instance`);
   return Object.freeze({ role: roleId, address, codeHash: hash(code, `${roleId} adapter code`), factory: binding });
 }
 

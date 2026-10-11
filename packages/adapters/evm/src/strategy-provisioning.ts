@@ -42,7 +42,6 @@ export interface EvmStrategyAdapterProvisioningSnapshot {
   readonly factory: EvmObservedContract;
   readonly expectedFactoryCodeHash: Hex;
   readonly instance: EvmObservedContract;
-  readonly expectedInstanceCodeHash: Hex;
   readonly factoryAdapterOfPackage: Address;
   readonly factoryValidatesInstance: boolean;
 }
@@ -53,7 +52,7 @@ export interface EvmProvisioningTransaction {
   readonly data: Hex;
   readonly value: 0n;
   readonly expectedAddress: Address;
-  readonly expectedCodeHash: Hex;
+  readonly expectedCodeHash?: Hex;
   readonly adapterId?: string;
 }
 
@@ -132,7 +131,6 @@ export function compileEvmStrategyProvisioning(input: Readonly<{
     const factory = checkedObserved(candidate.factory, `adapter ${candidate.adapterId} factory`);
     const instance = checkedObserved(candidate.instance, `adapter ${candidate.adapterId} instance`);
     const expectedFactoryCodeHash = checkedHash(candidate.expectedFactoryCodeHash, `adapter ${candidate.adapterId} expected factory code hash`);
-    const expectedInstanceCodeHash = checkedHash(candidate.expectedInstanceCodeHash, `adapter ${candidate.adapterId} expected instance code hash`);
     requireCondition(factory.codeHash === expectedFactoryCodeHash, `adapter ${candidate.adapterId} factory code hash mismatch`);
     requireCondition(!factoryAddresses.has(factory.address), `adapter factory ${factory.address} is repeated`);
     requireCondition(!instanceAddresses.has(instance.address), `adapter instance ${instance.address} is repeated`);
@@ -144,7 +142,6 @@ export function compileEvmStrategyProvisioning(input: Readonly<{
     );
     const deployed = instance.codeHash !== zeroHash;
     if (deployed) {
-      requireCondition(instance.codeHash === expectedInstanceCodeHash, `adapter ${candidate.adapterId} instance code hash mismatch`);
       requireCondition(candidate.factoryValidatesInstance, `adapter ${candidate.adapterId} factory rejects its deployed instance`);
       continue;
     }
@@ -159,7 +156,6 @@ export function compileEvmStrategyProvisioning(input: Readonly<{
       }),
       value: 0n,
       expectedAddress: instance.address,
-      expectedCodeHash: expectedInstanceCodeHash,
       adapterId: candidate.adapterId,
     }));
   }

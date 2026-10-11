@@ -24,7 +24,6 @@ function input(deployed: boolean) {
       factory: { address: address(4), codeHash: hash(4) },
       expectedFactoryCodeHash: hash(4),
       instance: { address: address(5), codeHash: deployed ? hash(5) : zeroHash },
-      expectedInstanceCodeHash: hash(5),
       factoryAdapterOfPackage: address(5),
       factoryValidatesInstance: deployed,
     }, {
@@ -32,7 +31,6 @@ function input(deployed: boolean) {
       factory: { address: address(6), codeHash: hash(6) },
       expectedFactoryCodeHash: hash(6),
       instance: { address: address(7), codeHash: deployed ? hash(7) : zeroHash },
-      expectedInstanceCodeHash: hash(7),
       factoryAdapterOfPackage: address(7),
       factoryValidatesInstance: deployed,
     }],
@@ -56,7 +54,7 @@ test('returns ready only when every observed deployment is recognized', () => {
   assert.deepEqual(plan.transactions, []);
 });
 
-test('rejects a factory prediction or deployed code mismatch', () => {
+test('rejects a factory prediction or an unrecognized deployed instance', () => {
   assert.throws(
     () => compileEvmStrategyProvisioning({
       ...input(true),
@@ -67,8 +65,8 @@ test('rejects a factory prediction or deployed code mismatch', () => {
   assert.throws(
     () => compileEvmStrategyProvisioning({
       ...input(true),
-      adapters: [{ ...input(true).adapters[0], instance: { address: address(5), codeHash: hash(9) } }],
+      adapters: [{ ...input(true).adapters[0], factoryValidatesInstance: false }],
     }),
-    /instance code hash mismatch/,
+    /factory rejects its deployed instance/,
   );
 });

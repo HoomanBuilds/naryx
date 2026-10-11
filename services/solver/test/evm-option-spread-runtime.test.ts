@@ -444,10 +444,10 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
       expectedStrategyAccountCodeHash: codeHash('7'),
       adapters: [{
         role: 'option-long', factory: { address: LONG_FACTORY, expectedCodeHash: codeHash('8') },
-        expectedAdapterCodeHash: codeHash('a'), maximumGasLimit: 600_000n,
+        maximumGasLimit: 600_000n,
       }, {
         role: 'option-short', factory: { address: SHORT_FACTORY, expectedCodeHash: codeHash('9') },
-        expectedAdapterCodeHash: codeHash('b'), maximumGasLimit: 600_000n,
+        maximumGasLimit: 600_000n,
       }],
       solver: SOLVER,
       packageIds: { resolvePackageId: async () => undefined },
@@ -636,10 +636,10 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
       expectedStrategyAccountCodeHash: codeHash('7'),
       adapters: [{
         role: 'option-long', factory: { address: LONG_FACTORY, expectedCodeHash: codeHash('8') },
-        expectedAdapterCodeHash: codeHash('a'), maximumGasLimit: 600_000n,
+        maximumGasLimit: 600_000n,
       }, {
         role: 'option-short', factory: { address: SHORT_FACTORY, expectedCodeHash: codeHash('9') },
-        expectedAdapterCodeHash: codeHash('b'), maximumGasLimit: 600_000n,
+        maximumGasLimit: 600_000n,
       }],
       solver: SOLVER,
       packageIds: { resolvePackageId: async () => undefined },

@@ -98,7 +98,9 @@ function plan(value: unknown, expectedOrderHash: string): EvmStrategyProvisionin
     const item = transaction as Record<string, unknown>;
     if ((item.kind !== 'CREATE_STRATEGY_ACCOUNT' && item.kind !== 'CREATE_PACKAGE_ADAPTER')
       || typeof item.to !== 'string' || typeof item.data !== 'string' || item.value !== 0n
-      || typeof item.expectedAddress !== 'string' || typeof item.expectedCodeHash !== 'string') {
+      || typeof item.expectedAddress !== 'string'
+      || (item.kind === 'CREATE_STRATEGY_ACCOUNT' && typeof item.expectedCodeHash !== 'string')
+      || (item.expectedCodeHash !== undefined && typeof item.expectedCodeHash !== 'string')) {
       throw new EvmOptionSpreadProvisioningClientError('INVALID_RESPONSE', 'provisioning transaction fields are invalid');
     }
   }

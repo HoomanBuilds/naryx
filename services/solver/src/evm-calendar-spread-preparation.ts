@@ -151,7 +151,6 @@ const FUTURE_MARKET_ABI = [{
 export interface EvmCalendarSpreadAdapterFactoryBinding {
   readonly role: EvmCalendarSpreadRole;
   readonly factory: EvmOptionSpreadContractIdentity;
-  readonly expectedAdapterCodeHash: Hex;
   readonly maximumGasLimit: bigint;
 }
 
@@ -319,9 +318,7 @@ async function readAdapter(
     lane.pricing.chain.readContract({ address, abi: FUTURE_ADAPTER_ABI, functionName: 'position' }),
     lane.pricing.chain.readContract({ address: market, abi: FUTURE_MARKET_ABI, functionName: 'reserveOf', args: [address] }),
   ]);
-  requireCondition(code !== undefined
-    && hash(code, `${roleId} adapter code`) === hash(factoryBinding.expectedAdapterCodeHash, `${roleId} expected adapter code`)
-    && valid === true, `${roleId} adapter is not a reviewed package instance`);
+  requireCondition(code !== undefined && valid === true, `${roleId} adapter is not a factory-validated package instance`);
   return Object.freeze({
     role: roleId,
     address,

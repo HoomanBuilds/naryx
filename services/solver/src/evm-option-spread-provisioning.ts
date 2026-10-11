@@ -215,7 +215,6 @@ export class EvmOptionSpreadProvisioningResolver {
         factory: Object.freeze({ address: factory, codeHash: factoryCodeValue }),
         expectedFactoryCodeHash: binding.factory.expectedCodeHash,
         instance: Object.freeze({ address: adapter, codeHash: adapterCode ?? zeroHash }),
-        expectedInstanceCodeHash: binding.expectedAdapterCodeHash,
         factoryAdapterOfPackage: adapter,
         factoryValidatesInstance: valid,
       });

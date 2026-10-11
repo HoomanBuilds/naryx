@@ -186,7 +186,6 @@ function lane(
     return Object.freeze({
       role: item.role,
       factory: contract(item.factory, `lane.adapters[${index}].factory`),
-      expectedAdapterCodeHash: hash(item.expectedAdapterCodeHash, `lane.adapters[${index}].expectedAdapterCodeHash`),
       maximumGasLimit: positive(item.maximumGasLimit, `lane.adapters[${index}].maximumGasLimit`),
     });
   });
