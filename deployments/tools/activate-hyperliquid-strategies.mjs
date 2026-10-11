@@ -367,7 +367,7 @@ for (const definition of definitions) {
       maximumExpiryTtlMs: 300_000n,
     },
   };
-  profiles.push(profile);
+  if (definition.templateId !== 'cash-and-carry-v1') profiles.push(profile);
   series.push(seriesDocument);
   executionClasses.push(classDocument);
   matchingPolicies.push(policy);
