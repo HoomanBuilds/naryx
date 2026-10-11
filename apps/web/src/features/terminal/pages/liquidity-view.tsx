@@ -68,8 +68,8 @@ export function LiquidityView() {
     <main className={styles.page}>
       <div className={styles.pageHead}>
         <div>
-          <h1>Liquidity operations</h1>
-          <p>Current signed quote shards, firm inventory utilization, fills, and capacity evidence for the configured Naryx solver.</p>
+          <h1>Maker tools</h1>
+          <p>For liquidity providers running a Naryx solver: signed quote shards, firm inventory utilization, fills, and capacity evidence. Traders do not need this page.</p>
         </div>
         <div className={styles.headActions}>
           <button type="button" className={styles.ghost} onClick={refresh} disabled={loading || privateProvider === null}>
@@ -94,8 +94,8 @@ export function LiquidityView() {
       {!snapshot && unconfigured ? (
         <section className={styles.card}>
           <div className={styles.empty}>
-            <strong>Maker operations are not configured</strong>
-            <p>Enable the solver API and bind NARYX_MAKER_SOLVER_ID in the private service. No signing key is exposed to this browser.</p>
+            <strong>No maker configured</strong>
+            <p>Maker tools are for liquidity providers running a Naryx solver. This deployment has none configured. Trading does not depend on this page.</p>
           </div>
         </section>
       ) : null}

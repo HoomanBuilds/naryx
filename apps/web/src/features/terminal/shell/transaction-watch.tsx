@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
@@ -76,7 +77,8 @@ async function readOutcome(provider: PrivateHttpTerminalProvider, attempt: Recor
  * back into view, stops once each is final, and posts a notice when one settles.
  */
 export function TransactionWatch() {
-  const { attempts, privateProvider, notify } = useTerminal();
+  const { attempts, privateProvider, notify, selectedDomain } = useTerminal();
+  const pathname = usePathname();
   const solanaOwner = useSolanaWallet().selectedAccount?.address ?? null;
   const evmOwner = useEvmWallet().account;
   const queryClient = useQueryClient();
@@ -112,6 +114,8 @@ export function TransactionWatch() {
       void queryClient.invalidateQueries({ queryKey: ["lifecycle", attempt.attemptId] });
       void queryClient.invalidateQueries({ queryKey: ["owner-packages"] });
       void queryClient.invalidateQueries({ queryKey: ["positions"] });
+      // The open ticket already shows its own domain's outcome; a notice would repeat it.
+      if (pathname === "/trade" && attempt.domain === selectedDomain) return;
       notify(outcome.tone, `${DOMAIN_META[attempt.domain].network} ${attempt.mode} (size ${attempt.size}): ${outcome.label}`,
         { href: "/activity", label: "View activity" });
     });

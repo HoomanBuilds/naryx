@@ -17,8 +17,8 @@ const NAV: readonly { href: "/trade" | "/markets" | "/portfolio" | "/activity" |
   { href: "/markets", label: "Markets" },
   { href: "/portfolio", label: "Portfolio" },
   { href: "/activity", label: "Activity" },
-  { href: "/liquidity", label: "Liquidity" },
   { href: "/network", label: "Network" },
+  { href: "/liquidity", label: "Makers" },
 ];
 
 function BrandMark() {

@@ -122,6 +122,7 @@ type StrategyPreparationReview = Readonly<{
 type AdmissionSummary = Readonly<{
   quoteHash: string;
   routeHash: string;
+  owner: string;
   templateId: string;
   templateVersion: number;
   lifecycleAction: string;
@@ -1108,6 +1109,7 @@ function parseAdmissions(payload: unknown): readonly AdmissionSummary[] {
     return Object.freeze({
       quoteHash: hash(admission.quoteHashHex, `Recent strategy package ${index} quote hash`),
       routeHash: hash(admission.routeHashHex, `Recent strategy package ${index} route hash`),
+      owner: text(admission.owner, `Recent strategy package ${index} owner`),
       templateId: text(admission.templateId, `Recent strategy package ${index} template`),
       templateVersion: integer(admission.templateVersion, `Recent strategy package ${index} template version`),
       lifecycleAction: text(admission.lifecycleAction, `Recent strategy package ${index} action`),
@@ -3330,7 +3332,10 @@ export function GeneralizedStrategyPreparationPanel({
     return () => controller.abort();
   }, [hyperliquidLane, privateApiBaseUrl, sourceOrderHash, lifecycleAction, strategyOwner, templateId, strategyReceipt?.receiptHash]);
 
-  const matchingAdmissions = admissions.filter((admission) => admission.templateId === templateId
+  // The recent feed is public; only the connected wallet's own admitted packages are offered.
+  const matchingAdmissions = admissions.filter((admission) => (admission.owner === solanaOwner
+    || (strategyOwner !== null && admission.owner.toLowerCase() === strategyOwner.toLowerCase()))
+    && admission.templateId === templateId
     && admission.lifecycleAction === lifecycleAction
     && admission.domainIds.length === 1
     && admission.domainIds[0] === expectedDomainId);
@@ -6472,7 +6477,7 @@ export function GeneralizedStrategyPreparationPanel({
       <div className={styles.strategyPrepareForm}>
         {matchingAdmissions.length > 0 ? (
           <>
-            <label htmlFor="generalized-strategy-admission">Recent admitted package</label>
+            <label htmlFor="generalized-strategy-admission">Your recent quoted packages</label>
             <select
               id="generalized-strategy-admission"
               value={matchingAdmissions.some((admission) => admission.quoteHash === quoteHash) ? quoteHash : ""}
@@ -6496,7 +6501,7 @@ export function GeneralizedStrategyPreparationPanel({
                 setError(null);
               }}
             >
-              <option value="">Select an admitted quote</option>
+              <option value="">Select one of your quotes</option>
               {matchingAdmissions.map((admission) => (
                 <option key={admission.quoteHash} value={admission.quoteHash}>
                   {admission.domainIds.join(" + ")} / {admission.solverId} / {compact(admission.quoteHash, 8, 6)}
@@ -6672,10 +6677,12 @@ export function GeneralizedStrategyPreparationPanel({
           : review ? "Compilation passed. Nothing has been signed or submitted."
             : quoteReview ? "The signed quote is admitted and ready for unsigned execution preparation."
             : admissionError ?? (publicApiBaseUrl === null
-              ? "Preparation is read-only. Paste an admitted quote hash from the package API."
+              ? "The quote service is not configured on this deployment. Paste a quote hash you already have to review it. Nothing is signed or sent."
               : matchingAdmissions.length === 0
-                ? "No recent admitted quote matches this template and lifecycle action."
-                : "Select a recent admitted quote or paste its hash. Preparation never broadcasts."))}
+                ? strategyOwner === null && solanaOwner === null
+                  ? "Connect your wallet to list your recent quotes for this strategy, or paste a quote hash."
+                  : "You have no recent quote for this strategy and action. Request one above, or paste a quote hash."
+                : "Pick one of your recent quotes, or paste a quote hash, to review it. Nothing is signed or sent."))}
       </p>
       {review ? (
         <>

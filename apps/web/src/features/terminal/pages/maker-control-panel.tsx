@@ -61,7 +61,7 @@ export function MakerControlPanel({
       <div className={styles.cardHead}>
         <div>
           <h2 id="maker-controls-title">Emergency quote controls</h2>
-          <p>Exact-state controls are signed inside the solver process. The browser can request cancellation or halt, but cannot place quotes or re-arm a killed shard.</p>
+          <p>Only for the operator of this maker&apos;s solver. Exact-state controls are signed inside the solver process. The browser can request cancellation or halt, but cannot place quotes or re-arm a killed shard.</p>
         </div>
         <span className={styles.pillWarn}>Restricted operation</span>
       </div>
@@ -87,6 +87,7 @@ export function MakerControlPanel({
               onChange={(event) => setOperatorToken(event.target.value)}
               aria-invalid={operatorToken.length > 0 && !validToken}
             />
+            <small>Issued to maker operators only. Traders never need it.</small>
           </label>
           <div className={styles.makerObservedState}>
             <span>Observed state</span>

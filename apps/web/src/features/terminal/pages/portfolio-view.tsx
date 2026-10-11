@@ -153,16 +153,16 @@ export function PortfolioView() {
     hyperliquid: useHyperliquidBalance(evmAddress),
   };
   const accountFor = (domain: DomainId) => (DOMAIN_META[domain].wallet === "solana" ? solanaAddress : evmAddress);
+  // Hyperliquid packages run in the Naryx shared testnet account, so the wallet's own Hyperliquid
+  // balance funds nothing here and stays out of the total.
   const usdcTotal = sumUsdc([
     balances.solana.usdc,
     balances.base.usdc,
     balances.arbitrum.usdc,
-    balances.hyperliquid.usdc,
-    balances.hyperliquid.perpEquity ?? null,
   ]);
   const usdcPartial = DOMAIN_ORDER.some((domain) => {
     const balance = balances[domain];
-    return accountFor(domain) !== null && (balance.loading || balance.failed || balance.perpEquity === null
+    return domain !== "hyperliquid" && accountFor(domain) !== null && (balance.loading || balance.failed
       || (!balance.quoteUnconfigured && balance.usdc === null));
   });
   const connectedCount = (solanaAddress ? 1 : 0) + (evmAddress ? 1 : 0);
@@ -186,7 +186,7 @@ export function PortfolioView() {
         <div>
           <span>Testnet USDC</span>
           <strong>{usdcTotal !== null ? `$${usdcTotal}` : "-"}</strong>
-          <small>{usdcPartial ? "Partial: some balances not read" : "Across connected accounts"}</small>
+          <small>{usdcPartial ? "Partial: some balances not read" : "Solana, Base, and Arbitrum accounts"}</small>
         </div>
         <div>
           <span>Open packages</span>
@@ -208,7 +208,7 @@ export function PortfolioView() {
       <section className={styles.card} aria-labelledby="balances-title">
         <div className={styles.cardHead}>
           <h2 id="balances-title">Balances</h2>
-          <p>One row per execution domain. Test USDC is free: each claim adds {TEST_USDC_GRANT}. Gas comes from each network&apos;s faucet.</p>
+          <p>One row per execution domain. Test USDC is free: each claim adds {TEST_USDC_GRANT}. Gas comes from each network&apos;s faucet. Hyperliquid packages execute in the Naryx shared testnet account; no funding needed. Its row shows your own Hyperliquid testnet balance for reference only and is not counted in the total.</p>
         </div>
         <div className={styles.scroll}>
           <table className={styles.table}>
@@ -256,6 +256,7 @@ export function PortfolioView() {
                           ? <span title="Spot balance / perpetual account equity">{balance.usdc?.value ?? "0"} <span className={styles.dim}>spot</span> / {balance.perpEquity.value} <span className={styles.dim}>perp</span></span>
                           : amountText(balance.usdc, balance, account !== null, true)}
                       </span>
+                      {domain === "hyperliquid" && account ? <small className={styles.cellDetail}>Yours, not used by Naryx</small> : null}
                     </td>
                     <td>
                       <span className={live ? styles.pillOk : styles.pill}>

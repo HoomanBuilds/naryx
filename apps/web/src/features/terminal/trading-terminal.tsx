@@ -6,7 +6,7 @@ import { useBalance, useReadContract } from "wagmi";
 import { fixtureMarketFeed } from "./market-feed";
 import { usePublicMarketFeed, usePublicPackageMarkets } from "./public-market-feed";
 import { useReferenceMarketFeed } from "./reference-market-feed";
-import { handleTablistKeys, usePersistedSetting } from "./persisted-setting";
+import { handleTablistKeys, usePersistedFlag, usePersistedSetting } from "./persisted-setting";
 import { ChartWorkspace } from "./pro/chart-workspace";
 import { InstrumentBar } from "./pro/instrument-bar";
 import { OrderBook } from "./pro/order-book";
@@ -225,8 +225,17 @@ type HyperliquidFlowState = {
 
 const HYPERLIQUID_ACTIVE_PACKAGE_STATES = new Set(["PENDING_ENTRY", "OPEN", "EXITING", "UNRESOLVED"]);
 
+const HYPERLIQUID_LANE_BLOCKED_COPY =
+  "The shared testnet lane is paused while another package is reconciled. Your order waits; nothing has been sent.";
+
+/** Queued behind a lane another package holds BLOCKED; an in-flight attempt's own block is not this. */
+function hyperliquidLaneBlocked(progress: HyperliquidAttemptProgress | null | undefined): boolean {
+  return progress?.state === "QUEUED" && progress.lane === "BLOCKED";
+}
+
 function hyperliquidProgressLabel(progress: HyperliquidAttemptProgress | null): string | null {
   if (progress === null) return null;
+  if (hyperliquidLaneBlocked(progress)) return "Waiting, shared lane paused";
   if (progress.state === "QUEUED") {
     return progress.queuePosition === 0 ? "Queued, next in line" : `Queued, ${progress.queuePosition} ahead`;
   }
@@ -636,6 +645,7 @@ function HyperliquidTestnetPanel({
         Executed in Naryx&apos;s Hyperliquid testnet account on your behalf. Your wallet owns the package and signs its
         authorization; the shared trading account below holds and settles it, one package at a time.
       </p>
+      {hyperliquidLaneBlocked(flow?.progress) ? <p className={styles.reviewNotice}>{HYPERLIQUID_LANE_BLOCKED_COPY}</p> : null}
       {context ? (
         <div className={styles.reviewGrid}>
           <span>Owner (your wallet)</span><strong title={flow?.owner ?? undefined}>{flow?.owner ? compact(flow.owner, 10, 8) : "Not connected"}</strong>
@@ -1260,6 +1270,28 @@ function Ticket({
     : hyperliquidFlow?.attempt ? "selected" : hyperliquidFlow?.quote ? "quote" : hyperliquidFlow?.order ? "order" : "idle";
   const conformanceState = localFlow?.lifecycle?.attempt.state ??
     (localFlow?.attempt ? "SELECTED" : localFlow?.quote ? "QUOTE REVIEW" : localFlow?.order ? "UNSIGNED" : null);
+  const [advancedOpen, setAdvancedOpen] = usePersistedFlag("ticket.advanced-strategies", false);
+  const strategyPanel = (
+    <GeneralizedStrategyPreparationPanel
+      key={`${selectedDomain}:${selectedStrategyTemplateId}:${selectedLifecycleAction}:${selectedDomain === "hyperliquid" ? hyperliquidFlow?.attempt?.orderHash ?? "manual" : "manual"}`}
+      privateApiBaseUrl={privateApiBaseUrl}
+      publicApiBaseUrl={publicApiBaseUrl}
+      packageMarketId={packageMarketId}
+      executionDomain={selectedDomain}
+      templateId={selectedStrategyTemplateId}
+      lifecycleAction={selectedLifecycleAction}
+      sourceOrderHash={selectedDomain === "hyperliquid" && selectedLifecycleAction === "ENTRY" ? hyperliquidFlow?.attempt?.orderHash ?? null : null}
+      strategyOwner={(selectedDomain === "hyperliquid" ? hyperliquidFlow?.owner : connectedEvmAccount)?.toLowerCase() ?? null}
+      solanaOwner={connectedSolanaAccount}
+      sendSolanaTransaction={sendSolanaTransaction}
+      signStrategyOrder={signStrategyOrder}
+      signPackageBookOrder={signPackageBookOrder}
+      signEvmStrategyExecution={signEvmStrategyExecution}
+      sendEvmTransaction={sendEvmStrategyTransaction}
+      waitForEvmReceipt={waitForEvmStrategyReceipt}
+      walletAwaiting={walletAwaiting}
+    />
+  );
 
   return (
     <aside className={styles.ticket} aria-labelledby="ticket-title">
@@ -1501,26 +1533,17 @@ function Ticket({
         />
       ) : null}
 
-      {!nativeCashFlow || selectedDomain === "hyperliquid" ? (
-        <GeneralizedStrategyPreparationPanel
-          key={`${selectedDomain}:${selectedStrategyTemplateId}:${selectedLifecycleAction}:${selectedDomain === "hyperliquid" ? hyperliquidFlow?.attempt?.orderHash ?? "manual" : "manual"}`}
-          privateApiBaseUrl={privateApiBaseUrl}
-          publicApiBaseUrl={publicApiBaseUrl}
-          packageMarketId={packageMarketId}
-          executionDomain={selectedDomain}
-          templateId={selectedStrategyTemplateId}
-          lifecycleAction={selectedLifecycleAction}
-          sourceOrderHash={selectedDomain === "hyperliquid" && selectedLifecycleAction === "ENTRY" ? hyperliquidFlow?.attempt?.orderHash ?? null : null}
-          strategyOwner={(selectedDomain === "hyperliquid" ? hyperliquidFlow?.owner : connectedEvmAccount)?.toLowerCase() ?? null}
-          solanaOwner={connectedSolanaAccount}
-          sendSolanaTransaction={sendSolanaTransaction}
-          signStrategyOrder={signStrategyOrder}
-          signPackageBookOrder={signPackageBookOrder}
-          signEvmStrategyExecution={signEvmStrategyExecution}
-          sendEvmTransaction={sendEvmStrategyTransaction}
-          waitForEvmReceipt={waitForEvmStrategyReceipt}
-          walletAwaiting={walletAwaiting}
-        />
+      {!nativeCashFlow ? strategyPanel : selectedDomain === "hyperliquid" ? (
+        <details className={styles.flowDetails} open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}>
+          <summary>
+            <span>Advanced strategies</span>
+            <span className={styles.chipNeutral}>Optional</span>
+          </summary>
+          <p className={styles.summaryNote}>
+            Package-level tools for experienced users: strategy quotes, package book orders, and settlement review. A normal trade on the ticket above does not need this.
+          </p>
+          {strategyPanel}
+        </details>
       ) : null}
 
       <section className={styles.summaryCard} aria-labelledby="fee-summary-title">
@@ -2610,7 +2633,9 @@ export function TradingTerminal({
       }
       const progress = hyperliquidProgressLabel(currentHyperliquidFlow?.progress ?? null);
       if (currentHyperliquidFlow?.busy === "execute" && progress) {
-        return none(progress, "Executed in Naryx's Hyperliquid testnet account on your behalf; the account runs one package at a time.");
+        return none(progress, hyperliquidLaneBlocked(currentHyperliquidFlow.progress)
+          ? HYPERLIQUID_LANE_BLOCKED_COPY
+          : "Executed in Naryx's Hyperliquid testnet account on your behalf; the account runs one package at a time.");
       }
       if (currentHyperliquidFlow?.execution) {
         const execution = currentHyperliquidFlow.execution;
@@ -3169,7 +3194,9 @@ export function TradingTerminal({
         }
         if (progress?.state !== "COMPLETED") {
           throw progress && progress.state !== "NOT_STARTED"
-            ? new Error("The outcome is not recorded yet. Check again shortly; the package is never submitted twice.")
+            ? new Error(hyperliquidLaneBlocked(progress)
+              ? `${HYPERLIQUID_LANE_BLOCKED_COPY} Check again shortly; the package is never submitted twice.`
+              : "The outcome is not recorded yet. Check again shortly; the package is never submitted twice.")
             : cause;
         }
         execution = progress.result;
@@ -3678,7 +3705,12 @@ export function TradingTerminal({
       }
       done({ reclaimHash: hash, reclaimed: true });
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message : "Arbitrum Sepolia action failed.";
+      const raw = cause instanceof Error ? cause.message : "Arbitrum Sepolia action failed.";
+      // The solver's GMX price-impact refusal (quote QUOTE_DECLINED or executor COLLATERAL_BELOW_MINIMUM)
+      // keeps its exact figures behind a plain reason; the refusal itself is the solver's.
+      const message = /GMX's price impact of/.test(raw)
+        ? `The GMX testnet market is currently one-sided, so entries are refused to protect you. Exits are not affected by this check. Detail: ${raw}`
+        : raw;
       // An expired quote cannot be re-selected for the same order: start a fresh order instead.
       const restart = (step === "prepare" || step === "sign") && /expired|admission/i.test(message);
       setArbitrumFlow((previous) => ({
