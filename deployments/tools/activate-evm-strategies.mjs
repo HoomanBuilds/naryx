@@ -77,6 +77,12 @@ const accountFactoryAbi = Object.freeze([{
 async function inspectNetwork(input) {
   const release = JSON.parse(readFileSync(join(repository, 'deployments/evm', input.network, 'multi-strategy-release.json'), 'utf8'));
   const releaseRecord = readProtocol(`release-records/${input.network}.json`);
+  const domainManifest = protocol.domainManifest(release.domainManifest);
+  const domainManifestHash = `0x${protocol.toHex(protocol.domainManifestHash(domainManifest))}`;
+  if (domainManifest.manifestVersion !== release.domain.manifestVersion
+    || domainManifestHash !== release.domain.manifestHash) {
+    throw new Error(`${input.network} multi-strategy domain manifest differs from its active reference`);
+  }
   const client = createPublicClient({ transport: http(input.rpcUrl) });
   if (await client.getChainId() !== input.chainId) throw new Error(`${input.network} RPC chain differs`);
   const addresses = release.conformance;
@@ -119,7 +125,7 @@ async function inspectNetwork(input) {
     release,
     releaseRecord,
     domain,
-    domainManifest: releaseRecord.domainManifest,
+    domainManifest,
     baseAsset,
     quoteAsset,
     baseToken,

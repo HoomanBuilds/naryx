@@ -15,6 +15,23 @@
     "manifestVersion": 2,
     "manifestHash": "0xd20ecf3eebb55aa881473ceed695c7d4cfc53d54dea91b7a3847a1b5f72dc2c9"
   },
+  "domainManifest": {
+    "manifestVersion": 2,
+    "environment": "testnet",
+    "domainId": "eip155:84532",
+    "runtimeClassId": "naryx-evm",
+    "runtimeClassVersion": 1,
+    "chainNamespace": "eip155",
+    "chainReference": "84532",
+    "executionVerifierId": "package-verifier-v1",
+    "executionVerifierCodeHash": "0xb04e236c0c71448f6fb1b46ba754b9fd8598575cea75bd99f0fedc2f3170dd10",
+    "clockModelId": "evm-unix-seconds",
+    "finalityPolicyHash": "0x8974f9631561064aa8c9396875cda442ab80daa2542a3dd0c592f631508337db",
+    "addressCodecId": "evm-address-20",
+    "supportedSettlementClasses": [
+      "ATOMIC_POSTCONDITION"
+    ]
+  },
   "policy": {
     "feeSubjectId": "0x5739c6fdc0a4de0dba0a196c17066856e0fe22d9bad9480a828baca7292394c6",
     "feePolicyManifestHash": "0x509193765d1fd3f4808adf66c66dd14e58953d44f1f1203247699e47985aaa29",
