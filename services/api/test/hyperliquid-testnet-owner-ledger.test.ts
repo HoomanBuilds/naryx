@@ -336,6 +336,26 @@ test("a completed strategy decrease or exit releases its exposure exactly once, 
   reserve("alice-3", ALICE, 3_001n);
 }));
 
+test("a strategy backfill counts each pre-ledger execution once, never revives a release, and frees closed strategies", withLedger((ledger) => {
+  const reconcile = (open: { attemptId: string; owner: string; strategyKey: string; notionalAtoms: bigint }[], closedStrategyKeys: string[] = []) =>
+    ledger.reconcileStrategyExposures({ open, closedStrategyKeys });
+  const reserve = (attemptId: string, owner: string, notionalAtoms: bigint) =>
+    ledger.reserveExposure({ attemptId, owner, strategyKey: attemptId, notionalAtoms, newPackage: true, limits: LIMITS });
+  const aliceEntry = { attemptId: "alice-entry", owner: ALICE, strategyKey: "alice-k", notionalAtoms: 3_000n };
+  assert.deepEqual(reconcile([aliceEntry]), { backfilled: 1, released: 0 });
+  assert.deepEqual(reconcile([aliceEntry]), { backfilled: 0, released: 0 });
+  assert.throws(() => reserve("alice-2", ALICE, 1n), refused("OWNER_PACKAGE_LIMIT"));
+  assert.throws(() => reserve("bob-1", BOB, 2_001n), refused("OMNIBUS_NOTIONAL_LIMIT"));
+  // An exit released the strategy; a store still listing its entry does not revive it.
+  ledger.applyReduction({ attemptId: "alice-exit", strategyKey: "alice-k", reducedQuantityAtoms: null, priorQuantityAtoms: 1n });
+  assert.deepEqual(reconcile([aliceEntry]), { backfilled: 0, released: 0 });
+  reserve("bob-1", BOB, 5_000n);
+  // A strategy the store closed while its reduction went unreported is released at the next startup.
+  assert.deepEqual(reconcile([], ["bob-1"]), { backfilled: 0, released: 1 });
+  reserve("alice-2", ALICE, 5_000n);
+  assert.throws(() => reconcile([{ ...aliceEntry, attemptId: "alice-zero", notionalAtoms: 0n }]), refused("LEDGER_CONFLICT"));
+}));
+
 test("an UNRESOLVED entry or exit takes its later final outcome, and a later unresolved one changes nothing", withLedger((ledger) => {
   ledger.reserveEntry({ attemptId: "entry-1", owner: ALICE, orderHash: "01".repeat(32), notionalAtoms: 1_000n, limits: LIMITS });
   ledger.settleEntry("entry-1", reconciled("entry-1", "MANUAL_INTERVENTION", "0", "0"), 600n);

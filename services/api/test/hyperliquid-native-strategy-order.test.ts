@@ -11,17 +11,23 @@ import {
   manifestHash,
   packageGraph,
   packageGraphHash,
+  protocolId,
+  requireStrategyTemplateDefinition,
   strategyPackageOrder,
   strategyPackageOrderHash,
+  strategyPackageQuote,
   strategyPackageReceipt,
   strategyPackageReceiptHash,
   strategyExecutionMatches,
   stringifyProtocolJson,
   toHex,
+  typedStrategyRouteHash,
   validateStrategyTemplateGraph,
   versionedManifestRef,
+  type AdmittedStrategyRoute,
   type PackageGraphInput,
   type StrategyPackageOrderInput,
+  type TypedStrategyRoute,
 } from "@naryx/protocol-types";
 import {
   applyNativeStrategyExitReceipt,
@@ -41,6 +47,9 @@ import {
   type HyperliquidNativeStrategyProfile,
 } from "../src/index.js";
 import type { StrategyOrderIntakePort } from "../src/strategy-order-intake.js";
+import { SqliteStrategyPackageStore } from "../src/strategy-package-store.js";
+import { HyperliquidTestnetOwnerLedger } from "../src/hyperliquid-testnet-owner-ledger.js";
+import { attachHyperliquidStrategyExposures } from "../src/hyperliquid-testnet-owner-routes.js";
 
 const NOW_MS = 1_000_000;
 const OWNER = "0x1111111111111111111111111111111111111111";
@@ -671,4 +680,134 @@ test("derives an authoritative native state and closes only its exact exit", () 
   assert.equal(closed.status, "CLOSED");
   assert.equal(closed.state.open, false);
   assert.equal(closed.state.legs[0]?.signedQuantityAtoms, 0n);
+});
+
+test("the exposure ledger counts a native strategy opened before it and follows reductions recorded on any path", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-native-exposure-"));
+  const strategies = new SqliteStrategyPackageStore(join(scratch, "strategies.db"), { clock: () => NOW_MS });
+  const ledger = new HyperliquidTestnetOwnerLedger(join(scratch, "execution.db"));
+  try {
+    const selectedProfile = profile("btc-treasury-hedge", "treasury-inventory-hedge-v1");
+    const { baseAsset, quoteAsset, domain } = selectedProfile;
+    const port = createHyperliquidNativeStrategyOrderPort({
+      profiles: [selectedProfile],
+      intake: { store: (order, graph) => ({ ...intake.store(order, graph), ...strategies.registerOrder(order, graph) }) },
+      currentTimeMs: () => NOW_MS,
+    });
+    const amount = (atoms: bigint) => assetAmount(quoteAsset, atoms);
+    let nonce = 10n;
+    // Admits, selects, and returns the receipt-recording step of one native execution, as any path records it.
+    const execute = (lifecycleAction: "ENTRY" | "DECREASE" | "EXIT", quantityAtoms: bigint, economicQuantityAtoms: bigint,
+      settledAtoms: bigint, notionalAtoms: bigint, expectedStrategyStateHash?: string) => {
+      nonce += 1n;
+      const created = port.create({
+        profileId: selectedProfile.profileId, owner: OWNER, lifecycleAction,
+        quantityAtoms: quantityAtoms.toString(), economicQuantityAtoms: economicQuantityAtoms.toString(),
+        limitPrices: [{ legId: "treasury-hedge", quoteAtoms: lifecycleAction === "ENTRY" ? "60001" : "59999", baseAtoms: "1" }],
+        expiryValue: "1020000", nonce: nonce.toString(),
+        ...(expectedStrategyStateHash === undefined ? {} : { expectedStrategyStateHash }),
+      });
+      const orderHash = strategyPackageOrderHash(created.order);
+      const route: TypedStrategyRoute = {
+        version: 1, environment: created.order.environment, orderHash, graphHash: packageGraphHash(created.graph),
+        solverId: protocolId("solver-a"), settlementClass: created.order.settlementClass, legs: [],
+        domainPlans: [{ domain, executionPlanKind: "HYPERCORE_BATCHED_IOC", legIds: [], stageCount: 1 }],
+        routeExpiryUnit: "HYPERLIQUID_UNIX_MILLISECONDS", routeExpiryValue: created.order.expiryValue,
+      };
+      const quote = strategyPackageQuote({
+        version: 1, environment: created.order.environment, domains: [domain], orderHash, graphHash: route.graphHash,
+        routeHash: typedStrategyRouteHash(route), templateId: created.order.templateId, templateVersion: created.order.templateVersion,
+        packageTemplateManifestHash: created.order.packageTemplateManifestHash, seriesId: created.order.seriesId,
+        seriesVersion: created.order.seriesVersion, seriesManifestHash: created.order.seriesManifestHash,
+        executionClassId: created.order.executionClassId, executionClassVersion: created.order.executionClassVersion,
+        executionClassManifestHash: created.order.executionClassManifestHash, quoteConventionId: created.order.quoteConventionId,
+        riskClassId: created.order.riskClassId, solverId: "solver-a", solverCapabilityManifestHash: "15".repeat(32),
+        quoteMode: "EXECUTION_COMMITMENT", settlementClass: created.order.settlementClass, quoteAsset,
+        metrics: requireStrategyTemplateDefinition(created.order.templateId).metricIds
+          .map((metricId) => ({ metricId, value: 0n, scale: 0, unitId: "unit" })),
+        legEconomics: [{
+          legId: "treasury-hedge", quantity: assetAmount(baseAsset, quantityAtoms), grossNotional: amount(notionalAtoms),
+          marginDelta: amount(0n), venueFee: amount(1n), builderFee: amount(0n), residualValue: amount(0n),
+        }],
+        netPackageOutcome: amount(0n), totalGrossNotional: amount(notionalAtoms), totalMarginDelta: amount(0n),
+        totalResidualValue: amount(0n), serviceCharges: [], passThroughCosts: [{ category: "VENUE", amount: amount(1n) }],
+        feePolicyVersion: 1, feePolicyManifestHash: "16".repeat(32), validUntilUnit: "HYPERLIQUID_UNIX_MILLISECONDS",
+        validUntilValue: created.order.expiryValue, quoteNonce: nonce, solverSignatureScheme: "ED25519",
+        solverVerificationKey: new Uint8Array(32).fill(1), signature: new Uint8Array(64).fill(2),
+      });
+      const { quoteHashHex, routeHashHex } = strategies.registerQuote(
+        { order: created.order, graph: created.graph, quote, route } as unknown as AdmittedStrategyRoute,
+      );
+      strategies.recordOwnerAuthorization(toHex(orderHash), OWNER, `0x${"01".repeat(65)}`);
+      const { attemptId } = strategies.selectNativeHyperliquidExecution({
+        quoteHashHex, orderHashHex: toHex(orderHash), routeHashHex, idempotencyKey: `native-exposure-${nonce}`,
+      });
+      const record = () => strategies.recordReceipt(strategyPackageReceipt({
+        version: 1, environment: "testnet", domains: [domain], orderHash, graphHash: route.graphHash,
+        quoteHash: quoteHashHex, routeHash: routeHashHex, templateId: created.order.templateId,
+        templateVersion: created.order.templateVersion, packageTemplateManifestHash: created.order.packageTemplateManifestHash,
+        seriesId: created.order.seriesId, seriesVersion: created.order.seriesVersion, seriesManifestHash: created.order.seriesManifestHash,
+        executionClassId: created.order.executionClassId, executionClassVersion: created.order.executionClassVersion,
+        executionClassManifestHash: created.order.executionClassManifestHash, lifecycleAction, owner: OWNER, solverId: "solver-a",
+        settlementClass: "BATCHED_IOC_WITH_RECOVERY", terminalState: "FINALIZED_COMPLETE", quoteAsset,
+        legOutcomes: [{
+          legId: "treasury-hedge", positionLegId: "treasury-hedge", domain, status: "EXECUTED",
+          requestedQuantity: assetAmount(baseAsset, quantityAtoms), settledQuantity: assetAmount(baseAsset, settledAtoms),
+          grossNotional: amount(notionalAtoms), venueFee: amount(1n), residualValue: amount(0n),
+          evidenceGrade: "VENUE_API_CORROBORATED", onchainEnforced: false, evidenceHash: "53".repeat(32),
+        }],
+        serviceFee: amount(0n), solverFee: amount(0n), venueFees: amount(1n), networkCost: amount(0n), recoveryCost: amount(0n),
+        terminalResidualValue: amount(0n), finalityStatus: "FINALIZED", executedAtValue: 1_001_000n, receiptNonce: nonce,
+      }));
+      return { attemptId, record };
+    };
+    const limits = { maxOpenPackagesPerOwner: 1, maxOpenNotionalQuoteAtoms: 10_000n };
+    const reserve = (attemptId: string, owner: string, notionalAtoms: bigint) =>
+      ledger.reserveExposure({ attemptId, owner, strategyKey: attemptId, notionalAtoms, newPackage: true, limits });
+    const other = "0x2222222222222222222222222222222222222222";
+
+    // The strategy opened before the ledger existed: nothing holds its 6000.
+    const entry = execute("ENTRY", 100_000n, 200_000n, -100_000n, 6_000n);
+    entry.record();
+    const [opened] = strategies.nativeStrategyPositionsByOwner(OWNER);
+    assert.equal(opened?.status, "OPEN");
+    const lines: string[] = [];
+    const attach = (asset = quoteAsset) => attachHyperliquidStrategyExposures({
+      ledger, strategies, quoteAsset: asset, log: (line) => lines.push(line),
+    });
+    // A signed notional outside the cap's quote asset is skipped and reported, not guessed.
+    assert.deepEqual(attach({ ...quoteAsset, decimals: 18 }), { backfilled: 0, released: 0, skipped: 1 });
+    assert.match(lines[0] ?? "", new RegExp(`skipped ${entry.attemptId}`));
+    assert.deepEqual(attach(), { backfilled: 1, released: 0, skipped: 0 });
+    // A second startup counts nothing twice: 6000 of 10000 stays held.
+    assert.deepEqual(attach(), { backfilled: 0, released: 0, skipped: 0 });
+    assert.throws(() => reserve("owner-second", OWNER, 1n), { code: "OWNER_PACKAGE_LIMIT" });
+    assert.throws(() => reserve("other-1", other, 4_001n), { code: "OMNIBUS_NOTIONAL_LIMIT" });
+
+    // A decrease recorded outside the execution guard releases a quarter: 6000 keeps 4500.
+    const decrease = execute("DECREASE", 25_000n, 50_000n, 25_000n, 1_500n, opened!.stateHashHex);
+    decrease.record();
+    assert.throws(() => reserve("other-1", other, 5_501n), { code: "OMNIBUS_NOTIONAL_LIMIT" });
+    reserve("other-1", other, 5_500n);
+    // The guard settling the same attempt afterwards applies nothing more.
+    ledger.settleReduction({
+      attemptId: decrease.attemptId, strategyKey: opened!.entryOrderHashHex,
+      result: { status: "STRATEGY_EXECUTION", packageStatus: "COMPLETED" } as never,
+      reducedQuantityAtoms: 50_000n, priorQuantityAtoms: 200_000n,
+    });
+    assert.throws(() => reserve("third-1", `0x${"33".repeat(20)}`, 1n), { code: "OMNIBUS_NOTIONAL_LIMIT" });
+
+    // An exit recorded outside the guard closes the strategy and releases its slot and notional.
+    const [decreased] = strategies.nativeStrategyPositionsByOwner(OWNER);
+    execute("EXIT", 75_000n, 150_000n, 75_000n, 4_500n, decreased!.stateHashHex).record();
+    assert.equal(strategies.nativeStrategyPositionsByOwner(OWNER)[0]?.status, "CLOSED");
+    reserve("owner-second", OWNER, 4_500n);
+    // A later startup finds nothing left to release and never revives the closed strategy.
+    assert.deepEqual(attach(), { backfilled: 0, released: 0, skipped: 0 });
+    assert.throws(() => reserve("third-1", `0x${"33".repeat(20)}`, 1n), { code: "OMNIBUS_NOTIONAL_LIMIT" });
+  } finally {
+    strategies.close();
+    ledger.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });

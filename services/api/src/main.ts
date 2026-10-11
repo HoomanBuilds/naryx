@@ -102,6 +102,7 @@ import {
 import { HyperliquidTestnetOwnerLedger } from "./hyperliquid-testnet-owner-ledger.js";
 import { createReadCache } from "./read-cache.js";
 import {
+  attachHyperliquidStrategyExposures,
   createHyperliquidTestnetExecutionGuard,
   createHyperliquidTestnetExitOrderFactory,
   createHyperliquidTestnetOwnerRoutes,
@@ -568,6 +569,15 @@ if (hyperliquidRuntimeEnabled && hyperliquidExecutorClientEnabled) {
       "NARYX_API_HYPERLIQUID_TESTNET_EXECUTION_DB",
     );
     hyperliquidOwnerLedger = new HyperliquidTestnetOwnerLedger(executionDb);
+    if (publicMarket?.strategyPackageExecutions !== undefined) {
+      const exposures = attachHyperliquidStrategyExposures({
+        ledger: hyperliquidOwnerLedger,
+        strategies: publicMarket.strategyPackageExecutions,
+        quoteAsset: orderContext.quoteAsset,
+        log: (line) => { process.stderr.write(`Naryx API ${line}\n`); },
+      });
+      process.stdout.write(`Naryx API Hyperliquid strategy exposures: ${exposures.backfilled} backfilled, ${exposures.released} released, ${exposures.skipped} skipped\n`);
+    }
     hyperliquidExecutionRuntime = new DurableHyperliquidTestnetTerminalExecutionPort(
       executionDb,
       new HttpHyperliquidTestnetAttemptExecutor({

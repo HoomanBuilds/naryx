@@ -359,9 +359,8 @@ export class HyperliquidTestnetOwnerLedger {
   }
 
   /**
-   * Applies a completed risk-reducing strategy execution once: an exit releases the strategy's whole
-   * exposure; a decrease releases the closed fraction of each reservation, rounded down so the
-   * exposure still held is never understated. Any other outcome leaves the exposure held.
+   * Applies a completed risk-reducing strategy execution as a reduction; any other outcome leaves
+   * the exposure held.
    */
   settleReduction(input: Readonly<{
     attemptId: string;
@@ -371,7 +370,20 @@ export class HyperliquidTestnetOwnerLedger {
     reducedQuantityAtoms: bigint | null;
     priorQuantityAtoms: bigint;
   }>): void {
-    if (exposureOutcome(input.result) !== "OPEN") return;
+    if (exposureOutcome(input.result) === "OPEN") this.applyReduction(input);
+  }
+
+  /**
+   * Applies one recorded strategy reduction, once per attempt whichever path reports it: a close
+   * releases the strategy's whole exposure; a decrease releases the closed fraction of each
+   * reservation, rounded down so the exposure still held is never understated.
+   */
+  applyReduction(input: Readonly<{
+    attemptId: string;
+    strategyKey: string;
+    reducedQuantityAtoms: bigint | null;
+    priorQuantityAtoms: bigint;
+  }>): void {
     const { reducedQuantityAtoms: reduced, priorQuantityAtoms: prior } = input;
     if (reduced !== null && (reduced <= 0n || prior <= 0n)) {
       throw new HyperliquidOwnerLedgerError("LEDGER_CONFLICT", "The strategy reduction quantity is invalid.");
@@ -398,6 +410,39 @@ export class HyperliquidTestnetOwnerLedger {
         const atoms = BigInt(row.notional_atoms);
         update.run((atoms - atoms * reduced / prior).toString(), this.#now(), row.attempt_id);
       }
+    }).immediate();
+  }
+
+  /**
+   * Brings the exposure of strategies opened before this ledger existed under the caps: each
+   * execution an unclosed strategy carries is held as OPEN under its own attempt, so one already
+   * reserved, open, or released here is never counted twice or revived. A closed strategy releases
+   * whatever it still holds. Decreases made before the backfill are not credited, so held exposure
+   * may be overstated until the strategy closes, never understated.
+   */
+  reconcileStrategyExposures(input: Readonly<{
+    open: readonly Readonly<{ attemptId: string; owner: string; strategyKey: string; notionalAtoms: bigint }>[];
+    closedStrategyKeys: readonly string[];
+  }>): Readonly<{ backfilled: number; released: number }> {
+    return this.#db.transaction(() => {
+      const insert = this.#db.prepare(`
+        INSERT OR IGNORE INTO hyperliquid_owner_exposures (attempt_id, owner, strategy_key, notional_atoms, state, updated_at_ms)
+        VALUES (?, ?, ?, ?, 'OPEN', ?)
+      `);
+      const release = this.#db.prepare(`
+        UPDATE hyperliquid_owner_exposures SET state = 'RELEASED', updated_at_ms = ?
+        WHERE strategy_key = ? AND state IN ${ACTIVE_EXPOSURE_STATES}
+      `);
+      let backfilled = 0;
+      let released = 0;
+      for (const row of input.open) {
+        if (row.notionalAtoms <= 0n) {
+          throw new HyperliquidOwnerLedgerError("LEDGER_CONFLICT", "A backfilled strategy exposure must be positive.");
+        }
+        backfilled += insert.run(row.attemptId, row.owner, row.strategyKey, row.notionalAtoms.toString(), this.#now()).changes;
+      }
+      for (const key of input.closedStrategyKeys) released += release.run(this.#now(), key).changes;
+      return Object.freeze({ backfilled, released });
     }).immediate();
   }
 

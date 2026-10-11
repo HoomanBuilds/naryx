@@ -26,6 +26,7 @@ import {
   typedStrategyRouteHash,
   validatePackageQuoteExecutionBinding,
   type AdmittedStrategyRoute,
+  type AssetAmount,
   type PackageGraphInput,
   type PackageQuoteExecutionBinding,
   type PackageQuoteExecutionBindingInput,
@@ -385,6 +386,24 @@ export interface OwnerStrategyPackageReceipt {
 export interface StoredNativeStrategyPosition extends NativeStrategyPosition {
   readonly recordedAtMs: number;
   readonly updatedAtMs: number;
+}
+
+/** A native strategy execution whose receipt closed or decreased its position. */
+export interface NativeStrategyReduction {
+  readonly attemptId: string;
+  /** The strategy's entry order hash. */
+  readonly strategyKey: string;
+  /** The economic quantity a decrease closed; null when the position closed. */
+  readonly reducedQuantityAtoms: bigint | null;
+  readonly priorQuantityAtoms: bigint;
+}
+
+/** One ENTRY or finalized INCREASE execution that an unclosed native strategy still carries. */
+export interface NativeStrategyExposure {
+  readonly attemptId: string;
+  readonly owner: string;
+  readonly strategyKey: string;
+  readonly totalGrossNotional: AssetAmount;
 }
 
 export interface StoredEvmStrategyPosition {
@@ -849,10 +868,53 @@ function solanaPositionRow(row: SolanaPositionRow): StoredSolanaStrategyPosition
 export class SqliteStrategyPackageStore {
   private readonly db: Database.Database;
   private readonly clock: () => number;
+  private reductionListener: ((reduction: NativeStrategyReduction) => void) | undefined;
 
   constructor(dbPath: string, options: { readonly clock?: () => number } = {}) {
     this.db = openDurableDatabase(dbPath, SCHEMA_SQL, (code, message) => new StrategyPackageStoreError(code, message));
     this.clock = options.clock ?? Date.now;
+  }
+
+  /**
+   * Reports each native strategy reduction this store records from now on, whichever caller records
+   * its receipt. The report follows the committed receipt: a listener that fails leaves the
+   * reduction unreported, never reported without its receipt.
+   */
+  onNativeStrategyReduction(listener: (reduction: NativeStrategyReduction) => void): void {
+    this.reductionListener = listener;
+  }
+
+  /**
+   * The executions every unclosed native strategy still carries, with each one's signed quote
+   * notional, and the entry order hashes of every closed native strategy.
+   */
+  nativeStrategyExposures(): Readonly<{ open: readonly NativeStrategyExposure[]; closedStrategyKeys: readonly string[] }> {
+    const rows = this.db.prepare(`
+      SELECT a.attempt_id, p.owner_id, p.entry_order_hash, q.quote_json
+      FROM strategy_native_positions p
+      JOIN strategy_native_execution_attempts a ON a.order_hash = p.entry_order_hash
+      JOIN strategy_package_quotes q ON q.quote_hash = a.quote_hash
+      WHERE p.status <> 'CLOSED'
+      UNION ALL
+      SELECT a.attempt_id, p.owner_id, p.entry_order_hash, q.quote_json
+      FROM strategy_native_positions p
+      JOIN strategy_native_transitions t ON t.strategy_id = p.strategy_id
+        AND t.action = 'INCREASE' AND t.receipt_hash IS NOT NULL
+      JOIN strategy_native_execution_attempts a ON a.order_hash = t.order_hash
+      JOIN strategy_package_quotes q ON q.quote_hash = a.quote_hash
+      WHERE p.status <> 'CLOSED'
+    `).all() as { attempt_id: string; owner_id: string; entry_order_hash: Uint8Array; quote_json: string }[];
+    const closed = this.db.prepare("SELECT entry_order_hash FROM strategy_native_positions WHERE status = 'CLOSED'")
+      .pluck().all() as Uint8Array[];
+    return Object.freeze({
+      open: Object.freeze(rows.map((row) => Object.freeze({
+        attemptId: row.attempt_id,
+        owner: row.owner_id,
+        strategyKey: toHex(row.entry_order_hash),
+        totalGrossNotional: strategyPackageQuote(parseProtocolJson(row.quote_json) as StrategyPackageQuoteInput).totalGrossNotional,
+      }))),
+      closedStrategyKeys: Object.freeze(closed.map(toHex)),
+    });
   }
 
   close(): void {
@@ -1770,7 +1832,8 @@ export class SqliteStrategyPackageStore {
     }
     const receiptHashHex = toHex(receiptHash);
     const receiptJson = stringifyProtocolJson(receipt);
-    return this.db.transaction(() => {
+    let reduction: NativeStrategyReduction | undefined;
+    const recorded = this.db.transaction(() => {
       const knownForQuote = this.db.prepare("SELECT receipt_hash, receipt_json FROM strategy_package_receipts WHERE quote_hash = ?").get(receipt.quoteHash) as { receipt_hash: Uint8Array; receipt_json: string } | undefined;
       if (knownForQuote !== undefined) {
         requireCondition(bytesEqual(knownForQuote.receipt_hash, receiptHash) && knownForQuote.receipt_json === receiptJson,
@@ -1784,9 +1847,9 @@ export class SqliteStrategyPackageStore {
       }
       this.db.prepare("INSERT INTO strategy_package_receipts (receipt_hash, order_hash, quote_hash, route_hash, receipt_json, recorded_at_ms) VALUES (?, ?, ?, ?, ?, ?)")
         .run(receiptHash, receipt.orderHash, receipt.quoteHash, receipt.routeHash, receiptJson, this.clock());
-      const nativeAttempt = this.db.prepare("SELECT 1 FROM strategy_native_execution_attempts WHERE quote_hash = ?")
-        .get(receipt.quoteHash);
-      if (nativeAttempt !== undefined) {
+      const nativeAttemptId = this.db.prepare("SELECT attempt_id FROM strategy_native_execution_attempts WHERE quote_hash = ?")
+        .pluck().get(receipt.quoteHash) as string | undefined;
+      if (nativeAttemptId !== undefined) {
         const changedAtMs = this.clock();
         requireCondition(Number.isSafeInteger(changedAtMs) && changedAtMs >= 0,
           "INVALID_CLOCK", "The native strategy position clock is invalid.");
@@ -1852,6 +1915,14 @@ export class SqliteStrategyPackageStore {
             );
             requireCondition(updated.changes === 1, "STALE_STRATEGY_STATE",
               "The native strategy state changed before receipt finalization.");
+            if (next.status === "CLOSED") {
+              reduction = Object.freeze({
+                attemptId: nativeAttemptId,
+                strategyKey: position.entryOrderHashHex,
+                reducedQuantityAtoms: null,
+                priorQuantityAtoms: position.economicQuantityAtoms,
+              });
+            }
           } else if (order.lifecycleAction === "MIGRATE") {
             const migration = this.db.prepare(`
               SELECT strategy_id, expected_state_hash, receipt_hash
@@ -1963,6 +2034,14 @@ export class SqliteStrategyPackageStore {
             );
             requireCondition(updated.changes === 1, "STALE_STRATEGY_STATE",
               "The native strategy state changed before transition finalization.");
+            if (next.economicQuantityAtoms < position.economicQuantityAtoms) {
+              reduction = Object.freeze({
+                attemptId: nativeAttemptId,
+                strategyKey: position.entryOrderHashHex,
+                reducedQuantityAtoms: position.economicQuantityAtoms - next.economicQuantityAtoms,
+                priorQuantityAtoms: position.economicQuantityAtoms,
+              });
+            }
             const finalized = this.db.prepare(`
               UPDATE strategy_native_transitions
               SET receipt_hash = ?, finalized_at_ms = ?
@@ -1980,6 +2059,8 @@ export class SqliteStrategyPackageStore {
       }
       return Object.freeze({ created: true, receiptHashHex });
     }).immediate();
+    if (reduction !== undefined) this.reductionListener?.(reduction);
+    return recorded;
   }
 
   order(orderHashHex: string): StoredStrategyPackageOrder | undefined {

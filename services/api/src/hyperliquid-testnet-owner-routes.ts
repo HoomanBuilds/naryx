@@ -10,6 +10,7 @@ import {
   packageOrderHash,
   solverQuote,
   validatePackageOrderProfile,
+  type AssetAmount,
   type AssetRef,
   type PackageOrder,
   type PackageOrderInput,
@@ -196,6 +197,37 @@ function attemptBinding(
   });
 }
 
+/** The signed notional the omnibus cap counts: positive and in the cap's quote asset, else undefined. */
+function capNotional(notional: AssetAmount, quoteAsset: AssetRef): bigint | undefined {
+  return notional.atoms > 0n && notional.asset.assetId === quoteAsset.assetId
+    && notional.asset.decimals === quoteAsset.decimals
+    && bytesEqual(notional.asset.assetManifestHash, quoteAsset.assetManifestHash) ? notional.atoms : undefined;
+}
+
+/**
+ * Puts native Hyperliquid strategies under the shared account caps whichever path moves them: it
+ * backfills the executions of strategies opened before the exposure ledger existed, releases closed
+ * ones, and then applies every reduction the strategy store records. An execution whose signed
+ * notional is not in the cap's quote asset is skipped and reported, never guessed.
+ */
+export function attachHyperliquidStrategyExposures(options: Readonly<{
+  ledger: Pick<HyperliquidTestnetOwnerLedger, "reconcileStrategyExposures" | "applyReduction">;
+  strategies: Pick<SqliteStrategyPackageStore, "nativeStrategyExposures" | "onNativeStrategyReduction">;
+  quoteAsset: AssetRef;
+  log: (line: string) => void;
+}>): Readonly<{ backfilled: number; released: number; skipped: number }> {
+  const { open, closedStrategyKeys } = options.strategies.nativeStrategyExposures();
+  const counted = open.flatMap(({ attemptId, owner, strategyKey, totalGrossNotional }) => {
+    const notionalAtoms = capNotional(totalGrossNotional, options.quoteAsset);
+    if (notionalAtoms !== undefined) return [{ attemptId, owner, strategyKey, notionalAtoms }];
+    options.log(`Hyperliquid strategy exposure backfill skipped ${attemptId}: its signed notional is not in the cap's quote asset.`);
+    return [];
+  });
+  const result = options.ledger.reconcileStrategyExposures({ open: counted, closedStrategyKeys });
+  options.strategies.onNativeStrategyReduction((reduction) => options.ledger.applyReduction(reduction));
+  return Object.freeze({ ...result, skipped: open.length - counted.length });
+}
+
 function ledgerRefusal(error: unknown): never {
   if (error instanceof HyperliquidOwnerLedgerError) {
     throw new HyperliquidTestnetTerminalValidationError(error.code, error.message);
@@ -294,10 +326,8 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
         "Hyperliquid testnet entries are closed until the shared account limits are configured.",
       );
     }
-    const notional = quote.totalGrossNotional;
-    if (notional.atoms <= 0n || notional.asset.assetId !== options.quoteAsset.assetId
-      || notional.asset.decimals !== options.quoteAsset.decimals
-      || !bytesEqual(notional.asset.assetManifestHash, options.quoteAsset.assetManifestHash)) {
+    const notionalAtoms = capNotional(quote.totalGrossNotional, options.quoteAsset);
+    if (notionalAtoms === undefined) {
       throw new HyperliquidTestnetTerminalValidationError(
         "STRATEGY_NOTIONAL_UNAVAILABLE",
         "The strategy quote carries no positive notional in the shared account's quote asset.",
@@ -310,7 +340,7 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
         attemptId,
         owner: order.owner,
         strategyKey,
-        notionalAtoms: notional.atoms,
+        notionalAtoms,
         newPackage: order.lifecycleAction === "ENTRY",
         limits: options.limits,
       });
