@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -48,6 +48,25 @@ const quoteAsset = protocol.assetRef(
   cashQuote.market.quoteAsset.decimals,
 );
 const tradingAccount = runtime.orderContext.tradingAccount;
+const spot = Object.freeze({
+  adapter: protocol.adapterRef(cashQuote.market.spot.adapter),
+  venue: protocol.versionedManifestRef(
+    cashQuote.market.spot.venue.subjectId,
+    cashQuote.market.spot.venue.manifestVersion,
+    cashQuote.market.spot.venue.manifestHash,
+  ),
+  market: protocol.versionedManifestRef(
+    cashQuote.market.spot.market.subjectId,
+    cashQuote.market.spot.market.manifestVersion,
+    cashQuote.market.spot.market.manifestHash,
+  ),
+  coin: cashQuote.market.spot.coin,
+  assetId: runtime.market.spot.assetId,
+  sizeDecimals: cashQuote.market.spot.sizeDecimals,
+  maximumPriceDecimals: 8,
+  venueClassId: 'hypercore-spot-v1',
+  marketKind: 'SPOT',
+});
 const primary = Object.freeze({
   adapter: protocol.adapterRef(cashQuote.market.perpetual.adapter),
   venue: protocol.versionedManifestRef(
@@ -64,6 +83,8 @@ const primary = Object.freeze({
   assetId: 3,
   sizeDecimals: 5,
   maximumPriceDecimals: 6,
+  venueClassId: 'hypercore-perpetual-v1',
+  marketKind: 'PERPETUAL',
 });
 const secondary = Object.freeze({
   adapter: cashQuote.market.perpetual.adapter,
@@ -73,8 +94,26 @@ const secondary = Object.freeze({
   assetId: 390000,
   sizeDecimals: 4,
   maximumPriceDecimals: 6,
+  venueClassId: 'hypercore-perpetual-v1',
+  marketKind: 'PERPETUAL',
 });
 const definitions = Object.freeze([
+  Object.freeze({
+    profileId: 'btc-cash-carry-testnet',
+    displayName: 'BTC cash and carry',
+    templateId: 'cash-and-carry-v1',
+    legTypes: ['spot-purchase', 'perp-sale'],
+    ratios: [1n, -1n],
+    markets: [
+      { role: 'spot-purchase', entrySide: 'BUY', nettingFamilies: ['SPOT_SWAP'], binding: spot },
+      {
+        role: 'perp-sale',
+        entrySide: 'SELL',
+        nettingFamilies: ['PERP_OPEN', 'PERP_INCREASE', 'PERP_DECREASE', 'PERP_CLOSE'],
+        binding: primary,
+      },
+    ],
+  }),
   Object.freeze({
     profileId: 'btc-treasury-hedge-testnet',
     displayName: 'BTC treasury hedge',
@@ -153,6 +192,14 @@ const record = (kind, ref, template) => protocol.domainRegistryRecord({
 
 for (const definition of definitions) {
   const strategyDefinition = protocol.requireStrategyTemplateDefinition(definition.templateId);
+  const spotAdapterIds = [...new Set(definition.markets
+    .filter((market) => market.binding.marketKind === 'SPOT')
+    .map((market) => market.binding.adapter.adapterId))];
+  const perpetualAdapterIds = [...new Set(definition.markets
+    .filter((market) => market.binding.marketKind === 'PERPETUAL')
+    .map((market) => market.binding.adapter.adapterId))];
+  const allowedAdapterIds = [...new Set([...spotAdapterIds, ...perpetualAdapterIds])];
+  const venueClassIds = [...new Set(definition.markets.map((market) => market.binding.venueClassId))];
   const template = protocol.packageTemplateManifest({
     manifestVersion: 2,
     environment: 'testnet',
@@ -169,9 +216,9 @@ for (const definition of definitions) {
     legTypes: definition.legTypes,
     supportedDirections: ['LONG_SPOT_SHORT_PERP'],
     supportedSettlementClasses: ['BATCHED_IOC_WITH_RECOVERY'],
-    allowedSpotAdapterIds: [],
-    allowedPerpAdapterIds: [primary.adapter.adapterId],
-    allowedAdapterIds: [primary.adapter.adapterId],
+    allowedSpotAdapterIds: spotAdapterIds,
+    allowedPerpAdapterIds: perpetualAdapterIds,
+    allowedAdapterIds,
     riskPolicyHash: digest(`${definition.templateId}/risk`),
   });
   templateManifests.set(definition.templateId, template);
@@ -218,7 +265,7 @@ for (const definition of definitions) {
       supportedLifecycleConventionIds: definitions.map((value) => protocol.requireStrategyTemplateDefinition(value.templateId).lifecycleConventionId),
     }),
     domains: [domain],
-    venueClasses: ['hypercore-perpetual-v1'],
+    venueClasses: venueClassIds,
     collateralMode: 'hypercore-omnibus-testnet-v1',
     settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
     firmnessClass: 'firm-testnet-capacity-v1',
@@ -227,7 +274,7 @@ for (const definition of definitions) {
     matchingPolicyHash: protocol.packageMatchingPolicyHash(policy),
   };
   const classSupport = {
-    supportedVenueClassIds: ['hypercore-perpetual-v1'],
+    supportedVenueClassIds: venueClassIds,
     supportedCollateralModeIds: ['hypercore-omnibus-testnet-v1'],
     supportedSettlementClasses: ['BATCHED_IOC_WITH_RECOVERY'],
     supportedFirmnessClassIds: ['firm-testnet-capacity-v1'],
@@ -247,7 +294,7 @@ for (const definition of definitions) {
     clearingRule: 'LIMIT_MIDPOINT_BUYER_FAVOR',
     maximumObligations: 32,
     maximumBatchWindowMilliseconds: 1_000n,
-    instruments: definition.markets.flatMap((market) => definition.nettingFamilies.map((family) => ({
+    instruments: definition.markets.flatMap((market) => (market.nettingFamilies ?? definition.nettingFamilies).map((family) => ({
       instrumentId: `${market.role}-${family.toLowerCase().replaceAll('_', '-')}`,
       domain,
       adapter: market.binding.adapter,
@@ -267,7 +314,7 @@ for (const definition of definitions) {
   const activeRecords = [
     record('ASSET', baseAsset, template),
     record('ASSET', quoteAsset, template),
-    record('ADAPTER', primary.adapter, template),
+    ...definition.markets.map((market) => record('ADAPTER', market.binding.adapter, template)),
     ...definition.markets.flatMap((market) => [
       record('VENUE', market.binding.venue, template),
       record('MARKET', market.binding.market, template),
@@ -361,22 +408,36 @@ for (const definition of definitions) {
   quote.market.candidateId = `${definition.profileId}-solver`;
   quote.market.capacityBaseAtoms = 10_000_000n;
   quote.market.maxBookSpreadBps = definition.markets.some((market) => market.binding === secondary) ? 3_000 : 200;
+  const spotMarket = definition.markets.find((market) => market.binding.marketKind === 'SPOT');
+  const perpetualMarkets = definition.markets.filter((market) => market.binding.marketKind === 'PERPETUAL');
+  const quotedPerpetual = perpetualMarkets[0];
+  if (quotedPerpetual === undefined) throw new Error(`${definition.profileId} has no perpetual quote market`);
+  if (spotMarket !== undefined) {
+    quote.market.spot = {
+      ...quote.market.spot,
+      adapter: spotMarket.binding.adapter,
+      venue: spotMarket.binding.venue,
+      market: spotMarket.binding.market,
+      coin: spotMarket.binding.coin,
+      sizeDecimals: spotMarket.binding.sizeDecimals,
+    };
+  }
   quote.market.perpetual = {
     ...quote.market.perpetual,
-    adapter: definition.markets[0].binding.adapter,
-    venue: definition.markets[0].binding.venue,
-    market: definition.markets[0].binding.market,
-    coin: definition.markets[0].binding.coin,
-    sizeDecimals: definition.markets[0].binding.sizeDecimals,
+    adapter: quotedPerpetual.binding.adapter,
+    venue: quotedPerpetual.binding.venue,
+    market: quotedPerpetual.binding.market,
+    coin: quotedPerpetual.binding.coin,
+    sizeDecimals: quotedPerpetual.binding.sizeDecimals,
   };
-  if (definition.markets.length === 2) {
+  if (perpetualMarkets.length === 2) {
     quote.market.counterPerpetual = {
       ...quote.market.perpetual,
-      adapter: definition.markets[1].binding.adapter,
-      venue: definition.markets[1].binding.venue,
-      market: definition.markets[1].binding.market,
-      coin: definition.markets[1].binding.coin,
-      sizeDecimals: definition.markets[1].binding.sizeDecimals,
+      adapter: perpetualMarkets[1].binding.adapter,
+      venue: perpetualMarkets[1].binding.venue,
+      market: perpetualMarkets[1].binding.market,
+      coin: perpetualMarkets[1].binding.coin,
+      sizeDecimals: perpetualMarkets[1].binding.sizeDecimals,
       action: { ...quote.market.perpetual.action, legIndex: 1, sequence: 1 },
     };
   }
@@ -440,7 +501,8 @@ const seriesSupport = {
   supportedLifecycleConventionIds: definitions.map((value) => protocol.requireStrategyTemplateDefinition(value.templateId).lifecycleConventionId),
 };
 const executionClassSupport = {
-  supportedVenueClassIds: ['hypercore-perpetual-v1'],
+  supportedVenueClassIds: [...new Set(definitions.flatMap((definition) =>
+    definition.markets.map((market) => market.binding.venueClassId)))],
   supportedCollateralModeIds: ['hypercore-omnibus-testnet-v1'],
   supportedSettlementClasses: ['BATCHED_IOC_WITH_RECOVERY'],
   supportedFirmnessClassIds: ['firm-testnet-capacity-v1'],
@@ -477,6 +539,101 @@ writeProtocol('api/hyperliquid-public-graph-context.json', {
   ])).values()],
   resourceLimits: [{ domainId: domain.domainId, maximumActionsPerTransaction: 8 }],
 });
+
+const combinedPaths = [
+  'api/public-market-bootstrap.json',
+  'api/public-market-support.json',
+  'api/public-graph-context.json',
+];
+if (combinedPaths.every((path) => existsSync(join(source, path)))) {
+  const combinedBootstrap = readProtocol(combinedPaths[0]);
+  const combinedSupport = readProtocol(combinedPaths[1]);
+  const combinedGraph = readProtocol(combinedPaths[2]);
+  const templateIds = new Set(definitions.map((value) => value.templateId));
+  const seriesIds = new Set(series.map((value) => value.seriesId));
+  const executionClassIds = new Set(executionClasses.map((value) => value.executionClassId));
+  const unique = (values) => [...new Set(values)];
+  writeProtocol(combinedPaths[0], {
+    ...combinedBootstrap,
+    domainManifests: [
+      ...combinedBootstrap.domainManifests.filter((value) => value.domainId !== domain.domainId),
+      domainManifest,
+    ],
+    packageTemplateManifests: [
+      ...combinedBootstrap.packageTemplateManifests.filter((value) => !templateIds.has(value.templateId)),
+      ...templateManifests.values(),
+    ],
+    matchingPolicies: [
+      ...combinedBootstrap.matchingPolicies.filter((value) => !executionClassIds.has(value.executionClassId)),
+      ...matchingPolicies,
+    ],
+    series: [...combinedBootstrap.series.filter((value) => !seriesIds.has(value.seriesId)), ...series],
+    executionClasses: [
+      ...combinedBootstrap.executionClasses.filter((value) => !executionClassIds.has(value.executionClassId)),
+      ...executionClasses,
+    ],
+    books: [
+      ...combinedBootstrap.books.filter((value) => !executionClassIds.has(value.executionClassId)),
+      ...executionClasses.map((value) => ({
+        executionClassId: value.executionClassId,
+        executionClassVersion: value.executionClassVersion,
+      })),
+    ],
+  });
+  writeProtocol(combinedPaths[1], {
+    ...combinedSupport,
+    seriesSupport: {
+      supportedTemplateIds: unique([
+        ...combinedSupport.seriesSupport.supportedTemplateIds,
+        ...seriesSupport.supportedTemplateIds,
+      ]),
+      supportedQuoteConventionIds: unique([
+        ...combinedSupport.seriesSupport.supportedQuoteConventionIds,
+        ...seriesSupport.supportedQuoteConventionIds,
+      ]),
+      supportedRiskClassIds: unique([
+        ...combinedSupport.seriesSupport.supportedRiskClassIds,
+        ...seriesSupport.supportedRiskClassIds,
+      ]),
+      supportedLifecycleConventionIds: unique([
+        ...combinedSupport.seriesSupport.supportedLifecycleConventionIds,
+        ...seriesSupport.supportedLifecycleConventionIds,
+      ]),
+    },
+    executionClassSupport: {
+      supportedVenueClassIds: unique([
+        ...combinedSupport.executionClassSupport.supportedVenueClassIds,
+        ...executionClassSupport.supportedVenueClassIds,
+      ]),
+      supportedCollateralModeIds: unique([
+        ...combinedSupport.executionClassSupport.supportedCollateralModeIds,
+        ...executionClassSupport.supportedCollateralModeIds,
+      ]),
+      supportedSettlementClasses: unique([
+        ...combinedSupport.executionClassSupport.supportedSettlementClasses,
+        ...executionClassSupport.supportedSettlementClasses,
+      ]),
+      supportedFirmnessClassIds: unique([
+        ...combinedSupport.executionClassSupport.supportedFirmnessClassIds,
+        ...executionClassSupport.supportedFirmnessClassIds,
+      ]),
+    },
+  });
+  writeProtocol(combinedPaths[2], {
+    ...combinedGraph,
+    activeRegistryRecords: [
+      ...combinedGraph.activeRegistryRecords.filter((value) => value.domain.domainId !== domain.domainId),
+      ...new Map(graphRecords.map((value) => [
+        `${value.recordKind}:${value.subjectId}:${hex(value.subjectManifestHash)}:${value.allowedTemplates[0].templateId}`,
+        value,
+      ])).values(),
+    ],
+    resourceLimits: [
+      ...combinedGraph.resourceLimits.filter((value) => value.domainId !== domain.domainId),
+      { domainId: domain.domainId, maximumActionsPerTransaction: 8 },
+    ],
+  });
+}
 writeFileSync(join(output, 'activation.json'), `${JSON.stringify({
   version: 1,
   preparationFiles,
