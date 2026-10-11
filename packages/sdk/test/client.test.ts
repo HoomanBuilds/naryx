@@ -324,6 +324,23 @@ describe('public API client', () => {
       obligations: [obligation],
     };
     const progress = await client({ [path]: { body } }).getPackageSettlementProgress(orderId);
+    const ordersPath = '/v1/package-book/participants/alice/orders';
+    const resting = {
+      packageOrderIdHex: id(8), executionClassId: CLASS, strategyOrderHashHex: id(6), state: 'OPEN', side: 'ASK',
+      priceTicks: 100n, quantity: 30n, filledQuantity: 10n, remainingQuantity: 20n, expiresAtValue: 2_000n, recordedAtMs: 1,
+    };
+    const owned = await client({ [ordersPath]: { body: { version: 1, participantId: 'alice', asOfValue: 1_000n, orders: [resting] } } })
+      .getParticipantPackageOrders('alice');
+    assert.deepEqual([owned.orders[0]?.packageOrderId, owned.orders[0]?.remainingQuantity], [id(8), 20n]);
+    await assert.rejects(
+      client({ [ordersPath]: { body: { version: 1, participantId: 'alice', asOfValue: 1_000n, orders: [{ ...resting, state: 'FILLED' }] } } })
+        .getParticipantPackageOrders('alice'),
+      NaryxEvidenceError,
+    );
+    await assert.rejects(
+      client({ [ordersPath]: { body: { version: 1, participantId: 'bob', asOfValue: 1_000n, orders: [] } } }).getParticipantPackageOrders('alice'),
+      NaryxEvidenceError,
+    );
     assert.equal(progress.readiness.status, 'READY_FOR_OWNER_AUTHORIZATION');
     assert.equal(progress.readinessHash, body.readinessHashHex);
     await assert.rejects(
@@ -445,11 +462,9 @@ describe('public API client', () => {
     const sdk = client({
       [`/v1/netting/batches/${proofHash}`]: { body: batch },
       [`/v1/netting/packages/${packages[0]!.packageOrderIdHex}`]: { body: batch },
-      [`POST /v1/netting/batches/${proofHash}/execute`]: { body: { batch, executedIntentHashes: [] } },
     });
     assert.equal((await sdk.getNettingBatch(proofHash)).settlementStatus, 'AWAITING_SETTLEMENT');
     assert.equal((await sdk.getNettingBatchForPackage(packages[0]!.packageOrderIdHex)).proofHash, proofHash);
-    assert.deepEqual((await sdk.executeNettingBatch(proofHash)).executedIntentHashes, []);
 
     await assert.rejects(
       client({

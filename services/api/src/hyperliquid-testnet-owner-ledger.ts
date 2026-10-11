@@ -281,11 +281,15 @@ export class HyperliquidTestnetOwnerLedger {
     `).get(orderHash) as { owner: string; signature: string } | undefined;
   }
 
-  packages(owner: string): readonly HyperliquidOwnerPackage[] {
+  /** Every package the owner has not closed, which must stay exitable, plus the most recent closed ones. */
+  packages(owner: string, closedLimit = 20): readonly HyperliquidOwnerPackage[] {
     const rows = this.#db.prepare(`
-      SELECT * FROM hyperliquid_owner_packages WHERE owner = ?
-      ORDER BY updated_at_ms DESC, entry_attempt_id LIMIT 20
-    `).all(owner) as PackageRow[];
+      SELECT * FROM (SELECT * FROM hyperliquid_owner_packages WHERE owner = ? AND state <> 'CLOSED')
+      UNION ALL
+      SELECT * FROM (SELECT * FROM hyperliquid_owner_packages WHERE owner = ? AND state = 'CLOSED'
+        ORDER BY updated_at_ms DESC, entry_attempt_id LIMIT ?)
+      ORDER BY updated_at_ms DESC, entry_attempt_id
+    `).all(owner, owner, closedLimit) as PackageRow[];
     return Object.freeze(rows.map(decode));
   }
 

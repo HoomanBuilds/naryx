@@ -5,6 +5,7 @@ import test from 'node:test';
 import { fromProtocolJson } from '@naryx/protocol-types';
 import {
   HyperliquidNettingResidualExecutionClientError,
+  createNettingBatchExecutionHandler,
   createPublicApiHandler,
   type PublicApiOptions,
 } from '../src/index.js';
@@ -12,7 +13,7 @@ import {
 const proofHash = '11'.repeat(32);
 const crossBatchPlanHash = '33'.repeat(32);
 
-test('public API triggers only an existing authorized netting batch', async () => {
+test('only a loopback operator triggers an existing authorized netting batch; the public API cannot', async () => {
   const batch = { proofHashHex: proofHash, externalExecutionStatus: 'PENDING' } as never;
   let pending = false;
   const handler = createPublicApiHandler({
@@ -26,8 +27,15 @@ test('public API triggers only an existing authorized netting batch', async () =
         ? [{ status: 'PENDING', plan: { planHash: crossBatchPlanHash } }]
         : [],
     } as never,
-    nettingExecution: {
+    nowValue: () => 1n,
+    rateLimit: { windowMs: 60_000, maxRequests: 100 },
+  } satisfies PublicApiOptions);
+  let executions = 0;
+  const internal = createNettingBatchExecutionHandler({
+    exchange: { nettingBatch: (value: Uint8Array | string) => value === proofHash ? batch : undefined },
+    execution: {
       async execute(value) {
+        executions += 1;
         assert.equal(value, proofHash);
         if (pending) {
           throw new HyperliquidNettingResidualExecutionClientError(
@@ -37,19 +45,17 @@ test('public API triggers only an existing authorized netting batch', async () =
         return { batch, executedIntentHashes: ['22'.repeat(32)] };
       },
     },
-    nowValue: () => 1n,
-    rateLimit: { windowMs: 60_000, maxRequests: 100 },
-  } satisfies PublicApiOptions);
+  });
   const server = createServer((request, response) => {
-    if (!handler(request, response)) response.end();
+    if (!internal(request, response) && !handler(request, response)) response.end();
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as AddressInfo).port;
-  const execute = () => fetch(
-    `http://127.0.0.1:${port}/v1/netting/batches/${proofHash}/execute`,
+  const execute = (path = `/internal/netting/batches/${proofHash}/execute`, headers: Record<string, string> = {}) => fetch(
+    `http://127.0.0.1:${port}${path}`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...headers },
       body: '{}',
     },
   );
@@ -70,6 +76,12 @@ test('public API triggers only an existing authorized netting batch', async () =
     assert.equal(recent.status, 200);
     assert.equal((fromProtocolJson(await recent.json()) as { clearings: readonly unknown[] }).clearings.length, 1);
     assert.equal((await fetch(`http://127.0.0.1:${port}/v1/netting/cross-batch?limit=0`)).status, 400);
+    assert.equal((await execute(`/v1/netting/batches/${proofHash}/execute`)).status, 404);
+    // A request a reverse proxy forwarded, or a browser sent, never reaches the executor.
+    assert.equal((await execute(undefined, { 'X-Forwarded-For': '203.0.113.7' })).status, 403);
+    assert.equal((await execute(undefined, { Origin: 'https://terminal.example' })).status, 403);
+    assert.equal((await execute(`/internal/netting/batches/${'44'.repeat(32)}/execute`)).status, 404);
+    assert.equal(executions, 0);
     const completed = await execute();
     assert.equal(completed.status, 200);
     const body = fromProtocolJson(await completed.json()) as {

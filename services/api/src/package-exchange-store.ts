@@ -160,6 +160,24 @@ export interface PackageTapeRecord {
   readonly recordedAtMs: number;
 }
 
+export type PackageBookParticipantOrderState = "OPEN" | "EXPIRED" | "FILLED" | "CANCELLED" | "CLOSED";
+
+/** One of a participant's package-book orders, as the book and its settlement evidence record it. */
+export interface PackageBookParticipantOrder {
+  readonly packageOrderIdHex: string;
+  readonly executionClassId: string;
+  readonly strategyOrderHashHex: string;
+  readonly state: PackageBookParticipantOrderState;
+  /** Unknown only for a reopening order that left the book without a fill. */
+  readonly side: "BID" | "ASK" | null;
+  readonly priceTicks: bigint | null;
+  readonly quantity: bigint;
+  readonly filledQuantity: bigint;
+  readonly remainingQuantity: bigint;
+  readonly expiresAtValue: bigint | null;
+  readonly recordedAtMs: number;
+}
+
 export interface PackageExchangeCancellationResult {
   readonly cancellationHashHex: string;
   readonly replayed: boolean;
@@ -716,6 +734,8 @@ CREATE TRIGGER IF NOT EXISTS reject_netting_settlement_completion_receipt_delete
   BEGIN SELECT RAISE(ABORT, 'netting settlement completion receipts are append-only'); END;
 CREATE INDEX IF NOT EXISTS package_book_allocations_by_time ON package_book_allocations(execution_class_id, recorded_at_ms);
 CREATE INDEX IF NOT EXISTS package_book_reopening_obligations_by_order ON package_book_reopening_obligations(package_order_id);
+CREATE INDEX IF NOT EXISTS package_book_settlement_obligations_by_order ON package_book_settlement_obligations(package_order_id);
+CREATE INDEX IF NOT EXISTS package_book_settlement_commitments_by_participant ON package_book_settlement_commitments(participant_id, recorded_at_ms);
 CREATE TABLE IF NOT EXISTS package_book_trades (
   allocation_rowid INTEGER PRIMARY KEY,
   allocation_hash BLOB NOT NULL UNIQUE REFERENCES package_book_allocations(allocation_hash),
@@ -3012,6 +3032,70 @@ export class SqlitePackageExchangeStore {
       this.clock(),
     );
     return completion;
+  }
+
+  /**
+   * A participant's package-book orders: every one resting in a book, plus the most recently
+   * committed ones. Filled quantity counts the order's continuous and reopening settlement
+   * obligations on either side; an order that left the book unfilled and was not cancelled by its
+   * owner (expiry, invalidation, an unfilled immediate remainder) is CLOSED.
+   */
+  participantOrders(participantId: string, nowValue: bigint, recentLimit = 50): readonly PackageBookParticipantOrder[] {
+    const rows = this.db.prepare(`
+      SELECT c.package_order_id, c.execution_class_id, c.strategy_order_hash, c.commitment_json, c.recorded_at_ms,
+             e.entry_json, a.allocation_json, x.entry_id AS cancelled
+      FROM package_book_settlement_commitments c
+      LEFT JOIN package_book_entries e ON e.entry_id = c.package_order_id AND e.execution_class_id = c.execution_class_id
+      LEFT JOIN package_book_allocations a ON a.taker_order_id = c.package_order_id
+      LEFT JOIN package_book_cancellations x ON x.execution_class_id = c.execution_class_id AND x.entry_id = c.package_order_id
+      WHERE c.participant_id = ? AND (e.entry_id IS NOT NULL OR c.package_order_id IN (
+        SELECT package_order_id FROM package_book_settlement_commitments WHERE participant_id = ?
+        ORDER BY recorded_at_ms DESC, package_order_id LIMIT ?
+      ))
+      ORDER BY c.recorded_at_ms DESC, c.package_order_id
+    `).all(participantId, participantId, recentLimit) as {
+      package_order_id: unknown;
+      execution_class_id: string;
+      strategy_order_hash: unknown;
+      commitment_json: unknown;
+      recorded_at_ms: number;
+      entry_json: unknown;
+      allocation_json: unknown;
+      cancelled: unknown;
+    }[];
+    const fills = this.db.prepare(`
+      SELECT role, price_ticks, quantity_atoms FROM package_book_settlement_obligations WHERE package_order_id = ?
+      UNION ALL
+      SELECT role, price_ticks, quantity_atoms FROM package_book_reopening_obligations WHERE package_order_id = ?
+    `);
+    return Object.freeze(rows.map((row) => {
+      const orderId = hashBytes(row.package_order_id, "package_order_id");
+      const commitment = guarded("CORRUPT_ROW", "Stored settlement commitment failed validation.", () =>
+        packageSettlementCommitment(parseProtocolJson(jsonText(row.commitment_json, "commitment_json")) as PackageSettlementCommitment));
+      const entry = row.entry_json === null ? undefined
+        : parseProtocolJson(jsonText(row.entry_json, "entry_json")) as PackageBookEntry;
+      const allocation = row.allocation_json === null ? undefined : this.decodeAllocation(row.execution_class_id, row.allocation_json);
+      const obligations = fills.all(orderId, orderId) as { role: string; price_ticks: unknown; quantity_atoms: unknown }[];
+      const filledQuantity = obligations.reduce((sum, fill) => sum + storedBigInt(fill.quantity_atoms, "quantity_atoms"), 0n);
+      const reopeningSide = obligations.find((fill) => fill.role === "BID" || fill.role === "ASK");
+      const expired = entry?.expiresAtValue !== undefined && entry.expiresAtValue <= nowValue;
+      const state: PackageBookParticipantOrderState = entry !== undefined ? (expired ? "EXPIRED" : "OPEN")
+        : row.cancelled !== null ? "CANCELLED"
+          : filledQuantity >= commitment.quantity ? "FILLED" : "CLOSED";
+      return Object.freeze({
+        packageOrderIdHex: toHex(orderId),
+        executionClassId: row.execution_class_id,
+        strategyOrderHashHex: toHex(hashBytes(row.strategy_order_hash, "strategy_order_hash")),
+        state,
+        side: entry?.side ?? allocation?.takerSide ?? (reopeningSide?.role as "BID" | "ASK" | undefined) ?? null,
+        priceTicks: entry?.priceTicks ?? allocation?.takerLimitPriceTicks ?? null,
+        quantity: commitment.quantity,
+        filledQuantity,
+        remainingQuantity: state === "OPEN" ? entry!.quantity : 0n,
+        expiresAtValue: entry?.expiresAtValue ?? null,
+        recordedAtMs: row.recorded_at_ms,
+      });
+    }));
   }
 
   settlementHandoff(allocationHash: Uint8Array | string): PackageSettlementHandoff | undefined {

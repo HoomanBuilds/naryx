@@ -139,6 +139,20 @@ CREATE TABLE IF NOT EXISTS order_activation_completion_evidence (
   allocated_notional_ticks TEXT NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS order_activation_owners (
+  order_hash BLOB PRIMARY KEY REFERENCES order_activations(order_hash),
+  owner TEXT NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS order_activation_owners_by_owner ON order_activation_owners(owner);
+CREATE TABLE IF NOT EXISTS order_activation_owner_cancellations (
+  owner TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  order_hash BLOB NOT NULL REFERENCES order_activations(order_hash),
+  expires_at_ms INTEGER NOT NULL,
+  signature TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (owner, nonce)
+) STRICT;
 CREATE UNIQUE INDEX IF NOT EXISTS one_reserved_activation_attempt
   ON order_activation_attempts(order_hash) WHERE status = 'RESERVED';
 CREATE UNIQUE INDEX IF NOT EXISTS one_activation_attempt_per_slice
@@ -200,6 +214,17 @@ export class SqliteOrderActivationStore {
     this.orders = options.orders;
     this.clock = options.clock ?? Date.now;
     this.db = openDurableDatabase(dbPath, SCHEMA_SQL, (code, message) => new OrderActivationStoreError(code, message));
+    // Activations registered before the owner index existed are indexed once from their stored order.
+    const unindexed = this.db.prepare(`
+      SELECT order_hash, order_json FROM order_activations a
+      WHERE NOT EXISTS (SELECT 1 FROM order_activation_owners o WHERE o.order_hash = a.order_hash)
+    `).all() as { order_hash: Uint8Array; order_json: string }[];
+    if (unindexed.length > 0) {
+      const insert = this.db.prepare("INSERT INTO order_activation_owners (order_hash, owner) VALUES (?, ?)");
+      this.transaction(() => {
+        for (const row of unindexed) insert.run(row.order_hash, (parseProtocolJson(row.order_json) as StrategyPackageOrder).owner);
+      });
+    }
   }
 
   close(): void {
@@ -306,6 +331,7 @@ export class SqliteOrderActivationStore {
           VALUES (?, ?, ?)
         `).run(orderHash, sourceHash, now);
       }
+      this.db.prepare("INSERT INTO order_activation_owners (order_hash, owner) VALUES (?, ?)").run(orderHash, order.owner);
       return true;
     });
     return { created, view: this.requireView(input.orderHashHex) };
@@ -744,16 +770,64 @@ export class SqliteOrderActivationStore {
   }
 
   cancel(orderHashHex: string): OrderActivationView {
+    return this.transaction(() => this.cancelWaiting(orderHashHex));
+  }
+
+  /** An owner's activations: every one still WAITING, plus the most recently updated terminal ones. */
+  ownerViews(owner: string, terminalLimit = 20): readonly OrderActivationView[] {
+    const rows = this.db.prepare(`
+      SELECT order_hash FROM (
+        SELECT a.order_hash, a.updated_at_ms FROM order_activations a
+        JOIN order_activation_owners o ON o.order_hash = a.order_hash WHERE o.owner = ? AND a.status = 'WAITING'
+      )
+      UNION ALL
+      SELECT order_hash FROM (
+        SELECT a.order_hash, a.updated_at_ms FROM order_activations a
+        JOIN order_activation_owners o ON o.order_hash = a.order_hash WHERE o.owner = ? AND a.status <> 'WAITING'
+        ORDER BY a.updated_at_ms DESC, a.order_hash LIMIT ?
+      )
+    `).all(owner, owner, terminalLimit) as { order_hash: Uint8Array }[];
+    return Object.freeze(rows.map((row) => this.requireView(toHex(row.order_hash)))
+      .sort((left, right) => right.updatedAtMs - left.updatedAtMs || (left.orderHashHex < right.orderHashHex ? -1 : 1)));
+  }
+
+  /**
+   * Cancels for the order's owner under a verified signature. The nonce is spent in the same
+   * transaction as the cancellation, so a refused cancellation spends nothing and a signed
+   * cancellation is accepted at most once.
+   */
+  cancelByOwner(input: Readonly<{
+    orderHashHex: string;
+    owner: string;
+    nonce: string;
+    expiresAtMs: number;
+    signature: string;
+  }>): OrderActivationView {
     return this.transaction(() => {
-      const view = this.requireView(orderHashHex);
-      if (view.status === "CANCELLED") return view;
-      if (view.status !== "WAITING") throw new OrderActivationStoreError("ORDER_TERMINAL", `Activation status is ${view.status}.`);
-      if (view.attempts.some((attempt) => attempt.status === "RESERVED")) {
-        throw new OrderActivationStoreError("ATTEMPT_OUTSTANDING", "Resolve the reserved attempt before cancellation.");
+      const view = this.requireView(input.orderHashHex);
+      if (view.order.owner !== input.owner) throw new OrderActivationStoreError("NOT_OWNER", "Only the order owner can cancel this activation.");
+      const now = this.clock();
+      if (!Number.isSafeInteger(input.expiresAtMs) || input.expiresAtMs <= now) {
+        throw new OrderActivationStoreError("CANCELLATION_EXPIRED", "The signed cancellation has expired.");
       }
-      this.setStatus(orderHashHex, "CANCELLED");
-      return this.requireView(orderHashHex);
+      const spent = this.db.prepare(`
+        INSERT OR IGNORE INTO order_activation_owner_cancellations
+          (owner, nonce, order_hash, expires_at_ms, signature, recorded_at_ms) VALUES (?, ?, ?, ?, ?, ?)
+      `).run(input.owner, input.nonce, hashBytes(input.orderHashHex), input.expiresAtMs, input.signature, now);
+      if (spent.changes !== 1) throw new OrderActivationStoreError("NONCE_REPLAYED", "This signed cancellation was already used.");
+      return this.cancelWaiting(input.orderHashHex);
     });
+  }
+
+  private cancelWaiting(orderHashHex: string): OrderActivationView {
+    const view = this.requireView(orderHashHex);
+    if (view.status === "CANCELLED") return view;
+    if (view.status !== "WAITING") throw new OrderActivationStoreError("ORDER_TERMINAL", `Activation status is ${view.status}.`);
+    if (view.attempts.some((attempt) => attempt.status === "RESERVED")) {
+      throw new OrderActivationStoreError("ATTEMPT_OUTSTANDING", "Resolve the reserved attempt before cancellation.");
+    }
+    this.setStatus(orderHashHex, "CANCELLED");
+    return this.requireView(orderHashHex);
   }
 
   private requireView(orderHashHex: string): OrderActivationView {

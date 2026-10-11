@@ -143,12 +143,6 @@ import {
   type StrategyOrderIntakePort,
 } from "./strategy-order-intake.js";
 import {
-  HyperliquidNettingResidualExecutionClientError,
-} from "./hyperliquid-netting-residual-execution-client.js";
-import { BaseSepoliaNettingResidualExecutionClientError } from "./base-sepolia-netting-residual-execution-client.js";
-import { SolanaDevnetNettingResidualExecutionClientError } from "./solana-devnet-netting-residual-execution-client.js";
-import type { NettingExecutionCoordinator } from "./netting-execution-coordinator.js";
-import {
   isEvmPackageBookParticipant,
   packageAmendmentAuthorizationTypedData,
   packageCancellationAuthorizationTypedData,
@@ -226,6 +220,7 @@ export type PublicExchangeStore = Pick<
   | "settlementAuthorization"
   | "settlementHandoff"
   | "settlementProgress"
+  | "participantOrders"
   | "reopeningResult"
   | "reopeningSettlementHandoff"
   | "haltRecord"
@@ -331,8 +326,6 @@ export interface PublicApiOptions {
   readonly strategyQuotes?: GeneralizedStrategyQuotePort;
   /** Optional: computes an advisory portfolio selection and independently verifies the solver response. */
   readonly portfolioOptimization?: AuthoritativePortfolioOptimizationPort;
-  /** Optional: executes already authorized Testnet residual intents through the loopback solver. */
-  readonly nettingExecution?: Pick<NettingExecutionCoordinator, "execute">;
   /** Builder manifests and attributions; without it the builder routes answer 503. */
   readonly builders?: Pick<SqliteBuilderStore, "registerManifest" | "latest" | "attribute" | "attributions" | "revenue">;
   /** Cross-domain coordinations and manual recovery incidents; without it those routes answer 503. */
@@ -573,13 +566,6 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       throw new RequestError(503, "PORTFOLIO_OPTIMIZATION_UNAVAILABLE", "Portfolio optimization is disabled on this server.");
     }
     return options.portfolioOptimization;
-  }
-
-  function requireNettingExecution(): Pick<NettingExecutionCoordinator, "execute"> {
-    if (options.nettingExecution === undefined) {
-      throw new RequestError(503, "NETTING_EXECUTION_UNAVAILABLE", "Netting residual execution is disabled.");
-    }
-    return options.nettingExecution;
   }
 
   function requireNativeClearing(): NonNullable<PublicApiOptions['nativeClearing']> {
@@ -1605,6 +1591,12 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const hash = match[1] as string;
       return store.auctionView(hash, wallClockIn(store.auctionDefinition(hash).timeUnit));
     }
+    if ((match = /^\/v1\/package-book\/participants\/([^/]+)\/orders$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      const participantId = id(match[1], "Participant id");
+      const now = nowValue();
+      return { version: 1, participantId, asOfValue: now, orders: exchange.participantOrders(participantId, now) };
+    }
     if ((match = /^\/v1\/package-book\/orders\/([0-9a-f]{64})\/settlement-readiness$/.exec(path)) !== null) {
       onlyParams(url, []);
       const orderId = match[1] as string;
@@ -1730,7 +1722,6 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     const path = url.pathname;
     const privateRfqAcceptanceMatch = /^\/v1\/rfqs\/private\/([0-9a-f]{64})\/accept$/.exec(path);
     const sealedAuctionAwardMatch = /^\/v1\/auctions\/sealed\/([0-9a-f]{64})\/award$/.exec(path);
-    const nettingExecutionMatch = /^\/v1\/netting\/batches\/([0-9a-f]{64})\/execute$/.exec(path);
     const activationPreparationMatch = /^\/v1\/order-activations\/attempts\/([0-9a-f]{64})\/prepare$/.exec(path);
     if (![
       "/v1/orders/validate",
@@ -1774,7 +1765,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       "/v1/builders",
       "/v1/builders/attributions",
     ].includes(path) && sealedAuctionAwardMatch === null && privateRfqAcceptanceMatch === null
-      && nettingExecutionMatch === null && activationPreparationMatch === null) {
+      && activationPreparationMatch === null) {
       throw new RequestError(404, "NOT_FOUND", "Unknown public route.");
     }
     const body = object(await readProtocolBody(
@@ -1862,28 +1853,6 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         ...(body.schedule === undefined ? {} : { schedule: object(body.schedule, "schedule") as unknown as ExecutionScheduleInput }),
       });
       return { version: 1, created: registered.created, ...registered.view };
-    }
-    if (nettingExecutionMatch !== null) {
-      if (Object.keys(body).length !== 0) {
-        throw new RequestError(400, "INVALID_REQUEST", "A netting execution request has no caller-selected fields.");
-      }
-      const proofHash = nettingExecutionMatch[1] as string;
-      if (exchange.nettingBatch(proofHash) === undefined) {
-        throw new RequestError(404, "NETTING_BATCH_NOT_FOUND", "No prepared netting batch exists for this proof hash.");
-      }
-      try {
-        return await requireNettingExecution().execute(proofHash);
-      } catch (error) {
-        if (error instanceof HyperliquidNettingResidualExecutionClientError
-          || error instanceof BaseSepoliaNettingResidualExecutionClientError
-          || error instanceof SolanaDevnetNettingResidualExecutionClientError) {
-          if (error.code === "EVIDENCE_PENDING") {
-            throw new RequestError(409, "NETTING_EVIDENCE_PENDING", error.message);
-          }
-          throw new RequestError(502, "NETTING_EXECUTION_FAILED", error.message);
-        }
-        throw error;
-      }
     }
     if (privateRfqAcceptanceMatch !== null) {
       if (Object.keys(body).length !== 0) {

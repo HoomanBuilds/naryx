@@ -30,6 +30,7 @@ import { createCoordinationInternalHandler, SqliteCoordinationStore } from "./co
 import { createStrategyPackageInternalHandler, SqliteStrategyPackageStore } from "./strategy-package-store.js";
 import { SqliteOrderActivationStore } from "./order-activation-store.js";
 import { createOrderActivationAdminHandler } from "./order-activation-admin.js";
+import { createOrderActivationOwnerHandler } from "./order-activation-owner-routes.js";
 import { AdvancedOrderFactory } from "./advanced-order-factory.js";
 import { AdvancedOrderExecutionFactory } from "./advanced-order-execution-factory.js";
 import { AdvancedOrderReconciliation } from "./advanced-order-reconciliation.js";
@@ -72,7 +73,7 @@ import {
   NettingAllocationSettlementCoordinator,
 } from "./netting-allocation-settlement-coordinator.js";
 import { createNettingAllocationAdminHandler } from "./netting-allocation-admin.js";
-import { createNettingBatchAdminHandler } from "./netting-batch-admin.js";
+import { createNettingBatchAdminHandler, createNettingBatchExecutionHandler } from "./netting-batch-admin.js";
 import { prepareNextAuthoritativeNettingBatch } from "./authoritative-netting.js";
 import { prepareNextAuthoritativeCrossBatchClearing } from './authoritative-cross-batch-clearing.js';
 import {
@@ -780,6 +781,7 @@ export function loadPublicMarketRuntime(
           clockMs(),
         ),
       })]),
+      ...(nettingExecution === undefined ? [] : [createNettingBatchExecutionHandler({ exchange: store, execution: nettingExecution })]),
       createCrossBatchClearingAdminHandler({
         exchange: store,
         prepareNext: (policy) => prepareNextAuthoritativeCrossBatchClearing(store, policy),
@@ -793,6 +795,8 @@ export function loadPublicMarketRuntime(
         observations: metricObservations,
         ...(advancedOrderReconciliation === undefined ? {} : { reconciliation: advancedOrderReconciliation }),
       })]),
+      // Owner list and signed cancel under /internal/terminal/, which the terminal origin reaches.
+      ...(orderActivations === undefined ? [] : [createOrderActivationOwnerHandler({ activations: orderActivations, clock: clockMs })]),
       ...(metricObservations === undefined ? [] : [createMetricObservationAdminHandler({ observations: metricObservations })]),
       ...(strategyPackages === undefined ? [] : [createStrategyPackageInternalHandler(strategyPackages)]),
       ...(nettingAllocationAdmin === undefined ? [] : [nettingAllocationAdmin]),
@@ -825,7 +829,6 @@ export function loadPublicMarketRuntime(
       ...(strategyPackages === undefined ? {} : { strategyPackageExecutions: strategyPackages }),
       ...(strategyQuotes === undefined ? {} : { strategyQuotes }),
       ...(portfolioOptimization === undefined ? {} : { portfolioOptimization }),
-      ...(nettingExecution === undefined ? {} : { nettingExecution }),
       ...(builders === undefined ? {} : { builders }),
       ...(keeper === undefined ? {} : { health: keeper }),
       ...(coordination === undefined ? {} : { coordination }),

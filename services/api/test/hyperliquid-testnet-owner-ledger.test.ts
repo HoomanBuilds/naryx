@@ -427,3 +427,35 @@ test("a package listing shows each Hyperliquid entry and exit attempt's state", 
   assert.equal(ledger.attemptOutcome("entry-1")?.state, "OPENED");
   assert.equal(ledger.attemptOutcome("unknown"), undefined);
 }));
+
+test("an owner's open package stays listed behind any number of later closed packages", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-ledger-"));
+  let now = 1;
+  const ledger = new HyperliquidTestnetOwnerLedger(join(scratch, "execution.db"), () => now++);
+  const limits = { maxOpenPackagesPerOwner: 2, maxOpenNotionalQuoteAtoms: 5_000n };
+  try {
+    ledger.reserveEntry({ attemptId: "entry-old", owner: ALICE, orderHash: "f0".repeat(32), notionalAtoms: 1_000n, limits });
+    ledger.settleEntry("entry-old", reconciled("entry-old", "COMPLETED_EXACT", "100", "-100"), 600n);
+    for (let index = 0; index < 22; index += 1) {
+      const id = `entry-${index}`;
+      const exitHash = index.toString(16).padStart(2, "0").repeat(32);
+      ledger.reserveEntry({ attemptId: id, owner: ALICE, orderHash: `a${index.toString(16).padStart(2, "0")}`.padEnd(64, "0"), notionalAtoms: 1_000n, limits });
+      ledger.settleEntry(id, reconciled(id, "COMPLETED_EXACT", "100", "-100"), 600n);
+      ledger.bindExitOrder(id, ALICE, exitHash);
+      ledger.beginExit(`exit-${index}`, {
+        owner: ALICE, orderHash: exitHash, perpQuantityAtoms: 100n, grossSpotQuantityAtoms: 100n, spotLotAtoms: 1n,
+        entryReceiptHash: ledger.openPackage(ALICE, id)!.entryReceiptHash!,
+      });
+      ledger.settleExit(`exit-${index}`, reconciled(`exit-${index}`, "COMPLETED_EXACT", "-100", "100"));
+    }
+    const listed = ledger.packages(ALICE);
+    assert.equal(listed.length, 21);
+    assert.deepEqual(listed.filter((row) => row.state !== "CLOSED").map((row) => row.entryAttemptId), ["entry-old"]);
+    assert.equal(listed[0]?.entryAttemptId, "entry-21");
+    assert.equal(listed.some((row) => row.entryAttemptId === "entry-0" || row.entryAttemptId === "entry-1"), false);
+    assert.deepEqual(ledger.packages(BOB), []);
+  } finally {
+    ledger.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});

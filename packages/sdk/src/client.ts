@@ -371,6 +371,23 @@ export interface PackageSettlementProgressView {
   readonly obligations: readonly PackageSettlementObligationView[];
 }
 
+export type PackageBookParticipantOrderState = 'OPEN' | 'EXPIRED' | 'FILLED' | 'CANCELLED' | 'CLOSED';
+
+/** One of a participant's package-book orders: every resting one, plus the most recent closed ones. */
+export interface PackageBookParticipantOrderView {
+  readonly packageOrderId: string;
+  readonly packageMarketId: string;
+  readonly strategyOrderHash: string;
+  readonly state: PackageBookParticipantOrderState;
+  readonly side: 'BID' | 'ASK' | null;
+  readonly priceTicks: bigint | null;
+  readonly quantity: bigint;
+  readonly filledQuantity: bigint;
+  readonly remainingQuantity: bigint;
+  readonly expiresAtValue: bigint | null;
+  readonly recordedAtMs: number;
+}
+
 export type PackageBookOrderDraft = Omit<PackageTakerOrderInput, 'orderId'>;
 
 export type PackageBookSettlementDraft = Omit<
@@ -882,11 +899,6 @@ export interface VerifiedPreparedNettingBatch {
   readonly crossBatchClearings: readonly VerifiedCrossBatchClearing[];
   readonly crossBatchResolutions: readonly CrossBatchNettingResolution[];
   readonly recordedAtMs: number;
-}
-
-export interface ExecutedNettingBatchResult {
-  readonly batch: VerifiedPreparedNettingBatch;
-  readonly executedIntentHashes: readonly string[];
 }
 
 export interface VerifiedRiskGroup {
@@ -2894,6 +2906,51 @@ export class NaryxClient {
         ? {}
         : { settlementHandoff, settlementHandoffHash }),
     });
+  }
+
+  async getParticipantPackageOrders(participantId: string): Promise<Readonly<{
+    participantId: string;
+    asOfValue: bigint;
+    orders: readonly PackageBookParticipantOrderView[];
+  }>> {
+    if (!ID.test(participantId)) throw new TypeError('participant id is malformed');
+    const body = record(
+      await this.#request('GET', `/v1/package-book/participants/${participantId}/orders`),
+      'participant package orders',
+    );
+    if (body.participantId !== participantId) throw new NaryxEvidenceError('participant package orders name another participant');
+    const orders = list(body.orders, 'participant package orders').map((value, index) => {
+      const context = `participant package orders[${index}]`;
+      const entry = record(value, context);
+      const state = entry.state;
+      const quantity = big(entry.quantity, `${context}.quantity`);
+      const filledQuantity = big(entry.filledQuantity, `${context}.filledQuantity`);
+      const remainingQuantity = big(entry.remainingQuantity, `${context}.remainingQuantity`);
+      if ((state !== 'OPEN' && state !== 'EXPIRED' && state !== 'FILLED' && state !== 'CANCELLED' && state !== 'CLOSED')
+        || (entry.side !== 'BID' && entry.side !== 'ASK' && entry.side !== null)
+        || (entry.priceTicks !== null && typeof entry.priceTicks !== 'bigint')
+        || (entry.expiresAtValue !== null && typeof entry.expiresAtValue !== 'bigint')
+        || typeof entry.executionClassId !== 'string' || !ID.test(entry.executionClassId)
+        || quantity <= 0n || filledQuantity < 0n || remainingQuantity < 0n
+        || (state !== 'OPEN' && remainingQuantity !== 0n)
+        || (state === 'FILLED' && filledQuantity < quantity)) {
+        throw new NaryxEvidenceError(`${context} is malformed`);
+      }
+      return Object.freeze({
+        packageOrderId: hashHex(entry.packageOrderIdHex, `${context}.packageOrderIdHex`),
+        packageMarketId: entry.executionClassId,
+        strategyOrderHash: hashHex(entry.strategyOrderHashHex, `${context}.strategyOrderHashHex`),
+        state,
+        side: entry.side,
+        priceTicks: entry.priceTicks as bigint | null,
+        quantity,
+        filledQuantity,
+        remainingQuantity,
+        expiresAtValue: entry.expiresAtValue as bigint | null,
+        recordedAtMs: count(entry.recordedAtMs, `${context}.recordedAtMs`),
+      });
+    });
+    return Object.freeze({ participantId, asOfValue: big(body.asOfValue, 'participant package orders.asOfValue'), orders: Object.freeze(orders) });
   }
 
   async getPackageSettlementProgress(packageOrderId: string): Promise<PackageSettlementProgressView> {
@@ -5152,29 +5209,6 @@ export class NaryxClient {
       }
     }
     return Object.freeze(clearings);
-  }
-
-  /** Executes every still-direct external residual and verifies the returned batch after execution. */
-  async executeNettingBatch(proofHash: string): Promise<ExecutedNettingBatchResult> {
-    const requested = hashHex(proofHash, 'netting proof hash');
-    const body = record(
-      await this.#request('POST', `/v1/netting/batches/${requested}/execute`, {}),
-      'executed netting response',
-    );
-    const batch = await this.#verifiedPreparedNettingBatch(body.batch, requested);
-    const executedIntentHashes = list(body.executedIntentHashes, 'executed netting response.executedIntentHashes').map((value, index) => (
-      hashHex(value, `executed netting response.executedIntentHashes[${index}]`)
-    ));
-    if (new Set(executedIntentHashes).size !== executedIntentHashes.length) {
-      throw new NaryxEvidenceError('executed netting response repeats an intent hash');
-    }
-    for (const intentHash of executedIntentHashes) {
-      const execution = batch.externalExecutions.find((entry) => toHex(entry.intent.intentHash) === intentHash);
-      if (execution?.evidence === undefined) {
-        throw new NaryxEvidenceError('executed netting response does not carry evidence for an executed intent');
-      }
-    }
-    return Object.freeze({ batch, executedIntentHashes: Object.freeze(executedIntentHashes) });
   }
 
   async validateDeRisk(input: { readonly positions: readonly unknown[]; readonly policy: unknown; readonly stateCertain: boolean; readonly openRiskIncreasingOrderIds?: readonly string[] }): Promise<readonly unknown[]> {

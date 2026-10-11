@@ -10,6 +10,12 @@ export {
 } from "./order-activation-store.js";
 export { createOrderActivationAdminHandler } from "./order-activation-admin.js";
 export {
+  createOrderActivationOwnerHandler,
+  orderActivationCancellationHash,
+  orderActivationCancellationTypedData,
+  verifyOrderActivationCancellation,
+} from "./order-activation-owner-routes.js";
+export {
   AdvancedOrderReconciliation,
   AdvancedOrderReconciliationError,
   type AdvancedOrderReconciliationResult,
@@ -64,6 +70,7 @@ export {
 } from './netting-allocation-admin.js';
 export {
   createNettingBatchAdminHandler,
+  createNettingBatchExecutionHandler,
   type NettingBatchAdminOptions,
 } from './netting-batch-admin.js';
 export {

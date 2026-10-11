@@ -893,3 +893,31 @@ test("one participant cannot grow a book past its entry cap, but can always canc
     assert.equal(store.submitOrder(CLASS, replacement, NOW, settlement(replacement)).accepted, true);
   });
 });
+
+test("a participant's package-book orders list every resting order and the recent closed ones with their state", () => {
+  withStore((store) => {
+    registerAll(store);
+    const alice = { participantId: "alice", commonControlGroupId: "group-alice" };
+    const resting = order(1, { ...alice, quantity: 30n });
+    const cancelled = order(2, { ...alice, limitPriceTicks: 105n });
+    const expiring = order(3, { ...alice, limitPriceTicks: 110n, expiresAtValue: 1_500n });
+    for (const value of [resting, cancelled, expiring]) store.submitOrder(CLASS, value, NOW, settlement(value));
+    const taker = order(4, { side: "BID", timeInForce: "IOC", participantId: "bob", commonControlGroupId: "group-bob" });
+    store.submitOrder(CLASS, taker, NOW, settlement(taker));
+    store.cancelEntry(CLASS, cancelled.orderId, "alice");
+
+    const listed = store.participantOrders("alice", 1_600n);
+    const byId = new Map(listed.map((entry) => [entry.packageOrderIdHex, entry]));
+    assert.deepEqual(
+      [byId.get(id(1))?.state, byId.get(id(1))?.filledQuantity, byId.get(id(1))?.remainingQuantity, byId.get(id(1))?.priceTicks],
+      ["OPEN", 10n, 20n, 100n],
+    );
+    assert.equal(byId.get(id(2))?.state, "CANCELLED");
+    assert.deepEqual([byId.get(id(3))?.state, byId.get(id(3))?.remainingQuantity], ["EXPIRED", 0n]);
+    assert.equal(byId.has(id(4)), false);
+    assert.deepEqual(store.participantOrders("bob", NOW).map((entry) => [entry.state, entry.side, entry.filledQuantity]), [["FILLED", "BID", 10n]]);
+    // A resting order is listed however many later orders push it out of the recent window.
+    assert.deepEqual(store.participantOrders("alice", NOW, 0).map((entry) => entry.packageOrderIdHex).sort(), [id(1), id(3)]);
+    assert.deepEqual(store.participantOrders("nobody", NOW), []);
+  });
+});
