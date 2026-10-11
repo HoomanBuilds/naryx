@@ -9,7 +9,7 @@ pub use constants::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("CEUicPZ2gS8EhV6RvDMUmJ9YjEkLetqrppHdrTMA1GNb");
+declare_id!("EbY7MezVnmueWnyUb5QXe6jr4Cxe95Znh1FhZiPf633c");
 
 #[program]
 pub mod naryx_inventory_adapter {

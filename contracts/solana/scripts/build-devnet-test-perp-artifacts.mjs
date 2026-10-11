@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Publishes the ABI-only IDLs for the Devnet test perp lane: the venue, its adapter, and the
+// Publishes the ABI-only IDLs for the Devnet release: test perp, generalized strategy, and the
 // naryx_core build with the `devnet-test-perp` feature. The default core IDL is published by
 // build-program-artifacts.mjs and is not touched here.
 const contractsDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -62,9 +62,11 @@ try {
   }
   const venue = buildIdl("naryx_test_perp", "naryx_test_perp.json");
   const adapter = buildIdl("naryx_test_perp_adapter", "naryx_test_perp_adapter.json");
+  const inventoryAdapter = buildIdl("naryx_inventory_adapter", "naryx_inventory_adapter.json");
+  const multiStrategy = buildIdl("naryx_multi_strategy", "naryx_multi_strategy.json");
 
   mkdirSync(outputDir, { recursive: true });
-  for (const { path } of [core, venue, adapter]) {
+  for (const { path } of [core, venue, adapter, inventoryAdapter, multiStrategy]) {
     copyFileSync(path, join(outputDir, path.split("/").pop()));
   }
   process.stdout.write(`Published Devnet test perp IDLs to ${outputDir}\n`);

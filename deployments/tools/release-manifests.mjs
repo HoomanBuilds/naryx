@@ -25,7 +25,15 @@ export const NETWORKS = Object.freeze({
   'solana-devnet': { family: 'svm', domainId: 'svm:devnet', environment: 'devnet' },
   'hyperliquid-testnet': { family: 'hypercore', domainId: 'hypercore:testnet', environment: 'testnet' },
 });
-const SOLANA_PROGRAM_NAMES = ['core', 'package_book', 'perp_adapter', 'perp_venue', 'reservation'];
+const SOLANA_PROGRAM_NAMES = [
+  'core',
+  'inventory_adapter',
+  'multi_strategy',
+  'package_book',
+  'perp_adapter',
+  'perp_venue',
+  'reservation',
+];
 const MISSING = Symbol('missing');
 
 export class ReleaseError extends Error {}

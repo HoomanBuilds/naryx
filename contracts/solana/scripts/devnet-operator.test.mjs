@@ -130,9 +130,25 @@ test("plan, layout, fragments, and lookup table agree and fail closed on drift",
     programDataAddress: new web3.PublicKey(fill(seed + 16)),
     codeIdentity: fill(seed + 32),
   });
-  const programs = { core: program(1), reservation: program(2), package_book: program(3), perp_venue: program(4), perp_adapter: program(5) };
+  const programs = {
+    core: program(1),
+    inventory_adapter: program(2),
+    reservation: program(3),
+    multi_strategy: program(4),
+    package_book: program(5),
+    perp_venue: program(6),
+    perp_adapter: program(7),
+  };
   const layout = deriveDevnetLayout(parsed, programs, { marketOwner: web3.Keypair.generate().publicKey });
-  const names = ["naryx_core", "naryx_inventory_reservation", "naryx_package_book", "naryx_test_perp", "naryx_test_perp_adapter"];
+  const names = [
+    "naryx_core",
+    "naryx_inventory_adapter",
+    "naryx_inventory_reservation",
+    "naryx_multi_strategy",
+    "naryx_package_book",
+    "naryx_test_perp",
+    "naryx_test_perp_adapter",
+  ];
   const release = {
     genesisHash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
     programs: names.map((name, index) => ({

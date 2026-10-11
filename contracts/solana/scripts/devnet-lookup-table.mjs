@@ -43,7 +43,7 @@ export function fixedFirmAccounts(record) {
   for (const program of fragment.programs ?? []) {
     addresses.push(text(program.programId, `${program.name} programId`), text(program.programDataAddress, `${program.name} programDataAddress`));
   }
-  if (addresses.length !== 10) throw new Error("initialization record must carry the five reviewed programs");
+  if (addresses.length !== 14) throw new Error("initialization record must carry the seven reviewed programs");
   for (const name of [
     "config", "solverRegistry", "testPerpMarket", "collateralVault", "feeVault", "insuranceVault", "reservationClass",
     "packageBookClass", "packageBookShard", "packageBookLevelPage", "seriesIndex", "seriesRecord",

@@ -53,7 +53,9 @@ export const SOL_USD_PRICE_ACCOUNT = "7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjL
 export const SOL_USD_FEED_ID_HEX = "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d";
 export const RELEASE_PROGRAMS = Object.freeze({
   naryx_core: "core",
+  naryx_inventory_adapter: "inventory_adapter",
   naryx_inventory_reservation: "reservation",
+  naryx_multi_strategy: "multi_strategy",
   naryx_package_book: "package_book",
   naryx_test_perp: "perp_venue",
   naryx_test_perp_adapter: "perp_adapter",
@@ -549,7 +551,7 @@ async function main() {
       upgradeAuthority: evidence.upgradeAuthority,
     };
   }
-  for (const name of ["core", "reservation", "package_book"]) {
+  for (const name of Object.values(RELEASE_PROGRAMS)) {
     if (programs[name].upgradeAuthority !== upgradeAuthority.publicKey.toBase58()) {
       throw new Error(`--upgrade-authority is not the live ${name} upgrade authority`);
     }

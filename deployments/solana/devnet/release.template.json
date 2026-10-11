@@ -22,6 +22,28 @@
         "$operator": "sha256 of the reviewed naryx_core.so with trailing zero bytes removed"
       }
     },
+    "inventory_adapter": {
+      "programId": {
+        "$operator": "naryx_inventory_adapter program id"
+      },
+      "upgradeAuthority": {
+        "$operator": "upgrade authority public key, or null"
+      },
+      "artifactSha256": {
+        "$operator": "reviewed naryx_inventory_adapter.so trimmed sha256"
+      }
+    },
+    "multi_strategy": {
+      "programId": {
+        "$operator": "naryx_multi_strategy program id"
+      },
+      "upgradeAuthority": {
+        "$operator": "upgrade authority public key, or null"
+      },
+      "artifactSha256": {
+        "$operator": "reviewed naryx_multi_strategy.so trimmed sha256"
+      }
+    },
     "package_book": {
       "programId": {
         "$operator": "naryx_package_book program id"

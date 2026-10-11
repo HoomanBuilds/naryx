@@ -10,7 +10,7 @@ pub use constants::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("5P1Sh9xsWzpzT86jPwTnKwrP2UEZFELUFNcaV7wa7Jvd");
+declare_id!("CDaUbFWSG6rh5mgjAr63157Ha7upZmza5SF47xgSaxqj");
 
 #[program]
 pub mod naryx_multi_strategy {
