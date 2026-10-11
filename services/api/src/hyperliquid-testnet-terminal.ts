@@ -3,6 +3,7 @@ export const HYPERLIQUID_TESTNET_ENVIRONMENT = "TESTNET" as const;
 
 const REQUEST_KEYS = ["attemptId", "idempotencyKey"] as const;
 const ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+const ATTEMPT_ID_PATTERN = /^hyperliquid-testnet-[0-9a-f]{48}$/;
 const LEG_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const COMMITMENT_PATTERN = /^0x[0-9a-f]{64}$/;
 const REASON_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
@@ -233,6 +234,16 @@ function requireBrowserId(value: unknown, name: string): string {
   return value;
 }
 
+function requireAttemptId(value: unknown): string {
+  if (typeof value !== "string" || !ATTEMPT_ID_PATTERN.test(value)) {
+    throw new HyperliquidTestnetTerminalValidationError(
+      "INVALID_HYPERLIQUID_ID",
+      "attemptId must use the canonical Hyperliquid Testnet attempt identity.",
+    );
+  }
+  return value;
+}
+
 function requireLegId(value: unknown, name: string): string {
   if (typeof value !== "string" || !LEG_ID_PATTERN.test(value)) {
     throw new Error(`${name} must be a bounded protocol identifier`);
@@ -256,7 +267,7 @@ export function parseHyperliquidTestnetTerminalExecutionRequest(
     );
   }
   return Object.freeze({
-    attemptId: requireBrowserId(value.attemptId, "attemptId"),
+    attemptId: requireAttemptId(value.attemptId),
     idempotencyKey: requireBrowserId(value.idempotencyKey, "idempotencyKey"),
   });
 }

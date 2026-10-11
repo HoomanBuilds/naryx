@@ -9,7 +9,7 @@ import {
 } from "../src/index.js";
 import { executionReadinessFixtureGate, executionReadinessFixtureScopes } from "./execution-readiness-fixture.js";
 
-const ATTEMPT_ID = "attempt-0123456789AB";
+const ATTEMPT_ID = `hyperliquid-testnet-${"ab".repeat(24)}`;
 const IDEMPOTENCY_KEY = "idem-0123456789ABCD";
 const ACTION = `0x${"aa".repeat(32)}`;
 const REQUEST = `0x${"bb".repeat(32)}`;
@@ -275,6 +275,18 @@ test("hyperliquid testnet terminal execution boundary is injected and fail-close
       assert.equal(rejected.status, 400);
       assert.match((await rejected.json() as { error: { code: string } }).error.code, /INVALID_HYPERLIQUID/);
     }
+    assert.equal(calls, 1);
+
+    const malformedAttempt = await fetch(`${serverUrl}${ENDPOINT}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: origin },
+      body: JSON.stringify({ ...body, attemptId: "attempt-0123456789AB" }),
+    });
+    assert.equal(malformedAttempt.status, 400);
+    assert.equal(
+      (await malformedAttempt.json() as { error: { code: string } }).error.code,
+      "INVALID_HYPERLIQUID_ID",
+    );
     assert.equal(calls, 1);
 
     for (const fixture of variantFixtures()) {
