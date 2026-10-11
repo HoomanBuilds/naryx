@@ -102,7 +102,8 @@ Limits, modelled on how large venues bound risk rather than ration trading:
   prefer this only for emergencies).
 - Optional daily brakes, off by default: add `maxPrincipalAtomsPerDay` (per network per UTC day)
   and `maxPrincipalAtomsPerOwnerPerDay` (per wallet) to the lane's entry under the
-  `api/testnet-execution-policy.json` output in your template copy. Exits count as zero principal
+  `api/testnet-execution-policy.json` output in your template copy. A per-network cap requires the
+  per-wallet cap, so one wallet cannot use up the day for everyone. Exits count as zero principal
   against them.
 - Arbitrum `exitCallbackGasLimit`: the GMX callback of a full close also sells the spot leg, so it
   needs far more gas than the entry callback.
@@ -152,7 +153,6 @@ the bundle, so redeploy after any change. Leave the API URL unset for Preview de
 2. Portfolio: connect a fresh wallet, claim test USDC on Base, Arbitrum, and Solana, and see the
    balances update.
 3. Trade: one minimum-size package per lane, entry and exit, and its receipts on the Activity page.
-   Skip Solana while its exits are unavailable (see "Not available yet").
 4. Many users: repeat step 3 with a second wallet at the same time, then open the Activity page
    from another browser with the first wallet and exit from there.
 5. Keeper: the code watchlist reports every target `MATCH`; the funding mirror stays `disabled`
@@ -166,7 +166,7 @@ Nothing in a lane is tied to the operator's wallet. Any visitor connects their o
 |---|---|---|---|
 | Base Sepolia | Claim tUSDC in Portfolio; ETH gas from a public faucet | The wallet signs and sends the atomic package | Wallet-signed, from any device |
 | Arbitrum Sepolia | Mint USDC.SG in Portfolio; ETH gas from a public faucet | The wallet creates its own Naryx account and signs; the solver submits to GMX and pays GMX fees | Wallet-signed exit authorization; the solver submits the full close |
-| Solana Devnet | Claim test USDC in Portfolio; SOL from a public faucet | Paused while exits are unavailable, so nobody opens a package they cannot close | Not available yet: the terminal and Portfolio show why instead of an exit |
+| Solana Devnet | Claim test USDC in Portfolio; SOL from a public faucet | The wallet signs the solver's firm quote; one atomic transaction | Wallet-signed firm buy-back exit from the solver |
 | Hyperliquid testnet | None | The EVM wallet signs the package authorization; the shared trading account executes, one package at a time | The owner wallet signs; only its own packages |
 
 The Activity page lists each wallet's packages from the API, so they follow the wallet across
@@ -225,17 +225,13 @@ These have passed local, fork, and LiteSVM tests but have never run against the 
 - Seeded Uniswap pools drift from the oracle as people trade; nothing re-centres them yet. Orders
   are bounded by the pinned Uniswap quoter's executable price for their size, so drift costs price,
   not failed transactions, and a size the pool cannot fill is refused before signing.
-- The public v1 market API (package order book, solver metrics) is optional and off unless
-  configured; quote-based trading does not need it.
+- The public v1 market API (package order book, tape, solver metrics, strategy receipts, RFQ and
+  sealed auctions) runs on its own listener (8790) when a release enables it; the Hyperliquid
+  release does. nginx forwards `/v1/` to it, and the web needs `NARYX_WEB_PUBLIC_API_BASE_URL` set to
+  the API's HTTPS origin or those panels show as not configured. Quote-based trading does not need it.
 
 ## Not available yet
 
-- Solana Devnet exits. The only Devnet exit route is the solver's firm buy-back
-  (`execute_firm_cash_and_carry` with action `EXIT` on the `devnet-test-perp` core build), and the
-  protocol admits firm quotes only for atomic entries (`solverQuote` and `validatePackageAdmission`
-  in `packages/protocol-types`, mirrored by `WireFirmQuoteShape` in the core program), so the
-  solver's exit bid is refused before any transaction is built. The public Orca exit stays
-  fail-closed until a Devnet Orca spot venue, market, and adapter are registered. The terminal therefore
-  pauses Solana entries too, so nobody opens a package they cannot close; removing the Solana entry
-  from `EXIT_UNAVAILABLE` (`apps/web/src/features/terminal/shell/terminal-context.tsx`) re-enables
-  both once exits ship. Do not announce the Solana lane until then.
+- Solana Devnet exits through the public Orca route. Exits use the solver's firm buy-back
+  (`execute_firm_cash_and_carry` with action `EXIT`); the public Orca exit stays fail-closed until a
+  Devnet Orca spot venue, market, and adapter are registered.
