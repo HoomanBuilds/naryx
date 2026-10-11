@@ -151,6 +151,18 @@ describe('public API client', () => {
     new NaryxClient({ baseUrl: 'https://api.example/naryx', fetch });
   });
 
+  test('calls fetch without a receiver, as browsers require of native fetch', async () => {
+    const routes = serve({ [`/v1/markets/${CLASS}/package-depth`]: { body: {
+      packageMarketId: CLASS, matchingPolicyHash: 'ab'.repeat(32), halted: false, asOfValue: 1_000n, bids: [], asks: [],
+    } } });
+    const nativeLike = function (this: unknown, url: string, init: Parameters<FetchLike>[1]) {
+      if (this !== undefined && this !== globalThis) throw new TypeError("Failed to execute 'fetch': Illegal invocation");
+      return routes(url, init);
+    };
+    const book = await new NaryxClient({ baseUrl: 'https://api.example/', fetch: nativeLike }).getDepth(CLASS);
+    assert.deepEqual(book.asks, []);
+  });
+
   test('reads depth with direct and implied quantity kept apart', async () => {
     const book = await client({
       [`/v1/markets/${CLASS}/package-depth`]: {

@@ -111,7 +111,9 @@ export class NaryxSolverClient {
       headers['X-Naryx-Nonce'] = nonce;
       headers['X-Naryx-Signature'] = toHex(signature);
     }
-    const response = await this.#fetch(`${this.#baseUrl}${path}`, { method, headers, ...(text === '' ? {} : { body: text }) });
+    // Called without a receiver, as a browser's native fetch requires.
+    const fetchImplementation = this.#fetch;
+    const response = await fetchImplementation(`${this.#baseUrl}${path}`, { method, headers, ...(text === '' ? {} : { body: text }) });
     const payload = await response.text();
     if (payload.length > MAX_RESPONSE_CHARS) throw new NaryxEvidenceError('response is too large');
     let parsed: unknown;

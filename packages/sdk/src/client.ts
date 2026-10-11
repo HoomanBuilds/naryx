@@ -2334,7 +2334,10 @@ export class NaryxClient {
     const init = body === undefined
       ? { method, headers: { Accept: 'application/json' } }
       : { method, headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(toProtocolJson(body)) };
-    const response = await this.#fetch(`${this.#baseUrl}${path}`, init);
+    // Called without a receiver: a browser's native fetch throws "Illegal invocation" when bound to
+    // anything but the window.
+    const fetchImplementation = this.#fetch;
+    const response = await fetchImplementation(`${this.#baseUrl}${path}`, init);
     const contentType = response.headers.get('content-type') ?? '';
     const text = await response.text();
     if (text.length > MAX_RESPONSE_CHARS) throw new NaryxEvidenceError('response is too large');
