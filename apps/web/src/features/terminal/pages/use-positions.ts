@@ -16,6 +16,8 @@ export type OpenPosition = Readonly<{
   key: string;
   domain: DomainId;
   packageId: string;
+  /** The id the Trade page's exit ticket selects the package by; null when the lane keys it by owner alone. */
+  exitId: string | null;
   size: string;
   /** The spot leg in base units at full precision, as the exit ticket is sized; null when unknown. */
   exactSize: string | null;
@@ -71,6 +73,7 @@ export function usePositions(): PositionsState {
         key: `base:${open.entryReceiptHash}`,
         domain: "base",
         packageId: shortId(open.entryReceiptHash),
+        exitId: open.entryReceiptHash,
         size: `${units(open.baseQuantityAtoms, 18)} ETH`,
         exactSize: exact(open.baseQuantityAtoms, 18),
         entryNotional: usd(open.entryPerpNotionalWad, 18),
@@ -89,6 +92,7 @@ export function usePositions(): PositionsState {
         key: `arbitrum:${open.packageId}`,
         domain: "arbitrum",
         packageId: shortId(open.packageId),
+        exitId: open.packageId,
         size: `${units(open.spotBaseAtoms, 18)} ETH`,
         exactSize: exact(open.spotBaseAtoms, 18),
         entryNotional: usd(open.positionSizeUsd, 30),
@@ -108,6 +112,7 @@ export function usePositions(): PositionsState {
         key: `hyperliquid:${entry.entryOrderHash}`,
         domain: "hyperliquid",
         packageId: shortId(entry.entryReceiptHash ?? entry.entryOrderHash),
+        exitId: entry.entryAttemptId,
         size: entry.spotQuantityAtoms !== null && account.baseDecimals !== null
           ? units(entry.spotQuantityAtoms, account.baseDecimals) : "-",
         exactSize: entry.spotQuantityAtoms !== null && account.baseDecimals !== null
@@ -130,6 +135,7 @@ export function usePositions(): PositionsState {
         key: `solana:${solana}`,
         domain: "solana",
         packageId: shortId(solana!),
+        exitId: null,
         size: units(open.spotQuantityAtoms, open.baseDecimals),
         exactSize: exact(open.spotQuantityAtoms, open.baseDecimals),
         entryNotional: open.entryNotionalAtoms > BigInt(0) ? usd(open.entryNotionalAtoms, open.quoteDecimals) : null,

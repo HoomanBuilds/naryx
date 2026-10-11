@@ -14,7 +14,9 @@ import { attemptsOf } from "../shell/attempt-index";
 import { useEvmBalances, useHyperliquidBalance, useSolanaBalance, type Amount, type ChainBalance } from "./use-balances";
 import { formatAtomicAmount, formatScaledInteger } from "../format";
 import { TransactionLink } from "../transaction-status";
-import { usePortfolioIntelligence } from "./use-portfolio-intelligence";
+import { usePortfolioIntelligence, type ObservationStatus } from "./use-portfolio-intelligence";
+import { NativeClearingCard, RiskDomainsCard, useNativeClearing } from "./clearing-and-risk";
+import { StrategyPositionsTable, useStrategyPositions } from "./strategy-positions";
 import { PortfolioScenarioLab } from "./portfolio-scenario-lab";
 import { StrategyEntryManager, StrategyLifecycleManager } from "./strategy-lifecycle-manager";
 import { StrategyNovation } from "./strategy-novation";
@@ -92,6 +94,12 @@ function ageText(value: bigint): string {
   return `${value / BigInt(86_400_000)} d`;
 }
 
+function missing(status: ObservationStatus) {
+  return status === "unavailable"
+    ? <span className={styles.dim} title="The read failed or this store is not configured on the server">Unavailable</span>
+    : <span className={styles.dim}>No observation</span>;
+}
+
 function StrategyManagement({
   baseUrl,
   connected,
@@ -145,6 +153,12 @@ export function PortfolioView() {
   const solanaAddress = solana.selectedAccount?.address ?? null;
   const evmAddress = evm.account;
   const intelligence = usePortfolioIntelligence(publicApiBaseUrl, [solanaAddress, evmAddress]);
+  const strategyPositions = useStrategyPositions();
+  const clearing = useNativeClearing(publicApiBaseUrl, [solanaAddress, evmAddress?.toLowerCase() ?? null].filter((owner): owner is string => owner !== null));
+  const riskDomainIds = [...new Set([
+    ...intelligence.rows.flatMap((row) => row.riskDomainIds),
+    ...clearing.accounts.map((entry) => entry.domain.policy.riskDomainId),
+  ])].sort();
   const evmBalances = useEvmBalances(evmAddress);
   const balances: Readonly<Record<DomainId, ChainBalance>> = {
     solana: useSolanaBalance(solanaAddress),
@@ -190,8 +204,8 @@ export function PortfolioView() {
         </div>
         <div>
           <span>Open packages</span>
-          <strong>{positionsLoading && positions.length === 0 ? "-" : positions.length}</strong>
-          <small>{unreadable.length > 0 ? "Some networks could not be read" : "Read from each network"}</small>
+          <strong>{(positionsLoading || strategyPositions.loading) && positions.length + strategyPositions.positions.length === 0 ? "-" : positions.length + strategyPositions.positions.length}</strong>
+          <small>{unreadable.length > 0 || strategyPositions.unreadable.length > 0 ? "Some sources could not be read" : "Read from each network and the strategy store"}</small>
         </div>
         <div>
           <span>Packages started here</span>
@@ -368,8 +382,10 @@ export function PortfolioView() {
                         className={styles.ghost}
                         aria-label={`Exit the ${DOMAIN_META[position.domain].network} package ${position.packageId}`}
                         onClick={() => {
+                          const params = new URLSearchParams({ mode: "exit", lane: position.domain });
+                          if (position.exitId !== null) params.set("package", position.exitId);
                           setSelectedDomain(position.domain);
-                          router.push("/trade?mode=exit");
+                          router.push(`/trade?${params.toString()}`);
                         }}
                       >
                         Exit
@@ -381,6 +397,7 @@ export function PortfolioView() {
             </tbody>
           </table>
         </div>
+        <StrategyPositionsTable state={strategyPositions} />
       </section>
 
       <section className={styles.card} aria-labelledby="portfolio-intelligence-title">
@@ -388,6 +405,13 @@ export function PortfolioView() {
           <h2 id="portfolio-intelligence-title">Clearing intelligence</h2>
           <p>Signed position and collateral observations used for package comparison. An observation proves its configured publisher, not the venue itself.</p>
         </div>
+        {intelligence.unreadableOwners > 0 || intelligence.unreadableStrategies > 0 ? (
+          <p className={styles.noticeError} role="status">
+            {intelligence.unreadableOwners > 0 ? `${intelligence.unreadableOwners} wallet's strategy list could not be read. ` : ""}
+            {intelligence.unreadableStrategies > 0 ? `${intelligence.unreadableStrategies} strateg${intelligence.unreadableStrategies === 1 ? "y" : "ies"} could not be read and ${intelligence.unreadableStrategies === 1 ? "is" : "are"} missing below. ` : ""}
+            Retrying.
+          </p>
+        ) : null}
         <div className={styles.scroll}>
           <table className={styles.table}>
             <thead>
@@ -413,16 +437,20 @@ export function PortfolioView() {
                 const ages = [row.positionAgeMs, ...row.collateral.map((source) => source.ageMs)].filter((age): age is bigint => age !== null);
                 const oldest = ages.reduce<bigint | null>((current, age) => current === null || age > current ? age : current, null);
                 const stale = oldest !== null && oldest > BigInt(300_000);
-                const riskDomains = [...new Set(row.collateral.map((source) => source.riskDomainId))].sort();
+                const riskDomains = row.riskDomainIds;
                 return (
                   <tr key={row.strategyId}>
                     <td className={styles.mono} title={row.strategyId}>{shortId(row.strategyId)}</td>
                     <td>
-                      <strong>{row.positionCount}</strong> <span className={styles.dim}>positions</span>
-                      <small className={styles.cellDetail}>{row.positionSources} signed source{row.positionSources === 1 ? "" : "s"}</small>
+                      {row.riskStatus === "observed" ? (
+                        <>
+                          <strong>{row.positionCount}</strong> <span className={styles.dim}>positions</span>
+                          <small className={styles.cellDetail}>{row.positionSources} signed source{row.positionSources === 1 ? "" : "s"}</small>
+                        </>
+                      ) : missing(row.riskStatus)}
                     </td>
                     <td className={styles.num}>
-                      {row.risk.length === 0 ? <span className={styles.dim}>No observation</span> : (
+                      {row.risk.length === 0 ? missing(row.riskStatus) : (
                         <span className={styles.cellStack}>
                           {row.risk.map((group) => (
                             <span key={`${group.assetId}:${group.decimals}`} title="Net marked exposure and gross absolute marked exposure from locally verified position snapshots">
@@ -434,7 +462,7 @@ export function PortfolioView() {
                       )}
                     </td>
                     <td className={styles.num}>
-                      {row.risk.length === 0 ? <span className={styles.dim}>No observation</span> : (
+                      {row.risk.length === 0 ? missing(row.riskStatus) : (
                         <span className={styles.cellStack}>
                           {row.risk.map((group) => (
                             <span key={`${group.assetId}:${group.decimals}`} title="Locally replayed uniform price shocks with close costs stressed to 150%">
@@ -446,7 +474,7 @@ export function PortfolioView() {
                       )}
                     </td>
                     <td className={styles.num}>
-                      {row.risk.length === 0 ? <span className={styles.dim}>No observation</span> : (
+                      {row.risk.length === 0 ? missing(row.riskStatus) : (
                         <span className={styles.cellStack}>
                           {row.risk.map((group) => (
                             <span key={`${group.assetId}:${group.decimals}`} title="Executable cost of the configured close routes, recomputed locally from signed position evidence">
@@ -458,7 +486,7 @@ export function PortfolioView() {
                       )}
                     </td>
                     <td className={styles.num}>
-                      {row.collateral.length === 0 ? <span className={styles.dim}>No observation</span> : (
+                      {row.collateral.length === 0 ? missing(row.collateralStatus) : (
                         <span className={styles.cellStack}>
                           {row.collateral.map((source) => (
                             <span key={`${source.sourceId}:${source.assetId}:${source.riskDomainId}`} title={`${source.sourceId}; ${source.mode}; ${formatScaledInteger(source.haircutBps, 2, "%")} haircut`}>
@@ -486,7 +514,11 @@ export function PortfolioView() {
         </div>
       </section>
 
-      <PortfolioScenarioLab rows={intelligence.rows} />
+      <PortfolioScenarioLab rows={intelligence.rows} baseUrl={publicApiBaseUrl} />
+
+      <RiskDomainsCard baseUrl={publicApiBaseUrl} ids={riskDomainIds} clearingDomains={clearing.domains} />
+
+      <NativeClearingCard state={clearing} connected={connectedCount > 0} />
 
       <Suspense fallback={null}>
         <StrategyManagement

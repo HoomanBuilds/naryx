@@ -44,6 +44,9 @@ export type PortfolioScenarioGroup = Readonly<{
   dependencyIds: readonly string[];
 }>;
 
+/** "none" is a 404 (nothing published); "unavailable" is any other failure, including a store that is off. */
+export type ObservationStatus = "observed" | "none" | "unavailable";
+
 export type PortfolioIntelligenceRow = Readonly<{
   strategyId: string;
   environment: string;
@@ -54,13 +57,20 @@ export type PortfolioIntelligenceRow = Readonly<{
   positionAgeMs: bigint | null;
   risk: readonly SignedRisk[];
   scenarioGroups: readonly PortfolioScenarioGroup[];
+  positions: readonly NormalizedPosition[];
   collateral: readonly SignedCollateral[];
+  riskStatus: ObservationStatus;
+  collateralStatus: ObservationStatus;
+  riskDomainIds: readonly string[];
 }>;
 
 export type PortfolioIntelligenceState = Readonly<{
   rows: readonly PortfolioIntelligenceRow[];
   loading: boolean;
   unavailable: boolean;
+  /** Owners or strategies whose own read failed; the rest still load. */
+  unreadableOwners: number;
+  unreadableStrategies: number;
   configured: boolean;
   refresh(): Promise<void>;
 }>;
@@ -90,7 +100,16 @@ function integer(value: unknown, context: string): bigint {
   return value;
 }
 
-async function read(base: string, path: string, signal: AbortSignal, optional = false): Promise<Record<string, unknown> | null> {
+class ReadError extends Error {
+  readonly status: number;
+
+  constructor(status: number, path: string) {
+    super(`${path} answered ${status}.`);
+    this.status = status;
+  }
+}
+
+async function read(base: string, path: string, signal: AbortSignal): Promise<Record<string, unknown>> {
   const response = await fetch(`${base}${path}`, {
     headers: { Accept: "application/json" },
     cache: "no-store",
@@ -98,8 +117,7 @@ async function read(base: string, path: string, signal: AbortSignal, optional = 
     referrerPolicy: "no-referrer",
     signal,
   });
-  if (optional && response.status === 404) return null;
-  if (!response.ok) throw new Error(`${path} answered ${response.status}.`);
+  if (!response.ok) throw new ReadError(response.status, path);
   return record(decode(await response.json() as Json), path);
 }
 
@@ -108,8 +126,7 @@ function largest(values: readonly bigint[]): bigint | null {
   return values.reduce((current, value) => value > current ? value : current);
 }
 
-function parseCollateral(value: Record<string, unknown> | null): readonly SignedCollateral[] {
-  if (value === null) return [];
+function parseCollateral(value: Record<string, unknown>): readonly SignedCollateral[] {
   if (!Array.isArray(value.sources)) throw new Error("Collateral sources are malformed.");
   return Object.freeze(value.sources.map((raw, index) => {
     const source = record(raw, `Collateral source ${index}`);
@@ -140,9 +157,12 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((byte, index) => byte === right[index]);
 }
 
-function summarizeRisk(value: VerifiedRisk | null): Pick<PortfolioIntelligenceRow, "positionSources" | "positionCount" | "positionAgeMs" | "risk" | "scenarioGroups"> {
-  if (value === null) return { positionSources: 0, positionCount: 0, positionAgeMs: null, risk: [], scenarioGroups: [] };
+type RiskSummary = Pick<PortfolioIntelligenceRow, "positionSources" | "positionCount" | "positionAgeMs" | "risk" | "scenarioGroups" | "positions">;
+const NO_RISK: RiskSummary = Object.freeze({ positionSources: 0, positionCount: 0, positionAgeMs: null, risk: [], scenarioGroups: [], positions: [] });
+
+function summarizeRisk(value: VerifiedRisk): RiskSummary {
   return Object.freeze({
+    positions: value.positions.positions,
     positionSources: value.positions.sources.length,
     positionCount: value.positions.positions.length,
     positionAgeMs: largest(value.positions.sources.map((source) => source.ageMs)),
@@ -181,12 +201,14 @@ function summarizeRisk(value: VerifiedRisk | null): Pick<PortfolioIntelligenceRo
   });
 }
 
-async function readRisk(client: NaryxClient, strategyId: string): Promise<VerifiedRisk | null> {
+/** Reads one optional column; any failure but an abort marks only that column. */
+async function optional<T>(signal: AbortSignal, load: () => Promise<T>): Promise<Readonly<{ status: ObservationStatus; value: T | null }>> {
   try {
-    return await client.getRisk(strategyId);
+    return { status: "observed", value: await load() };
   } catch (error) {
-    if (error instanceof NaryxApiError && error.status === 404) return null;
-    throw error;
+    if (signal.aborted) throw error;
+    const status = error instanceof NaryxApiError || error instanceof ReadError ? error.status : 0;
+    return { status: status === 404 ? "none" : "unavailable", value: null };
   }
 }
 
@@ -196,14 +218,17 @@ export function usePortfolioIntelligence(baseUrl: string | null, owners: readonl
     queryKey: ["portfolio-intelligence", baseUrl, activeOwners],
     enabled: baseUrl !== null && activeOwners.length > 0,
     refetchInterval: 15_000,
-    queryFn: async ({ signal }): Promise<readonly PortfolioIntelligenceRow[]> => {
+    queryFn: async ({ signal }) => {
       const base = baseUrl!.replace(/\/+$/, "");
       const client = new NaryxClient({ baseUrl: base });
-      const ownerViews = await Promise.all(activeOwners.map((owner) => read(base, `/v1/owners/${encodeURIComponent(owner)}/strategies`, signal)));
+      const ownerViews = await Promise.all(activeOwners.map((owner) => optional(signal, () => read(base, `/v1/owners/${encodeURIComponent(owner)}/strategies`, signal))));
+      const unreadableOwners = ownerViews.filter((view) => view.status === "unavailable").length;
+      if (unreadableOwners === ownerViews.length) throw new Error("No owner strategy view could be read.");
       const ids = new Set<string>();
       let environment: string | null = null;
-      for (const view of ownerViews) {
-        if (view === null || !Array.isArray(view.strategies)) throw new Error("Owner strategies are malformed.");
+      for (const { value: view } of ownerViews) {
+        if (view === null) continue;
+        if (!Array.isArray(view.strategies)) throw new Error("Owner strategies are malformed.");
         const ownerEnvironment = string(view.environment, "Strategy environment");
         if (environment !== null && environment !== ownerEnvironment) throw new Error("Owner strategy views disagree on environment.");
         environment = ownerEnvironment;
@@ -212,30 +237,41 @@ export function usePortfolioIntelligence(baseUrl: string | null, owners: readonl
           if (strategy.open === true && strategy.retired === false) ids.add(string(strategy.strategyId, "Strategy id"));
         }
       }
-      const rows = await Promise.all([...ids].sort().map(async (strategyId) => {
-        const encoded = encodeURIComponent(strategyId);
+      const rows = await Promise.all([...ids].sort().map(async (strategyId): Promise<PortfolioIntelligenceRow | null> => {
         const [strategy, risk, collateral] = await Promise.all([
-          client.getStrategy(strategyId),
-          readRisk(client, strategyId),
-          read(base, `/v1/collateral/${encoded}`, signal, true),
+          optional(signal, () => client.getStrategy(strategyId)),
+          optional(signal, async () => summarizeRisk(await client.getRisk(strategyId))),
+          optional(signal, async () => parseCollateral(await read(base, `/v1/collateral/${encodeURIComponent(strategyId)}`, signal))),
         ]);
+        if (strategy.value === null) return null;
+        const summary = risk.value ?? NO_RISK;
+        const collateralSources = collateral.value ?? [];
         return Object.freeze({
           strategyId,
           environment: environment as string,
-          state: strategy.state,
-          stateHash: strategy.stateHash,
-          ...summarizeRisk(risk),
-          collateral: parseCollateral(collateral),
+          state: strategy.value.state,
+          stateHash: strategy.value.stateHash,
+          ...summary,
+          collateral: collateralSources,
+          riskStatus: risk.status,
+          collateralStatus: collateral.status,
+          riskDomainIds: Object.freeze([...new Set([
+            ...summary.positions.map((position) => position.riskDomainId),
+            ...collateralSources.map((source) => source.riskDomainId),
+          ])].sort()),
         });
       }));
-      return Object.freeze(rows);
+      const loaded = rows.filter((row): row is PortfolioIntelligenceRow => row !== null);
+      return Object.freeze({ rows: Object.freeze(loaded), unreadableOwners, unreadableStrategies: rows.length - loaded.length });
     },
   });
 
   return Object.freeze({
-    rows: query.data ?? [],
+    rows: query.data?.rows ?? [],
     loading: query.isLoading,
     unavailable: query.isError,
+    unreadableOwners: query.data?.unreadableOwners ?? 0,
+    unreadableStrategies: query.data?.unreadableStrategies ?? 0,
     configured: baseUrl !== null,
     refresh: async () => { await query.refetch(); },
   });

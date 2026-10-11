@@ -1,15 +1,19 @@
 "use client";
 
 import { useMemo, useState, type FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
 import bs58 from "bs58";
 import {
+  NaryxApiError,
   NaryxClient,
+  NaryxEvidenceError,
   type StrategyCommandAuthorizationSigner,
   type StrategyCommandInput,
   type StrategyState,
 } from "@naryx/sdk";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
+import { formatScaledInteger } from "../format";
 import styles from "./pages.module.css";
 
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -32,6 +36,83 @@ function short(value: string): string {
 
 function hex(value: string | Uint8Array): string {
   return typeof value === "string" ? value : [...value].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function readFailure(error: unknown, subject: string): string {
+  if (error instanceof NaryxApiError && error.status === 404) return `No ${subject} is recorded for this strategy's current state.`;
+  if (error instanceof NaryxApiError && error.status === 503) return `This service does not publish strategy ${subject}.`;
+  if (error instanceof NaryxEvidenceError) return `The served ${subject} failed verification here, so it is not shown.`;
+  return `Strategy ${subject} could not be read.`;
+}
+
+function StrategyEvidence({ baseUrl, strategy }: { baseUrl: string; strategy: ManagedStrategy }) {
+  const client = useMemo(() => new NaryxClient({ baseUrl }), [baseUrl]);
+  const health = useQuery({
+    queryKey: ["strategy-health", baseUrl, strategy.strategyId, strategy.stateHash],
+    queryFn: () => client.getStrategyHealth(strategy.strategyId),
+    retry: false,
+  });
+  const history = useQuery({
+    queryKey: ["strategy-history", baseUrl, strategy.strategyId, strategy.stateHash],
+    queryFn: () => client.getStrategyHistory(strategy.strategyId),
+    retry: false,
+  });
+  const snapshot = health.data?.snapshot;
+  const commands = history.data ?? [];
+
+  return (
+    <div className={`${styles.cardBody} ${styles.strategyEvidence}`}>
+      <div>
+        <h3>Health</h3>
+        {snapshot ? (
+          <dl className={styles.novationReview}>
+            <div><dt>Dependencies</dt><dd>{snapshot.dependencyState}</dd></div>
+            <div><dt>Margin health</dt><dd>{formatScaledInteger(snapshot.marginHealthBps, 2, "%")}</dd></div>
+            <div><dt>Leverage</dt><dd>{formatScaledInteger(snapshot.leverageBps, 4, "x")}</dd></div>
+            <div><dt>Liquidation distance</dt><dd>{snapshot.liquidationDistanceBps === undefined ? "Not reported" : formatScaledInteger(snapshot.liquidationDistanceBps, 2, "%")}</dd></div>
+            <div><dt>Residual</dt><dd>{snapshot.residualBaseAtoms.toLocaleString("en-US")} base atoms</dd></div>
+            <div><dt>Loss bound</dt><dd>{snapshot.maximumLossBoundQuoteAtoms.toLocaleString("en-US")} quote atoms</dd></div>
+            <div><dt>Manual takeover</dt><dd>{health.data?.manualTakeover ? "Active" : "No"}</dd></div>
+            <div><dt>Evidence</dt><dd title={health.data?.snapshotHash}>Server asserted; signature not served</dd></div>
+          </dl>
+        ) : <p className={styles.evidenceNote}>{health.isLoading ? "Reading health" : readFailure(health.error, "health")}</p>}
+      </div>
+      <details className={styles.strategyHistory}>
+        <summary>Command history{history.data ? ` (${commands.length})` : ""}</summary>
+        {history.isError ? <p className={styles.evidenceNote}>{readFailure(history.error, "history")}</p> : commands.length === 0 ? (
+          <p className={styles.evidenceNote}>{history.isLoading ? "Reading and verifying history" : "No commands recorded."}</p>
+        ) : (
+          <div className={styles.scroll}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th scope="col">Command</th>
+                  <th scope="col" className={styles.num}>From version</th>
+                  <th scope="col">Actor</th>
+                  <th scope="col">Recorded</th>
+                  <th scope="col">Hash</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...commands].reverse().map((entry) => (
+                  <tr key={entry.commandHash}>
+                    <td>{entry.command.parameters.kind.replaceAll("_", " ")}</td>
+                    <td className={styles.num}>{entry.command.expectedStateVersion.toString()}</td>
+                    <td className={styles.mono} title={entry.command.actorId}>
+                      {short(entry.command.actorId)}
+                      <small className={styles.cellDetail}>{entry.signatureVerified ? "Signature checked here" : "Signature not checked here"}</small>
+                    </td>
+                    <td>{entry.recordedAtMs > 0 ? new Date(entry.recordedAtMs).toLocaleString() : <span className={styles.dim}>-</span>}</td>
+                    <td className={styles.mono} title={entry.commandHash}>{entry.commandHash.slice(0, 12)}...</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </details>
+    </div>
+  );
 }
 
 export function StrategyEntryManager({
@@ -372,6 +453,7 @@ export function StrategyLifecycleManager({
         </div>
         {notice ? <p className={notice.kind === "ok" ? styles.noticeOk : styles.noticeError} role="status">{notice.text}</p> : null}
       </form>
+      <StrategyEvidence key={selected.strategyId} baseUrl={baseUrl} strategy={selected} />
     </section>
   );
 }
