@@ -232,6 +232,6 @@ These have passed local, fork, and LiteSVM tests but have never run against the 
 
 ## Not available yet
 
-- Solana Devnet exits through the public Orca route. Exits use the solver's firm buy-back
-  (`execute_firm_cash_and_carry` with action `EXIT`); the public Orca exit stays fail-closed until a
-  Devnet Orca spot venue, market, and adapter are registered.
+- Solana Devnet public Orca exits. Current exits use the solver's firm buy-back
+  (`execute_firm_cash_and_carry` with action `EXIT`). The public Orca route stays fail-closed until
+  a Devnet Orca spot venue, market, and adapter are registered.
