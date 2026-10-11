@@ -401,6 +401,10 @@ test("a final result whose owner-ledger settle failed after it was stored is set
     assert.deepEqual(settled, [REQUEST.attemptId, second.attemptId]);
     await port.reconcileUnresolved();
     assert.deepEqual(settled, [REQUEST.attemptId, second.attemptId]);
+    // A status read of a settled final result returns it without settling it again.
+    assert.deepEqual(await port.status(REQUEST), { state: "COMPLETED", result: result(REQUEST) });
+    assert.deepEqual(settled, [REQUEST.attemptId, second.attemptId]);
+    assert.deepEqual(port.finalResult(REQUEST), result(REQUEST));
     assert.equal(executions, 2);
   } finally {
     port.close();

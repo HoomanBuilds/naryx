@@ -120,7 +120,8 @@ export interface PublicMarketRuntime {
     "selectHyperliquidExecution" | "selectNativeHyperliquidExecution"
       | "strategyExecutionAttempt" | "nativeStrategyExecutionAttempt" | "anyStrategyExecutionAttempt" | "admissionByQuote"
       | "ownerAuthorization" | "recordReceipt" | "nativeStrategyPositionByStateHash" | "nativeStrategyPositionsByOwner" | "quotes"
-      | "nativeStrategyExposures" | "onNativeStrategyReduction"
+      | "nativeStrategyExposures" | "onNativeStrategyReduction" | "receiptByQuote" | "nativeStrategyReduction"
+      | "sourceBackedStrategyAttempts"
   >;
   /** Immutable owner approval for an exact generalized strategy order. */
   readonly strategyPackageAuthorizations?: Pick<SqliteStrategyPackageStore, "order" | "ownerAuthorization" | "recordOwnerAuthorization">;

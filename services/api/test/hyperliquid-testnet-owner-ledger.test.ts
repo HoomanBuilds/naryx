@@ -4,8 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
+import { generateKeyPairSync } from "node:crypto";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import type { AssetRef, PackageOrder } from "@naryx/protocol-types";
+import {
+  assetAmount,
+  assetRef,
+  domainRef,
+  strategyPackageReceiptHash,
+  toHex,
+  toProtocolJson,
+  type AssetRef,
+  type PackageOrder,
+  type StrategyPackageReceipt,
+} from "@naryx/protocol-types";
 import {
   HyperliquidOwnerLedgerError,
   HyperliquidTestnetOwnerLedger,
@@ -16,6 +27,7 @@ import {
   verifyHyperliquidTestnetAuthorization,
 } from "../src/hyperliquid-testnet-owner-routes.js";
 import type { HyperliquidTestnetTerminalExecutionResult } from "../src/hyperliquid-testnet-terminal.js";
+import { routeFor, signedQuoteFor } from "./quote-fixtures.js";
 
 const ALICE = `0x${"a1".repeat(20)}`;
 const BOB = `0x${"b2".repeat(20)}`;
@@ -24,6 +36,8 @@ const LIMITS = { maxOpenPackagesPerOwner: 1, maxOpenNotionalQuoteAtoms: 5_000n }
 const HASH = `0x${"dd".repeat(32)}`;
 const KEY = "idem-0123456789ABCD";
 const QUOTE = { assetId: "usdc", decimals: 6, assetManifestHash: new Uint8Array(32).fill(7) } as unknown as AssetRef;
+const BASE = assetRef("hypercore:testnet:btc", "08".repeat(32), 5);
+const DOMAIN = domainRef("hypercore:testnet", 1, "13".repeat(32));
 
 function reconciled(
   attemptId: string,
@@ -197,6 +211,8 @@ test("a generalized strategy attempt requires its own authorization and reserves
         ? { owner: ALICE } as never : undefined,
       nativeStrategyPositionByStateHash: () => undefined,
       recordReceipt: () => { throw new Error("must not record during admission"); },
+      receiptByQuote: () => undefined,
+      nativeStrategyReduction: () => undefined,
     },
     tradingAccount: TRADING,
     limits: LIMITS,
@@ -209,8 +225,10 @@ test("a generalized strategy attempt requires its own authorization and reserves
   assert.throws(() => guard.admit(request), /OWNER_AUTHORIZATION_REQUIRED|must sign/);
   generalizedAuthorized = true;
   guard.admit(request);
-  assert.deepEqual(ledger.packages(ALICE), []);
-  // The strategy holds the owner's one package slot and its signed notional in the shared account.
+  // A source-backed entry is a cash-and-carry package: it holds the owner's one package slot and its
+  // signed notional in the shared account.
+  assert.deepEqual(ledger.packages(ALICE).map((entry) => [entry.entryAttemptId, entry.state, entry.reservedNotionalAtoms]),
+    [[strategyAttemptId, "PENDING_ENTRY", 1_000n]]);
   assert.throws(
     () => ledger.reserveEntry({ attemptId: "entry-alice-1", owner: ALICE, orderHash: "01".repeat(32), notionalAtoms: 1n, limits: LIMITS }),
     refused("OWNER_PACKAGE_LIMIT"),
@@ -256,6 +274,8 @@ function strategyGuard(
       }) as never,
       nativeStrategyPositionByStateHash: () => undefined,
       recordReceipt: () => { throw new Error("no receipt for an unsubmitted attempt"); },
+      receiptByQuote: () => undefined,
+      nativeStrategyReduction: () => undefined,
     },
     tradingAccount: TRADING,
     limits: limits ?? undefined,
@@ -459,3 +479,194 @@ test("an owner's open package stays listed behind any number of later closed pac
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+const commitment = (byte: string) => `0x${byte.repeat(32)}`;
+
+/**
+ * One source-backed generalized entry of a cash-and-carry source order: the guard over shape-only
+ * store fakes, the executor's completed strategy result (spot bought 100 with a 1 base-atom fee,
+ * 100 sold short), and the source quote's expected perp notional as the entry notional.
+ */
+function sourceBackedEntry(ledger: HyperliquidTestnetOwnerLedger, n: number, owner: string, options: Readonly<{
+  selectedSourceQuote?: boolean;
+  exitOrders?: Map<string, PackageOrder>;
+  exitAttempts?: Map<string, string>;
+}> = {}) {
+  const byte = (offset: number) => (n * 16 + offset).toString(16).padStart(2, "0");
+  const strategyOrderHash = byte(1).repeat(32);
+  const strategyQuoteHash = byte(2).repeat(32);
+  const sourceOrderHash = byte(3).repeat(32);
+  const sourceAttemptId = `hyperliquid-testnet-${byte(4).repeat(24)}`;
+  const attemptId = `strategy-hl-${byte(5).repeat(24)}`;
+  const leg = (legId: string, legFamily: string, side: string) => ({
+    legId, legFamily, side, domain: DOMAIN, quantityAsset: BASE, quantityAtoms: 100n, minimumQuantityAtoms: 90n,
+    maximumFeeQuoteAtoms: 25n,
+  });
+  const admission = {
+    orderHashHex: strategyOrderHash, graphHashHex: byte(6).repeat(32), quoteHashHex: strategyQuoteHash,
+    routeHashHex: byte(7).repeat(32),
+    order: {
+      environment: "testnet", templateId: "cash-and-carry-v1", templateVersion: 1,
+      packageTemplateManifestHash: new Uint8Array(32).fill(0x31), seriesId: "btc-cash-carry-usdc", seriesVersion: 1,
+      seriesManifestHash: new Uint8Array(32).fill(0x32), executionClassId: "hyperliquid-testnet-batched-ioc",
+      executionClassVersion: 1, executionClassManifestHash: new Uint8Array(32).fill(0x33), lifecycleAction: "ENTRY",
+      owner, settlementAccount: TRADING, settlementClass: "BATCHED_IOC_WITH_RECOVERY", quoteAsset: QUOTE,
+      maximumResidualValue: assetAmount(QUOTE, 100n),
+    },
+    graph: { legs: [leg("spot", "SPOT_SWAP", "BUY"), leg("perp", "PERP_OPEN", "SELL")] },
+    quote: {
+      domains: [DOMAIN], solverId: "solver-hypercore-testnet-v1", totalGrossNotional: assetAmount(QUOTE, 1_000n),
+      passThroughCosts: [{ category: "VENUE", amount: assetAmount(QUOTE, 35n) }],
+    },
+    route: { domainPlans: [{ domain: DOMAIN }] },
+  };
+  const observed = (legId: string, signed: string, feeAsset: AssetRef, fee: string) => ({
+    legId, clientOrderId: `0x${byte(8).repeat(16)}`, plannedSignedBaseAtoms: signed, filledSignedBaseAtoms: signed,
+    terminalStatus: "FILLED", openOrderStatus: "NONE", orderId: 1, fillCount: 1, grossQuoteAtoms: "6000000",
+    feeAssetId: feeAsset.assetId, feeAssetDecimals: feeAsset.decimals, feeAtoms: fee, venueFeeQuoteAtoms: "10",
+    observedAtMs: "1000000", evidenceCommitment: commitment(byte(9)),
+  });
+  const result = {
+    attemptId, idempotencyKey: KEY, domain: "hypercore:testnet", environment: "TESTNET",
+    status: "STRATEGY_EXECUTION", packageStatus: "COMPLETED", completedStages: [1],
+    stages: [{
+      batchStage: 1, submissionStatus: "ACKNOWLEDGED", actionCommitment: commitment(byte(10)),
+      requestCommitment: commitment(byte(11)),
+      evidence: {
+        status: "COMPLETE", outcome: "COMPLETED", reasons: [], observedAtMs: "1000000", rawEvidenceCommitments: [],
+        legs: [observed("spot", "100", BASE, "1"), observed("perp", "-100", QUOTE, "10")],
+      },
+    }],
+  } as unknown as HyperliquidTestnetTerminalExecutionResult;
+  const route = routeFor(sourceOrderHash, DOMAIN, "testnet");
+  const sourceQuote = signedQuoteFor({
+    orderHash: sourceOrderHash, route, environment: "testnet", domain: DOMAIN, solverId: "solver-a",
+    manifestHash: "ab".repeat(32), quoteKey: generateKeyPairSync("ed25519").privateKey,
+    validUntilUnit: "HYPERLIQUID_UNIX_MILLISECONDS", validUntilValue: 2_000_000n,
+  });
+  const receipts = new Map<string, string>();
+  const recorded: string[] = [];
+  const strategyAttempt = (id: string) => id === attemptId
+    ? { sourceOrderHashHex: sourceOrderHash, orderHashHex: strategyOrderHash, quoteHashHex: strategyQuoteHash } as never
+    : undefined;
+  const guard = createHyperliquidTestnetExecutionGuard({
+    ledger,
+    intents: {
+      getAttempt: (id) => options.exitAttempts?.has(id) === true
+        ? { status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED", orderHash: options.exitAttempts.get(id) } as never : undefined,
+      getAttemptForOrder: (orderHash) => orderHash === sourceOrderHash ? {
+        attemptId: sourceAttemptId, orderHash, status: "HYPERLIQUID_TESTNET_QUOTE_SELECTED", domainId: "hypercore:testnet",
+      } as never : undefined,
+      getSelectedQuote: (id) => id === sourceAttemptId && options.selectedSourceQuote !== false
+        ? { quote: toProtocolJson(sourceQuote) } as never : undefined,
+    },
+    orders: {
+      getCanonicalOrderByHash: (orderHash) => orderHash === sourceOrderHash
+        ? { owner, settlementAccount: TRADING, action: "ENTRY" } as unknown as PackageOrder
+        : options.exitOrders?.get(orderHash as string),
+    },
+    strategyAttempts: { anyStrategyExecutionAttempt: strategyAttempt },
+    strategyReceipts: {
+      anyStrategyExecutionAttempt: strategyAttempt,
+      admissionByQuote: () => admission as never,
+      ownerAuthorization: () => ({ owner }) as never,
+      nativeStrategyPositionByStateHash: () => undefined,
+      recordReceipt: (receipt) => {
+        const receiptHashHex = toHex(strategyPackageReceiptHash(receipt as StrategyPackageReceipt));
+        recorded.push(receiptHashHex);
+        receipts.set(toHex((receipt as StrategyPackageReceipt).quoteHash), receiptHashHex);
+        return { created: true, receiptHashHex };
+      },
+      receiptByQuote: (quoteHashHex) => receipts.has(quoteHashHex)
+        ? { receiptHashHex: receipts.get(quoteHashHex) } as never : undefined,
+      nativeStrategyReduction: () => undefined,
+    },
+    tradingAccount: TRADING,
+    limits: LIMITS,
+    quoteAsset: QUOTE,
+    spotLotAtoms: 10n,
+  });
+  return { guard, attemptId, request: { attemptId, idempotencyKey: KEY }, result, recorded, strategyOrderHash };
+}
+
+test("a source-backed entry opens one owner package from its net fill and exits only through its owner's cash-and-carry exit", withLedger((ledger) => {
+  const exitOrders = new Map<string, PackageOrder>();
+  const exitAttempts = new Map<string, string>();
+  const entry = sourceBackedEntry(ledger, 1, ALICE, { exitOrders, exitAttempts });
+  entry.guard.admit(entry.request);
+  // The package holds the signed notional once: 1000 of 5000, so another owner's 4001 is refused.
+  assert.throws(
+    () => ledger.reserveEntry({ attemptId: "entry-bob-1", owner: BOB, orderHash: "f1".repeat(32), notionalAtoms: 4_001n, limits: LIMITS }),
+    refused("OMNIBUS_NOTIONAL_LIMIT"),
+  );
+  // Settled on execution and again on a status read: one receipt, one package.
+  entry.guard.settle(entry.request, entry.result);
+  entry.guard.settle(entry.request, entry.result);
+  assert.equal(entry.recorded.length, 1);
+  const open = ledger.openPackage(ALICE, entry.attemptId)!;
+  assert.deepEqual(
+    [open.state, open.spotQuantityAtoms, open.perpQuantityAtoms, open.entryNotionalAtoms, open.entryReceiptHash],
+    ["OPEN", 99n, 100n, 99_500_000n, entry.recorded[0]],
+  );
+  ledger.reserveEntry({ attemptId: "entry-bob-1", owner: BOB, orderHash: "f1".repeat(32), notionalAtoms: 4_000n, limits: LIMITS });
+
+  // Another wallet cannot bind or present an exit for it.
+  assert.throws(() => ledger.bindExitOrder(entry.attemptId, BOB, "e3".repeat(32)), refused("NO_OPEN_PACKAGE"));
+  const exitOrder = (exitOwner: string) => ({
+    owner: exitOwner, settlementAccount: TRADING, action: "EXIT", quantity: { atoms: 100n },
+    // HyperCore sells whole lots: 99 floored to the 10-atom lot is 90; the 9 atoms stay as dust.
+    hyperliquidGrossSpotQuantity: { atoms: 90n }, entryReceiptHash: Buffer.from(open.entryReceiptHash!, "hex"),
+  }) as unknown as PackageOrder;
+  const bobExit = { attemptId: `hyperliquid-testnet-${"e2".repeat(24)}`, idempotencyKey: KEY };
+  exitOrders.set("e2".repeat(32), exitOrder(BOB));
+  exitAttempts.set(bobExit.attemptId, "e2".repeat(32));
+  ledger.recordAuthorization("e2".repeat(32), BOB, "0x00");
+  assert.throws(() => entry.guard.admit(bobExit), { code: "EXIT_PACKAGE_MISMATCH" });
+
+  const aliceExit = { attemptId: `hyperliquid-testnet-${"e1".repeat(24)}`, idempotencyKey: KEY };
+  exitOrders.set("e1".repeat(32), exitOrder(ALICE));
+  exitAttempts.set(aliceExit.attemptId, "e1".repeat(32));
+  ledger.recordAuthorization("e1".repeat(32), ALICE, "0x00");
+  ledger.bindExitOrder(entry.attemptId, ALICE, "e1".repeat(32));
+  entry.guard.admit(aliceExit);
+  assert.equal(ledger.packages(ALICE)[0]?.exitSpotQuantityAtoms, 90n);
+  entry.guard.settle(aliceExit, reconciled(aliceExit.attemptId, "COMPLETED_EXACT", "-90", "100"));
+  assert.equal(ledger.packages(ALICE)[0]?.state, "CLOSED");
+  // The closed package freed its slot and notional.
+  ledger.reserveEntry({ attemptId: "entry-alice-2", owner: ALICE, orderHash: "f2".repeat(32), notionalAtoms: 1_000n, limits: LIMITS });
+}));
+
+test("source-backed entries completed under strategy exposure migrate once onto packages, counted once", withLedger((ledger) => {
+  const legacy = (entry: ReturnType<typeof sourceBackedEntry>, owner: string) => {
+    ledger.reserveExposure({
+      attemptId: entry.attemptId, owner, strategyKey: entry.strategyOrderHash, notionalAtoms: 1_000n, newPackage: true, limits: LIMITS,
+    });
+    ledger.settleExposure(entry.attemptId, entry.result);
+  };
+  const alice = sourceBackedEntry(ledger, 1, ALICE);
+  const bob = sourceBackedEntry(ledger, 2, BOB, { selectedSourceQuote: false });
+  legacy(alice, ALICE);
+  legacy(bob, BOB);
+  const lines: string[] = [];
+  const migrate = (entry: typeof alice) => entry.guard.migrateSourceBackedEntries(
+    [entry.request, { attemptId: `strategy-hl-${"99".repeat(24)}`, idempotencyKey: KEY }],
+    (request) => request.attemptId === entry.attemptId ? entry.result : undefined,
+    (line) => lines.push(line),
+  );
+  assert.deepEqual(migrate(alice), { migrated: 1, skipped: 0 });
+  // Without the source quote's entry notional the exit limits cannot be derived: skipped, reported, still held.
+  assert.deepEqual(migrate(bob), { migrated: 0, skipped: 1 });
+  assert.match(lines[0] ?? "", new RegExp(`skipped ${bob.attemptId}`));
+  assert.deepEqual(ledger.packages(BOB), []);
+  const open = ledger.openPackage(ALICE, alice.attemptId)!;
+  assert.deepEqual([open.spotQuantityAtoms, open.perpQuantityAtoms, open.entryReceiptHash], [99n, 100n, alice.recorded[0]]);
+  // A second startup changes nothing, and each entry is still counted once: 2000 of 5000 held.
+  assert.deepEqual(migrate(alice), { migrated: 0, skipped: 0 });
+  assert.equal(alice.recorded.length, 1);
+  const carol = `0x${"c4".repeat(20)}`;
+  assert.throws(
+    () => ledger.reserveEntry({ attemptId: "entry-carol-1", owner: carol, orderHash: "f3".repeat(32), notionalAtoms: 3_001n, limits: LIMITS }),
+    refused("OMNIBUS_NOTIONAL_LIMIT"),
+  );
+  ledger.reserveEntry({ attemptId: "entry-carol-1", owner: carol, orderHash: "f3".repeat(32), notionalAtoms: 3_000n, limits: LIMITS });
+}));

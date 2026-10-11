@@ -594,6 +594,14 @@ implements HyperliquidTestnetTerminalExecutionPort {
     return promise;
   }
 
+  /** The stored final result of an attempt, or undefined while it is unknown, pending, or non-final. */
+  finalResult(request: HyperliquidTestnetTerminalExecutionRequest): HyperliquidTestnetTerminalExecutionResult | undefined {
+    const row = this.#select.get(request.idempotencyKey) as StoredExecutionRow | undefined;
+    if (row === undefined || row.status !== "COMPLETED") return undefined;
+    const result = this.#stored(request)!;
+    return hyperliquidTerminalResultIsFinal(result) ? result : undefined;
+  }
+
   requireOwnerAuthorization(request: HyperliquidTestnetTerminalExecutionRequest): void {
     this.#guard?.requireOwnerAuthorization(request);
   }
@@ -613,8 +621,10 @@ implements HyperliquidTestnetTerminalExecutionPort {
       );
     }
     if (row.status === "COMPLETED") {
-      const result = await this.#latest(request, this.#stored(request)!, row.result_json as string);
-      this.#settleIfUnsettled(request, result);
+      const result = this.#settleIfUnsettled(
+        request,
+        await this.#latest(request, this.#stored(request)!, row.result_json as string),
+      );
       return Object.freeze({ state: "COMPLETED" as const, result });
     }
     if (this.#executor.attemptStatus === undefined) {

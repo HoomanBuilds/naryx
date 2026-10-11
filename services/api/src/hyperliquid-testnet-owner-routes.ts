@@ -24,6 +24,7 @@ import {
 } from "./hyperliquid-testnet-order-context.js";
 import {
   HyperliquidOwnerLedgerError,
+  type HyperliquidEntryFill,
   type HyperliquidOmnibusLimits,
   type HyperliquidOwnerPackage,
   type HyperliquidTestnetOwnerLedger,
@@ -228,12 +229,56 @@ export function attachHyperliquidStrategyExposures(options: Readonly<{
   return Object.freeze({ ...result, skipped: open.length - counted.length });
 }
 
+/**
+ * The spot and short a completed source-backed entry left in the trading account, from the same
+ * authoritative fields the cash-and-carry lane opens a package from: the observed net deltas of a
+ * reconciled result, or for a strategy result the spot leg's fill net of its base-asset fee and the
+ * perpetual leg's fill. Undefined unless the result completed with exactly that evidence.
+ */
+export function sourceBackedEntryFill(
+  admission: StoredStrategyPackageAdmission,
+  result: HyperliquidTestnetTerminalExecutionResult,
+  entryReceiptHash: string,
+): HyperliquidEntryFill | undefined {
+  if (result.status === "RECONCILED") {
+    if ((result.packageStatus !== "COMPLETED_EXACT" && result.packageStatus !== "COMPLETED_BOUNDED")
+      || result.observedNetSpotDeltaAtoms === undefined || result.observedPerpetualDeltaAtoms === undefined) return undefined;
+    return Object.freeze({
+      spotQuantityAtoms: BigInt(result.observedNetSpotDeltaAtoms),
+      perpQuantityAtoms: -BigInt(result.observedPerpetualDeltaAtoms),
+      entryReceiptHash,
+    });
+  }
+  if (result.status !== "STRATEGY_EXECUTION" || result.packageStatus !== "COMPLETED") return undefined;
+  const graphLegs = admission.graph.legs;
+  const spot = graphLegs.filter((leg) => leg.legFamily === "SPOT_SWAP" && leg.side === "BUY");
+  const perp = graphLegs.filter((leg) => leg.legFamily === "PERP_OPEN" && leg.side === "SELL");
+  if (graphLegs.length !== 2 || spot.length !== 1 || perp.length !== 1) return undefined;
+  const observed = result.stages.flatMap((stage) => stage.evidence?.legs ?? []);
+  const spotFill = observed.filter((leg) => leg.legId === spot[0]!.legId);
+  const perpFill = observed.filter((leg) => leg.legId === perp[0]!.legId);
+  if (spotFill.length !== 1 || perpFill.length !== 1) return undefined;
+  const base = spot[0]!.quantityAsset;
+  if (spotFill[0]!.feeAssetId !== base.assetId || spotFill[0]!.feeAssetDecimals !== base.decimals) return undefined;
+  return Object.freeze({
+    spotQuantityAtoms: BigInt(spotFill[0]!.filledSignedBaseAtoms) - BigInt(spotFill[0]!.feeAtoms),
+    perpQuantityAtoms: -BigInt(perpFill[0]!.filledSignedBaseAtoms),
+    entryReceiptHash,
+  });
+}
+
 function ledgerRefusal(error: unknown): never {
   if (error instanceof HyperliquidOwnerLedgerError) {
     throw new HyperliquidTestnetTerminalValidationError(error.code, error.message);
   }
   throw error;
 }
+
+type MigrateSourceBackedEntries = (
+  attempts: readonly HyperliquidTestnetTerminalExecutionRequest[],
+  finalResult: (request: HyperliquidTestnetTerminalExecutionRequest) => HyperliquidTestnetTerminalExecutionResult | undefined,
+  log: (line: string) => void,
+) => Readonly<{ migrated: number; skipped: number }>;
 
 /**
  * Refuses a handoff unless the order's owner signed it and it settles in the trading account;
@@ -248,7 +293,8 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
   strategyAttempts?: StrategyAttemptLookup;
   strategyReceipts?: Pick<
     SqliteStrategyPackageStore,
-    "anyStrategyExecutionAttempt" | "admissionByQuote" | "ownerAuthorization" | "recordReceipt" | "nativeStrategyPositionByStateHash"
+    "anyStrategyExecutionAttempt" | "admissionByQuote" | "ownerAuthorization" | "recordReceipt"
+    | "nativeStrategyPositionByStateHash" | "receiptByQuote" | "nativeStrategyReduction"
   >;
   tradingAccount: string;
   limits: HyperliquidOmnibusLimits | undefined;
@@ -256,7 +302,7 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
   quoteAsset: AssetRef;
   /** Base atoms per spot size unit; an exit sells the package spot floored to it. */
   spotLotAtoms: bigint;
-}>): HyperliquidTestnetExecutionGuard {
+}>): HyperliquidTestnetExecutionGuard & Readonly<{ migrateSourceBackedEntries: MigrateSourceBackedEntries }> {
   const entryNotional = (attemptId: string): bigint => {
     const selected = options.intents.getSelectedQuote(attemptId);
     if (selected === undefined) return 0n;
@@ -316,8 +362,13 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
     }
     return position;
   };
-  // The signed quote's gross notional is what the strategy adds to the shared account.
-  const reserveStrategyExposure = (attemptId: string, admission: StoredStrategyPackageAdmission): void => {
+  // The signed quote's gross notional is what the strategy adds to the shared account. A
+  // source-backed entry is a cash-and-carry package, so it reserves a package rather than exposure.
+  const reserveStrategyExposure = (
+    attemptId: string,
+    admission: StoredStrategyPackageAdmission,
+    sourceBacked: boolean,
+  ): void => {
     const { order, quote } = admission;
     if (order.lifecycleAction !== "ENTRY" && order.lifecycleAction !== "INCREASE") return;
     if (options.limits === undefined) {
@@ -332,6 +383,16 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
         "STRATEGY_NOTIONAL_UNAVAILABLE",
         "The strategy quote carries no positive notional in the shared account's quote asset.",
       );
+    }
+    if (sourceBacked && order.lifecycleAction === "ENTRY") {
+      try {
+        options.ledger.reserveEntry({
+          attemptId, owner: order.owner, orderHash: admission.orderHashHex, notionalAtoms, limits: options.limits,
+        });
+      } catch (error) {
+        ledgerRefusal(error);
+      }
+      return;
     }
     const strategyKey = order.lifecycleAction === "ENTRY"
       ? admission.orderHashHex : priorStrategyPosition(admission)!.entryOrderHashHex;
@@ -348,14 +409,93 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
       ledgerRefusal(error);
     }
   };
+  const strategyAdmission = (quoteHashHex: string): StoredStrategyPackageAdmission => {
+    const admission = options.strategyReceipts?.admissionByQuote(quoteHashHex);
+    if (admission === undefined) {
+      throw new HyperliquidTestnetTerminalValidationError(
+        "STRATEGY_ADMISSION_NOT_FOUND",
+        "The selected strategy admission was not found.",
+      );
+    }
+    return admission;
+  };
+  // Settling repeats (status reads, replays, sweeps). Once the receipt is recorded the strategy
+  // state it consumed is gone, so a repeat reuses it and reruns only the idempotent ledger steps.
+  const strategyReceiptHash = (
+    attemptId: string,
+    quoteHashHex: string,
+    admission: StoredStrategyPackageAdmission,
+    result: HyperliquidTestnetTerminalExecutionResult,
+  ): string | undefined => {
+    const recorded = options.strategyReceipts!.receiptByQuote(quoteHashHex);
+    if (recorded !== undefined) return recorded.receiptHashHex;
+    const priorPosition = priorStrategyPosition(admission);
+    const receipt = buildHyperliquidStrategyPackageReceipt({
+      attemptId,
+      admission,
+      result,
+      ...(priorPosition === undefined ? {} : { priorState: priorPosition.state }),
+    });
+    return receipt === undefined ? undefined : options.strategyReceipts!.recordReceipt(receipt).receiptHashHex;
+  };
+  const settleSourceBackedEntry = (
+    attemptId: string,
+    admission: StoredStrategyPackageAdmission,
+    result: HyperliquidTestnetTerminalExecutionResult,
+    fill: HyperliquidEntryFill | undefined,
+    entryNotionalAtoms: bigint,
+  ): boolean => {
+    const created = options.ledger.adoptStrategyEntry({
+      attemptId,
+      owner: admission.order.owner,
+      orderHash: admission.orderHashHex,
+      notionalAtoms: capNotional(admission.quote.totalGrossNotional, options.quoteAsset) ?? 0n,
+    });
+    options.ledger.settleStrategyEntry(attemptId, result, fill, entryNotionalAtoms);
+    return created;
+  };
+  /**
+   * Moves source-backed entries that completed before they opened owner-ledger packages onto
+   * cash-and-carry packages from their stored final results, releasing the strategy exposure they
+   * held. Idempotent: a migrated, exited, or released entry is never migrated or revived again.
+   * An entry whose result lacks a positive net fill or entry notional is skipped and reported.
+   */
+  const migrateSourceBackedEntries: MigrateSourceBackedEntries = (attempts, finalResult, log) => {
+    let migrated = 0;
+    let skipped = 0;
+    for (const request of attempts) {
+      try {
+        const result = finalResult(request);
+        if (result === undefined || !((result.status === "STRATEGY_EXECUTION" && result.packageStatus === "COMPLETED")
+          || (result.status === "RECONCILED"
+            && (result.packageStatus === "COMPLETED_EXACT" || result.packageStatus === "COMPLETED_BOUNDED")))) continue;
+        const binding = attemptBinding(request.attemptId, options.intents, options.orders, options.strategyAttempts);
+        if (binding.strategyQuoteHash === null || binding.selectedQuoteAttemptId === null) {
+          throw new Error("it is not a source-backed strategy attempt");
+        }
+        const admission = strategyAdmission(binding.strategyQuoteHash);
+        const receiptHashHex = strategyReceiptHash(request.attemptId, binding.strategyQuoteHash, admission, result);
+        const fill = receiptHashHex === undefined ? undefined : sourceBackedEntryFill(admission, result, receiptHashHex);
+        const entryNotionalAtoms = entryNotional(binding.selectedQuoteAttemptId);
+        if (fill === undefined || fill.spotQuantityAtoms <= 0n || fill.perpQuantityAtoms <= 0n || entryNotionalAtoms <= 0n) {
+          throw new Error("its stored result has no positive net fill, receipt, or entry notional");
+        }
+        if (settleSourceBackedEntry(request.attemptId, admission, result, fill, entryNotionalAtoms)) migrated += 1;
+      } catch (error) {
+        skipped += 1;
+        log(`Hyperliquid source-backed entry migration skipped ${request.attemptId}: ${error instanceof Error ? error.message : "unknown error"}`);
+      }
+    }
+    return Object.freeze({ migrated, skipped });
+  };
   return Object.freeze({
     requireOwnerAuthorization(request: HyperliquidTestnetTerminalExecutionRequest) {
       authorized(request);
     },
     admit(request: HyperliquidTestnetTerminalExecutionRequest) {
-      const { order, orderHash, admission } = authorized(request);
+      const { order, orderHash, admission, selectedQuoteAttemptId } = authorized(request);
       if (admission !== undefined) {
-        reserveStrategyExposure(request.attemptId, admission);
+        reserveStrategyExposure(request.attemptId, admission, selectedQuoteAttemptId !== null);
         return;
       }
       if (order === null) throw new HyperliquidTestnetTerminalValidationError("ATTEMPT_NOT_FOUND", "Hyperliquid order was not found.");
@@ -391,35 +531,24 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
     settle(request: HyperliquidTestnetTerminalExecutionRequest, result: HyperliquidTestnetTerminalExecutionResult) {
       const binding = attemptBinding(request.attemptId, options.intents, options.orders, options.strategyAttempts);
       const strategyAttempt = options.strategyReceipts?.anyStrategyExecutionAttempt(request.attemptId);
-      let strategyReceipt: ReturnType<typeof buildHyperliquidStrategyPackageReceipt> = undefined;
       if (strategyAttempt !== undefined) {
-        const admission = options.strategyReceipts?.admissionByQuote(strategyAttempt.quoteHashHex);
-        if (admission === undefined) {
-          throw new HyperliquidTestnetTerminalValidationError(
-            "STRATEGY_ADMISSION_NOT_FOUND",
-            "The selected strategy admission was not found.",
-          );
-        }
-        const priorPosition = priorStrategyPosition(admission);
-        strategyReceipt = buildHyperliquidStrategyPackageReceipt({
-          attemptId: request.attemptId,
-          admission,
-          result,
-          ...(priorPosition === undefined ? {} : { priorState: priorPosition.state }),
-        });
-        if (strategyReceipt !== undefined) options.strategyReceipts!.recordReceipt(strategyReceipt);
+        const admission = strategyAdmission(strategyAttempt.quoteHashHex);
+        const receiptHashHex = strategyReceiptHash(request.attemptId, strategyAttempt.quoteHashHex, admission, result);
         // The exposure ledger follows the recorded receipt, so a receipt that fails keeps exposure held.
         const action = admission.order.lifecycleAction;
-        if (action === "ENTRY" || action === "INCREASE") {
-          options.ledger.settleExposure(request.attemptId, result);
-        } else if (priorPosition !== undefined && (action === "DECREASE" || action === "EXIT" || action === "EMERGENCY_UNWIND")) {
-          options.ledger.settleReduction({
-            attemptId: request.attemptId,
-            strategyKey: priorPosition.entryOrderHashHex,
+        if (binding.selectedQuoteAttemptId !== null && action === "ENTRY") {
+          settleSourceBackedEntry(
+            request.attemptId,
+            admission,
             result,
-            reducedQuantityAtoms: action === "DECREASE" ? admission.order.economicQuantity.atoms : null,
-            priorQuantityAtoms: priorPosition.economicQuantityAtoms,
-          });
+            receiptHashHex === undefined ? undefined : sourceBackedEntryFill(admission, result, receiptHashHex),
+            entryNotional(binding.selectedQuoteAttemptId),
+          );
+        } else if (action === "ENTRY" || action === "INCREASE") {
+          options.ledger.settleExposure(request.attemptId, result);
+        } else if (action === "DECREASE" || action === "EXIT" || action === "EMERGENCY_UNWIND") {
+          const reduction = options.strategyReceipts!.nativeStrategyReduction(request.attemptId);
+          if (reduction !== undefined) options.ledger.applyReduction(reduction);
         }
         return;
       }
@@ -432,6 +561,7 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
         options.ledger.settleExit(request.attemptId, result);
       }
     },
+    migrateSourceBackedEntries,
   });
 }
 

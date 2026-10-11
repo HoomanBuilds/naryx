@@ -53,6 +53,13 @@ export class HyperliquidOwnerLedgerError extends Error {
   }
 }
 
+/** What a completed entry put in the trading account, and the receipt an exit binds. */
+export type HyperliquidEntryFill = Readonly<{
+  spotQuantityAtoms: bigint;
+  perpQuantityAtoms: bigint;
+  entryReceiptHash: string;
+}>;
+
 /** The terms an EXIT order must carry to close exactly one ledger package. */
 export type HyperliquidExitOrderTerms = Readonly<{
   owner: string;
@@ -455,19 +462,87 @@ export class HyperliquidTestnetOwnerLedger {
    * UNRESOLVED takes a later final outcome (after its recovery or lane release reconciles).
    */
   settleEntry(attemptId: string, result: HyperliquidTestnetTerminalExecutionResult, entryNotionalAtoms: bigint): void {
+    const done = completed(result);
+    const orderHash = done === undefined ? undefined : this.#row(attemptId)?.entry_order_hash;
+    this.#settleEntryOutcome(attemptId, noEffect(result) ? "RELEASED" : done === undefined ? "UNRESOLVED" : "OPEN",
+      done === undefined || orderHash === undefined ? undefined : {
+        spotQuantityAtoms: BigInt(done.observedNetSpotDeltaAtoms!),
+        perpQuantityAtoms: -BigInt(done.observedPerpetualDeltaAtoms!),
+        entryReceiptHash: hyperliquidTestnetEntryReceiptHash(attemptId, orderHash, done),
+      }, entryNotionalAtoms);
+  }
+
+  /**
+   * Records a source-backed strategy entry's outcome on its package exactly as a cash-and-carry
+   * entry: completion opens it with the fill the caller derived from authoritative evidence, no
+   * effect returns the reservation, and anything else (or a missing fill) holds it UNRESOLVED.
+   */
+  settleStrategyEntry(
+    attemptId: string,
+    result: HyperliquidTestnetTerminalExecutionResult,
+    fill: HyperliquidEntryFill | undefined,
+    entryNotionalAtoms: bigint,
+  ): void {
+    this.#settleEntryOutcome(attemptId, exposureOutcome(result), fill, entryNotionalAtoms);
+  }
+
+  /**
+   * Moves a source-backed strategy entry admitted under a strategy exposure reservation onto a
+   * pending package that takes over its notional, releasing the reservation so nothing is counted
+   * twice. An entry with neither a package nor a held reservation (one admitted before reservations
+   * existed) takes a package with `notionalAtoms`. A released reservation is never revived.
+   * Returns whether a package was created.
+   */
+  adoptStrategyEntry(input: Readonly<{ attemptId: string; owner: string; orderHash: string; notionalAtoms: bigint }>): boolean {
+    return this.#db.transaction(() => {
+      const release = () => this.#db.prepare(`
+        UPDATE hyperliquid_owner_exposures SET state = 'RELEASED', updated_at_ms = ?
+        WHERE attempt_id = ? AND state IN ${ACTIVE_EXPOSURE_STATES}
+      `).run(this.#now(), input.attemptId);
+      const existing = this.#row(input.attemptId);
+      if (existing !== undefined) {
+        if (existing.owner !== input.owner || existing.entry_order_hash !== input.orderHash) {
+          throw new HyperliquidOwnerLedgerError("LEDGER_CONFLICT", "Entry attempt is bound to a different package.");
+        }
+        release();
+        return false;
+      }
+      const exposure = this.#db.prepare("SELECT owner, notional_atoms, state FROM hyperliquid_owner_exposures WHERE attempt_id = ?")
+        .get(input.attemptId) as { owner: string; notional_atoms: string; state: string } | undefined;
+      if (exposure?.state === "RELEASED") return false;
+      if (exposure !== undefined && exposure.owner !== input.owner) {
+        throw new HyperliquidOwnerLedgerError("LEDGER_CONFLICT", "Strategy attempt is bound to a different exposure.");
+      }
+      const notional = exposure === undefined ? input.notionalAtoms : BigInt(exposure.notional_atoms);
+      if (notional <= 0n) {
+        throw new HyperliquidOwnerLedgerError("LEDGER_CONFLICT", "An adopted strategy entry must hold a positive notional.");
+      }
+      this.#db.prepare(`
+        INSERT INTO hyperliquid_owner_packages (entry_attempt_id, owner, entry_order_hash, state, reserved_notional_atoms, updated_at_ms)
+        VALUES (?, ?, ?, 'PENDING_ENTRY', ?, ?)
+      `).run(input.attemptId, input.owner, input.orderHash, notional.toString(), this.#now());
+      release();
+      return true;
+    }).immediate();
+  }
+
+  #settleEntryOutcome(
+    attemptId: string,
+    outcome: "OPEN" | "RELEASED" | "UNRESOLVED",
+    fill: HyperliquidEntryFill | undefined,
+    entryNotionalAtoms: bigint,
+  ): void {
     this.#db.transaction(() => {
       const row = this.#row(attemptId);
       const unresolvedEntry = row?.state === "UNRESOLVED" && row.exit_attempt_id === null;
       if (row === undefined || (row.state !== "PENDING_ENTRY" && !unresolvedEntry)) return;
-      if (unresolvedEntry && completed(result) === undefined && !noEffect(result)) return;
-      if (noEffect(result)) {
+      if (unresolvedEntry && outcome === "UNRESOLVED") return;
+      if (outcome === "RELEASED") {
         this.#db.prepare("DELETE FROM hyperliquid_owner_packages WHERE entry_attempt_id = ?").run(attemptId);
         return;
       }
-      const done = completed(result);
-      const spot = done === undefined ? 0n : BigInt(done.observedNetSpotDeltaAtoms!);
-      const perp = done === undefined ? 0n : -BigInt(done.observedPerpetualDeltaAtoms!);
-      if (done === undefined || spot <= 0n || perp <= 0n || entryNotionalAtoms <= 0n) {
+      if (outcome !== "OPEN" || fill === undefined || fill.spotQuantityAtoms <= 0n || fill.perpQuantityAtoms <= 0n
+        || entryNotionalAtoms <= 0n) {
         this.#db.prepare(`
           UPDATE hyperliquid_owner_packages SET state = 'UNRESOLVED', updated_at_ms = ? WHERE entry_attempt_id = ?
         `).run(this.#now(), attemptId);
@@ -479,9 +554,8 @@ export class HyperliquidTestnetOwnerLedger {
           entry_receipt_hash = ?, opened_at_ms = ?, updated_at_ms = ?
         WHERE entry_attempt_id = ? AND state IN ('PENDING_ENTRY', 'UNRESOLVED') AND exit_attempt_id IS NULL
       `).run(
-        perp.toString(), spot.toString(), entryNotionalAtoms.toString(),
-        hyperliquidTestnetEntryReceiptHash(attemptId, row.entry_order_hash, done),
-        this.#now(), this.#now(), attemptId,
+        fill.perpQuantityAtoms.toString(), fill.spotQuantityAtoms.toString(), entryNotionalAtoms.toString(),
+        fill.entryReceiptHash, this.#now(), this.#now(), attemptId,
       );
     }).immediate();
   }

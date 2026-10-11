@@ -205,6 +205,12 @@ CREATE TABLE IF NOT EXISTS strategy_native_rebalances (
   selected_at_ms INTEGER NOT NULL,
   finalized_at_ms INTEGER
 ) STRICT;
+CREATE TABLE IF NOT EXISTS strategy_native_reductions (
+  attempt_id TEXT PRIMARY KEY,
+  strategy_key TEXT NOT NULL,
+  reduced_quantity_atoms TEXT,
+  prior_quantity_atoms TEXT NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS strategy_evm_positions (
   package_id BLOB PRIMARY KEY,
   owner_id TEXT NOT NULL,
@@ -884,6 +890,26 @@ export class SqliteStrategyPackageStore {
     this.reductionListener = listener;
   }
 
+  /** The exposure reduction a native strategy receipt recorded for an attempt, if any. */
+  nativeStrategyReduction(attemptId: string): NativeStrategyReduction | undefined {
+    const row = this.db.prepare("SELECT * FROM strategy_native_reductions WHERE attempt_id = ?").get(attemptId) as {
+      attempt_id: string; strategy_key: string; reduced_quantity_atoms: string | null; prior_quantity_atoms: string;
+    } | undefined;
+    return row === undefined ? undefined : Object.freeze({
+      attemptId: row.attempt_id,
+      strategyKey: row.strategy_key,
+      reducedQuantityAtoms: row.reduced_quantity_atoms === null ? null : BigInt(row.reduced_quantity_atoms),
+      priorQuantityAtoms: BigInt(row.prior_quantity_atoms),
+    });
+  }
+
+  /** Every source-backed Hyperliquid strategy attempt; each one is an ENTRY. */
+  sourceBackedStrategyAttempts(): readonly Readonly<{ attemptId: string; idempotencyKey: string }>[] {
+    const rows = this.db.prepare("SELECT attempt_id, idempotency_key FROM strategy_execution_attempts ORDER BY selected_at_ms, attempt_id")
+      .all() as { attempt_id: string; idempotency_key: string }[];
+    return Object.freeze(rows.map((row) => Object.freeze({ attemptId: row.attempt_id, idempotencyKey: row.idempotency_key })));
+  }
+
   /**
    * The executions every unclosed native strategy still carries, with each one's signed quote
    * notional, and the entry order hashes of every closed native strategy.
@@ -892,7 +918,8 @@ export class SqliteStrategyPackageStore {
     const rows = this.db.prepare(`
       SELECT a.attempt_id, p.owner_id, p.entry_order_hash, q.quote_json
       FROM strategy_native_positions p
-      JOIN strategy_native_execution_attempts a ON a.order_hash = p.entry_order_hash
+      JOIN strategy_package_receipts r ON r.receipt_hash = p.entry_receipt_hash
+      JOIN strategy_native_execution_attempts a ON a.quote_hash = r.quote_hash
       JOIN strategy_package_quotes q ON q.quote_hash = a.quote_hash
       WHERE p.status <> 'CLOSED'
       UNION ALL
@@ -900,7 +927,8 @@ export class SqliteStrategyPackageStore {
       FROM strategy_native_positions p
       JOIN strategy_native_transitions t ON t.strategy_id = p.strategy_id
         AND t.action = 'INCREASE' AND t.receipt_hash IS NOT NULL
-      JOIN strategy_native_execution_attempts a ON a.order_hash = t.order_hash
+      JOIN strategy_package_receipts r ON r.receipt_hash = t.receipt_hash
+      JOIN strategy_native_execution_attempts a ON a.quote_hash = r.quote_hash
       JOIN strategy_package_quotes q ON q.quote_hash = a.quote_hash
       WHERE p.status <> 'CLOSED'
     `).all() as { attempt_id: string; owner_id: string; entry_order_hash: Uint8Array; quote_json: string }[];
@@ -2055,6 +2083,17 @@ export class SqliteStrategyPackageStore {
             throw new StrategyPackageStoreError(error.code, error.message);
           }
           throw error;
+        }
+        if (reduction !== undefined) {
+          this.db.prepare(`
+            INSERT INTO strategy_native_reductions (attempt_id, strategy_key, reduced_quantity_atoms, prior_quantity_atoms)
+            VALUES (?, ?, ?, ?)
+          `).run(
+            reduction.attemptId,
+            reduction.strategyKey,
+            reduction.reducedQuantityAtoms === null ? null : reduction.reducedQuantityAtoms.toString(),
+            reduction.priorQuantityAtoms.toString(),
+          );
         }
       }
       return Object.freeze({ created: true, receiptHashHex });

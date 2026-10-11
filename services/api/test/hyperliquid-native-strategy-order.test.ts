@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import Database from "better-sqlite3";
 import {
   adapterRef,
   assetAmount,
@@ -49,7 +50,11 @@ import {
 import type { StrategyOrderIntakePort } from "../src/strategy-order-intake.js";
 import { SqliteStrategyPackageStore } from "../src/strategy-package-store.js";
 import { HyperliquidTestnetOwnerLedger } from "../src/hyperliquid-testnet-owner-ledger.js";
-import { attachHyperliquidStrategyExposures } from "../src/hyperliquid-testnet-owner-routes.js";
+import {
+  attachHyperliquidStrategyExposures,
+  createHyperliquidTestnetExecutionGuard,
+} from "../src/hyperliquid-testnet-owner-routes.js";
+import type { HyperliquidTestnetTerminalExecutionResult } from "../src/hyperliquid-testnet-terminal.js";
 
 const NOW_MS = 1_000_000;
 const OWNER = "0x1111111111111111111111111111111111111111";
@@ -116,6 +121,10 @@ function profile(
     }),
   });
 }
+
+// Hyperliquid receipts are venue-committed; the strategy-book preparation still takes finalized ones.
+const committed = (receipt: ReturnType<typeof strategyPackageReceipt>) =>
+  strategyPackageReceipt({ ...receipt, finalityStatus: "VENUE_COMMITTED" });
 
 const intake: StrategyOrderIntakePort = Object.freeze({
   store(orderInput: StrategyPackageOrderInput, graphInput: PackageGraphInput) {
@@ -307,7 +316,7 @@ test("rebalances and migrates an authoritative native hedge", () => {
     receiptHashHex: "74".repeat(32),
     order: entry.order,
     graph: entry.graph,
-    receipt: entryReceipt,
+    receipt: committed(entryReceipt),
   });
   assert.ok(opened);
   const rebalance = port.create({
@@ -378,7 +387,7 @@ test("rebalances and migrates an authoritative native hedge", () => {
     opened,
     rebalance.order,
     rebalance.graph,
-    rebalanceReceipt,
+    committed(rebalanceReceipt),
   );
   const preparedRebalance = prepareStrategyTransition({
     environment: "testnet",
@@ -482,7 +491,7 @@ test("rebalances and migrates an authoritative native hedge", () => {
     opened,
     migration.order,
     migration.graph,
-    migrationReceipt,
+    committed(migrationReceipt),
   );
   const preparedMigration = prepareStrategyTransition({
     environment: "testnet",
@@ -591,7 +600,7 @@ test("derives an authoritative native state and closes only its exact exit", () 
     receiptHashHex: "61".repeat(32),
     order: entry.order,
     graph: entry.graph,
-    receipt: receipt(entry, "ENTRY", -100_000n),
+    receipt: committed(receipt(entry, "ENTRY", -100_000n)),
   });
   assert.ok(opened);
   assert.equal(opened.status, "OPEN");
@@ -628,7 +637,7 @@ test("derives an authoritative native state and closes only its exact exit", () 
     opened,
     increase.order,
     increase.graph,
-    increaseReceipt,
+    committed(increaseReceipt),
   );
   assert.equal(increased.status, "OPEN");
   assert.equal(increased.economicQuantityAtoms, 250_000n);
@@ -650,7 +659,7 @@ test("derives an authoritative native state and closes only its exact exit", () 
     increased,
     decrease.order,
     decrease.graph,
-    receipt(decrease, "DECREASE", 25_000n),
+    committed(receipt(decrease, "DECREASE", 25_000n)),
   );
   assert.equal(decreased.status, "OPEN");
   assert.equal(decreased.economicQuantityAtoms, 200_000n);
@@ -675,92 +684,180 @@ test("derives an authoritative native state and closes only its exact exit", () 
     "62".repeat(32),
     exit.order,
     exit.graph,
-    receipt(exit, "EXIT", 100_000n),
+    committed(receipt(exit, "EXIT", 100_000n)),
   );
   assert.equal(closed.status, "CLOSED");
   assert.equal(closed.state.open, false);
   assert.equal(closed.state.legs[0]?.signedQuantityAtoms, 0n);
 });
 
+test("a HyperCore-only venue-committed receipt is final for a native position; mixed or weaker evidence is not", () => {
+  const selectedProfile = profile("btc-eth-funding", "perpetual-funding-spread-v1");
+  const port = createHyperliquidNativeStrategyOrderPort({ profiles: [selectedProfile], intake, currentTimeMs: () => NOW_MS });
+  const entry = port.create({
+    profileId: selectedProfile.profileId,
+    owner: OWNER,
+    lifecycleAction: "ENTRY",
+    quantityAtoms: "100000",
+    economicQuantityAtoms: "100000",
+    limitPrices: [
+      { legId: "funding-long", quoteAtoms: "60001", baseAtoms: "1" },
+      { legId: "funding-short", quoteAtoms: "3001", baseAtoms: "1" },
+    ],
+    expiryValue: "1020000",
+    nonce: "21",
+  });
+  const amount = (atoms: bigint) => assetAmount(selectedProfile.quoteAsset, atoms);
+  const otherDomain = domainRef("eip155:421614", 1, "12".repeat(32));
+  const receipt = (overrides: Readonly<{
+    domains?: readonly ReturnType<typeof domainRef>[];
+    legDomain?: ReturnType<typeof domainRef>;
+    evidenceGrade?: "VENUE_API_CORROBORATED" | "CONTROLLER_ATTESTED";
+    bounded?: boolean;
+  }> = {}) => strategyPackageReceipt({
+    version: 1, environment: "testnet", domains: overrides.domains ?? [selectedProfile.domain],
+    orderHash: strategyPackageOrderHash(entry.order), graphHash: packageGraphHash(entry.graph),
+    quoteHash: "81".repeat(32), routeHash: "82".repeat(32), templateId: entry.order.templateId, templateVersion: 1,
+    packageTemplateManifestHash: entry.order.packageTemplateManifestHash, seriesId: entry.order.seriesId,
+    seriesVersion: 1, seriesManifestHash: entry.order.seriesManifestHash, executionClassId: entry.order.executionClassId,
+    executionClassVersion: 1, executionClassManifestHash: entry.order.executionClassManifestHash,
+    lifecycleAction: "entry", owner: OWNER, solverId: "solver-a", settlementClass: "BATCHED_IOC_WITH_RECOVERY",
+    terminalState: overrides.bounded === true ? "FINALIZED_BOUNDED" : "FINALIZED_COMPLETE",
+    quoteAsset: selectedProfile.quoteAsset,
+    legOutcomes: entry.graph.legs.map((leg) => ({
+      legId: leg.legId, positionLegId: leg.legId, domain: overrides.legDomain ?? selectedProfile.domain,
+      status: "EXECUTED" as const, requestedQuantity: assetAmount(selectedProfile.baseAsset, leg.quantityAtoms),
+      settledQuantity: assetAmount(selectedProfile.baseAsset, leg.side === "BUY" ? leg.quantityAtoms : -leg.quantityAtoms),
+      grossNotional: amount(60_000n), venueFee: amount(1n), residualValue: amount(overrides.bounded === true ? 5n : 0n),
+      evidenceGrade: overrides.evidenceGrade ?? "VENUE_API_CORROBORATED", onchainEnforced: false,
+      evidenceHash: "83".repeat(32),
+    })),
+    serviceFee: amount(0n), solverFee: amount(0n), venueFees: amount(2n), networkCost: amount(0n),
+    recoveryCost: amount(0n), terminalResidualValue: amount(overrides.bounded === true ? 10n : 0n),
+    finalityStatus: "VENUE_COMMITTED", executedAtValue: 1_001_000n, receiptNonce: 21n,
+  });
+  const open = (value: ReturnType<typeof receipt>) => nativeStrategyPositionFromEntry({
+    orderHashHex: toHex(strategyPackageOrderHash(entry.order)), receiptHashHex: "84".repeat(32),
+    order: entry.order, graph: entry.graph, receipt: value,
+  });
+  const opened = open(receipt());
+  assert.equal(opened?.status, "OPEN");
+  assert.deepEqual(opened?.state.legs.map((leg) => leg.signedQuantityAtoms), entry.graph.legs
+    .map((leg) => leg.side === "BUY" ? leg.quantityAtoms : -leg.quantityAtoms));
+  for (const refused of [
+    receipt({ domains: [selectedProfile.domain, otherDomain] }),
+    receipt({ domains: [otherDomain], legDomain: otherDomain }),
+    receipt({ evidenceGrade: "CONTROLLER_ATTESTED" }),
+    receipt({ bounded: true }),
+  ]) {
+    assert.throws(() => open(refused), { code: "POSITION_NOT_FINAL" });
+  }
+});
+
+function nativeExecutions(strategies: SqliteStrategyPackageStore) {
+  const selectedProfile = profile("btc-treasury-hedge", "treasury-inventory-hedge-v1");
+  const { baseAsset, quoteAsset, domain } = selectedProfile;
+  const port = createHyperliquidNativeStrategyOrderPort({
+    profiles: [selectedProfile],
+    intake: { store: (order, graph) => ({ ...intake.store(order, graph), ...strategies.registerOrder(order, graph) }) },
+    currentTimeMs: () => NOW_MS,
+  });
+  const amount = (atoms: bigint) => assetAmount(quoteAsset, atoms);
+  let nonce = 10n;
+  // Admits, selects, and returns the receipt-recording step of one native execution, as any path records it,
+  // and the executor's result for the same fill.
+  return (lifecycleAction: "ENTRY" | "DECREASE" | "EXIT", quantityAtoms: bigint, economicQuantityAtoms: bigint,
+    settledAtoms: bigint, notionalAtoms: bigint, expectedStrategyStateHash?: string) => {
+    nonce += 1n;
+    const created = port.create({
+      profileId: selectedProfile.profileId, owner: OWNER, lifecycleAction,
+      quantityAtoms: quantityAtoms.toString(), economicQuantityAtoms: economicQuantityAtoms.toString(),
+      limitPrices: [{ legId: "treasury-hedge", quoteAtoms: lifecycleAction === "ENTRY" ? "60001" : "59999", baseAtoms: "1" }],
+      expiryValue: "1020000", nonce: nonce.toString(),
+      ...(expectedStrategyStateHash === undefined ? {} : { expectedStrategyStateHash }),
+    });
+    const orderHash = strategyPackageOrderHash(created.order);
+    const route: TypedStrategyRoute = {
+      version: 1, environment: created.order.environment, orderHash, graphHash: packageGraphHash(created.graph),
+      solverId: protocolId("solver-a"), settlementClass: created.order.settlementClass, legs: [],
+      domainPlans: [{ domain, executionPlanKind: "HYPERCORE_BATCHED_IOC", legIds: [], stageCount: 1 }],
+      routeExpiryUnit: "HYPERLIQUID_UNIX_MILLISECONDS", routeExpiryValue: created.order.expiryValue,
+    };
+    const quote = strategyPackageQuote({
+      version: 1, environment: created.order.environment, domains: [domain], orderHash, graphHash: route.graphHash,
+      routeHash: typedStrategyRouteHash(route), templateId: created.order.templateId, templateVersion: created.order.templateVersion,
+      packageTemplateManifestHash: created.order.packageTemplateManifestHash, seriesId: created.order.seriesId,
+      seriesVersion: created.order.seriesVersion, seriesManifestHash: created.order.seriesManifestHash,
+      executionClassId: created.order.executionClassId, executionClassVersion: created.order.executionClassVersion,
+      executionClassManifestHash: created.order.executionClassManifestHash, quoteConventionId: created.order.quoteConventionId,
+      riskClassId: created.order.riskClassId, solverId: "solver-a", solverCapabilityManifestHash: "15".repeat(32),
+      quoteMode: "EXECUTION_COMMITMENT", settlementClass: created.order.settlementClass, quoteAsset,
+      metrics: requireStrategyTemplateDefinition(created.order.templateId).metricIds
+        .map((metricId) => ({ metricId, value: 0n, scale: 0, unitId: "unit" })),
+      legEconomics: [{
+        legId: "treasury-hedge", quantity: assetAmount(baseAsset, quantityAtoms), grossNotional: amount(notionalAtoms),
+        marginDelta: amount(0n), venueFee: amount(1n), builderFee: amount(0n), residualValue: amount(0n),
+      }],
+      netPackageOutcome: amount(0n), totalGrossNotional: amount(notionalAtoms), totalMarginDelta: amount(0n),
+      totalResidualValue: amount(0n), serviceCharges: [], passThroughCosts: [{ category: "VENUE", amount: amount(1n) }],
+      feePolicyVersion: 1, feePolicyManifestHash: "16".repeat(32), validUntilUnit: "HYPERLIQUID_UNIX_MILLISECONDS",
+      validUntilValue: created.order.expiryValue, quoteNonce: nonce, solverSignatureScheme: "ED25519",
+      solverVerificationKey: new Uint8Array(32).fill(1), signature: new Uint8Array(64).fill(2),
+    });
+    const { quoteHashHex, routeHashHex } = strategies.registerQuote(
+      { order: created.order, graph: created.graph, quote, route } as unknown as AdmittedStrategyRoute,
+    );
+    strategies.recordOwnerAuthorization(toHex(orderHash), OWNER, `0x${"01".repeat(65)}`);
+    const { attemptId } = strategies.selectNativeHyperliquidExecution({
+      quoteHashHex, orderHashHex: toHex(orderHash), routeHashHex, idempotencyKey: `native-exposure-${nonce}`,
+    });
+    const record = () => strategies.recordReceipt(strategyPackageReceipt({
+      version: 1, environment: "testnet", domains: [domain], orderHash, graphHash: route.graphHash,
+      quoteHash: quoteHashHex, routeHash: routeHashHex, templateId: created.order.templateId,
+      templateVersion: created.order.templateVersion, packageTemplateManifestHash: created.order.packageTemplateManifestHash,
+      seriesId: created.order.seriesId, seriesVersion: created.order.seriesVersion, seriesManifestHash: created.order.seriesManifestHash,
+      executionClassId: created.order.executionClassId, executionClassVersion: created.order.executionClassVersion,
+      executionClassManifestHash: created.order.executionClassManifestHash, lifecycleAction, owner: OWNER, solverId: "solver-a",
+      settlementClass: "BATCHED_IOC_WITH_RECOVERY", terminalState: "FINALIZED_COMPLETE", quoteAsset,
+      legOutcomes: [{
+        legId: "treasury-hedge", positionLegId: "treasury-hedge", domain, status: "EXECUTED",
+        requestedQuantity: assetAmount(baseAsset, quantityAtoms), settledQuantity: assetAmount(baseAsset, settledAtoms),
+        grossNotional: amount(notionalAtoms), venueFee: amount(1n), residualValue: amount(0n),
+        evidenceGrade: "VENUE_API_CORROBORATED", onchainEnforced: false, evidenceHash: "53".repeat(32),
+      }],
+      serviceFee: amount(0n), solverFee: amount(0n), venueFees: amount(1n), networkCost: amount(0n), recoveryCost: amount(0n),
+      terminalResidualValue: amount(0n), finalityStatus: "VENUE_COMMITTED", executedAtValue: 1_001_000n, receiptNonce: nonce,
+    }));
+    const signedPlanned = created.graph.legs[0]!.side === "BUY" ? quantityAtoms : -quantityAtoms;
+    const commitment = (byte: string) => `0x${byte.repeat(32)}`;
+    const result = {
+      attemptId, idempotencyKey: `native-exposure-${nonce}`, domain: "hypercore:testnet", environment: "TESTNET",
+      status: "STRATEGY_EXECUTION", packageStatus: "COMPLETED", completedStages: [1],
+      stages: [{
+        batchStage: 1, submissionStatus: "ACKNOWLEDGED", actionCommitment: commitment("a1"), requestCommitment: commitment("a2"),
+        evidence: {
+          status: "COMPLETE", outcome: "COMPLETED", reasons: [], observedAtMs: "1001000", rawEvidenceCommitments: [],
+          legs: [{
+            legId: "treasury-hedge", clientOrderId: `0x${"a3".repeat(16)}`, plannedSignedBaseAtoms: signedPlanned.toString(),
+            filledSignedBaseAtoms: settledAtoms.toString(), terminalStatus: "FILLED", openOrderStatus: "NONE", orderId: 1,
+            fillCount: 1, grossQuoteAtoms: notionalAtoms.toString(), feeAssetId: quoteAsset.assetId,
+            feeAssetDecimals: quoteAsset.decimals, feeAtoms: "1", venueFeeQuoteAtoms: "1", observedAtMs: "1001000",
+            evidenceCommitment: commitment("a4"),
+          }],
+        },
+      }],
+    } as HyperliquidTestnetTerminalExecutionResult;
+    return { attemptId, idempotencyKey: `native-exposure-${nonce}`, record, result };
+  };
+}
+
 test("the exposure ledger counts a native strategy opened before it and follows reductions recorded on any path", () => {
   const scratch = mkdtempSync(join(tmpdir(), "naryx-native-exposure-"));
   const strategies = new SqliteStrategyPackageStore(join(scratch, "strategies.db"), { clock: () => NOW_MS });
   const ledger = new HyperliquidTestnetOwnerLedger(join(scratch, "execution.db"));
   try {
-    const selectedProfile = profile("btc-treasury-hedge", "treasury-inventory-hedge-v1");
-    const { baseAsset, quoteAsset, domain } = selectedProfile;
-    const port = createHyperliquidNativeStrategyOrderPort({
-      profiles: [selectedProfile],
-      intake: { store: (order, graph) => ({ ...intake.store(order, graph), ...strategies.registerOrder(order, graph) }) },
-      currentTimeMs: () => NOW_MS,
-    });
-    const amount = (atoms: bigint) => assetAmount(quoteAsset, atoms);
-    let nonce = 10n;
-    // Admits, selects, and returns the receipt-recording step of one native execution, as any path records it.
-    const execute = (lifecycleAction: "ENTRY" | "DECREASE" | "EXIT", quantityAtoms: bigint, economicQuantityAtoms: bigint,
-      settledAtoms: bigint, notionalAtoms: bigint, expectedStrategyStateHash?: string) => {
-      nonce += 1n;
-      const created = port.create({
-        profileId: selectedProfile.profileId, owner: OWNER, lifecycleAction,
-        quantityAtoms: quantityAtoms.toString(), economicQuantityAtoms: economicQuantityAtoms.toString(),
-        limitPrices: [{ legId: "treasury-hedge", quoteAtoms: lifecycleAction === "ENTRY" ? "60001" : "59999", baseAtoms: "1" }],
-        expiryValue: "1020000", nonce: nonce.toString(),
-        ...(expectedStrategyStateHash === undefined ? {} : { expectedStrategyStateHash }),
-      });
-      const orderHash = strategyPackageOrderHash(created.order);
-      const route: TypedStrategyRoute = {
-        version: 1, environment: created.order.environment, orderHash, graphHash: packageGraphHash(created.graph),
-        solverId: protocolId("solver-a"), settlementClass: created.order.settlementClass, legs: [],
-        domainPlans: [{ domain, executionPlanKind: "HYPERCORE_BATCHED_IOC", legIds: [], stageCount: 1 }],
-        routeExpiryUnit: "HYPERLIQUID_UNIX_MILLISECONDS", routeExpiryValue: created.order.expiryValue,
-      };
-      const quote = strategyPackageQuote({
-        version: 1, environment: created.order.environment, domains: [domain], orderHash, graphHash: route.graphHash,
-        routeHash: typedStrategyRouteHash(route), templateId: created.order.templateId, templateVersion: created.order.templateVersion,
-        packageTemplateManifestHash: created.order.packageTemplateManifestHash, seriesId: created.order.seriesId,
-        seriesVersion: created.order.seriesVersion, seriesManifestHash: created.order.seriesManifestHash,
-        executionClassId: created.order.executionClassId, executionClassVersion: created.order.executionClassVersion,
-        executionClassManifestHash: created.order.executionClassManifestHash, quoteConventionId: created.order.quoteConventionId,
-        riskClassId: created.order.riskClassId, solverId: "solver-a", solverCapabilityManifestHash: "15".repeat(32),
-        quoteMode: "EXECUTION_COMMITMENT", settlementClass: created.order.settlementClass, quoteAsset,
-        metrics: requireStrategyTemplateDefinition(created.order.templateId).metricIds
-          .map((metricId) => ({ metricId, value: 0n, scale: 0, unitId: "unit" })),
-        legEconomics: [{
-          legId: "treasury-hedge", quantity: assetAmount(baseAsset, quantityAtoms), grossNotional: amount(notionalAtoms),
-          marginDelta: amount(0n), venueFee: amount(1n), builderFee: amount(0n), residualValue: amount(0n),
-        }],
-        netPackageOutcome: amount(0n), totalGrossNotional: amount(notionalAtoms), totalMarginDelta: amount(0n),
-        totalResidualValue: amount(0n), serviceCharges: [], passThroughCosts: [{ category: "VENUE", amount: amount(1n) }],
-        feePolicyVersion: 1, feePolicyManifestHash: "16".repeat(32), validUntilUnit: "HYPERLIQUID_UNIX_MILLISECONDS",
-        validUntilValue: created.order.expiryValue, quoteNonce: nonce, solverSignatureScheme: "ED25519",
-        solverVerificationKey: new Uint8Array(32).fill(1), signature: new Uint8Array(64).fill(2),
-      });
-      const { quoteHashHex, routeHashHex } = strategies.registerQuote(
-        { order: created.order, graph: created.graph, quote, route } as unknown as AdmittedStrategyRoute,
-      );
-      strategies.recordOwnerAuthorization(toHex(orderHash), OWNER, `0x${"01".repeat(65)}`);
-      const { attemptId } = strategies.selectNativeHyperliquidExecution({
-        quoteHashHex, orderHashHex: toHex(orderHash), routeHashHex, idempotencyKey: `native-exposure-${nonce}`,
-      });
-      const record = () => strategies.recordReceipt(strategyPackageReceipt({
-        version: 1, environment: "testnet", domains: [domain], orderHash, graphHash: route.graphHash,
-        quoteHash: quoteHashHex, routeHash: routeHashHex, templateId: created.order.templateId,
-        templateVersion: created.order.templateVersion, packageTemplateManifestHash: created.order.packageTemplateManifestHash,
-        seriesId: created.order.seriesId, seriesVersion: created.order.seriesVersion, seriesManifestHash: created.order.seriesManifestHash,
-        executionClassId: created.order.executionClassId, executionClassVersion: created.order.executionClassVersion,
-        executionClassManifestHash: created.order.executionClassManifestHash, lifecycleAction, owner: OWNER, solverId: "solver-a",
-        settlementClass: "BATCHED_IOC_WITH_RECOVERY", terminalState: "FINALIZED_COMPLETE", quoteAsset,
-        legOutcomes: [{
-          legId: "treasury-hedge", positionLegId: "treasury-hedge", domain, status: "EXECUTED",
-          requestedQuantity: assetAmount(baseAsset, quantityAtoms), settledQuantity: assetAmount(baseAsset, settledAtoms),
-          grossNotional: amount(notionalAtoms), venueFee: amount(1n), residualValue: amount(0n),
-          evidenceGrade: "VENUE_API_CORROBORATED", onchainEnforced: false, evidenceHash: "53".repeat(32),
-        }],
-        serviceFee: amount(0n), solverFee: amount(0n), venueFees: amount(1n), networkCost: amount(0n), recoveryCost: amount(0n),
-        terminalResidualValue: amount(0n), finalityStatus: "FINALIZED", executedAtValue: 1_001_000n, receiptNonce: nonce,
-      }));
-      return { attemptId, record };
-    };
+    const execute = nativeExecutions(strategies);
+    const { quoteAsset } = profile("btc-treasury-hedge", "treasury-inventory-hedge-v1");
     const limits = { maxOpenPackagesPerOwner: 1, maxOpenNotionalQuoteAtoms: 10_000n };
     const reserve = (attemptId: string, owner: string, notionalAtoms: bigint) =>
       ledger.reserveExposure({ attemptId, owner, strategyKey: attemptId, notionalAtoms, newPackage: true, limits });
@@ -808,6 +905,88 @@ test("the exposure ledger counts a native strategy opened before it and follows 
   } finally {
     strategies.close();
     ledger.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("settling a native execution again after its receipt is recorded succeeds and applies nothing twice", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-native-resettle-"));
+  const strategies = new SqliteStrategyPackageStore(join(scratch, "strategies.db"), { clock: () => NOW_MS });
+  const ledger = new HyperliquidTestnetOwnerLedger(join(scratch, "execution.db"));
+  try {
+    const execute = nativeExecutions(strategies);
+    const { quoteAsset } = profile("btc-treasury-hedge", "treasury-inventory-hedge-v1");
+    const limits = { maxOpenPackagesPerOwner: 5, maxOpenNotionalQuoteAtoms: 10_000n };
+    const guard = createHyperliquidTestnetExecutionGuard({
+      ledger,
+      intents: { getAttempt: () => undefined, getAttemptForOrder: () => undefined, getSelectedQuote: () => undefined },
+      orders: { getCanonicalOrderByHash: () => undefined },
+      strategyAttempts: strategies,
+      strategyReceipts: strategies,
+      tradingAccount: "hypercore-testnet-account",
+      limits,
+      quoteAsset,
+      spotLotAtoms: 1n,
+    });
+    const other = "0x2222222222222222222222222222222222222222";
+    const reserve = (attemptId: string, notionalAtoms: bigint) =>
+      ledger.reserveExposure({ attemptId, owner: other, strategyKey: attemptId, notionalAtoms, newPackage: true, limits });
+    // Each execution settles three times: on execution, on a status read, and on a sweep or replay.
+    const run = (execution: ReturnType<ReturnType<typeof nativeExecutions>>) => {
+      const request = { attemptId: execution.attemptId, idempotencyKey: execution.idempotencyKey };
+      guard.admit(request);
+      for (let settle = 0; settle < 3; settle += 1) guard.settle(request, execution.result);
+    };
+    run(execute("ENTRY", 100_000n, 200_000n, -100_000n, 6_000n));
+    const [opened] = strategies.nativeStrategyPositionsByOwner(OWNER);
+    assert.equal(opened?.status, "OPEN");
+    assert.throws(() => reserve("other-1", 4_001n), { code: "OMNIBUS_NOTIONAL_LIMIT" });
+
+    // A quarter closed releases a quarter of 6000 once: 4500 stays held.
+    run(execute("DECREASE", 25_000n, 50_000n, 25_000n, 1_500n, opened!.stateHashHex));
+    const [decreased] = strategies.nativeStrategyPositionsByOwner(OWNER);
+    assert.equal(decreased?.economicQuantityAtoms, 150_000n);
+    assert.throws(() => reserve("other-1", 5_501n), { code: "OMNIBUS_NOTIONAL_LIMIT" });
+    reserve("other-1", 5_500n);
+
+    run(execute("EXIT", 75_000n, 150_000n, 75_000n, 4_500n, decreased!.stateHashHex));
+    assert.equal(strategies.nativeStrategyPositionsByOwner(OWNER)[0]?.status, "CLOSED");
+    reserve("other-2", 4_500n);
+    assert.throws(() => reserve("other-3", 1n), { code: "OMNIBUS_NOTIONAL_LIMIT" });
+  } finally {
+    strategies.close();
+    ledger.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("the exposure backfill counts only the attempt whose quote produced the receipt", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-native-backfill-"));
+  const path = join(scratch, "strategies.db");
+  const strategies = new SqliteStrategyPackageStore(path, { clock: () => NOW_MS });
+  try {
+    const entry = nativeExecutions(strategies)("ENTRY", 100_000n, 200_000n, -100_000n, 6_000n);
+    entry.record();
+    // A database from before one selection per order could hold an earlier no-effect attempt.
+    const raw = new Database(path);
+    try {
+      raw.prepare(`
+        INSERT INTO strategy_package_quotes
+        SELECT ?, order_hash, ?, solver_id, quote_json, route_json, recorded_at_ms
+        FROM strategy_package_quotes WHERE quote_hash = (
+          SELECT quote_hash FROM strategy_native_execution_attempts WHERE attempt_id = ?)
+      `).run(Buffer.alloc(32, 0xee), Buffer.alloc(32, 0xef), entry.attemptId);
+      raw.prepare(`
+        INSERT INTO strategy_native_execution_attempts
+        SELECT ?, 'stale-native-attempt-key', order_hash, graph_hash, ?, ?, status, selected_at_ms - 1
+        FROM strategy_native_execution_attempts WHERE attempt_id = ?
+      `).run(`strategy-hl-${"ee".repeat(24)}`, Buffer.alloc(32, 0xee), Buffer.alloc(32, 0xef), entry.attemptId);
+    } finally {
+      raw.close();
+    }
+    assert.deepEqual(strategies.nativeStrategyExposures().open.map((row) => row.attemptId), [entry.attemptId]);
+  } finally {
+    strategies.close();
     rmSync(scratch, { recursive: true, force: true });
   }
 });

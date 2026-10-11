@@ -578,25 +578,35 @@ if (hyperliquidRuntimeEnabled && hyperliquidExecutorClientEnabled) {
       });
       process.stdout.write(`Naryx API Hyperliquid strategy exposures: ${exposures.backfilled} backfilled, ${exposures.released} released, ${exposures.skipped} skipped\n`);
     }
+    const executionGuard = createHyperliquidTestnetExecutionGuard({
+      ledger: hyperliquidOwnerLedger,
+      intents: executionIntentStore,
+      orders: orderStore,
+      ...(publicMarket?.strategyPackageExecutions === undefined ? {} : {
+        strategyAttempts: publicMarket.strategyPackageExecutions,
+        strategyReceipts: publicMarket.strategyPackageExecutions,
+      }),
+      tradingAccount: orderContext.tradingAccount,
+      limits: hyperliquidConfig?.omnibus,
+      quoteAsset: orderContext.quoteAsset,
+      spotLotAtoms: hyperliquidTestnetSpotLotAtoms(hyperliquidConfig!),
+    });
     hyperliquidExecutionRuntime = new DurableHyperliquidTestnetTerminalExecutionPort(
       executionDb,
       new HttpHyperliquidTestnetAttemptExecutor({
         executorOrigin: process.env.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ORIGIN ?? "",
       }),
-      createHyperliquidTestnetExecutionGuard({
-        ledger: hyperliquidOwnerLedger,
-        intents: executionIntentStore,
-        orders: orderStore,
-        ...(publicMarket?.strategyPackageExecutions === undefined ? {} : {
-          strategyAttempts: publicMarket.strategyPackageExecutions,
-          strategyReceipts: publicMarket.strategyPackageExecutions,
-        }),
-        tradingAccount: orderContext.tradingAccount,
-        limits: hyperliquidConfig?.omnibus,
-        quoteAsset: orderContext.quoteAsset,
-        spotLotAtoms: hyperliquidTestnetSpotLotAtoms(hyperliquidConfig!),
-      }),
+      executionGuard,
     );
+    if (publicMarket?.strategyPackageExecutions !== undefined) {
+      const port = hyperliquidExecutionRuntime;
+      const migration = executionGuard.migrateSourceBackedEntries(
+        publicMarket.strategyPackageExecutions.sourceBackedStrategyAttempts(),
+        (request) => port.finalResult(request),
+        (line) => { process.stderr.write(`Naryx API ${line}\n`); },
+      );
+      process.stdout.write(`Naryx API Hyperliquid source-backed entries: ${migration.migrated} migrated to packages, ${migration.skipped} skipped\n`);
+    }
     // Server-side reconciliation: attempts stored with a non-final outcome are re-read from the
     // executor each minute, so a package resolved later (for example after its lane is released)
     // leaves UNRESOLVED without its owner having to poll.

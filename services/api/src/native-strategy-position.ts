@@ -6,11 +6,13 @@ import {
   strategyStateHash,
   STRATEGY_TEMPLATE_ID,
   toHex,
+  type DomainRef,
   type PackageGraphInput,
   type StrategyPackageOrder,
   type StrategyPackageReceipt,
   type StrategyState,
 } from "@naryx/protocol-types";
+import { HYPERLIQUID_TESTNET_DOMAIN } from "./hyperliquid-testnet-terminal.js";
 
 export type NativeStrategyPositionStatus = "OPEN" | "EXITING" | "CLOSED" | "UNRESOLVED";
 
@@ -51,6 +53,29 @@ function gcd(left: bigint, right: bigint): bigint {
   let b = absolute(right);
   while (b !== 0n) [a, b] = [b, a % b];
   return a;
+}
+
+/**
+ * Whether a receipt is final enough to change a native position. HyperCore has single-block BFT
+ * finality, so a VENUE_COMMITTED receipt counts when every domain it names is the one HyperCore
+ * Testnet domain and every leg carries the venue-corroborated evidence the receipt builder requires.
+ * A bounded or recovered outcome, or any other domain, still needs FINALIZED evidence.
+ */
+export function nativePositionReceiptFinal(receipt: StrategyPackageReceipt): boolean {
+  if (receipt.finalityStatus === "FINALIZED") return true;
+  const domain = receipt.domains[0];
+  return receipt.finalityStatus === "VENUE_COMMITTED"
+    && (receipt.terminalState === "FINALIZED_COMPLETE" || receipt.terminalState === "NO_EFFECT")
+    && domain !== undefined && domain.domainId === HYPERLIQUID_TESTNET_DOMAIN
+    && receipt.domains.every((candidate) => sameDomain(candidate, domain))
+    && receipt.legOutcomes.length > 0
+    && receipt.legOutcomes.every((leg) => sameDomain(leg.domain, domain)
+      && leg.evidenceGrade === "VENUE_API_CORROBORATED");
+}
+
+function sameDomain(left: DomainRef, right: DomainRef): boolean {
+  return left.domainId === right.domainId && left.domainManifestVersion === right.domainManifestVersion
+    && bytesEqual(left.domainManifestHash, right.domainManifestHash);
 }
 
 function completeTerminalState(state: StrategyPackageReceipt["terminalState"]): boolean {
@@ -95,7 +120,7 @@ export function nativeStrategyPositionFromEntry(input: Readonly<{
   const graph = packageGraph(input.graph);
   requireCondition(order.lifecycleAction === "ENTRY" && graph.lifecycleAction === "ENTRY",
     "POSITION_ACTION_MISMATCH", "Only an ENTRY package can create a native strategy position.");
-  requireCondition(receipt.finalityStatus === "FINALIZED", "POSITION_NOT_FINAL",
+  requireCondition(nativePositionReceiptFinal(receipt), "POSITION_NOT_FINAL",
     "A native strategy position requires finalized execution evidence.");
   const deltas = checkedPositionDeltas(graph, receipt);
   if (receipt.terminalState === "NO_EFFECT" || receipt.terminalState === "RECOVERED_FLAT") {
@@ -248,7 +273,7 @@ export function applyNativeStrategyTransitionReceipt(
   receipt: StrategyPackageReceipt,
 ): NativeStrategyPosition {
   validateNativeStrategyTransition(position, order, graphInput);
-  requireCondition(receipt.finalityStatus === "FINALIZED", "POSITION_NOT_FINAL",
+  requireCondition(nativePositionReceiptFinal(receipt), "POSITION_NOT_FINAL",
     "A native strategy transition requires finalized execution evidence.");
   const graph = packageGraph(graphInput);
   const deltas = checkedPositionDeltas(graph, receipt, position.state);
@@ -350,7 +375,7 @@ export function applyNativeStrategyMigrationReceipt(
   receipt: StrategyPackageReceipt,
 ): NativeStrategyPosition {
   validateNativeStrategyMigration(position, order, graphInput);
-  requireCondition(receipt.finalityStatus === "FINALIZED", "POSITION_NOT_FINAL",
+  requireCondition(nativePositionReceiptFinal(receipt), "POSITION_NOT_FINAL",
     "A native hedge migration requires finalized execution evidence.");
   const graph = packageGraph(graphInput);
   const deltas = checkedPositionDeltas(graph, receipt, position.state);
@@ -467,7 +492,7 @@ export function applyNativeStrategyRebalanceReceipt(
   receipt: StrategyPackageReceipt,
 ): NativeStrategyPosition {
   validateNativeStrategyRebalance(position, order, graphInput);
-  requireCondition(receipt.finalityStatus === "FINALIZED", "POSITION_NOT_FINAL",
+  requireCondition(nativePositionReceiptFinal(receipt), "POSITION_NOT_FINAL",
     "A native delta rebalance requires finalized execution evidence.");
   const graph = packageGraph(graphInput);
   const deltas = checkedPositionDeltas(graph, receipt, position.state);
@@ -517,7 +542,7 @@ export function applyNativeStrategyExitReceipt(
   requireCondition(position.status === "EXITING" && position.exitOrderHashHex === orderHashHex,
     "EXIT_NOT_SELECTED", "The receipt does not belong to the selected native strategy exit.");
   validateNativeStrategyExit({ ...position, status: "OPEN" }, order, graph);
-  requireCondition(receipt.finalityStatus === "FINALIZED", "POSITION_NOT_FINAL",
+  requireCondition(nativePositionReceiptFinal(receipt), "POSITION_NOT_FINAL",
     "A native strategy transition requires finalized execution evidence.");
   if (receipt.terminalState === "NO_EFFECT" || receipt.terminalState === "RECOVERED_FLAT") {
     const deltas = checkedPositionDeltas(graph, receipt, position.state);
