@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   NaryxClient,
   type ActivationConditionInput,
@@ -9,6 +10,14 @@ import {
   type OrderActivationView,
   type PreparedAdvancedOrderAttemptView,
 } from "@naryx/sdk";
+import {
+  activationKind,
+  nextActivation,
+  ORDER_ACTIVATIONS_QUERY,
+  useActivationOwners,
+  useCancelOrderActivation,
+  useOwnerOrderActivations,
+} from "./advanced-order-activations";
 import { publicClient, readFailure } from "./pages/public-read";
 import { getSolanaDevnetSlot } from "./solana-devnet-onboarding";
 import type { DomainId } from "./terminal-view-model";
@@ -28,6 +37,67 @@ function friendlyError(cause: unknown): string {
   if (message.includes("TIME_UNIT_MISMATCH")) return "Use the same clock unit as the strategy order.";
   if (message.includes("ORDER_NOT_FOUND")) return "Create or stage the immediate strategy order first.";
   return message;
+}
+
+function shortHash(value: string): string {
+  return `${value.slice(0, 10)}...${value.slice(-8)}`;
+}
+
+/** The connected wallets' advanced orders derived from this source order, as the service records them. */
+function SourceAdvancedOrders({ sourceOrderHash }: Readonly<{ sourceOrderHash: string }>) {
+  const owners = useActivationOwners();
+  const { activations, configured, loading, errors } = useOwnerOrderActivations(owners);
+  const { cancel, state, busy, awaitingWallet } = useCancelOrderActivation();
+  if (owners.length === 0) return null;
+  const listed = activations.filter((activation) => activation.sourceOrderHash === sourceOrderHash);
+  return (
+    <>
+      <div className={styles.evidenceHeading}>
+        <h3>Advanced orders on this source</h3>
+        <span>{listed.length}</span>
+      </div>
+      {!configured ? (
+        <p className={styles.fieldContext}>The private terminal service is not configured, so recorded advanced orders cannot be listed or cancelled here.</p>
+      ) : errors.length > 0 ? (
+        errors.map((message) => <p key={message} className={styles.fieldContext} role="alert">{message}</p>)
+      ) : loading ? (
+        <p className={styles.fieldContext}>Reading advanced orders.</p>
+      ) : listed.length === 0 ? (
+        <p className={styles.fieldContext}>No advanced order derived from this source order is recorded for the connected wallets.</p>
+      ) : null}
+      {listed.map((activation) => (
+        <div key={activation.orderHash} className={styles.strategyDomainReview}>
+          <div className={styles.reviewGrid}>
+            <span>Kind</span><strong>{activationKind(activation)}</strong>
+            <span>State</span><strong>{activation.status}</strong>
+            <span>Filled</span><strong>{activation.executedAtoms.toString()} of {activation.quantityAtoms.toString()} atoms</strong>
+            <span>Remaining</span><strong>{(activation.quantityAtoms - activation.executedAtoms).toString()} atoms</strong>
+            <span>Next activation</span><strong title={nextActivation(activation)}>{nextActivation(activation)}</strong>
+            <span>Created</span><strong>{new Date(activation.registeredAtMs).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}</strong>
+            <span>Advanced order</span><strong title={activation.orderHash}>{shortHash(activation.orderHash)}</strong>
+          </div>
+          {activation.status === "WAITING" ? (
+            <>
+              <button
+                type="button"
+                className={styles.secondaryAction}
+                disabled={busy || activation.attemptReserved}
+                onClick={() => void cancel(activation)}
+              >
+                {busy && state?.orderHash === activation.orderHash
+                  ? awaitingWallet ? "Confirm in your wallet" : "Cancelling"
+                  : "Cancel advanced order"}
+              </button>
+              {activation.attemptReserved ? <p className={styles.fieldContext}>A slice is executing; cancel after it settles.</p> : null}
+            </>
+          ) : null}
+          {state !== null && state.orderHash === activation.orderHash && state.phase !== "busy" ? (
+            <p className={styles.fieldContext} role={state.phase === "error" ? "alert" : "status"}>{state.text}</p>
+          ) : null}
+        </div>
+      ))}
+    </>
+  );
 }
 
 export function AdvancedOrderControls({
@@ -54,6 +124,7 @@ export function AdvancedOrderControls({
   onPrepared: (attempt: PreparedAdvancedOrderAttemptView) => void;
   onReset: (sourceOrderHash: string) => void;
 }>) {
+  const queryClient = useQueryClient();
   const [mode, setMode] = useState<AdvancedMode>("IMMEDIATE");
   const [metric, setMetric] = useState<ConditionMetric>("BASIS");
   const [comparator, setComparator] = useState<Comparator>("AT_OR_ABOVE");
@@ -175,6 +246,8 @@ export function AdvancedOrderControls({
       });
       setActivation(result.activation);
       onDerived(result);
+      // The service now lists the derived order for its owner, so it survives a reload.
+      void queryClient.invalidateQueries({ queryKey: [ORDER_ACTIVATIONS_QUERY] });
     } catch (cause) {
       setError(friendlyError(cause));
     } finally {
@@ -238,6 +311,7 @@ export function AdvancedOrderControls({
           Use immediate source order
         </button>
         {error ? <p className={styles.fieldContext} role="alert">{error}</p> : null}
+        <SourceAdvancedOrders sourceOrderHash={derivedOrder.sourceOrderHash} />
       </div>
     );
   }
@@ -338,6 +412,7 @@ export function AdvancedOrderControls({
         <p className={styles.fieldContext}>Expiry clock {expiryUnit.replaceAll("_", " ").toLowerCase()} {expiryValue} loaded from a verified quote proof for this order.</p>
       ) : null}
       {error ? <p className={styles.fieldContext} role="alert">{error}</p> : null}
+      {sourceOrderHash.length === 64 ? <SourceAdvancedOrders sourceOrderHash={sourceOrderHash} /> : null}
     </div>
   );
 }

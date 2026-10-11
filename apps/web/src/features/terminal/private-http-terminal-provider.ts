@@ -501,6 +501,34 @@ export type OwnerPackageEntry = Readonly<{
   receiptHash: string | null;
 }>;
 
+export type OrderActivationStatus = "WAITING" | "COMPLETED" | "STOPPED" | "CANCELLED" | "EXPIRED";
+
+/** One advanced order from GET /internal/terminal/order-activations, reduced to what the terminal shows. */
+export type OwnerOrderActivation = Readonly<{
+  orderHash: string;
+  sourceOrderHash: string | null;
+  owner: string;
+  kind: "CONDITIONAL" | "SCHEDULED" | "PACKAGE_TWAP";
+  status: OrderActivationStatus;
+  /** The schedule's aggregate limit, or the order's economic quantity for a conditional order. */
+  quantityAtoms: bigint;
+  executedAtoms: bigint;
+  attemptedSlices: number;
+  failedSlices: number;
+  lastAttemptedSliceIndex: number | null;
+  /** A reserved child attempt may be executing; the service refuses cancellation until it resolves. */
+  attemptReserved: boolean;
+  condition: Readonly<{ metric: string; comparator: "AT_OR_ABOVE" | "AT_OR_BELOW"; threshold: bigint; unit: string }> | null;
+  schedule: Readonly<{ timeUnit: string; startValue: bigint; sliceInterval: bigint; sliceCount: number }> | null;
+  registeredAtMs: number;
+  updatedAtMs: number;
+}>;
+
+/** What the owner's wallet signs to cancel one advanced order, rebuilt locally from the verified terms. */
+export type OrderActivationCancellationChallenge =
+  | Readonly<{ scheme: "EIP712_SECP256K1"; typedData: unknown }>
+  | Readonly<{ scheme: "ED25519"; message: Uint8Array }>;
+
 export type PackageLifecycleResponse = Readonly<{
   attempt: PackageLifecycleAttempt;
   receipts: readonly PackageLifecycleReceipt[];
@@ -3979,6 +4007,135 @@ function requireArbitrumAsyncObservation(
   });
 }
 
+const ACTIVATION_CANCELLATION_DOMAIN = "NARYX/order-activation-cancellation/v1";
+const ACTIVATION_EVM_OWNER = /^0x(?!0{40}$)[0-9a-f]{40}$/;
+const ACTIVATION_SOLANA_OWNER = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const ACTIVATION_STATUSES: ReadonlySet<unknown> = new Set(["WAITING", "COMPLETED", "STOPPED", "CANCELLED", "EXPIRED"]);
+const ACTIVATION_UNITS: ReadonlySet<unknown> = new Set(["SOLANA_SLOT", "EVM_UNIX_SECONDS", "HYPERLIQUID_UNIX_MILLISECONDS"]);
+const ACTIVATION_METRICS: ReadonlySet<unknown> = new Set([
+  "TIME", "PACKAGE_PRICE", "BASIS", "FUNDING", "VOLATILITY", "INVENTORY", "MARGIN_HEALTH", "LIQUIDATION_DISTANCE",
+]);
+
+function activationCount(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error(`${name} is invalid.`);
+  return value;
+}
+
+function activationAtoms(value: unknown, name: string): bigint {
+  if (typeof value !== "bigint" || value < BigInt(0)) throw new Error(`${name} is invalid.`);
+  return value;
+}
+
+function requireOwnerOrderActivation(value: unknown, owner: string): OwnerOrderActivation {
+  if (!isRecord(value) || !isRecord(value.order) || !isRecord(value.progress) || !Array.isArray(value.attempts)) {
+    throw new Error("Advanced order is invalid.");
+  }
+  const orderHash = requireHex32(value.orderHashHex, "Advanced order hash");
+  const sourceOrderHash = value.sourceOrderHashHex === undefined ? null : requireHex32(value.sourceOrderHashHex, "Advanced source order hash");
+  const order = value.order;
+  const kind = order.packageOrderType;
+  if (order.owner !== owner || (kind !== "CONDITIONAL" && kind !== "SCHEDULED" && kind !== "PACKAGE_TWAP")
+      || !ACTIVATION_STATUSES.has(value.status) || !isRecord(order.economicQuantity)) {
+    throw new Error("Advanced order does not bind this owner or a supported advanced type.");
+  }
+  let condition: OwnerOrderActivation["condition"] = null;
+  if (value.condition !== undefined) {
+    const input = value.condition;
+    if (!isRecord(input) || !ACTIVATION_METRICS.has(input.metric) || !ACTIVATION_UNITS.has(input.observationUnit)
+        || (input.comparator !== "AT_OR_ABOVE" && input.comparator !== "AT_OR_BELOW") || typeof input.threshold !== "bigint") {
+      throw new Error("Advanced order condition is invalid.");
+    }
+    condition = Object.freeze({
+      metric: input.metric as string,
+      comparator: input.comparator,
+      threshold: input.threshold,
+      unit: input.observationUnit as string,
+    });
+  }
+  let schedule: OwnerOrderActivation["schedule"] = null;
+  let quantityAtoms = activationAtoms(order.economicQuantity.atoms, "Advanced order quantity");
+  if (value.schedule !== undefined) {
+    const input = value.schedule;
+    if (!isRecord(input) || input.kind !== kind || !ACTIVATION_UNITS.has(input.timeUnit)) {
+      throw new Error("Advanced order schedule is invalid.");
+    }
+    const sliceCount = activationCount(input.sliceCount, "Advanced order slice count");
+    schedule = Object.freeze({
+      timeUnit: input.timeUnit as string,
+      startValue: activationAtoms(input.startValue, "Advanced order schedule start"),
+      sliceInterval: activationAtoms(input.sliceInterval, "Advanced order slice interval"),
+      sliceCount,
+    });
+    quantityAtoms = activationAtoms(input.aggregateQuantityLimit, "Advanced order schedule quantity");
+  }
+  // CONDITIONAL carries a condition and no schedule; a scheduled kind carries its schedule and may also be gated.
+  if (kind === "CONDITIONAL" ? condition === null || schedule !== null : schedule === null) {
+    throw new Error("Advanced order policy does not match its type.");
+  }
+  const progress = value.progress;
+  const executedAtoms = activationAtoms(progress.executedQuantity, "Advanced order executed quantity");
+  const attemptedSlices = activationCount(progress.attemptedSlices, "Advanced order attempted slices");
+  const failedSlices = activationCount(progress.failedSlices, "Advanced order failed slices");
+  const lastAttemptedSliceIndex = progress.lastAttemptedSliceIndex === undefined
+    ? null : activationCount(progress.lastAttemptedSliceIndex, "Advanced order last slice");
+  if (quantityAtoms === BigInt(0) || executedAtoms > quantityAtoms || failedSlices > attemptedSlices) {
+    throw new Error("Advanced order progress is invalid.");
+  }
+  let attemptReserved = false;
+  for (const attempt of value.attempts) {
+    if (!isRecord(attempt) || attempt.orderHashHex !== orderHash
+        || (attempt.status !== "RESERVED" && attempt.status !== "SUCCEEDED" && attempt.status !== "FAILED")) {
+      throw new Error("Advanced order attempt is invalid.");
+    }
+    requireHex32(attempt.attemptId, "Advanced order attempt id");
+    if (attempt.status === "RESERVED") attemptReserved = true;
+  }
+  return Object.freeze({
+    orderHash,
+    sourceOrderHash,
+    owner,
+    kind,
+    status: value.status as OrderActivationStatus,
+    quantityAtoms,
+    executedAtoms,
+    attemptedSlices,
+    failedSlices,
+    lastAttemptedSliceIndex,
+    attemptReserved,
+    condition,
+    schedule,
+    registeredAtMs: activationCount(value.registeredAtMs, "Advanced order registration time"),
+    updatedAtMs: activationCount(value.updatedAtMs, "Advanced order update time"),
+  });
+}
+
+/** The 32 bytes the service binds a cancellation to; recomputed here so the wallet never signs unchecked terms. */
+async function orderActivationCancellationHash(
+  terms: Readonly<{ orderHash: string; owner: string; nonce: string; expiresAtMs: number }>,
+): Promise<Uint8Array> {
+  const encoded = new TextEncoder().encode(JSON.stringify([
+    ACTIVATION_CANCELLATION_DOMAIN, terms.orderHash, terms.owner, terms.nonce, terms.expiresAtMs,
+  ]));
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", encoded));
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function activationCancellationFailure(status: number, code: string | null, message: string | null): Error {
+  if (code === "ATTEMPT_OUTSTANDING") return new Error("A slice is executing; cancel after it settles.");
+  if (code === "NONCE_REPLAYED") return new Error("This signed cancellation was already used. Cancel again to sign a fresh one.");
+  if (code === "CANCELLATION_EXPIRED") {
+    return new Error("The signed cancellation expired before the service accepted it. Cancel again to sign a fresh one.");
+  }
+  if (code === "INVALID_EXPIRY") return new Error("The service refused the cancellation expiry. Check this device's clock, then cancel again.");
+  if (code === "ORDER_TERMINAL") return new Error("This advanced order is no longer waiting, so there is nothing to cancel.");
+  if (status === 403) return new Error("The service did not accept this signature as the order owner's cancellation.");
+  if (status === 404) return new Error("The service has no advanced order registered for this hash.");
+  return new Error(message ?? `Advanced order cancellation failed with ${status}.`);
+}
+
 function toSafeObservationError(status: number, code: string | null): Error {
   if (status === 503 || code === "EXECUTION_UNAVAILABLE" ||
       status === 502 || code === "EXECUTION_OBSERVATION_FAILED") {
@@ -5096,6 +5253,119 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
         receiptHash,
       })];
     }));
+  }
+
+  /**
+   * An owner's advanced orders: every one still WAITING plus the most recent terminal ones.
+   * Any entry that does not bind this owner or parse exactly fails the whole read closed.
+   */
+  async listOwnerOrderActivations(owner: string, signal?: AbortSignal): Promise<readonly OwnerOrderActivation[]> {
+    if (!ACTIVATION_EVM_OWNER.test(owner) && !ACTIVATION_SOLANA_OWNER.test(owner)) throw new Error("Wallet address is invalid.");
+    const response = await fetch(
+      `${this.#baseUrl}/internal/terminal/order-activations?${new URLSearchParams({ owner }).toString()}`,
+      { method: "GET", cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer", signal },
+    );
+    if (response.status === 404) throw new Error("Advanced orders are not served by this private terminal service.");
+    if (!response.ok) throw new Error("Advanced orders are temporarily unavailable.");
+    let payload: unknown;
+    try {
+      payload = fromProtocolJson(await response.json() as unknown);
+    } catch {
+      throw new Error("Advanced order list is invalid.");
+    }
+    if (!isRecord(payload) || payload.version !== 1 || payload.owner !== owner || !Array.isArray(payload.activations)) {
+      throw new Error("Advanced order list does not bind this owner.");
+    }
+    const activations = payload.activations.map((entry) => requireOwnerOrderActivation(entry, owner));
+    if (new Set(activations.map((entry) => entry.orderHash)).size !== activations.length) {
+      throw new Error("Advanced order list repeats an order.");
+    }
+    return Object.freeze(activations);
+  }
+
+  /**
+   * Cancels one WAITING advanced order under its owner's signature: the service binds the order,
+   * a fresh 32-byte nonce, and an expiry five minutes out; the terms and their hash are checked
+   * here before the wallet signs, and the service spends the nonce with the cancellation.
+   */
+  async cancelOrderActivation(
+    input: Readonly<{ orderHash: string; owner: string }>,
+    sign: (challenge: OrderActivationCancellationChallenge) => Promise<string>,
+    signal?: AbortSignal,
+  ): Promise<OwnerOrderActivation> {
+    const orderHash = requireHex32(input.orderHash, "Advanced order hash");
+    const evm = ACTIVATION_EVM_OWNER.test(input.owner);
+    if (!evm && !ACTIVATION_SOLANA_OWNER.test(input.owner)) throw new Error("Advanced order owner has no supported signature scheme.");
+    const nonce = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
+    const expiresAtMs = Date.now() + 300_000;
+    const failure = async (response: Response) => {
+      let code: string | null = null;
+      let message: string | null = null;
+      try {
+        const body = await response.json() as unknown;
+        if (isRecord(body) && isRecord(body.error)) {
+          if (typeof body.error.code === "string" && FAILURE_CODE_PATTERN.test(body.error.code)) code = body.error.code;
+          if (typeof body.error.message === "string" && body.error.message.length > 0 && body.error.message.length <= 300) {
+            message = body.error.message;
+          }
+        }
+      } catch {
+        // Fall through to the status code.
+      }
+      return activationCancellationFailure(response.status, code, message);
+    };
+    const prepared = await this.#postJson("/internal/terminal/order-activations/cancellation", { orderHash, nonce, expiresAtMs }, signal);
+    if (!prepared.ok) throw await failure(prepared);
+    const terms = await prepared.json() as unknown;
+    const cancellationHash = await orderActivationCancellationHash({ orderHash, owner: input.owner, nonce, expiresAtMs });
+    if (!isRecord(terms) || terms.version !== 1 || terms.status !== "UNSIGNED_CANCELLATION" || terms.orderHash !== orderHash
+        || terms.owner !== input.owner || terms.nonce !== nonce || terms.expiresAtMs !== expiresAtMs
+        || terms.scheme !== (evm ? "EIP712_SECP256K1" : "ED25519") || terms.cancellationHash !== bytesToHex(cancellationHash)) {
+      throw new Error("Advanced order cancellation terms do not match this order, owner, nonce, and expiry.");
+    }
+    const challenge: OrderActivationCancellationChallenge = evm ? {
+      scheme: "EIP712_SECP256K1",
+      typedData: {
+        domain: { name: "Naryx Order Activation", version: "1" },
+        types: {
+          OrderActivationCancellation: [
+            { name: "cancellationHash", type: "bytes32" },
+            { name: "orderHash", type: "bytes32" },
+            { name: "owner", type: "address" },
+            { name: "nonce", type: "bytes32" },
+            { name: "expiresAtMs", type: "uint256" },
+          ],
+        },
+        primaryType: "OrderActivationCancellation",
+        message: {
+          cancellationHash: `0x${bytesToHex(cancellationHash)}`,
+          orderHash: `0x${orderHash}`,
+          owner: input.owner,
+          nonce: `0x${nonce}`,
+          expiresAtMs: BigInt(expiresAtMs),
+        },
+      },
+    } : { scheme: "ED25519", message: cancellationHash };
+    const signed = await sign(challenge);
+    const signature = evm ? signed.toLowerCase() : signed;
+    if (!evm) requireCanonicalBase58Signature(signature, "Cancellation signature");
+    else if (!EVM_SIGNATURE_PATTERN.test(signature)) throw new Error("Wallet returned an invalid cancellation signature.");
+    const cancelled = await this.#postJson(
+      "/internal/terminal/order-activations/cancel", { orderHash, nonce, expiresAtMs, signature }, signal,
+    );
+    if (!cancelled.ok) throw await failure(cancelled);
+    let payload: unknown;
+    try {
+      payload = fromProtocolJson(await cancelled.json() as unknown);
+    } catch {
+      throw new Error("Advanced order cancellation response is invalid.");
+    }
+    if (!isRecord(payload) || payload.version !== 1) throw new Error("Advanced order cancellation response is invalid.");
+    const view = requireOwnerOrderActivation(payload, input.owner);
+    if (view.orderHash !== orderHash || view.status !== "CANCELLED") {
+      throw new Error("The service did not confirm this advanced order as cancelled.");
+    }
+    return view;
   }
 
   async getPackageLifecycle(

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { NaryxClient, toHex } from "@naryx/sdk";
+import { NaryxClient, toHex, type PackageBookParticipantOrderView } from "@naryx/sdk";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { ChainIcon } from "@/features/brand/chain-icons";
@@ -11,7 +11,14 @@ import type { OwnerPackageEntry, PackageLifecycleResponse, PackageLifecycleState
 import { DOMAIN_META, useTerminal } from "../shell/terminal-context";
 import { attemptsOf, type RecordedAttempt } from "../shell/attempt-index";
 import { packageOrdersOf, usePackageOrderIndex } from "../shell/package-order-index";
-import { ReadState, publicClient } from "./public-read";
+import {
+  activationKind,
+  nextActivation,
+  useActivationOwners,
+  useCancelOrderActivation,
+  useOwnerOrderActivations,
+} from "../advanced-order-activations";
+import { ReadState, publicClient, readFailure } from "./public-read";
 import { TransactionLink } from "../transaction-status";
 import styles from "./pages.module.css";
 
@@ -300,6 +307,15 @@ function fromService(entry: OwnerPackageEntry, owner: string): Row | null {
   };
 }
 
+/** A package-book order as the service lists it, or this browser's record of one the service did not list. */
+type BookOrderRow = Readonly<{
+  packageOrderId: string;
+  strategyOrderHash: string;
+  participantId: string;
+  recordedAt: number;
+  service: PackageBookParticipantOrderView | null;
+}>;
+
 const RECOVERY_STATES = /RECOVERY|MANUAL|UNRESOLVED|FROZEN|COMPENSAT/;
 const HEX_HASH = /^[0-9a-f]{64}$/;
 const INCIDENT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -456,7 +472,7 @@ export function ActivityView() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [proofReceiptHash, setProofReceiptHash] = useState<string | null>(null);
   const [allocationOrderId, setAllocationOrderId] = useState<string | null>(null);
-  const [packageOrderRecords] = usePackageOrderIndex();
+  const [packageOrderRecords, recordPackageOrder] = usePackageOrderIndex();
   const solanaOwner = useSolanaWallet().selectedAccount?.address ?? null;
   const evmOwner = useEvmWallet().account;
   const owners = [solanaOwner, evmOwner].filter((owner): owner is string => owner !== null);
@@ -554,6 +570,48 @@ export function ActivityView() {
   const openState = openAttempt === undefined ? null
     : (readable(openAttempt) ? openLifecycle?.attempt.state ?? null : openAttempt.serviceState ?? null);
   const packageOrders = packageOrdersOf(packageOrderRecords, owners);
+  // Strategy orders, activations, and package-book participants bind the lowercase EVM address.
+  const participants = useActivationOwners();
+  const advanced = useOwnerOrderActivations(participants);
+  const advancedCancel = useCancelOrderActivation();
+  const participantQueries = useQueries({
+    queries: participants.map((participantId) => ({
+      queryKey: ["participant-package-orders", publicApiBaseUrl, participantId],
+      enabled: publicApiBaseUrl !== null,
+      retry: false,
+      refetchInterval: 30_000,
+      queryFn: () => {
+        const client = publicClient(publicApiBaseUrl);
+        if (client === null) throw new Error("The public API is not configured.");
+        return client.getParticipantPackageOrders(participantId);
+      },
+    })),
+  });
+  const listedParticipants = new Set(participants.filter((_participant, index) => participantQueries[index]?.isSuccess === true));
+  const serviceBookRows: BookOrderRow[] = participantQueries.flatMap((query, index) => {
+    const participantId = participants[index];
+    return participantId === undefined ? [] : (query.data?.orders ?? []).map((order) => ({
+      packageOrderId: order.packageOrderId,
+      strategyOrderHash: order.strategyOrderHash,
+      participantId,
+      recordedAt: order.recordedAtMs,
+      service: order,
+    }));
+  });
+  const listedOrderIds = new Set(serviceBookRows.map((row) => row.packageOrderId));
+  const bookRows: readonly BookOrderRow[] = [
+    ...serviceBookRows,
+    ...packageOrders.filter((order) => !listedOrderIds.has(order.packageOrderId)).map((order) => ({
+      packageOrderId: order.packageOrderId,
+      strategyOrderHash: order.strategyOrderHash,
+      participantId: order.participantId,
+      recordedAt: order.createdAt,
+      service: null,
+    })),
+  ].sort((left, right) => right.recordedAt - left.recordedAt);
+  const bookFailures = [...new Set(participantQueries.flatMap((query) => query.isError
+    ? [readFailure(query.error, "The package book order list")] : []))];
+  const bookLoading = publicApiBaseUrl !== null && participantQueries.some((query) => query.isPending);
 
   return (
     <main className={styles.page}>
@@ -883,45 +941,205 @@ export function ActivityView() {
         </section>
       ) : null}
 
-      {packageOrders.length > 0 ? (
+      <section className={styles.card} aria-labelledby="advanced-orders-title">
+        <div className={styles.cardHead}>
+          <div>
+            <h2 id="advanced-orders-title">Advanced orders</h2>
+            <p>Conditional, scheduled, and TWAP orders the connected wallets own: every waiting order plus the most recent finished ones. Cancelling needs the owner&apos;s signature.</p>
+          </div>
+        </div>
+        <div className={styles.scroll}>
+          <table className={styles.table}>
+            <thead>
+              <tr>
+                <th scope="col">Created</th>
+                <th scope="col">Kind</th>
+                <th scope="col">Source order</th>
+                <th scope="col">State</th>
+                <th scope="col" className={styles.num}>Filled / remaining</th>
+                <th scope="col">Next activation</th>
+                <th scope="col"><span className="sr-only">Advanced order actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {advanced.activations.length === 0 ? (
+                <tr>
+                  <td colSpan={7}>
+                    <div className={styles.empty}>
+                      <strong>{participants.length === 0
+                        ? "Connect a wallet"
+                        : !advanced.configured
+                          ? "Advanced orders not connected"
+                          : advanced.loading
+                            ? "Loading advanced orders"
+                            : advanced.errors.length > 0
+                              ? "Advanced orders unavailable"
+                              : "No advanced orders yet"}</strong>
+                      <p>{participants.length === 0
+                        ? "Connect a Solana or EVM wallet to list the advanced orders it owns."
+                        : !advanced.configured
+                          ? "The private terminal service is not configured, so advanced orders cannot be read."
+                          : advanced.errors.length > 0
+                            ? advanced.errors.join(" ")
+                            : "Create a conditional, scheduled, or TWAP order from a strategy order on the Trade page."}</p>
+                    </div>
+                  </td>
+                </tr>
+              ) : advanced.activations.map((activation) => {
+                const current = advancedCancel.state?.orderHash === activation.orderHash ? advancedCancel.state : null;
+                return (
+                  <tr key={activation.orderHash}>
+                    <td className={styles.mono}>{time(activation.registeredAtMs)}</td>
+                    <td title={activation.orderHash}>
+                      {activationKind(activation)}
+                      <small className={styles.cellDetail}>{compact(activation.orderHash, 8, 6)}</small>
+                    </td>
+                    <td className={styles.mono} title={activation.sourceOrderHash ?? undefined}>
+                      {activation.sourceOrderHash === null ? "-" : compact(activation.sourceOrderHash, 10, 6)}
+                    </td>
+                    <td>
+                      <span className={statePill(activation.status)}>{stateText(activation.status)}</span>
+                      {activation.failedSlices > 0 ? <small className={styles.cellDetail}>{activation.failedSlices} of {activation.attemptedSlices} slices failed</small> : null}
+                    </td>
+                    <td className={styles.num} title="Quantity in asset atoms">
+                      {activation.executedAtoms.toString()} / {(activation.quantityAtoms - activation.executedAtoms).toString()}
+                    </td>
+                    <td className={styles.dim}>{nextActivation(activation)}</td>
+                    <td>
+                      {activation.status === "WAITING" ? (
+                        <button
+                          type="button"
+                          className={styles.ghost}
+                          disabled={advancedCancel.busy || activation.attemptReserved}
+                          title={activation.attemptReserved ? "A slice is executing; cancel after it settles." : undefined}
+                          onClick={() => void advancedCancel.cancel(activation)}
+                        >
+                          {current?.phase === "busy" ? (advancedCancel.awaitingWallet ? "Confirm in your wallet" : "Cancelling") : "Cancel"}
+                        </button>
+                      ) : null}
+                      {current !== null && current.phase !== "busy" ? (
+                        <small className={styles.cellDetail} role={current.phase === "error" ? "alert" : "status"}>{current.text}</small>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {advanced.activations.length > 0 && advanced.errors.length > 0 ? (
+          <div className={styles.cardBody}>
+            {advanced.errors.map((message) => <p key={message} className={styles.readNote}>{message}</p>)}
+          </div>
+        ) : null}
+      </section>
+
+      {participants.length > 0 || bookRows.length > 0 ? (
         <section className={styles.card} aria-labelledby="package-book-orders-title">
           <div className={styles.cardHead}>
             <div>
               <h2 id="package-book-orders-title">Package book orders</h2>
-              <p>Orders this browser submitted to the package book for the connected wallets. Select one to verify its settlement allocation.</p>
+              <p>The connected wallets&apos; package-book orders as the service lists them: every resting order plus the most recent closed ones, with this browser&apos;s records the service did not list. Select one to verify its settlement allocation.</p>
             </div>
           </div>
+          {publicApiBaseUrl === null || bookFailures.length > 0 ? (
+            <div className={styles.cardBody}>
+              {publicApiBaseUrl === null
+                ? <p className={styles.readNote}>The public API is not configured, so only this browser&apos;s record of submitted orders is shown.</p>
+                : bookFailures.map((message) => <p key={message} className={styles.readNote}>{message} Only this browser&apos;s record is shown for that wallet.</p>)}
+            </div>
+          ) : null}
           <div className={styles.scroll}>
             <table className={styles.table}>
               <thead>
                 <tr>
-                  <th scope="col">Submitted</th>
+                  <th scope="col">Recorded</th>
+                  <th scope="col">Market</th>
+                  <th scope="col">Side</th>
+                  <th scope="col" className={styles.num}>Price (ticks)</th>
+                  <th scope="col" className={styles.num}>Quantity</th>
+                  <th scope="col" className={styles.num}>Filled</th>
+                  <th scope="col" className={styles.num}>Remaining</th>
+                  <th scope="col">State</th>
+                  <th scope="col" className={styles.num} title="In the package market's clock unit">Expiry</th>
                   <th scope="col">Package order</th>
-                  <th scope="col">Strategy order</th>
-                  <th scope="col"><span className="sr-only">Allocation</span></th>
+                  <th scope="col"><span className="sr-only">Order actions</span></th>
                 </tr>
               </thead>
               <tbody>
-                {packageOrders.map((order) => (
-                  <tr key={order.packageOrderId}>
-                    <td className={styles.mono}>{time(order.createdAt)}</td>
-                    <td className={styles.mono} title={order.packageOrderId}>{compact(order.packageOrderId, 12, 8)}</td>
-                    <td className={styles.mono} title={order.strategyOrderHash}>{compact(order.strategyOrderHash, 12, 8)}</td>
-                    <td>
-                      <button
-                        type="button"
-                        className={styles.ghost}
-                        onClick={() => setAllocationOrderId((current) => current === order.packageOrderId ? null : order.packageOrderId)}
-                      >
-                        {allocationOrderId === order.packageOrderId ? "Hide allocation" : "Verify allocation"}
-                      </button>
+                {bookRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={11}>
+                      <div className={styles.empty}>
+                        <strong>{bookLoading ? "Loading package book orders" : "No package book orders yet"}</strong>
+                        <p>Orders the connected wallets submit to a package book appear here with their fills and state.</p>
+                      </div>
                     </td>
                   </tr>
-                ))}
+                ) : bookRows.map((row) => {
+                  const order = row.service;
+                  return (
+                    <tr key={row.packageOrderId}>
+                      <td className={styles.mono}>{time(row.recordedAt)}</td>
+                      <td>{order?.packageMarketId ?? "-"}</td>
+                      <td style={order?.side ? { color: order.side === "BID" ? "var(--up)" : "var(--down)" } : undefined}>
+                        {order?.side === "BID" ? "Bid" : order?.side === "ASK" ? "Ask" : "-"}
+                      </td>
+                      <td className={styles.num}>{order?.priceTicks?.toString() ?? "-"}</td>
+                      <td className={styles.num}>{order?.quantity.toString() ?? "-"}</td>
+                      <td className={styles.num}>{order?.filledQuantity.toString() ?? "-"}</td>
+                      <td className={styles.num}>{order?.remainingQuantity.toString() ?? "-"}</td>
+                      <td>
+                        {order !== null ? (
+                          <span className={statePill(order.state)}>{stateText(order.state)}</span>
+                        ) : (
+                          <span
+                            className={styles.pill}
+                            title={listedParticipants.has(row.participantId)
+                              ? "This browser recorded the order; the service list for this wallet did not include it."
+                              : "This browser recorded the order; the service list for this wallet could not be read."}
+                          >
+                            {listedParticipants.has(row.participantId) ? "Not listed" : "Local record"}
+                          </span>
+                        )}
+                      </td>
+                      <td className={styles.num}>{order?.expiresAtValue?.toString() ?? "-"}</td>
+                      <td className={styles.mono} title={`Package order ${row.packageOrderId}; strategy order ${row.strategyOrderHash}`}>
+                        {compact(row.packageOrderId, 12, 8)}
+                        <small className={styles.cellDetail}>Strategy {compact(row.strategyOrderHash, 8, 6)}</small>
+                      </td>
+                      <td>
+                        <span className={styles.rowActions}>
+                          <button
+                            type="button"
+                            className={styles.ghost}
+                            onClick={() => setAllocationOrderId((current) => current === row.packageOrderId ? null : row.packageOrderId)}
+                          >
+                            {allocationOrderId === row.packageOrderId ? "Hide allocation" : "Verify allocation"}
+                          </button>
+                          {order?.state === "OPEN" ? (
+                            <Link
+                              href="/trade"
+                              title="Adds this order to Recent package order in the Trade ticket's strategy panel, where it can be amended or cancelled."
+                              onClick={() => recordPackageOrder({
+                                strategyOrderHash: row.strategyOrderHash,
+                                packageOrderId: row.packageOrderId,
+                                participantId: row.participantId,
+                                createdAt: row.recordedAt,
+                              })}
+                            >
+                              Amend or cancel
+                            </Link>
+                          ) : null}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
-          {allocationOrderId !== null && packageOrders.some((order) => order.packageOrderId === allocationOrderId) ? (
+          {allocationOrderId !== null && bookRows.some((row) => row.packageOrderId === allocationOrderId) ? (
             <div className={styles.cardBody}>
               <VerifiedAllocationFacts publicApiBaseUrl={publicApiBaseUrl} packageOrderId={allocationOrderId} />
             </div>
