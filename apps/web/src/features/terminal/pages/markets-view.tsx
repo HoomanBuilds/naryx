@@ -137,7 +137,7 @@ export function MarketsView() {
           </span>
           {catalogue === null ? null : (
             <span className={catalogue.state === "verified" ? styles.pillOk : catalogue.state === "rejected" ? styles.pillBad : styles.pill} title={catalogue.detail}>
-              {catalogue.state === "verified" ? "Catalogue hash verified" : catalogue.state === "rejected" ? "Catalogue rejected" : catalogue.state === "loading" ? "Reading catalogue" : "No catalogue"}
+              {catalogue.state === "verified" ? "Catalogue verified" : catalogue.state === "rejected" ? "Catalogue rejected" : catalogue.state === "loading" ? "Reading catalogue" : "No catalogue"}
             </span>
           )}
         </div>

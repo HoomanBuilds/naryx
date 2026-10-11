@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import bs58 from "bs58";
 import {
   NaryxApiError,
   NaryxClient,
@@ -32,6 +33,26 @@ const MAX_TRADES = 5_000;
 const MARKET_POLL_MS = 15_000;
 /** The server caches its catalogue for about a minute; a book it has not listed yet triggers an earlier read. */
 const CATALOGUE_REFRESH_MS = 60_000;
+
+function catalogueTrust(): { readonly authorities: ReadonlyMap<string, Uint8Array> | null; readonly error: string | null } {
+  const authority = process.env.NEXT_PUBLIC_NARYX_CATALOGUE_AUTHORITY?.trim() ?? "";
+  const encodedKey = process.env.NEXT_PUBLIC_NARYX_CATALOGUE_PUBLIC_KEY?.trim() ?? "";
+  if (authority.length === 0 && encodedKey.length === 0) {
+    return { authorities: null, error: "Catalogue trust is not configured; markets show without series metadata." };
+  }
+  if (authority.length === 0 || encodedKey.length === 0) {
+    return { authorities: null, error: "Catalogue trust configuration is incomplete; markets show without series metadata." };
+  }
+  try {
+    const publicKey = bs58.decode(encodedKey);
+    if (publicKey.length !== 32) throw new Error("the public key is not 32 bytes");
+    return { authorities: new Map([[authority, publicKey]]), error: null };
+  } catch {
+    return { authorities: null, error: "Catalogue trust configuration is malformed; markets show without series metadata." };
+  }
+}
+
+const CATALOGUE_TRUST = catalogueTrust();
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -84,10 +105,7 @@ export interface PublicMarketCatalogueStatus {
   readonly detail: string;
 }
 
-/**
- * The catalogue only enriches listed books. Its hash is recomputed by the SDK before any field is
- * used; this browser pins no signing authority, so the signature itself is not checked here.
- */
+/** The catalogue only enriches listed books after its hash and pinned authority signature verify. */
 export interface PublicCatalogueVerification {
   readonly state: "loading" | "verified" | "rejected" | "unavailable";
   readonly detail: string;
@@ -263,15 +281,19 @@ export function usePublicPackageMarkets(baseUrl: string | null): {
       const unexpired = catalogue !== null && catalogue.catalogue.expiresAtMs > BigInt(Date.now());
       const fresh = catalogueReadAtMs !== null && Date.now() - catalogueReadAtMs < CATALOGUE_REFRESH_MS && (catalogue === null || unexpired);
       if (fresh && uncovered(summaries) === uncoveredAtRead) return;
-      if (client === null) {
+      if (CATALOGUE_TRUST.authorities === null) {
+        catalogue = null;
+        verification = { state: "unavailable", detail: CATALOGUE_TRUST.error ?? "Catalogue trust is unavailable; markets show without series metadata." };
+      } else if (client === null) {
         catalogue = null;
         verification = { state: "unavailable", detail: "The SDK requires an HTTPS public API, so the catalogue cannot be verified and markets show without series metadata." };
       } else {
         try {
-          const next = await client.getCatalogue();
+          const next = await client.getCatalogue({ trustedAuthorities: CATALOGUE_TRUST.authorities, environment: "testnet" });
+          if (!next.signatureVerified) throw new NaryxEvidenceError("the catalogue authority is not trusted by this terminal");
           catalogue = next.current ? next : null;
           verification = next.current
-            ? { state: "verified", detail: `Catalogue ${next.catalogueHash.slice(0, 12)} hash verified in this browser; its signing authority is not pinned here.` }
+            ? { state: "verified", detail: `Catalogue ${next.catalogueHash.slice(0, 12)} hash and authority signature verified in this browser.` }
             : { state: "rejected", detail: "The served catalogue has expired; markets show without series metadata." };
         } catch (error) {
           if (controller.signal.aborted) return;
