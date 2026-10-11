@@ -96,7 +96,13 @@ export function loadPublicMarketBootstrap(path: string, expectedEnvironment: str
 
   const domainManifests = array(root.domainManifests, "domainManifests").map((value, index) => {
     const input = record(value, `domainManifests[${index}]`);
-    environment(input.environment, expectedEnvironment, `domainManifests[${index}].environment`);
+    const isSolanaDevnet = expectedEnvironment === "testnet"
+      && input.environment === "devnet"
+      && input.chainNamespace === "solana"
+      && input.domainId === "svm:devnet";
+    if (!isSolanaDevnet) {
+      environment(input.environment, expectedEnvironment, `domainManifests[${index}].environment`);
+    }
     return input as unknown as DomainManifestInput;
   });
   const packageTemplateManifests = array(root.packageTemplateManifests, "packageTemplateManifests").map((value, index) => {

@@ -111,7 +111,7 @@ test("creates dependency-ordered Solana treasury hedge lifecycle orders", async 
   const directory = mkdtempSync(join(tmpdir(), "naryx-solana-treasury-"));
   const path = join(directory, "profiles.json");
   try {
-    writeFileSync(path, stringifyProtocolJson({ version: 1, environment: "devnet", profiles: [profile()] }));
+    writeFileSync(path, stringifyProtocolJson({ version: 1, environment: "testnet", profiles: [profile()] }));
     const port = createSolanaTreasuryHedgeOrderPort({
       profiles: loadSolanaTreasuryHedgeProfiles(path),
       intake,

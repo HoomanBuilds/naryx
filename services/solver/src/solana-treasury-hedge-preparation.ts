@@ -56,7 +56,7 @@ export interface SolanaTreasuryHedgePackageIdPort {
 }
 
 export interface SolanaTreasuryHedgePreparationLane {
-  readonly environment: 'devnet';
+  readonly environment: 'testnet';
   readonly templateManifest: PackageTemplateManifest;
   readonly activeRegistryRecords: readonly DomainRegistryRecordInput[];
   readonly resourceLimits: readonly DomainResourceLimit[];
@@ -275,7 +275,7 @@ export class SolanaTreasuryHedgePreparationContextResolver implements StrategyPr
   constructor(lanes: readonly SolanaTreasuryHedgePreparationLane[]) {
     requireCondition(lanes.length > 0, 'at least one lane is required');
     for (const lane of lanes) {
-      requireCondition(lane.environment === 'devnet' && lane.pricing.domain.domainId === 'svm:devnet',
+      requireCondition(lane.environment === 'testnet' && lane.pricing.domain.domainId === 'svm:devnet',
         'lane must target Solana Devnet');
       key(lane.coreProgramId, 'core program');
       key(lane.multiStrategyProgramId, 'multi-strategy program');

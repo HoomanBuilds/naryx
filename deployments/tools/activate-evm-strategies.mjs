@@ -149,6 +149,25 @@ async function inspectNetwork(input) {
 }
 
 const networks = await Promise.all(networkInputs.map(inspectNetwork));
+const solanaReleaseRecord = readProtocol('release-records/solana-devnet.json');
+const solanaDomainManifest = protocol.domainManifest(solanaReleaseRecord.domainManifest);
+const solanaDomain = protocol.domainRef(
+  solanaDomainManifest.domainId,
+  solanaDomainManifest.manifestVersion,
+  protocol.domainManifestHash(solanaDomainManifest),
+);
+const solanaTreasuryAdapters = Object.freeze([
+  protocol.adapterRef({
+    adapterId: 'adapter:solana-devnet:inventory',
+    adapterManifestVersion: 1,
+    adapterManifestHash: digest('solana-devnet/adapter/inventory'),
+  }),
+  protocol.adapterRef({
+    adapterId: 'adapter:solana-devnet:perpetual',
+    adapterManifestVersion: 1,
+    adapterManifestHash: digest('solana-devnet/adapter/perpetual'),
+  }),
+]);
 const refs = (network) => Object.freeze({
   optionLong: protocol.adapterRef({ adapterId: `adapter:${network.network}:option-long`, adapterManifestVersion: 1, adapterManifestHash: digest(`${network.network}/adapter/option-long`) }),
   optionShort: protocol.adapterRef({ adapterId: `adapter:${network.network}:option-short`, adapterManifestVersion: 1, adapterManifestHash: digest(`${network.network}/adapter/option-short`) }),
@@ -179,7 +198,11 @@ const templateSpecifications = Object.freeze([
   }),
   Object.freeze({
     templateId: 'treasury-inventory-hedge-v1', legTypes: ['inventory-position', 'treasury-hedge'],
-    adapters: networks.flatMap((network) => [bindings.get(network.network).inventory, bindings.get(network.network).perp]),
+    adapters: [
+      ...networks.flatMap((network) => [bindings.get(network.network).inventory, bindings.get(network.network).perp]),
+      ...solanaTreasuryAdapters,
+    ],
+    additionalDomains: [solanaDomain],
   }),
 ]);
 const templates = new Map(templateSpecifications.map((specification) => {
@@ -188,7 +211,7 @@ const templates = new Map(templateSpecifications.map((specification) => {
     environment: 'testnet',
     templateId: specification.templateId,
     templateVersion: 1,
-    supportedDomains: networks.map((network) => network.domain),
+    supportedDomains: [...networks.map((network) => network.domain), ...(specification.additionalDomains ?? [])],
     orderSchemaHash: digest(`${specification.templateId}/order`),
     quoteSchemaHash: digest(`${specification.templateId}/quote`),
     routeSchemaHash: digest(`${specification.templateId}/route`),
@@ -592,7 +615,11 @@ const marketSupport = readProtocol('api/hyperliquid-public-market-support.json')
 const graphContext = readProtocol('api/hyperliquid-public-graph-context.json');
 writeProtocol('api/public-market-bootstrap.json', {
   ...bootstrap,
-  domainManifests: [...bootstrap.domainManifests, ...networks.map((network) => network.domainManifest)],
+  domainManifests: [
+    ...bootstrap.domainManifests,
+    ...networks.map((network) => network.domainManifest),
+    solanaDomainManifest,
+  ],
   packageTemplateManifests: [...bootstrap.packageTemplateManifests, ...templates.values()],
   matchingPolicies: [...bootstrap.matchingPolicies, ...matchingPolicies],
   series: [...bootstrap.series, ...series],

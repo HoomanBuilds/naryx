@@ -137,7 +137,7 @@ export function createSolanaTreasuryHedgeGeneralizedPricing(
       currentTime: PackageGraphCompileContext['currentTime'];
     }>): Promise<GeneralizedStrategyQuoteTerms> {
       const { order, graph } = documents;
-      requireCondition(order.environment === 'devnet' && graph.environment === 'devnet'
+      requireCondition(order.environment === 'testnet' && graph.environment === 'testnet'
         && order.templateId === STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE
         && graph.templateId === STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE
         && order.settlementClass === 'ATOMIC_POSTCONDITION' && graph.settlementClass === 'ATOMIC_POSTCONDITION'

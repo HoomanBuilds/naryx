@@ -79,7 +79,7 @@ const inventoryMarket = versionedManifestRef('sol-inventory', 1, hash('7'));
 const hedgeMarket = versionedManifestRef('sol-test-perpetual', 1, hash('8'));
 const templateInput: PackageTemplateManifestInput = {
   manifestVersion: 2,
-  environment: 'devnet',
+  environment: 'testnet',
   templateId: 'treasury-inventory-hedge-v1',
   templateVersion: 1,
   supportedDomains: [domain],
@@ -131,7 +131,7 @@ function documents(): StoredStrategyPackageDocuments {
   const strategyAccount = deriveSolanaMultiStrategyAccount({ programId: MULTI_PROGRAM, owner: OWNER });
   const graph = packageGraph({
     graphVersion: 1,
-    environment: 'devnet',
+    environment: 'testnet',
     templateId: template.templateId,
     templateVersion: 1,
     packageTemplateManifestHash: templateHash,
@@ -333,7 +333,7 @@ test('prepares a state-bound Solana treasury hedge entry from owner-controlled a
   const rpc = setupRpc(packageDocuments);
   let remembered: readonly [string, string] | undefined;
   const context = await new SolanaTreasuryHedgePreparationContextResolver([{
-    environment: 'devnet',
+    environment: 'testnet',
     templateManifest: template,
     activeRegistryRecords: [],
     resourceLimits: [{ domainId: domain.domainId, maximumActionsPerTransaction: 4 }],
@@ -382,7 +382,7 @@ test('reports the exact remaining Devnet collateral before Solana treasury hedge
   const packageDocuments = documents();
   const rpc = setupRpc(packageDocuments);
   const plan = await new SolanaTreasuryHedgeProvisioningResolver([{
-    environment: 'devnet',
+    environment: 'testnet',
     templateManifest: template,
     activeRegistryRecords: [],
     resourceLimits: [{ domainId: domain.domainId, maximumActionsPerTransaction: 4 }],

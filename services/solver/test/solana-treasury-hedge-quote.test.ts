@@ -136,7 +136,7 @@ function documents(
   const legs = increasing ? [inventoryLeg, hedgeLeg] : [hedgeLeg, inventoryLeg];
   const graph = packageGraph({
     graphVersion: 1,
-    environment: 'devnet',
+    environment: 'testnet',
     templateId: 'treasury-inventory-hedge-v1',
     templateVersion: 1,
     packageTemplateManifestHash: hash('a'),

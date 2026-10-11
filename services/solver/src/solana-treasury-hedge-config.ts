@@ -202,7 +202,7 @@ function lane(
   const input = record(value, 'lane');
   const laneId = string(input.laneId, 'lane.laneId');
   const templateManifest = packageTemplateManifest(input.templateManifest as PackageTemplateManifestInput, 'lane.templateManifest');
-  if (templateManifest.environment !== 'devnet' || templateManifest.templateId !== 'treasury-inventory-hedge-v1') {
+  if (templateManifest.environment !== 'testnet' || templateManifest.templateId !== 'treasury-inventory-hedge-v1') {
     fail(`lane ${laneId} template manifest is not a Devnet treasury hedge`);
   }
   if (!Array.isArray(input.activeRegistryRecords) || input.activeRegistryRecords.length === 0
@@ -306,7 +306,7 @@ function lane(
   if (new Set(adapters.map((item) => item.role)).size !== 2) fail(`lane ${laneId} adapter roles repeat`);
   const byRole = (role: 'inventory-position' | 'treasury-hedge') => adapters.find((item) => item.role === role)!;
   const preparation: SolanaTreasuryHedgePreparationLane = Object.freeze({
-    environment: 'devnet',
+    environment: 'testnet',
     templateManifest,
     activeRegistryRecords,
     resourceLimits,
@@ -348,7 +348,7 @@ function lane(
         }),
     quote: Object.freeze({
       laneId,
-      environment: 'devnet',
+      environment: 'testnet',
       templateManifest,
       executionClassId: string(input.executionClassId, 'lane.executionClassId'),
       executionClassVersion: integer(input.executionClassVersion, 'lane.executionClassVersion'),
@@ -376,9 +376,9 @@ export async function loadSolanaTreasuryHedgeRuntime(
   executionLanes: readonly SolanaTreasuryHedgeExecutionLane[];
 }>> {
   const root = record(absoluteJson(path), 'root');
-  if (root.version !== 1 || root.environment !== 'devnet' || typeof root.rpcUrl !== 'string'
+  if (root.version !== 1 || root.environment !== 'testnet' || typeof root.rpcUrl !== 'string'
     || !Array.isArray(root.lanes) || root.lanes.length === 0 || root.lanes.length > 8) {
-    fail('root must define version 1, devnet, rpcUrl, and one to eight lanes');
+    fail('root must define version 1, testnet, rpcUrl, and one to eight lanes');
   }
   const rpcUrl = string(root.rpcUrl, 'root.rpcUrl');
   const rpc = new HttpSolanaDevnetSolverRpc(rpcUrl, { writesEnabled: false });

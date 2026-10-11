@@ -142,7 +142,7 @@ function transferChecked(
 }
 
 function matchesLane(documents: StoredStrategyPackageOrderDocuments, lane: SolanaTreasuryHedgePreparationLane): boolean {
-  if (documents.order.environment !== 'devnet' || documents.order.templateId !== lane.templateManifest.templateId
+  if (documents.order.environment !== 'testnet' || documents.order.templateId !== lane.templateManifest.templateId
     || documents.order.templateVersion !== lane.templateManifest.templateVersion
     || documents.graph.legs.length !== 2) return false;
   const inventory = documents.graph.legs.find((leg) => leg.legId === 'inventory-position');

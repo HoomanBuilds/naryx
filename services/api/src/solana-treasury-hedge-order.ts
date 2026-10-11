@@ -65,7 +65,7 @@ export interface SolanaTreasuryHedgeProfile {
   readonly profileId: string;
   readonly displayName: string;
   readonly templateId: typeof STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE;
-  readonly templateVersion: 1;
+  readonly templateVersion: number;
   readonly packageTemplateManifestHash: Uint8Array;
   readonly seriesId: string;
   readonly seriesVersion: number;
@@ -181,7 +181,7 @@ function checkedProfile(value: unknown, index: number): SolanaTreasuryHedgeProfi
   ], context);
   if (typeof input.profileId !== "string" || typeof input.displayName !== "string"
     || typeof input.seriesId !== "string" || typeof input.executionClassId !== "string"
-    || input.templateId !== STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE || input.templateVersion !== 1) {
+    || input.templateId !== STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE) {
     fail("INVALID_CONFIGURATION", `${context} identity or template is invalid.`);
   }
   const displayName = input.displayName.trim();
@@ -221,7 +221,7 @@ function checkedProfile(value: unknown, index: number): SolanaTreasuryHedgeProfi
     profileId: protocolId(input.profileId, `${context}.profileId`),
     displayName,
     templateId: STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE,
-    templateVersion: 1 as const,
+    templateVersion: version(input.templateVersion, `${context}.templateVersion`),
     packageTemplateManifestHash: manifestHash(input.packageTemplateManifestHash as Uint8Array),
     seriesId: protocolId(input.seriesId, `${context}.seriesId`),
     seriesVersion: version(input.seriesVersion, `${context}.seriesVersion`),
@@ -247,9 +247,9 @@ function checkedProfile(value: unknown, index: number): SolanaTreasuryHedgeProfi
   try {
     strategyPackageOrder({
       version: 1,
-      environment: "devnet",
+      environment: "testnet",
       templateId: profile.templateId,
-      templateVersion: 1,
+      templateVersion: profile.templateVersion,
       packageTemplateManifestHash: profile.packageTemplateManifestHash,
       graphHash: "01".repeat(32),
       seriesId: profile.seriesId,
@@ -298,7 +298,7 @@ export function loadSolanaTreasuryHedgeProfiles(path: string): readonly SolanaTr
   }
   const root = record(parsed, "Solana treasury hedge profile file");
   exactKeys(root, ["version", "environment", "profiles"], "Solana treasury hedge profile file");
-  if (root.version !== 1 || root.environment !== "devnet" || !Array.isArray(root.profiles)
+  if (root.version !== 1 || root.environment !== "testnet" || !Array.isArray(root.profiles)
     || root.profiles.length === 0 || root.profiles.length > 16) {
     fail("INVALID_CONFIGURATION", "Solana treasury hedge profile file must contain one to sixteen Devnet profiles.");
   }
@@ -469,9 +469,9 @@ export function createSolanaTreasuryHedgeOrderPort(input: Readonly<{
       const legs = Object.freeze(increasing ? [inventoryLeg, hedgeLeg] : [hedgeLeg, inventoryLeg]);
       const graph = packageGraph({
         graphVersion: 1,
-        environment: "devnet",
+        environment: "testnet",
         templateId: profile.templateId,
-        templateVersion: 1,
+        templateVersion: profile.templateVersion,
         packageTemplateManifestHash: profile.packageTemplateManifestHash,
         seriesId: profile.seriesId,
         seriesVersion: profile.seriesVersion,
@@ -510,9 +510,9 @@ export function createSolanaTreasuryHedgeOrderPort(input: Readonly<{
       const cap = (atoms: bigint) => atoms === 0n ? [] : [{ asset: profile.quoteAsset, maxAtoms: atoms }];
       const order = strategyPackageOrder({
         version: 1,
-        environment: "devnet",
+        environment: "testnet",
         templateId: profile.templateId,
-        templateVersion: 1,
+        templateVersion: profile.templateVersion,
         packageTemplateManifestHash: profile.packageTemplateManifestHash,
         graphHash: packageGraphHash(graph),
         seriesId: profile.seriesId,
