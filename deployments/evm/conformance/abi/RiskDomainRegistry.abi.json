@@ -1,0 +1,1023 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [
+      {
+        "name": "config_",
+        "type": "address",
+        "internalType": "contract ProtocolConfig"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "MAXIMUM_DEPENDENCIES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAXIMUM_LEVERAGE_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAXIMUM_SERIES",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "activate",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "activeVersion",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "manifestVersion",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "cancel",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "config",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract ProtocolConfig"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "configCodeHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "dependencyCap",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "manifestVersion",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "dependencyId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint128",
+        "internalType": "uint128"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "deploymentChainId",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "isEligibleSeries",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "manifestVersion",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "series",
+        "type": "tuple",
+        "internalType": "struct RiskDomainRegistry.SeriesRef",
+        "components": [
+          {
+            "name": "seriesId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "manifestVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "manifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "latestVersion",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "manifestVersion",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pauseEntry",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "pending",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct RiskDomainRegistry.PendingPolicy",
+        "components": [
+          {
+            "name": "manifestVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "activationTimestamp",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "resume",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "exists",
+            "type": "bool",
+            "internalType": "bool"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "policy",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "manifestVersion",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct RiskDomainRegistry.Policy",
+        "components": [
+          {
+            "name": "config",
+            "type": "tuple",
+            "internalType": "struct RiskDomainRegistry.PolicyConfig",
+            "components": [
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "domainManifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "domainManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "accountingToken",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "expectedTokenCodeHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "grossCapQuoteAtoms",
+                "type": "uint128",
+                "internalType": "uint128"
+              },
+              {
+                "name": "netCapQuoteAtoms",
+                "type": "uint128",
+                "internalType": "uint128"
+              },
+              {
+                "name": "minimumMarginFloorQuoteAtoms",
+                "type": "uint128",
+                "internalType": "uint128"
+              },
+              {
+                "name": "maximumLeverageBps",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "maximumStalenessMs",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "maximumTimeToUnwindMs",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "requiredRecoveryReserveQuoteAtoms",
+                "type": "uint128",
+                "internalType": "uint128"
+              },
+              {
+                "name": "aggregateHaircutBps",
+                "type": "uint16",
+                "internalType": "uint16"
+              }
+            ]
+          },
+          {
+            "name": "lifecycle",
+            "type": "uint8",
+            "internalType": "enum RiskDomainRegistry.Lifecycle"
+          },
+          {
+            "name": "activated",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "seriesCount",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "dependencyCount",
+            "type": "uint16",
+            "internalType": "uint16"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "proposePolicy",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "proposed",
+        "type": "tuple",
+        "internalType": "struct RiskDomainRegistry.PolicyConfig",
+        "components": [
+          {
+            "name": "manifestVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "manifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "domainManifestVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "domainManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "accountingToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "expectedTokenCodeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "grossCapQuoteAtoms",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "netCapQuoteAtoms",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "minimumMarginFloorQuoteAtoms",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "maximumLeverageBps",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "maximumStalenessMs",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "maximumTimeToUnwindMs",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "requiredRecoveryReserveQuoteAtoms",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "aggregateHaircutBps",
+            "type": "uint16",
+            "internalType": "uint16"
+          }
+        ]
+      },
+      {
+        "name": "series",
+        "type": "tuple[]",
+        "internalType": "struct RiskDomainRegistry.SeriesRef[]",
+        "components": [
+          {
+            "name": "seriesId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "manifestVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "manifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          }
+        ]
+      },
+      {
+        "name": "dependencies",
+        "type": "tuple[]",
+        "internalType": "struct RiskDomainRegistry.DependencyLimit[]",
+        "components": [
+          {
+            "name": "dependencyId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "maximumGrossQuoteAtoms",
+            "type": "uint128",
+            "internalType": "uint128"
+          }
+        ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "proposeResume",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "validateEntry",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "manifestVersion",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "manifestHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "series",
+        "type": "tuple",
+        "internalType": "struct RiskDomainRegistry.SeriesRef",
+        "components": [
+          {
+            "name": "seriesId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "manifestVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "manifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          }
+        ]
+      },
+      {
+        "name": "risk",
+        "type": "tuple",
+        "internalType": "struct RiskDomainRegistry.EntryRisk",
+        "components": [
+          {
+            "name": "accountingToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "grossQuoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "netQuoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "marginQuoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "reservedRecoveryQuoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "observationAgeMs",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "timeToUnwindMs",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      },
+      {
+        "name": "dependencies",
+        "type": "tuple[]",
+        "internalType": "struct RiskDomainRegistry.DependencyExposure[]",
+        "components": [
+          {
+            "name": "dependencyId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "grossQuoteAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "minimumMarginAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "validateExit",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "manifestVersion",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "manifestHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "series",
+        "type": "tuple",
+        "internalType": "struct RiskDomainRegistry.SeriesRef",
+        "components": [
+          {
+            "name": "seriesId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "manifestVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "manifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          }
+        ]
+      },
+      {
+        "name": "accountingToken",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "view"
+  },
+  {
+    "type": "event",
+    "name": "EntryPaused",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "manifestVersion",
+        "type": "uint32",
+        "indexed": true,
+        "internalType": "uint32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "EntryResumeProposed",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "manifestVersion",
+        "type": "uint32",
+        "indexed": true,
+        "internalType": "uint32"
+      },
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "EntryResumed",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "manifestVersion",
+        "type": "uint32",
+        "indexed": true,
+        "internalType": "uint32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PolicyActivated",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "manifestVersion",
+        "type": "uint32",
+        "indexed": true,
+        "internalType": "uint32"
+      },
+      {
+        "name": "manifestHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PolicyProposalCancelled",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "manifestVersion",
+        "type": "uint32",
+        "indexed": true,
+        "internalType": "uint32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PolicyProposed",
+    "inputs": [
+      {
+        "name": "riskDomainId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "manifestVersion",
+        "type": "uint32",
+        "indexed": true,
+        "internalType": "uint32"
+      },
+      {
+        "name": "manifestHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "accountingToken",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "ActivationTimestampOverflow",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DependencyLimitExceeded",
+    "inputs": [
+      {
+        "name": "dependencyId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "maximumAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "providedAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "EntryAlreadyPaused",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "EntryNotPaused",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "EntryUnavailable",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidConfiguration",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidDependency",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidPolicy",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidSeries",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "MarginInsufficient",
+    "inputs": [
+      {
+        "name": "requiredAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "providedAtoms",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ObservationStale",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PolicyMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PolicyUnknown",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ProposalExists",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ProposalMissing",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ProposalNotReady",
+    "inputs": [
+      {
+        "name": "activationTimestamp",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "RecoveryReserveInsufficient",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "RiskLimitExceeded",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SeriesUnsupported",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TokenMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnauthorizedRole",
+    "inputs": [
+      {
+        "name": "caller",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "requiredRole",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "UnwindTooSlow",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "VersionNotIncreasing",
+    "inputs": [
+      {
+        "name": "latestVersion",
+        "type": "uint32",
+        "internalType": "uint32"
+      },
+      {
+        "name": "proposedVersion",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ]
+  }
+]

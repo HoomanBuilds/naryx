@@ -1,0 +1,3652 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [
+      {
+        "name": "owner_",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "accountFactory_",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "config_",
+        "type": "address",
+        "internalType": "contract ProtocolConfig"
+      },
+      {
+        "name": "solverRegistry_",
+        "type": "address",
+        "internalType": "contract SolverRegistry"
+      },
+      {
+        "name": "adapterRegistry_",
+        "type": "address",
+        "internalType": "contract TypedStrategyAdapterRegistry"
+      },
+      {
+        "name": "feePolicyRegistry_",
+        "type": "address",
+        "internalType": "contract StrategyFeePolicyRegistry"
+      },
+      {
+        "name": "riskDomainRegistry_",
+        "type": "address",
+        "internalType": "contract RiskDomainRegistry"
+      },
+      {
+        "name": "feePolicySubjectId_",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "DECREASE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "EMERGENCY_UNWIND",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "ENTER",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "EXIT",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "INCREASE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_CALLS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIGRATE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "REBALANCE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "ROLL",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "accountFactory",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "activePackageCount",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "adapterRegistry",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract TypedStrategyAdapterRegistry"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "adapterRegistryCodeHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "callsHash",
+    "inputs": [
+      {
+        "name": "calls",
+        "type": "tuple[]",
+        "internalType": "struct NaryxMultiStrategyAccount.AdapterCall[]",
+        "components": [
+          {
+            "name": "adapter",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "target",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "stage",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "riskIncreasing",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "approvalToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "approvalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "grossNotionalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "gasLimit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "payload",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "config",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract ProtocolConfig"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "configCodeHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "deploymentChainId",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "deploymentDomainIdHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "execute",
+    "inputs": [
+      {
+        "name": "execution",
+        "type": "tuple",
+        "internalType": "struct NaryxMultiStrategyAccount.Execution",
+        "components": [
+          {
+            "name": "domainIdHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "domainManifestVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "domainManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "packageId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "graphHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "quoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "template",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.TemplateRef",
+            "components": [
+              {
+                "name": "templateId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "templateVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "templateManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "settlementClass",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.SettlementClassRef",
+            "components": [
+              {
+                "name": "classId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "classVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              }
+            ]
+          },
+          {
+            "name": "operation",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "previousStateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "nextStateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "totalGrossNotionalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "risk",
+            "type": "tuple",
+            "internalType": "struct NaryxMultiStrategyAccount.RiskTerms",
+            "components": [
+              {
+                "name": "riskDomainId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "policyVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "policyManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "series",
+                "type": "tuple",
+                "internalType": "struct RiskDomainRegistry.SeriesRef",
+                "components": [
+                  {
+                    "name": "seriesId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "accountingToken",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "grossQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "netQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "marginQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "reservedRecoveryQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "observationAgeMs",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "timeToUnwindMs",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "dependencyExposures",
+                "type": "tuple[]",
+                "internalType": "struct RiskDomainRegistry.DependencyExposure[]",
+                "components": [
+                  {
+                    "name": "dependencyId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "grossQuoteAtoms",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "fees",
+            "type": "tuple",
+            "internalType": "struct NaryxMultiStrategyAccount.FeeTerms",
+            "components": [
+              {
+                "name": "policyVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "policyManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "token",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "protocolFeeAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "solverFeeAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          },
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "deadline",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      },
+      {
+        "name": "calls",
+        "type": "tuple[]",
+        "internalType": "struct NaryxMultiStrategyAccount.AdapterCall[]",
+        "components": [
+          {
+            "name": "adapter",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "target",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "stage",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "riskIncreasing",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "approvalToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "approvalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "grossNotionalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "gasLimit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "payload",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
+      },
+      {
+        "name": "ownerSignature",
+        "type": "bytes",
+        "internalType": "bytes"
+      },
+      {
+        "name": "solverSignature",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "receiptHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "executeNettingAllocation",
+    "inputs": [
+      {
+        "name": "execution",
+        "type": "tuple",
+        "internalType": "struct NaryxMultiStrategyAccount.Execution",
+        "components": [
+          {
+            "name": "domainIdHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "domainManifestVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "domainManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "packageId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "graphHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "quoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "template",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.TemplateRef",
+            "components": [
+              {
+                "name": "templateId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "templateVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "templateManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "settlementClass",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.SettlementClassRef",
+            "components": [
+              {
+                "name": "classId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "classVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              }
+            ]
+          },
+          {
+            "name": "operation",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "previousStateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "nextStateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "totalGrossNotionalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "risk",
+            "type": "tuple",
+            "internalType": "struct NaryxMultiStrategyAccount.RiskTerms",
+            "components": [
+              {
+                "name": "riskDomainId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "policyVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "policyManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "series",
+                "type": "tuple",
+                "internalType": "struct RiskDomainRegistry.SeriesRef",
+                "components": [
+                  {
+                    "name": "seriesId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "accountingToken",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "grossQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "netQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "marginQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "reservedRecoveryQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "observationAgeMs",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "timeToUnwindMs",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "dependencyExposures",
+                "type": "tuple[]",
+                "internalType": "struct RiskDomainRegistry.DependencyExposure[]",
+                "components": [
+                  {
+                    "name": "dependencyId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "grossQuoteAtoms",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "fees",
+            "type": "tuple",
+            "internalType": "struct NaryxMultiStrategyAccount.FeeTerms",
+            "components": [
+              {
+                "name": "policyVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "policyManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "token",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "protocolFeeAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "solverFeeAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          },
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "deadline",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      },
+      {
+        "name": "calls",
+        "type": "tuple[]",
+        "internalType": "struct NaryxMultiStrategyAccount.AdapterCall[]",
+        "components": [
+          {
+            "name": "adapter",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "target",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "stage",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "riskIncreasing",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "approvalToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "approvalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "grossNotionalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "gasLimit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "payload",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
+      },
+      {
+        "name": "authorizationHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "ownerSignature",
+        "type": "bytes",
+        "internalType": "bytes"
+      },
+      {
+        "name": "solverSignature",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "receiptHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "executeRecovery",
+    "inputs": [
+      {
+        "name": "execution",
+        "type": "tuple",
+        "internalType": "struct NaryxMultiStrategyAccount.Execution",
+        "components": [
+          {
+            "name": "domainIdHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "domainManifestVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "domainManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "packageId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "graphHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "quoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "template",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.TemplateRef",
+            "components": [
+              {
+                "name": "templateId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "templateVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "templateManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "settlementClass",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.SettlementClassRef",
+            "components": [
+              {
+                "name": "classId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "classVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              }
+            ]
+          },
+          {
+            "name": "operation",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "previousStateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "nextStateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "totalGrossNotionalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "risk",
+            "type": "tuple",
+            "internalType": "struct NaryxMultiStrategyAccount.RiskTerms",
+            "components": [
+              {
+                "name": "riskDomainId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "policyVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "policyManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "series",
+                "type": "tuple",
+                "internalType": "struct RiskDomainRegistry.SeriesRef",
+                "components": [
+                  {
+                    "name": "seriesId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "accountingToken",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "grossQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "netQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "marginQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "reservedRecoveryQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "observationAgeMs",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "timeToUnwindMs",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "dependencyExposures",
+                "type": "tuple[]",
+                "internalType": "struct RiskDomainRegistry.DependencyExposure[]",
+                "components": [
+                  {
+                    "name": "dependencyId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "grossQuoteAtoms",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "fees",
+            "type": "tuple",
+            "internalType": "struct NaryxMultiStrategyAccount.FeeTerms",
+            "components": [
+              {
+                "name": "policyVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "policyManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "token",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "protocolFeeAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "solverFeeAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          },
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "deadline",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      },
+      {
+        "name": "calls",
+        "type": "tuple[]",
+        "internalType": "struct NaryxMultiStrategyAccount.AdapterCall[]",
+        "components": [
+          {
+            "name": "adapter",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "target",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "stage",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "riskIncreasing",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "approvalToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "approvalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "grossNotionalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "gasLimit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "payload",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
+      },
+      {
+        "name": "ownerSignature",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "receiptHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "feePolicyRegistry",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract StrategyFeePolicyRegistry"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "feePolicyRegistryCodeHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "feePolicySubjectId",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "managePackageCollateral",
+    "inputs": [
+      {
+        "name": "management",
+        "type": "tuple",
+        "internalType": "struct NaryxMultiStrategyAccount.CollateralManagement",
+        "components": [
+          {
+            "name": "packageId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "intentHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "template",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.TemplateRef",
+            "components": [
+              {
+                "name": "templateId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "templateVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "templateManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "settlementClass",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.SettlementClassRef",
+            "components": [
+              {
+                "name": "classId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "classVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              }
+            ]
+          },
+          {
+            "name": "adapter",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "target",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "action",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "assetToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "inputAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "minimumOutputAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "maximumOutputAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "approvalToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "approvalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "grossNotionalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "gasLimit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "payloadHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "deadline",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      },
+      {
+        "name": "payload",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "evidenceHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "nettingAuthorizationOf",
+    "inputs": [
+      {
+        "name": "receiptHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "authorizationHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "nettingOwnerDigest",
+    "inputs": [
+      {
+        "name": "execution",
+        "type": "tuple",
+        "internalType": "struct NaryxMultiStrategyAccount.Execution",
+        "components": [
+          {
+            "name": "domainIdHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "domainManifestVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "domainManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "packageId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "graphHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "quoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "template",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.TemplateRef",
+            "components": [
+              {
+                "name": "templateId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "templateVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "templateManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "settlementClass",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.SettlementClassRef",
+            "components": [
+              {
+                "name": "classId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "classVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              }
+            ]
+          },
+          {
+            "name": "operation",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "previousStateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "nextStateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "totalGrossNotionalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "risk",
+            "type": "tuple",
+            "internalType": "struct NaryxMultiStrategyAccount.RiskTerms",
+            "components": [
+              {
+                "name": "riskDomainId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "policyVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "policyManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "series",
+                "type": "tuple",
+                "internalType": "struct RiskDomainRegistry.SeriesRef",
+                "components": [
+                  {
+                    "name": "seriesId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "accountingToken",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "grossQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "netQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "marginQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "reservedRecoveryQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "observationAgeMs",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "timeToUnwindMs",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "dependencyExposures",
+                "type": "tuple[]",
+                "internalType": "struct RiskDomainRegistry.DependencyExposure[]",
+                "components": [
+                  {
+                    "name": "dependencyId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "grossQuoteAtoms",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "fees",
+            "type": "tuple",
+            "internalType": "struct NaryxMultiStrategyAccount.FeeTerms",
+            "components": [
+              {
+                "name": "policyVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "policyManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "token",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "protocolFeeAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "solverFeeAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          },
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "deadline",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      },
+      {
+        "name": "calls",
+        "type": "tuple[]",
+        "internalType": "struct NaryxMultiStrategyAccount.AdapterCall[]",
+        "components": [
+          {
+            "name": "adapter",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "target",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "stage",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "riskIncreasing",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "approvalToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "approvalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "grossNotionalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "gasLimit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "payload",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
+      },
+      {
+        "name": "authorizationHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "nettingSolverDigest",
+    "inputs": [
+      {
+        "name": "execution",
+        "type": "tuple",
+        "internalType": "struct NaryxMultiStrategyAccount.Execution",
+        "components": [
+          {
+            "name": "domainIdHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "domainManifestVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "domainManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "packageId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "graphHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "quoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "template",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.TemplateRef",
+            "components": [
+              {
+                "name": "templateId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "templateVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "templateManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "settlementClass",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.SettlementClassRef",
+            "components": [
+              {
+                "name": "classId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "classVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              }
+            ]
+          },
+          {
+            "name": "operation",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "previousStateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "nextStateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "totalGrossNotionalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "risk",
+            "type": "tuple",
+            "internalType": "struct NaryxMultiStrategyAccount.RiskTerms",
+            "components": [
+              {
+                "name": "riskDomainId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "policyVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "policyManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "series",
+                "type": "tuple",
+                "internalType": "struct RiskDomainRegistry.SeriesRef",
+                "components": [
+                  {
+                    "name": "seriesId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "accountingToken",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "grossQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "netQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "marginQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "reservedRecoveryQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "observationAgeMs",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "timeToUnwindMs",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "dependencyExposures",
+                "type": "tuple[]",
+                "internalType": "struct RiskDomainRegistry.DependencyExposure[]",
+                "components": [
+                  {
+                    "name": "dependencyId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "grossQuoteAtoms",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "fees",
+            "type": "tuple",
+            "internalType": "struct NaryxMultiStrategyAccount.FeeTerms",
+            "components": [
+              {
+                "name": "policyVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "policyManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "token",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "protocolFeeAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "solverFeeAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          },
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "deadline",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      },
+      {
+        "name": "calls",
+        "type": "tuple[]",
+        "internalType": "struct NaryxMultiStrategyAccount.AdapterCall[]",
+        "components": [
+          {
+            "name": "adapter",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "target",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "stage",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "riskIncreasing",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "approvalToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "approvalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "grossNotionalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "gasLimit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "payload",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
+      },
+      {
+        "name": "authorizationHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "nextCollateralNonce",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "nextNonce",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "owner",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "ownerDigest",
+    "inputs": [
+      {
+        "name": "execution",
+        "type": "tuple",
+        "internalType": "struct NaryxMultiStrategyAccount.Execution",
+        "components": [
+          {
+            "name": "domainIdHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "domainManifestVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "domainManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "packageId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "graphHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "quoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "template",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.TemplateRef",
+            "components": [
+              {
+                "name": "templateId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "templateVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "templateManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "settlementClass",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.SettlementClassRef",
+            "components": [
+              {
+                "name": "classId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "classVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              }
+            ]
+          },
+          {
+            "name": "operation",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "previousStateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "nextStateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "totalGrossNotionalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "risk",
+            "type": "tuple",
+            "internalType": "struct NaryxMultiStrategyAccount.RiskTerms",
+            "components": [
+              {
+                "name": "riskDomainId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "policyVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "policyManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "series",
+                "type": "tuple",
+                "internalType": "struct RiskDomainRegistry.SeriesRef",
+                "components": [
+                  {
+                    "name": "seriesId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "accountingToken",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "grossQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "netQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "marginQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "reservedRecoveryQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "observationAgeMs",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "timeToUnwindMs",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "dependencyExposures",
+                "type": "tuple[]",
+                "internalType": "struct RiskDomainRegistry.DependencyExposure[]",
+                "components": [
+                  {
+                    "name": "dependencyId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "grossQuoteAtoms",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "fees",
+            "type": "tuple",
+            "internalType": "struct NaryxMultiStrategyAccount.FeeTerms",
+            "components": [
+              {
+                "name": "policyVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "policyManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "token",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "protocolFeeAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "solverFeeAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          },
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "deadline",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      },
+      {
+        "name": "calls",
+        "type": "tuple[]",
+        "internalType": "struct NaryxMultiStrategyAccount.AdapterCall[]",
+        "components": [
+          {
+            "name": "adapter",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "target",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "stage",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "riskIncreasing",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "approvalToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "approvalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "grossNotionalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "gasLimit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "payload",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "packageState",
+    "inputs": [
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct NaryxMultiStrategyAccount.PackageState",
+        "components": [
+          {
+            "name": "template",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.TemplateRef",
+            "components": [
+              {
+                "name": "templateId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "templateVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "templateManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "riskDomainId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "riskPolicyVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "riskPolicyManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "series",
+            "type": "tuple",
+            "internalType": "struct RiskDomainRegistry.SeriesRef",
+            "components": [
+              {
+                "name": "seriesId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "stateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "lastReceiptHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "active",
+            "type": "bool",
+            "internalType": "bool"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "receipt",
+    "inputs": [
+      {
+        "name": "receiptHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "internalType": "struct NaryxMultiStrategyAccount.Receipt",
+        "components": [
+          {
+            "name": "packageId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "graphHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "quoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "operation",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "previousStateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "nextStateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "callsHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "evidenceRoot",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "riskDomainId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "riskPolicyVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "riskPolicyManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "fees",
+            "type": "tuple",
+            "internalType": "struct NaryxMultiStrategyAccount.FeeTerms",
+            "components": [
+              {
+                "name": "policyVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "policyManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "token",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "protocolFeeAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "solverFeeAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "riskDomainRegistry",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract RiskDomainRegistry"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "riskDomainRegistryCodeHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "solverDigest",
+    "inputs": [
+      {
+        "name": "execution",
+        "type": "tuple",
+        "internalType": "struct NaryxMultiStrategyAccount.Execution",
+        "components": [
+          {
+            "name": "domainIdHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "domainManifestVersion",
+            "type": "uint32",
+            "internalType": "uint32"
+          },
+          {
+            "name": "domainManifestHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "packageId",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "orderHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "graphHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "quoteHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "routeHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "template",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.TemplateRef",
+            "components": [
+              {
+                "name": "templateId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "templateVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "templateManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "settlementClass",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.SettlementClassRef",
+            "components": [
+              {
+                "name": "classId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "classVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              }
+            ]
+          },
+          {
+            "name": "operation",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "previousStateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "nextStateHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "totalGrossNotionalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "risk",
+            "type": "tuple",
+            "internalType": "struct NaryxMultiStrategyAccount.RiskTerms",
+            "components": [
+              {
+                "name": "riskDomainId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "policyVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "policyManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "series",
+                "type": "tuple",
+                "internalType": "struct RiskDomainRegistry.SeriesRef",
+                "components": [
+                  {
+                    "name": "seriesId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "manifestVersion",
+                    "type": "uint32",
+                    "internalType": "uint32"
+                  },
+                  {
+                    "name": "manifestHash",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  }
+                ]
+              },
+              {
+                "name": "accountingToken",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "grossQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "netQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "marginQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "reservedRecoveryQuoteAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "observationAgeMs",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "timeToUnwindMs",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "dependencyExposures",
+                "type": "tuple[]",
+                "internalType": "struct RiskDomainRegistry.DependencyExposure[]",
+                "components": [
+                  {
+                    "name": "dependencyId",
+                    "type": "bytes32",
+                    "internalType": "bytes32"
+                  },
+                  {
+                    "name": "grossQuoteAtoms",
+                    "type": "uint256",
+                    "internalType": "uint256"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "fees",
+            "type": "tuple",
+            "internalType": "struct NaryxMultiStrategyAccount.FeeTerms",
+            "components": [
+              {
+                "name": "policyVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "policyManifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "token",
+                "type": "address",
+                "internalType": "address"
+              },
+              {
+                "name": "protocolFeeAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              },
+              {
+                "name": "solverFeeAtoms",
+                "type": "uint256",
+                "internalType": "uint256"
+              }
+            ]
+          },
+          {
+            "name": "solver",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "nonce",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "deadline",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ]
+      },
+      {
+        "name": "calls",
+        "type": "tuple[]",
+        "internalType": "struct NaryxMultiStrategyAccount.AdapterCall[]",
+        "components": [
+          {
+            "name": "adapter",
+            "type": "tuple",
+            "internalType": "struct TypedStrategyAdapterRegistry.ManifestRef",
+            "components": [
+              {
+                "name": "subjectId",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "manifestVersion",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "manifestHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "target",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "stage",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "riskIncreasing",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "approvalToken",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "approvalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "grossNotionalAtoms",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "gasLimit",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "payload",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "solverRegistry",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract SolverRegistry"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "solverRegistryCodeHash",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "withdrawIdleToken",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "contract IERC20"
+      },
+      {
+        "name": "recipient",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "event",
+    "name": "AdapterLegExecuted",
+    "inputs": [
+      {
+        "name": "receiptHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "callIndex",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "adapterSubjectId",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "stage",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
+      },
+      {
+        "name": "evidenceHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "IdleTokenWithdrawn",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "recipient",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "NettingAllocationExecuted",
+    "inputs": [
+      {
+        "name": "receiptHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "authorizationHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "PackageCollateralManaged",
+    "inputs": [
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "intentHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "adapter",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "action",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
+      },
+      {
+        "name": "approvalAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "outputAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "evidenceHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "StrategyExecuted",
+    "inputs": [
+      {
+        "name": "receiptHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "packageId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "operation",
+        "type": "uint8",
+        "indexed": true,
+        "internalType": "uint8"
+      },
+      {
+        "name": "solver",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "evidenceRoot",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "nextStateHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "StrategyFeesCollected",
+    "inputs": [
+      {
+        "name": "receiptHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "protocolRecipient",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "solverRecipient",
+        "type": "address",
+        "indexed": false,
+        "internalType": "address"
+      },
+      {
+        "name": "protocolFeeAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "solverFeeAtoms",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "AdapterEvidenceInvalid",
+    "inputs": [
+      {
+        "name": "callIndex",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "AdapterExecutionFailed",
+    "inputs": [
+      {
+        "name": "callIndex",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "returnData",
+        "type": "bytes",
+        "internalType": "bytes"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "DomainMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ECDSAInvalidSignature",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ECDSAInvalidSignatureLength",
+    "inputs": [
+      {
+        "name": "length",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ECDSAInvalidSignatureS",
+    "inputs": [
+      {
+        "name": "s",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "EntryPaused",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "Expired",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InsufficientGas",
+    "inputs": [
+      {
+        "name": "callIndex",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidConfiguration",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidExecution",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidNonce",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidOwnerSignature",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidPackageState",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidSolverSignature",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidStageOrder",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidWithdrawal",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PackageActive",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReentrancyGuardReentrantCall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "RiskDirectionMismatch",
+    "inputs": [
+      {
+        "name": "callIndex",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SafeERC20FailedOperation",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "UnauthorizedOwner",
+    "inputs": []
+  }
+]

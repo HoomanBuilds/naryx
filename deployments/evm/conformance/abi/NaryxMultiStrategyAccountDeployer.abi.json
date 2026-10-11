@@ -1,0 +1,130 @@
+[
+  {
+    "type": "function",
+    "name": "accountOf",
+    "inputs": [
+      {
+        "name": "salt",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "owner",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "accountFactory",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "config",
+        "type": "address",
+        "internalType": "contract ProtocolConfig"
+      },
+      {
+        "name": "solverRegistry",
+        "type": "address",
+        "internalType": "contract SolverRegistry"
+      },
+      {
+        "name": "adapterRegistry",
+        "type": "address",
+        "internalType": "contract TypedStrategyAdapterRegistry"
+      },
+      {
+        "name": "feePolicyRegistry",
+        "type": "address",
+        "internalType": "contract StrategyFeePolicyRegistry"
+      },
+      {
+        "name": "riskDomainRegistry",
+        "type": "address",
+        "internalType": "contract RiskDomainRegistry"
+      },
+      {
+        "name": "feePolicySubjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "deploy",
+    "inputs": [
+      {
+        "name": "salt",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "owner",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "accountFactory",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "config",
+        "type": "address",
+        "internalType": "contract ProtocolConfig"
+      },
+      {
+        "name": "solverRegistry",
+        "type": "address",
+        "internalType": "contract SolverRegistry"
+      },
+      {
+        "name": "adapterRegistry",
+        "type": "address",
+        "internalType": "contract TypedStrategyAdapterRegistry"
+      },
+      {
+        "name": "feePolicyRegistry",
+        "type": "address",
+        "internalType": "contract StrategyFeePolicyRegistry"
+      },
+      {
+        "name": "riskDomainRegistry",
+        "type": "address",
+        "internalType": "contract RiskDomainRegistry"
+      },
+      {
+        "name": "feePolicySubjectId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "contract NaryxMultiStrategyAccount"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "error",
+    "name": "DeploymentMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnauthorizedFactory",
+    "inputs": []
+  }
+]
