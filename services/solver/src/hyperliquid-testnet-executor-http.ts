@@ -47,6 +47,7 @@ export const SOLVER_TESTNET_RECONCILE_RECOVERY_PATH =
 
 const MAX_BODY_BYTES = 4_096;
 const ID = /^[A-Za-z0-9_-]{16,64}$/;
+const ATTEMPT_ID = /^hyperliquid-testnet-[0-9a-f]{48}$/;
 const HASH = /^0x[0-9a-f]{64}$/;
 const REASON = /^[A-Z][A-Z0-9_]{0,63}$/;
 const MAX_REASONS = 8;
@@ -393,7 +394,7 @@ function parseRequest(value: unknown): HyperliquidTestnetExecutorRequest {
   requireCondition(isRecord(value), 'INVALID_REQUEST', 'request must be an object');
   requireCondition(hasExactKeys(value, ['attemptId', 'idempotencyKey']), 'INVALID_REQUEST',
     'request must contain only attemptId and idempotencyKey');
-  requireCondition(typeof value.attemptId === 'string' && ID.test(value.attemptId),
+  requireCondition(typeof value.attemptId === 'string' && ATTEMPT_ID.test(value.attemptId),
     'INVALID_REQUEST', 'attemptId is invalid');
   requireCondition(typeof value.idempotencyKey === 'string' && ID.test(value.idempotencyKey),
     'INVALID_REQUEST', 'idempotencyKey is invalid');

@@ -18,7 +18,7 @@ import {
   type HyperliquidTestnetAttemptHandoff,
 } from '../src/index.js';
 
-const ATTEMPT_ID = 'attempt-0123456789AB';
+const ATTEMPT_ID = `hyperliquid-testnet-${'ab'.repeat(24)}`;
 const IDEMPOTENCY_KEY = 'idem-0123456789ABCD';
 const MASTER = `0x${'11'.repeat(20)}` as const;
 const TRADING = `0x${'22'.repeat(20)}` as const;
@@ -545,7 +545,7 @@ test('executor rejects provider identity mismatch and stays disabled without a f
       status: 'CHECKPOINT_FAILED', attemptId: ATTEMPT_ID, errorCommitment: ERROR,
     }),
   } as unknown as HyperliquidTestnetRuntimeCoordinator<unknown, unknown>,
-  attempt('attempt-ABCDEFGHIJKL'));
+  attempt(`hyperliquid-testnet-${'cd'.repeat(24)}`));
   try {
     const response = await execute(mismatch.url);
     assert.equal(response.status, 409);
