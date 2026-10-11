@@ -402,6 +402,24 @@ test("requests are rate limited per client window", async () => {
   );
 });
 
+test("uses a configured domain clock for slot-timed public evidence", async () => {
+  let observed: bigint | undefined;
+  await withMarket(async (get) => {
+    const response = await get(`/v1/orders/${id(7_900)}/quotes`);
+    assert.equal(response.status, 200, response.text);
+    assert.equal(observed, 321n);
+  }, {
+    unitClock: (unit) => unit === "SOLANA_SLOT" ? 321n : undefined,
+    evidence: {
+      getOrder: () => ({}),
+      quotesFor: (_orderHash: string, nowIn: (unit: string) => bigint | undefined) => {
+        observed = nowIn("SOLANA_SLOT");
+        return [];
+      },
+    } as never,
+  });
+});
+
 test("the runtime is off by default and validates its configuration", () => {
   assert.equal(loadPublicMarketRuntime({}), undefined);
   assert.throws(() => loadPublicMarketRuntime({ NARYX_PUBLIC_MARKET_ENABLED: "yes" }), PublicMarketConfigError);

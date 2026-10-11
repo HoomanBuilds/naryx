@@ -185,7 +185,6 @@ const referenceSources: Partial<Record<DomainId, Readonly<{ spot: string; perp: 
 const config = loadPrivateTerminalServerConfig();
 const startup = loadPrivateTerminalStartupConfig(process.env, config);
 const reportRuntimeFailure = stderrRuntimeFailureReporter();
-const publicMarket = loadPublicMarketRuntime();
 const orderStore = new SqliteInternalOrderStore(startup.orderDbPath);
 const lifecycleStore = new SqlitePackageLifecycleStore(startup.lifecycleDbPath);
 const executionIntentStore = new SqliteExecutionIntentStore(startup.executionIntentDbPath);
@@ -378,6 +377,22 @@ if (explicitlyEnabled("NARYX_SOLANA_DEVNET_ORDER_CONTEXT_ENABLED")) {
     reportRuntimeFailure("solanaDevnetOrderContext", error);
   }
 }
+let publicSolanaSlot: bigint | undefined;
+if (solanaDevnetOrderRuntime !== undefined) {
+  const runtime = solanaDevnetOrderRuntime;
+  const context = runtime.contexts(runtime.config.contextId);
+  if (context !== undefined) {
+    const refresh = async () => { publicSolanaSlot = await runtime.clock.currentClock(context); };
+    try {
+      await refresh();
+    } catch (error) {
+      reportRuntimeFailure("solanaPublicClock", error);
+    }
+    setInterval(() => { void refresh().catch(() => undefined); }, 5_000).unref();
+  }
+}
+const publicMarket = loadPublicMarketRuntime(process.env, Date.now, (unit) =>
+  unit === "SOLANA_SLOT" ? publicSolanaSlot : undefined);
 // The async observation port the terminal serves; after the executor handoff below, it advances the solver too.
 let arbitrumRuntime: Pick<Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>>, "observe"> | undefined;
 let arbitrumAdmittingRuntime: Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>> | undefined;

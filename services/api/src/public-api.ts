@@ -348,6 +348,7 @@ export interface PublicApiOptions {
   readonly nowValue: () => bigint;
   /** Unit of nowValue. When set, book orders whose expiry uses another clock are refused, so none can outlive the book. */
   readonly clockUnit?: "UNIX_SECONDS" | "UNIX_MILLISECONDS";
+  readonly unitClock?: (unit: string) => bigint | undefined;
   readonly rateLimit: { readonly windowMs: number; readonly maxRequests: number };
   readonly clockMs?: () => number;
 }
@@ -520,6 +521,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
 
   /** Server time in a quote's own unit; slot-timed quotes cannot be judged against wall-clock time. */
   function nowIn(unit: string): bigint | undefined {
+    const observed = options.unitClock?.(unit);
+    if (observed !== undefined) return observed > 0n ? observed : undefined;
     if (unit === "EVM_UNIX_SECONDS") return BigInt(Math.floor(clockMs() / 1_000));
     if (unit === "HYPERLIQUID_UNIX_MILLISECONDS") return BigInt(clockMs());
     return undefined;

@@ -372,6 +372,7 @@ function activationDelay(value: string | undefined): bigint {
 export function loadPublicMarketRuntime(
   environment: NodeJS.ProcessEnv = process.env,
   clockMs: () => number = Date.now,
+  unitClock?: (unit: string) => bigint | undefined,
 ): PublicMarketRuntime | undefined {
   const enabled = environment.NARYX_PUBLIC_MARKET_ENABLED ?? "false";
   if (enabled !== "true" && enabled !== "false") throw new PublicMarketConfigError("NARYX_PUBLIC_MARKET_ENABLED must be true or false.");
@@ -839,6 +840,7 @@ export function loadPublicMarketRuntime(
       ...(advancedOrderExecutions === undefined ? {} : { advancedOrderExecutions }),
       nowValue,
       clockUnit: support.clockUnit,
+      ...(unitClock === undefined ? {} : { unitClock }),
       rateLimit,
       clockMs,
     });
