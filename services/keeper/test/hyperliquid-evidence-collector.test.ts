@@ -37,8 +37,8 @@ const tradingAccount = `0x${'12'.repeat(20)}` as const;
 const spotCloid = `0x${'21'.repeat(16)}` as const;
 const perpCloid = `0x${'22'.repeat(16)}` as const;
 const recoveryCloid = `0x${'23'.repeat(16)}` as const;
-const baseAsset = assetRef('ubtc', '31'.repeat(32), 8);
-const quoteAsset = assetRef('usdc', '32'.repeat(32), 8);
+const baseAsset = assetRef('hypercore:testnet:ubtc', '31'.repeat(32), 8);
+const quoteAsset = assetRef('hypercore:testnet:usdc', '32'.repeat(32), 8);
 const account = { masterAccount, tradingAccount, accountKind: 'SUBACCOUNT' as const };
 const binding: HyperliquidEvidenceMarketBinding = {
   spotUniverseIndex: 7,
@@ -567,7 +567,7 @@ test('accounts for a spot buy fee charged in the base token at the token precisi
   assert.equal(result.input.spot.filledSignedBaseAtoms, 100n);
   assert.equal(result.input.netSpotDeltaAtoms, 99n);
   assert.deepEqual(result.input.fees.map((fee) => [fee.assetId, fee.amountAtoms]),
-    [['usdc', 1n], ['ubtc', 1n]]);
+    [['hypercore:testnet:usdc', 1n], ['hypercore:testnet:ubtc', 1n]]);
 
   // A base-token fee on the perpetual leg is not a known HyperCore fee path.
   const perpClient = new FixtureClient();
@@ -694,7 +694,7 @@ test('reconciles a bound HIP-3 perpetual leg in a generalized package', async ()
   assert.equal(result.status, 'COMPLETE');
   assert.equal(result.outcome, 'COMPLETED');
   assert.equal(result.legs[2]?.legId, 'leg-2');
-  assert.equal(result.legs[2]?.feeAssetId, 'usdc');
+  assert.equal(result.legs[2]?.feeAssetId, 'hypercore:testnet:usdc');
   assert.equal(result.legs[2]?.venueFeeQuoteAtoms, 1n);
 });
 

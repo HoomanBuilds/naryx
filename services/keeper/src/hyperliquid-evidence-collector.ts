@@ -379,8 +379,9 @@ function sameAsset(left: AssetRef, right: AssetRef): boolean {
 }
 
 function normalizedAssetSymbol(value: string): string | null {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) return null;
-  return value.toLowerCase();
+  const symbol = value.slice(value.lastIndexOf(':') + 1);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(symbol)) return null;
+  return symbol.toLowerCase();
 }
 
 function normalizedAccount(account: HyperliquidAccountIdentity): HyperliquidAccountIdentity {
