@@ -238,15 +238,21 @@ export function loadEvmTreasuryHedgeRuntime(
     || !Array.isArray(root.lanes) || root.lanes.length === 0 || root.lanes.length > 8) {
     fail('root must define version 1, testnet, rpcUrl, and one to eight lanes');
   }
-  const chain = createViemEvmOptionSpreadReadPort(root.rpcUrl);
-  const lanes = root.lanes.map((item) => lane(item, chain, dependencies.nonceSource, dependencies.packageIds));
-  const observation = createViemEvmStrategyObservationReadPort(root.rpcUrl);
+  const defaultRpcUrl = string(root.rpcUrl, 'root.rpcUrl');
+  const lanes = root.lanes.map((item) => {
+    const laneInput = record(item, 'lane');
+    const rpcUrl = laneInput.rpcUrl === undefined ? defaultRpcUrl : string(laneInput.rpcUrl, 'lane.rpcUrl');
+    return Object.freeze({
+      ...lane(item, createViemEvmOptionSpreadReadPort(rpcUrl), dependencies.nonceSource, dependencies.packageIds),
+      observation: createViemEvmStrategyObservationReadPort(rpcUrl),
+    });
+  });
   return Object.freeze({
     quoteLanes: Object.freeze(lanes.map((item) => item.quote)),
     preparationLanes: Object.freeze(lanes.map((item) => item.preparation)),
     observationLanes: Object.freeze(lanes.map((item) => Object.freeze({
       chainId: Number(item.preparation.pricing.chainId),
-      chain: observation,
+      chain: item.observation,
     }))),
   });
 }
