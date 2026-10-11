@@ -467,6 +467,20 @@ test('incomplete post-submission evidence keeps reconciling with preserved reaso
   assert.ok(result.rawResponseCommitments.length > 0);
 });
 
+test('unknown terminal order evidence remains incomplete after reduction', async () => {
+  const { client, collector, state } = await preparedState();
+  client.stamp = 9_950;
+  const runtime = new HyperliquidTestnetEvidenceRuntime(collector);
+  const result = await runtime.reconcile(
+    state, handoff(state.attemptId, state.actionHash), binding, evidenceWindow,
+  );
+  assert.equal(result.status, 'EVIDENCE_INCOMPLETE');
+  assert.equal(result.attempt.status, 'RECONCILING');
+  assert.deepEqual(result.reasons, ['AWAITING_TERMINAL_EVIDENCE']);
+  assert.equal(result.accountObservation?.netSpotBalanceDeltaAtoms, 0n);
+  assert.equal(result.accountObservation?.perpetualPositionDeltaAtoms, 0n);
+});
+
 test('a package reconciled to RECOVERY_REQUIRED is recorded as a keeper recovery source', async () => {
   const { client, collector, state } = await preparedState();
   client.stamp = 9_950;

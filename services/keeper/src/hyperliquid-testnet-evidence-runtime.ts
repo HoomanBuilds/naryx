@@ -82,7 +82,7 @@ export type HyperliquidTestnetReconcileResult = Readonly<{
 }> | Readonly<{
   status: 'EVIDENCE_INCOMPLETE';
   attempt: HyperliquidPackageAttempt;
-  reasons: readonly HyperliquidEvidenceIncompleteReason[];
+  reasons: readonly (HyperliquidEvidenceIncompleteReason | 'AWAITING_TERMINAL_EVIDENCE')[];
   accountObservation: HyperliquidCollectedStateObservation | null;
   observedFills: readonly HyperliquidObservedFill[];
   rawResponseCommitments: readonly HyperliquidRawResponseCommitment[];
@@ -333,6 +333,16 @@ export class HyperliquidTestnetEvidenceRuntime {
     }
     const attempt = reconcileHyperliquidPackageAttempt(reconciling, evidence.input);
     this.#recoverySources?.record(attempt);
+    if (attempt.status === 'RECONCILING') {
+      return Object.freeze({
+        status: 'EVIDENCE_INCOMPLETE' as const,
+        attempt,
+        reasons: Object.freeze(['AWAITING_TERMINAL_EVIDENCE'] as const),
+        accountObservation: evidence.accountObservation,
+        observedFills: evidence.observedFills,
+        rawResponseCommitments: evidence.rawResponseCommitments,
+      });
+    }
     return Object.freeze({
       status: 'RECONCILED' as const,
       attempt,
