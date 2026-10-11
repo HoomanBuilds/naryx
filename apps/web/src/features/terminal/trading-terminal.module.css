@@ -717,6 +717,7 @@
 
 .ticketFacts {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   margin: 0;
 }
@@ -729,10 +730,15 @@
 }
 
 .ticketFacts dt {
+  flex: 0 0 auto;
+}
+
+.ticketFacts dt {
   color: var(--text-dim);
 }
 
 .ticketFacts dd {
+  min-width: 0;
   margin: 0;
   color: var(--text-secondary);
   font-family: var(--font-geist-mono), monospace;
@@ -799,11 +805,15 @@
 
 .presets {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
 }
 
 .presets button {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   height: 26px;
   border: 1px solid var(--line);
   border-radius: var(--radius-small);
@@ -830,6 +840,8 @@
 
 .ticketRow {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -879,7 +891,7 @@
 
 .legList li {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) auto;
+  grid-template-columns: 20px minmax(0, 1fr) fit-content(55%);
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
@@ -921,6 +933,9 @@
 
 .legList strong {
   display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 12px;
   font-weight: 600;
 }
@@ -935,6 +950,9 @@
 }
 
 .legNumbers {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   text-align: right;
 }
 

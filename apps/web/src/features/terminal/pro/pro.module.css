@@ -890,7 +890,7 @@
 .tapeHeader,
 .tapeRow {
   display: grid;
-  grid-template-columns: 1.05fr 1fr 1fr 1.05fr;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.05fr);
   gap: 4px;
   padding: 0 12px;
   font-family: var(--font-geist-mono), monospace;
@@ -966,6 +966,17 @@
   z-index: 1;
 }
 
+/* Large sizes and prices shorten with an ellipsis inside their column instead of widening the book. */
+.bookRow > *,
+.tapeRow > *,
+.spreadRow > *,
+.ratioBar > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .bookRow > span[role="cell"]:not(:nth-child(2)) {
   text-align: right;
 }
@@ -1004,7 +1015,7 @@
   display: grid;
   flex: 0 0 auto;
   height: 34px;
-  grid-template-columns: 1.05fr 1fr 2.05fr;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr) minmax(0, 2.05fr);
   align-items: center;
   gap: 4px;
   border-block: 1px solid var(--line-soft);
