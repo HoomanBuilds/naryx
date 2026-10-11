@@ -1239,7 +1239,7 @@ async function generalizedTreasuryHedgeTerms(
       : order.lifecycleAction === 'DECREASE' ? 'PERP_DECREASE'
         : order.lifecycleAction === 'EXIT' || order.lifecycleAction === 'EMERGENCY_UNWIND'
           ? 'PERP_CLOSE' : undefined;
-  if (order.templateId !== STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE
+  if (order.templateId !== STRATEGY_TEMPLATE_ID.EXTERNAL_INVENTORY_HEDGE
     || expectedFamily === undefined
     || order.settlementClass !== 'BATCHED_IOC_WITH_RECOVERY'
     || graph.legs.length !== 1
@@ -1316,7 +1316,7 @@ async function generalizedTreasuryHedgeTerms(
   return Object.freeze({
     quoteMode: 'EXECUTION_COMMITMENT',
     economics: Object.freeze({
-      templateId: STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE,
+      templateId: STRATEGY_TEMPLATE_ID.EXTERNAL_INVENTORY_HEDGE,
       values: Object.freeze({
         inventoryAtoms: order.economicQuantity.atoms,
         hedgeAtoms: signedHedgeAtoms,

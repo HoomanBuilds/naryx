@@ -82,7 +82,7 @@ export interface HyperliquidNativeStrategyProfile {
   readonly profileId: string;
   readonly displayName: string;
   readonly templateId:
-    | typeof STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE
+    | typeof STRATEGY_TEMPLATE_ID.EXTERNAL_INVENTORY_HEDGE
     | typeof STRATEGY_TEMPLATE_ID.PERPETUAL_FUNDING_SPREAD
     | typeof STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION
     | typeof STRATEGY_TEMPLATE_ID.DELTA_NEUTRAL_REBALANCE;
@@ -200,7 +200,7 @@ function checkedProfile(value: unknown, index: number): HyperliquidNativeStrateg
     fail("INVALID_CONFIGURATION", `${context}.displayName is invalid.`);
   }
   const templateId = profile.templateId;
-  if (templateId !== STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE
+  if (templateId !== STRATEGY_TEMPLATE_ID.EXTERNAL_INVENTORY_HEDGE
     && templateId !== STRATEGY_TEMPLATE_ID.PERPETUAL_FUNDING_SPREAD
     && templateId !== STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION
     && templateId !== STRATEGY_TEMPLATE_ID.DELTA_NEUTRAL_REBALANCE) {
@@ -264,7 +264,7 @@ function checkedProfile(value: unknown, index: number): HyperliquidNativeStrateg
     });
   });
   const roles = markets.map((market) => market.role).sort().join(",");
-  const templateMarketsValid = templateId === STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE
+  const templateMarketsValid = templateId === STRATEGY_TEMPLATE_ID.EXTERNAL_INVENTORY_HEDGE
     ? roles === "treasury-hedge"
     : templateId === STRATEGY_TEMPLATE_ID.PERPETUAL_FUNDING_SPREAD
       ? roles === "funding-long,funding-short"

@@ -78,7 +78,7 @@ const definitions = Object.freeze([
   Object.freeze({
     profileId: 'btc-treasury-hedge-testnet',
     displayName: 'BTC treasury hedge',
-    templateId: 'treasury-inventory-hedge-v1',
+    templateId: 'external-inventory-hedge-v1',
     legTypes: ['treasury-hedge'],
     ratios: [-1n],
     markets: [{ role: 'treasury-hedge', entrySide: 'SELL', binding: primary }],

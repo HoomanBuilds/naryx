@@ -61,7 +61,7 @@ const OWNER = "0x1111111111111111111111111111111111111111";
 
 function profile(
   profileId: string,
-  templateId: "treasury-inventory-hedge-v1" | "perpetual-funding-spread-v1" | "hedge-migration-v1"
+  templateId: "external-inventory-hedge-v1" | "perpetual-funding-spread-v1" | "hedge-migration-v1"
     | "delta-neutral-rebalance-v1",
 ): HyperliquidNativeStrategyProfile {
   const market = (
@@ -99,7 +99,7 @@ function profile(
     settlementAccount: "hypercore-testnet-account",
     baseAsset: assetRef("hypercore:testnet:btc", "31".repeat(32), 5),
     quoteAsset: assetRef("hypercore:testnet:usdc", "32".repeat(32), 6),
-    markets: templateId === "treasury-inventory-hedge-v1"
+    markets: templateId === "external-inventory-hedge-v1"
       ? [market("treasury-hedge", 3)]
       : templateId === "perpetual-funding-spread-v1"
         ? [market("funding-long", 3), market("funding-short", 4)]
@@ -151,7 +151,7 @@ test("loads reviewed profiles and creates treasury entry plus funding exit order
       version: 1,
       environment: "testnet",
       profiles: [
-        profile("btc-treasury-hedge", "treasury-inventory-hedge-v1"),
+        profile("btc-treasury-hedge", "external-inventory-hedge-v1"),
         profile("btc-eth-funding", "perpetual-funding-spread-v1"),
         profile("btc-eth-migration", "hedge-migration-v1"),
         profile("btc-delta-rebalance", "delta-neutral-rebalance-v1"),
@@ -206,7 +206,7 @@ test("loads reviewed profiles and creates treasury entry plus funding exit order
 
 test("rejects requests outside reviewed quantity and expiry bounds", () => {
   const port = createHyperliquidNativeStrategyOrderPort({
-    profiles: [profile("btc-treasury-hedge", "treasury-inventory-hedge-v1")],
+    profiles: [profile("btc-treasury-hedge", "external-inventory-hedge-v1")],
     intake,
     currentTimeMs: () => NOW_MS,
   });
@@ -223,7 +223,7 @@ test("rejects requests outside reviewed quantity and expiry bounds", () => {
 });
 
 test("rebalances and migrates an authoritative native hedge", () => {
-  const treasuryProfile = profile("btc-treasury-hedge", "treasury-inventory-hedge-v1");
+  const treasuryProfile = profile("btc-treasury-hedge", "external-inventory-hedge-v1");
   const migrationProfile = profile("btc-hedge-migration", "hedge-migration-v1");
   const rebalanceProfile = profile("btc-delta-rebalance", "delta-neutral-rebalance-v1");
   const port = createHyperliquidNativeStrategyOrderPort({
@@ -516,7 +516,7 @@ test("rebalances and migrates an authoritative native hedge", () => {
     );
   }
   assert.equal(migrated.status, "OPEN");
-  assert.equal(migrated.templateId, "treasury-inventory-hedge-v1");
+  assert.equal(migrated.templateId, "external-inventory-hedge-v1");
   assert.equal(migrated.state.legs.length, 1);
   assert.equal(
     migrated.state.legs[0]?.instrumentId,
@@ -526,7 +526,7 @@ test("rebalances and migrates an authoritative native hedge", () => {
 });
 
 test("derives an authoritative native state and closes only its exact exit", () => {
-  const selectedProfile = profile("btc-treasury-hedge", "treasury-inventory-hedge-v1");
+  const selectedProfile = profile("btc-treasury-hedge", "external-inventory-hedge-v1");
   const port = createHyperliquidNativeStrategyOrderPort({
     profiles: [selectedProfile],
     intake,
@@ -755,7 +755,7 @@ test("a HyperCore-only venue-committed receipt is final for a native position; m
 });
 
 function nativeExecutions(strategies: SqliteStrategyPackageStore) {
-  const selectedProfile = profile("btc-treasury-hedge", "treasury-inventory-hedge-v1");
+  const selectedProfile = profile("btc-treasury-hedge", "external-inventory-hedge-v1");
   const { baseAsset, quoteAsset, domain } = selectedProfile;
   const port = createHyperliquidNativeStrategyOrderPort({
     profiles: [selectedProfile],
@@ -857,7 +857,7 @@ test("the exposure ledger counts a native strategy opened before it and follows 
   const ledger = new HyperliquidTestnetOwnerLedger(join(scratch, "execution.db"));
   try {
     const execute = nativeExecutions(strategies);
-    const { quoteAsset } = profile("btc-treasury-hedge", "treasury-inventory-hedge-v1");
+    const { quoteAsset } = profile("btc-treasury-hedge", "external-inventory-hedge-v1");
     const limits = { maxOpenPackagesPerOwner: 1, maxOpenNotionalQuoteAtoms: 10_000n };
     const reserve = (attemptId: string, owner: string, notionalAtoms: bigint) =>
       ledger.reserveExposure({ attemptId, owner, strategyKey: attemptId, notionalAtoms, newPackage: true, limits });
@@ -915,7 +915,7 @@ test("settling a native execution again after its receipt is recorded succeeds a
   const ledger = new HyperliquidTestnetOwnerLedger(join(scratch, "execution.db"));
   try {
     const execute = nativeExecutions(strategies);
-    const { quoteAsset } = profile("btc-treasury-hedge", "treasury-inventory-hedge-v1");
+    const { quoteAsset } = profile("btc-treasury-hedge", "external-inventory-hedge-v1");
     const limits = { maxOpenPackagesPerOwner: 5, maxOpenNotionalQuoteAtoms: 10_000n };
     const guard = createHyperliquidTestnetExecutionGuard({
       ledger,

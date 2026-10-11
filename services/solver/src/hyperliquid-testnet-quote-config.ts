@@ -288,7 +288,7 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
     throw new Error('generalized Hyperliquid quote config must match exactly one preparation lane');
   }
   if (configured.templateId !== 'cash-and-carry-v1'
-    && configured.templateId !== 'treasury-inventory-hedge-v1'
+    && configured.templateId !== 'external-inventory-hedge-v1'
     && configured.templateId !== 'perpetual-funding-spread-v1'
     && configured.templateId !== 'hedge-migration-v1'
     && configured.templateId !== 'delta-neutral-rebalance-v1') {

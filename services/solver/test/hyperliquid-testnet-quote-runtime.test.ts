@@ -892,7 +892,7 @@ test('prices a native Hyperliquid treasury hedge from executable perpetual depth
   const graph = packageGraph({
     graphVersion: 1,
     environment: 'testnet',
-    templateId: 'treasury-inventory-hedge-v1',
+    templateId: 'external-inventory-hedge-v1',
     templateVersion: 1,
     packageTemplateManifestHash: hash('1'),
     seriesId: 'btc-treasury-hedge-testnet',
@@ -1018,7 +1018,7 @@ test('prices a native Hyperliquid treasury hedge from executable perpetual depth
   });
 
   assert.deepEqual(requests, [`l2Book:BTC`, `userFees:${tradingAccount}`]);
-  assert.equal(terms.economics.templateId, 'treasury-inventory-hedge-v1');
+  assert.equal(terms.economics.templateId, 'external-inventory-hedge-v1');
   assert.ok('values' in terms.economics);
   if ('values' in terms.economics) {
     assert.equal(terms.economics.values.inventoryAtoms, 2_000_000n);

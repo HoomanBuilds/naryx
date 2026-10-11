@@ -444,7 +444,7 @@ export function validateNativeStrategyRebalance(
   const graph = packageGraph(graphInput);
   requireCondition(position.status === "OPEN", "STRATEGY_NOT_OPEN",
     "The native strategy position is not available for rebalancing.");
-  requireCondition(position.templateId === STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE
+  requireCondition(position.templateId === STRATEGY_TEMPLATE_ID.EXTERNAL_INVENTORY_HEDGE
     && order.templateId === STRATEGY_TEMPLATE_ID.DELTA_NEUTRAL_REBALANCE
     && order.lifecycleAction === "REBALANCE" && graph.lifecycleAction === "REBALANCE",
   "POSITION_ACTION_MISMATCH", "A native delta rebalance must target an open treasury hedge.");

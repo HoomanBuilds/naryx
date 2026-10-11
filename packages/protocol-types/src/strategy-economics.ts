@@ -319,6 +319,7 @@ export type StrategyEconomicsInput =
   | Readonly<{ templateId: typeof STRATEGY_TEMPLATE_ID.PERPETUAL_FUNDING_SPREAD; values: FundingSpreadEconomicsInput }>
   | Readonly<{ templateId: typeof STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION; values: MigrationEconomicsInput }>
   | Readonly<{ templateId: typeof STRATEGY_TEMPLATE_ID.DELTA_NEUTRAL_REBALANCE; values: RebalanceEconomicsInput }>
+  | Readonly<{ templateId: typeof STRATEGY_TEMPLATE_ID.EXTERNAL_INVENTORY_HEDGE; values: TreasuryHedgeEconomicsInput }>
   | Readonly<{ templateId: typeof STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE; values: TreasuryHedgeEconomicsInput }>
   | Readonly<{ templateId: typeof STRATEGY_TEMPLATE_ID.CALENDAR_SPREAD; values: CalendarSpreadEconomicsInput }>
   | Readonly<{ templateId: typeof STRATEGY_TEMPLATE_ID.OPTION_SPREAD; values: OptionSpreadEconomicsInput }>
@@ -338,6 +339,7 @@ export function strategyEconomicsMetrics(input: StrategyEconomicsInput): readonl
       return hedgeMigrationMetrics(input.values);
     case STRATEGY_TEMPLATE_ID.DELTA_NEUTRAL_REBALANCE:
       return deltaNeutralRebalanceMetrics(input.values);
+    case STRATEGY_TEMPLATE_ID.EXTERNAL_INVENTORY_HEDGE:
     case STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE:
       return treasuryInventoryHedgeMetrics(input.values);
     case STRATEGY_TEMPLATE_ID.CALENDAR_SPREAD:

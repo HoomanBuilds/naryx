@@ -261,7 +261,7 @@ test("private terminal selects exactly the reviewed generalized Hyperliquid quot
         return [{
           strategyId: "native-hl-position",
           owner: nativeOwner,
-          templateId: "treasury-inventory-hedge-v1",
+          templateId: "external-inventory-hedge-v1",
           economicQuantityAtoms: 200_000n,
           entryOrderHashHex: "12".repeat(32),
           entryReceiptHashHex: "13".repeat(32),
@@ -323,7 +323,7 @@ test("private terminal selects exactly the reviewed generalized Hyperliquid quot
     positions: [{
       strategyId: "native-hl-position",
       owner: nativeOwner,
-      templateId: "treasury-inventory-hedge-v1",
+      templateId: "external-inventory-hedge-v1",
       economicQuantityAtoms: 200_000n,
       entryOrderHashHex: "12".repeat(32),
       entryReceiptHashHex: "13".repeat(32),
