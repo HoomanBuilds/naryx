@@ -99,7 +99,7 @@
     "executionClassId": "arbitrum-sepolia-gmx-v2-cash-carry-v1",
     "seriesId": "eth-cash-carry-30d-usdc-v1",
     "seriesVersion": 1,
-    "seriesManifestHash": "0x11326420e4131ef3149f51134ca01c2a8017c112f30c1b728f9c30a6e041127a",
+    "seriesManifestHash": "0xf883c8079f7baa90a40d5b9cd47ee755ce8079dad9618f0d355ffaf0f1f7c967",
     "domains": [{
       "domainId": "eip155:421614",
       "domainManifestVersion": 2,
@@ -112,12 +112,12 @@
     "deliveryPolicyHash": "0x6e030b378cf7a278791afd0319f244f352a973f8e99d7920139db3fd10189430",
     "recoveryPolicyHash": "0x0d3940ee52fa93d368810527d91b18746edafa52db3ca4953ee97773b42445a5",
     "matchingPolicyHash": "0x353a364b763db24f920cd5b55653a3a9165932c2c0ab14a9042f0b29944b5329",
-    "manifestHash": "0xf15f9fac67933c02ce83df9ee803d0331abf24a8368c396ac196b6fb04da8e9b"
+    "manifestHash": "0x8790131a1c91c57614fa7ccace9b2ca799d07574cfba8202bf4409fb04434fc6"
   },
   "economicSeries": {
     "seriesId": "eth-cash-carry-30d-usdc-v1",
     "templateId": "cash-and-carry-v1",
-    "templateManifestHash": "0x3435aad20a22038f6e95eea807d622df4c030b9872f7722e71e586de93f2a705",
+    "templateManifestHash": "0x9a3cf332942247f5d330871dc63ff2a1c81b650583f08465b7c6627e8b5f0562",
     "underlyingRefs": ["eth", "eth"],
     "quoteAsset": "usdc-sg",
     "legRatios": ["1/1", "-1/1"],
@@ -125,7 +125,7 @@
     "quoteConvention": "annualized-net-yield-v1",
     "riskClass": "delta-neutral-basis-v1",
     "lifecycleConvention": "rolling-evaluation-window-v1",
-    "manifestHash": "0x11326420e4131ef3149f51134ca01c2a8017c112f30c1b728f9c30a6e041127a"
+    "manifestHash": "0xf883c8079f7baa90a40d5b9cd47ee755ce8079dad9618f0d355ffaf0f1f7c967"
   },
   "externalDependencies": {
     "gmxMarket": { "address": "0xb6fC4C9eB02C35A134044526C62bb15014Ac0Bcc", "runtimeCodeHash": "0x1c23d77b59296d60300925c688c1f1a3def4cb63cad5ac73946b8c4bc5f7f100" },
@@ -147,12 +147,12 @@
   "activationTransactions": {
     "proposeDomain": "0xeb704b735ad17cbbe9bd348fa952c8cc87b03f3f325148c453766faf243a9597",
     "activateDomain": "0xa11bfd2e7412612d7a0d54923c40f7de3d5038cbe2dfc189246f7cefe7e86839",
-    "proposeExecutionClass": "0x0df92d3c5c876e952518469527969bee63a84b65408a0a6951d3d238636d18d2",
-    "activateExecutionClass": "0x989cea4c4c6ad5f94f09dc87dde87f408dad6ee568b5c09e9caab1aef0d0cfb0",
-    "proposeAdmission": "0xda67b6f70e5f5b3357ebc0a87ca87c2b37c7ed3b2a0da8f2d1ecd475d2d64bce",
-    "activateAdmission": "0x84e8b3481a41e3bd8d94edbd76393fe9a8903163e7e6a98fa0720b5d9a09c235",
-    "scheduleUnpause": "0x283f3fbadf9af622edb0f1ccce1cae152662a0bf6002ea8fa30732e92ed660f1",
-    "activateEntry": "0x9ca01b6ce3657782c85eae4fb7eb8f884e3019f4a0ef9d9a3cce8b743eb72649"
+    "proposeExecutionClass": "0xfcfa2764f9ff5767052b561641640b2d4b3967562204b18cfc9dc1ea6a12a3a2",
+    "activateExecutionClass": "0x2911784ab07284db15f160cb9931c60569d1d36a88443b1c06206f130bf59e3a",
+    "proposeAdmission": "0x021b8c983dcd6100b3fa29f213fac2282503a0e16a2db3dd940e25bb162d8ba9",
+    "activateAdmission": "0x2df504e7251c604be2a285a8645d4115ae09546c8c53c1ecd2b5335a7b492992",
+    "scheduleUnpause": "0xe0a43725ca8f1ee0b5c4847e675febc3638940638fd84486fe5215e2396db044",
+    "activateEntry": "0x2e2cafa7195dd72d36ea09a9f039f94d7a7f7b500af266e2724d7aba34524952"
   },
   "testnetFunding": {
     "solver": "0x30b8b89eccc3cdd7faa139126583d2b380734e31",
