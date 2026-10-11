@@ -107,6 +107,21 @@ function requireCondition(condition: boolean, message: string): asserts conditio
   if (!condition) throw new Error(`Solana treasury hedge preparation refused: ${message}`);
 }
 
+function sameAsset(
+  left: Readonly<{ assetId: string; assetManifestHash: Uint8Array; decimals: number }>,
+  right: Readonly<{ assetId: string; assetManifestHash: Uint8Array; decimals: number }>,
+): boolean {
+  return left.assetId === right.assetId && left.decimals === right.decimals
+    && bytesEqual(left.assetManifestHash, right.assetManifestHash);
+}
+
+function feeCap(
+  caps: readonly Readonly<{ asset: { assetId: string; assetManifestHash: Uint8Array; decimals: number }; maxAtoms: bigint }>[],
+  asset: Readonly<{ assetId: string; assetManifestHash: Uint8Array; decimals: number }>,
+): bigint {
+  return caps.find((cap) => sameAsset(cap.asset, asset))?.maxAtoms ?? 0n;
+}
+
 function key(value: string, context: string): PublicKey {
   try {
     const checked = new PublicKey(value);
@@ -446,16 +461,22 @@ export class SolanaTreasuryHedgePreparationContextResolver implements StrategyPr
     const priced = entryPricing ?? exitPricing!;
     const hedgeEconomics = documents.quote.legEconomics.find((leg) => leg.legId === 'treasury-hedge');
     const inventoryEconomics = documents.quote.legEconomics.find((leg) => leg.legId === 'inventory-position');
+    const inventoryLeg = documents.graph.legs.find((leg) => leg.legId === 'inventory-position');
+    const hedgeLeg = documents.graph.legs.find((leg) => leg.legId === 'treasury-hedge');
     requireCondition(hedgeEconomics?.executionPrice !== undefined && inventoryEconomics !== undefined,
       'quote lacks treasury hedge economics');
-    requireCondition(hedgeEconomics.executionPrice.quoteAtoms * quoteState.market.baseLotAtoms
-      === priced.fillPricePerLot * hedgeEconomics.executionPrice.baseAtoms
-      && hedgeEconomics.grossNotional.atoms === priced.notionalAtoms
-      && hedgeEconomics.venueFee.atoms === priced.feeAtoms,
-    'live perp economics differ from the signed quote');
+    requireCondition(inventoryLeg !== undefined && hedgeLeg?.limitPrice !== undefined, 'strategy legs are missing');
+    const livePriceAgainstLimit = priced.fillPricePerLot * hedgeLeg.limitPrice.baseAtoms;
+    const signedLimitAgainstLot = hedgeLeg.limitPrice.quoteAtoms * quoteState.market.baseLotAtoms;
+    requireCondition(increasing ? livePriceAgainstLimit >= signedLimitAgainstLot
+      : livePriceAgainstLimit <= signedLimitAgainstLot,
+    'live perp price violates the signed limit');
+    requireCondition(priced.feeAtoms <= hedgeLeg.maximumFeeQuoteAtoms
+      && priced.feeAtoms <= feeCap(documents.order.maximumVenueFeesByAsset, lane.pricing.quoteAsset),
+    'live perp fee exceeds the signed cap');
     const requiredMargin = entryPricing === undefined ? 0n : entryPricing.initialMarginAtoms + entryPricing.feeAtoms;
-    requireCondition(!increasing || hedgeEconomics.marginDelta.atoms === requiredMargin,
-      'signed margin differs from the live requirement');
+    requireCondition(!increasing || requiredMargin <= documents.order.maximumMarginIncrease.atoms,
+      'live margin exceeds the signed cap');
     requireCondition(!increasing || perpPosition.collateralAtoms >= requiredMargin,
       'test perp position lacks the quoted collateral');
     const adjustment = opening || terminal ? undefined : previewTestPerpShortAdjustment({
@@ -466,9 +487,6 @@ export class SolanaTreasuryHedgePreparationContextResolver implements StrategyPr
       baseAtoms: quantity,
       action: action as 'INCREASE' | 'DECREASE',
     });
-    const inventoryLeg = documents.graph.legs.find((leg) => leg.legId === 'inventory-position');
-    const hedgeLeg = documents.graph.legs.find((leg) => leg.legId === 'treasury-hedge');
-    requireCondition(inventoryLeg !== undefined && hedgeLeg !== undefined, 'strategy legs are missing');
     const materializers = Object.freeze([
       createSolanaExactInventoryMaterializer({
         binding: {
@@ -560,7 +578,14 @@ export class SolanaTreasuryHedgePreparationContextResolver implements StrategyPr
       riskIncreasing: increasing,
       grossNotionalAtoms,
     });
-    const totalGrossNotionalAtoms = inventoryEconomics.grossNotional.atoms + hedgeEconomics.grossNotional.atoms;
+    const liveInventoryNotionalAtoms = quoteState.oraclePricePerLot * lots;
+    const inventoryGrossNotionalAtoms = inventoryEconomics.grossNotional.atoms > liveInventoryNotionalAtoms
+      ? inventoryEconomics.grossNotional.atoms
+      : liveInventoryNotionalAtoms;
+    const hedgeGrossNotionalAtoms = hedgeEconomics.grossNotional.atoms > priced.notionalAtoms
+      ? hedgeEconomics.grossNotional.atoms
+      : priced.notionalAtoms;
+    const totalGrossNotionalAtoms = inventoryGrossNotionalAtoms + hedgeGrossNotionalAtoms;
     u64(totalGrossNotionalAtoms, 'total gross notional');
     return Object.freeze({
       compileContext: Object.freeze({
@@ -615,14 +640,14 @@ export class SolanaTreasuryHedgePreparationContextResolver implements StrategyPr
             inventoryLeg.legId,
             lane.pricing.inventory.adapter.adapterManifestVersion,
             lane.pricing.inventory.adapter.adapterManifestHash,
-            inventoryEconomics.grossNotional.atoms,
+            inventoryGrossNotionalAtoms,
           ),
           policy(
             lane.hedgeAdapter,
             hedgeLeg.legId,
             lane.pricing.hedge.adapter.adapterManifestVersion,
             lane.pricing.hedge.adapter.adapterManifestHash,
-            hedgeEconomics.grossNotional.atoms,
+            hedgeGrossNotionalAtoms,
           ),
         ]),
       }]),

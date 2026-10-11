@@ -251,7 +251,7 @@ class Rpc implements SolanaDevnetSolverReadPort {
   }
 }
 
-function pricing(): SolanaTreasuryHedgePricingInput {
+function pricing(oraclePricePerLot = 150_000n): SolanaTreasuryHedgePricingInput {
   return {
     domain,
     inventoryAsset,
@@ -271,13 +271,13 @@ function pricing(): SolanaTreasuryHedgePricingInput {
     quoteTtlSlots: 60n,
     maximumStateAdvanceSlots: 2n,
     readState: async () => ({
-      slot: SLOT, nowUnixSeconds: 1_000n, marketAddress: MARKET, market, oraclePricePerLot: 150_000n,
+      slot: SLOT, nowUnixSeconds: 1_000n, marketAddress: MARKET, market, oraclePricePerLot,
     }),
     nonceSource: { nextNonce: () => 1n },
   };
 }
 
-function setupRpc(packageDocuments: StoredStrategyPackageDocuments): Rpc {
+function setupRpc(packageDocuments: StoredStrategyPackageDocuments, collateralAtoms = 30_149_955n): Rpc {
   const rpc = new Rpc();
   const owner = new PublicKey(OWNER);
   const strategyAccount = deriveSolanaMultiStrategyAccount({ programId: MULTI_PROGRAM, owner });
@@ -323,21 +323,21 @@ function setupRpc(packageDocuments: StoredStrategyPackageDocuments): Rpc {
   rpc.accounts.set(perpPosition.toBase58(), {
     owner: TEST_PERP_PROGRAM,
     data: new BorshWriter().bytes(accountDiscriminator('TestPerpPosition')).key(MARKET).key(owner).key(perpStrategy)
-      .u64(30_149_955n).i64(0n).u64(0n).i128(0n).u8(1).done(),
+      .u64(collateralAtoms).i64(0n).u64(0n).i128(0n).u8(1).done(),
   });
   return rpc;
 }
 
 test('prepares a state-bound Solana treasury hedge entry from owner-controlled accounts', async () => {
   const packageDocuments = documents();
-  const rpc = setupRpc(packageDocuments);
+  const rpc = setupRpc(packageDocuments, 31_000_000n);
   let remembered: readonly [string, string] | undefined;
   const context = await new SolanaTreasuryHedgePreparationContextResolver([{
     environment: 'testnet',
     templateManifest: template,
     activeRegistryRecords: [],
     resourceLimits: [{ domainId: domain.domainId, maximumActionsPerTransaction: 4 }],
-    pricing: pricing(),
+    pricing: pricing(150_100n),
     rpc,
     coreProgramId: CORE_PROGRAM,
     multiStrategyProgramId: MULTI_PROGRAM,
@@ -368,7 +368,7 @@ test('prepares a state-bound Solana treasury hedge entry from owner-controlled a
   assert.equal(context.bindings[0]?.kind, 'SOLANA_MULTI_STRATEGY_ACCOUNT');
   if (context.bindings[0]?.kind !== 'SOLANA_MULTI_STRATEGY_ACCOUNT') throw new Error('missing Solana binding');
   assert.equal(context.bindings[0].nonce, 7n);
-  assert.equal(context.bindings[0].totalGrossNotionalAtoms, 599_910_000n);
+  assert.equal(context.bindings[0].totalGrossNotionalAtoms, 600_308_000n);
   assert.equal(context.bindings[0].fees?.protocolFeeAtoms, 100_000n);
   assert.equal(context.bindings[0].fees?.solverFeeAtoms, 50_000n);
   assert.deepEqual(context.bindings[0].policies.map((policy) => [policy.legId, policy.riskIncreasing]), [
