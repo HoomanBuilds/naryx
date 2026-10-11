@@ -33,6 +33,7 @@ import {
   verifyPackageAllocation,
   verifyPackageReopeningSettlementHandoff,
   versionedManifestRef,
+  stringifyProtocolJson,
   type NettingObligationInput,
   type NettingPolicyManifestInput,
   type PackageAllocation,
@@ -452,6 +453,23 @@ test("the runtime is off by default and validates its configuration", () => {
     assert.equal(runtime.requestsPerMinute, 120);
     assert.equal(runtime.listener, undefined);
     runtime.close();
+    const capabilities = join(dir, "solver-capabilities.json");
+    const registryDb = join(dir, "registry.sqlite");
+    const solver = signedSolverManifest(operatorKeys());
+    writeFileSync(capabilities, stringifyProtocolJson({ version: 1, manifests: [solver] }));
+    assert.throws(() => loadPublicMarketRuntime({
+      ...env,
+      NARYX_SOLVER_CAPABILITY_MANIFESTS: capabilities,
+    }), /requires NARYX_REGISTRY_DB/);
+    const registered = loadPublicMarketRuntime({
+      ...env,
+      NARYX_REGISTRY_DB: registryDb,
+      NARYX_SOLVER_CAPABILITY_MANIFESTS: capabilities,
+    });
+    registered?.close();
+    const registry = new SqliteRegistryStore(registryDb);
+    assert.deepEqual(registry.list("SOLVER_CAPABILITY").map((entry) => entry.subjectId), [solver.solverId]);
+    registry.close();
     assert.throws(() => loadPublicMarketRuntime({ ...env, NARYX_PUBLIC_API_PORT: "70000" }), /between 1 and 65535/);
     assert.throws(() => loadPublicMarketRuntime({ ...env, NARYX_PUBLIC_API_HOST: "0.0.0.0" }), /requires NARYX_PUBLIC_API_PORT/);
     const separate = loadPublicMarketRuntime({ ...env, NARYX_PUBLIC_API_PORT: "8788", NARYX_PUBLIC_API_HOST: "0.0.0.0" });

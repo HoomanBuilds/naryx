@@ -10,6 +10,7 @@ import type {
   SeriesExecutionClassSupportInput,
   DomainRegistryRecordInput,
   DomainResourceLimit,
+  SolverCapabilityManifestInput,
 } from "@naryx/protocol-types";
 import { SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { createPublicApiHandler } from "./public-api.js";
@@ -362,6 +363,26 @@ function activationDelay(value: string | undefined): bigint {
   return BigInt(value);
 }
 
+function loadSolverCapabilityManifests(path: string): readonly SolverCapabilityManifestInput[] {
+  let value: unknown;
+  try {
+    value = parseProtocolJson(readFileSync(path, "utf8"), "solverCapabilityManifests");
+  } catch (error) {
+    throw new PublicMarketConfigError(
+      `NARYX_SOLVER_CAPABILITY_MANIFESTS is invalid: ${error instanceof Error ? error.message : "unknown error"}`,
+    );
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)
+    || Object.keys(value).sort().join(",") !== "manifests,version") {
+    throw new PublicMarketConfigError("NARYX_SOLVER_CAPABILITY_MANIFESTS must contain only version and manifests.");
+  }
+  const document = value as { version?: unknown; manifests?: unknown };
+  if (document.version !== 1 || !Array.isArray(document.manifests) || document.manifests.length === 0) {
+    throw new PublicMarketConfigError("NARYX_SOLVER_CAPABILITY_MANIFESTS must contain at least one version 1 manifest.");
+  }
+  return document.manifests as readonly SolverCapabilityManifestInput[];
+}
+
 /**
  * Loads the public v1 API. It is off unless NARYX_PUBLIC_MARKET_ENABLED is exactly "true", and
  * then requires an absolute exchange database path and support manifest; NARYX_REGISTRY_DB, when
@@ -425,6 +446,17 @@ export function loadPublicMarketRuntime(
         store,
         registry,
       );
+    }
+    const solverCapabilityPath = optional(environment.NARYX_SOLVER_CAPABILITY_MANIFESTS);
+    if (solverCapabilityPath !== undefined) {
+      if (registry === undefined) {
+        throw new PublicMarketConfigError("NARYX_SOLVER_CAPABILITY_MANIFESTS requires NARYX_REGISTRY_DB.");
+      }
+      for (const manifest of loadSolverCapabilityManifests(
+        absolute(solverCapabilityPath, "NARYX_SOLVER_CAPABILITY_MANIFESTS"),
+      )) {
+        registry.registerSolverManifest(manifest);
+      }
     }
     const solverState = optional(solverPath) === undefined ? undefined : new SqliteSolverApiStore(absolute(solverPath, "NARYX_SOLVER_API_DB"));
     if (solverState !== undefined) opened.push(solverState);
