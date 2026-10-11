@@ -2563,6 +2563,16 @@ function parseExecutionProgress(
   });
 }
 
+/** A fee as a percent of a base amount, rounded up to 0.01% so it is never understated. */
+function feeShare(feeAtoms: string, baseAtoms: string): string {
+  const fee = BigInt(feeAtoms);
+  const base = BigInt(baseAtoms);
+  if (base === BigInt(0)) return "n/a";
+  const absolute = base < BigInt(0) ? -base : base;
+  const hundredths = (fee * BigInt(10_000) + absolute - BigInt(1)) / absolute;
+  return `${hundredths / BigInt(100)}.${(hundredths % BigInt(100)).toString().padStart(2, "0")}%`;
+}
+
 function compact(value: string, head = 10, tail = 8): string {
   return value.length > head + tail + 3 ? `${value.slice(0, head)}...${value.slice(-tail)}` : value;
 }
@@ -6430,6 +6440,11 @@ export function GeneralizedStrategyPreparationPanel({
             <div><span>Service fees</span><strong>{formatAtomicAmount(quoteReview.serviceFeeAtoms, quoteReview.quoteDecimals, quoteReview.quoteAsset)}</strong></div>
             <div><span>Residual value</span><strong>{formatAtomicAmount(quoteReview.residualValueAtoms, quoteReview.quoteDecimals, quoteReview.quoteAsset)}</strong></div>
           </div>
+          <p className={styles.fieldContext}>
+            Service fees are charged on gross notional, the total turnover of every leg:{" "}
+            {feeShare(quoteReview.serviceFeeAtoms, quoteReview.grossNotionalAtoms)} of gross notional,{" "}
+            {feeShare(quoteReview.serviceFeeAtoms, quoteReview.marginDeltaAtoms)} of the margin this package commits.
+          </p>
           <div className={styles.reviewGrid}>
             <span>Series</span><strong>{quoteReview.seriesId}</strong>
             <span>Solver</span><strong>{quoteReview.solverId}</strong>
