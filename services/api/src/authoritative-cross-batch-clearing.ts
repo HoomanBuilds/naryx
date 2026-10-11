@@ -1,5 +1,6 @@
 import {
   ProtocolError,
+  compareProtocolIds,
   crossBatchClearingPlan,
   crossBatchClearingPolicy,
   toHex,
@@ -103,7 +104,7 @@ function selectSources(
   viablePairs.sort((left, right) => {
     if (left.right.index !== right.right.index) return left.right.index - right.right.index;
     if (left.left.index !== right.left.index) return left.left.index - right.left.index;
-    return left.key.localeCompare(right.key);
+    return compareProtocolIds(left.key, right.key);
   });
   const selectedPair = viablePairs[0];
   if (selectedPair === undefined) return undefined;

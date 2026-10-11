@@ -107,6 +107,77 @@ test("orders match durably and replay returns the recorded allocation", () => {
   });
 });
 
+test("external intents are matched to net residual instruments in byte order", () => {
+  withStore((store) => {
+    registerAll(store);
+    const signature = bs58.encode(new Uint8Array(64).fill(7));
+    const maker = order(1);
+    const taker = order(2, { side: "BID", timeInForce: "IOC" });
+    store.submitOrder(CLASS, maker, NOW, settlement(maker), { scheme: "ED25519", signature });
+    store.submitOrder(CLASS, taker, NOW, settlement(taker), { scheme: "ED25519", signature });
+    const progress = store.settlementProgress(maker.orderId)!;
+    // "Spot" sorts before "perp" by bytes, after it by locale collation.
+    const instrument = (instrumentId: string, marketId: string) => ({
+      instrumentId,
+      domain: domainRef("svm:solana-devnet", 1, id(501)),
+      adapter: adapterRef({ adapterId: "spot-adapter", adapterManifestVersion: 1, adapterManifestHash: id(502) }),
+      venue: versionedManifestRef("spot-venue", 1, id(503)),
+      market: versionedManifestRef(marketId, 1, id(504)),
+      quantityAsset: assetRef("sol", id(505), 9),
+      quoteAsset: assetRef("usdc", id(506), 6),
+      legFamily: "SPOT_SWAP" as const,
+      quantityIncrementAtoms: 10n,
+      priceTickQuoteAtoms: 1n,
+    });
+    const policy: NettingPolicyManifestInput = {
+      schemaVersion: 1,
+      manifestVersion: 1,
+      nettingPolicyVersion: 2,
+      environment: "local",
+      executionClassId: CLASS,
+      executionClassVersion: 1,
+      executionClassManifestHash: seriesExecutionClassHash(executionClass(), CLASS_SUPPORT),
+      settlementClass: "ATOMIC_POSTCONDITION",
+      allocationRule: "PRO_RATA_SEQUENCE",
+      externalExecutionMode: "EXACT_NET_ONLY",
+      clearingRule: "LIMIT_MIDPOINT_BUYER_FAVOR",
+      maximumObligations: 4,
+      maximumBatchWindowMilliseconds: 1_000n,
+      instruments: [instrument("Spot", "sol-usdc"), instrument("perp", "sol-usdc-perp")],
+    };
+    const result = netObligations(["Spot", "perp"].map((instrumentId, index) => ({
+      ownerId: maker.participantId,
+      strategyOrderHash: settlement(maker).strategyOrderHash,
+      packageOrderId: maker.orderId,
+      settlementReadinessHash: progress.readinessHashHex,
+      legId: `leg-${index}`,
+      instrumentId,
+      signedQuantityAtoms: index === 0 ? 10n : -10n,
+      limitPriceTicks: index === 0 ? 12n : 8n,
+      sequence: BigInt(index + 1),
+    })), policy);
+    const intents = ["perp", "Spot"].map((instrumentId) => nettingExternalExecutionIntent(result, policy, {
+      instrumentId,
+      validUntilUnit: "SOLANA_SLOT",
+      validUntilValue: 2_000n,
+      sourceFeeCaps: result.allocations
+        .filter((allocation) => allocation.instrumentId === instrumentId)
+        .map((allocation) => ({ obligationId: allocation.obligationId, maximumFeeQuoteAtoms: 2n })),
+    }));
+    const packages = [{
+      packageOrderIdHex: maker.orderId as string,
+      strategyOrderHashHex: settlement(maker).strategyOrderHash as string,
+      settlementReadinessHashHex: progress.readinessHashHex,
+    }];
+    assert.throws(
+      () => store.recordPreparedNettingBatch({ policy, result, externalIntents: intents.slice(0, 1), packages }),
+      { code: "INVALID_INPUT" },
+    );
+    const { batch } = store.recordPreparedNettingBatch({ policy, result, externalIntents: intents, packages });
+    assert.deepEqual(batch.externalExecutions.map((record) => record.intent.instrumentId), ["Spot", "perp"]);
+  });
+});
+
 test("owner authorization and prepared netting evidence are immutable and replayable", () => {
   withStore((store) => {
     registerAll(store);
@@ -726,6 +797,69 @@ test("partial settlement obligations require new authorization after the order c
     store.submitOrder(CLASS, untouched, NOW, settlement(untouched));
     store.cancelEntry(CLASS, untouched.orderId, untouched.participantId);
     assert.equal(store.settlementProgress(untouched.orderId)?.readiness.status, "CANCELLED_UNFILLED");
+  });
+});
+
+test("orders that left the book keep their side and limit price, and older stores recover them once", () => {
+  withStore((store, path) => {
+    registerAll(store);
+    const policy = packageMatchingPolicy(POLICY);
+    const alice = { participantId: "alice", commonControlGroupId: "group-alice" };
+    store.haltBook({
+      version: 1,
+      executionClassId: CLASS,
+      expectedOpenSnapshotHash: packageReopeningSnapshotHash(policy, store.getBook(CLASS)!),
+      incidentEvidenceHash: id(703),
+      reasonCode: "test-incident",
+    });
+    const reopeningAsk = order(1, { ...alice, limitPriceTicks: 95n });
+    const reopeningBid = order(2, { side: "BID", limitPriceTicks: 105n });
+    const reopeningCancelled = order(3, { ...alice, limitPriceTicks: 120n });
+    for (const value of [reopeningAsk, reopeningBid, reopeningCancelled]) {
+      store.queueReopeningOrder(CLASS, value, NOW, settlement(value));
+    }
+    store.clearReopeningAuction(CLASS, id(803), packageReopeningSnapshotHash(policy, store.getBook(CLASS)!), id(903), 100n, NOW);
+    store.cancelEntry(CLASS, reopeningCancelled.orderId, "alice");
+    const filled = order(4, alice);
+    const cancelled = order(6, { ...alice, limitPriceTicks: 110n });
+    const expired = order(7, { ...alice, limitPriceTicks: 115n, expiresAtValue: 1_500n });
+    for (const value of [filled, cancelled, expired]) store.submitOrder(CLASS, value, NOW, settlement(value));
+    const taker = order(5, { side: "BID", timeInForce: "IOC" });
+    store.submitOrder(CLASS, taker, NOW, settlement(taker));
+    store.cancelEntry(CLASS, cancelled.orderId, "alice");
+    const sweep = order(8, { side: "BID", timeInForce: "IOC", limitPriceTicks: 90n });
+    store.submitOrder(CLASS, sweep, 1_600n, settlement(sweep));
+    assert.equal(store.getBook(CLASS)?.entries.length, 0);
+
+    const terms = (listed: ReturnType<typeof store.participantOrders>) =>
+      new Map(listed.map((entry) => [entry.packageOrderIdHex, [entry.state, entry.side, entry.priceTicks]]));
+    assert.deepEqual(terms(store.participantOrders("alice", 1_600n)), new Map([
+      [id(1), ["FILLED", "ASK", 95n]],
+      [id(3), ["CANCELLED", "ASK", 120n]],
+      [id(4), ["FILLED", "ASK", 100n]],
+      [id(6), ["CANCELLED", "ASK", 110n]],
+      [id(7), ["CLOSED", "ASK", 115n]],
+    ]));
+    const raw = new Database(path);
+    try {
+      raw.exec("DROP TABLE package_book_order_terms");
+    } finally {
+      raw.close();
+    }
+    const reopened = new SqlitePackageExchangeStore(path, { seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT });
+    try {
+      // Continuous orders recover their terms from their own allocation; a reopening order that already
+      // left the book keeps only the side its fill proves.
+      assert.deepEqual(terms(reopened.participantOrders("alice", 1_600n)), new Map([
+        [id(1), ["FILLED", "ASK", null]],
+        [id(3), ["CANCELLED", null, null]],
+        [id(4), ["FILLED", "ASK", 100n]],
+        [id(6), ["CANCELLED", "ASK", 110n]],
+        [id(7), ["CLOSED", "ASK", 115n]],
+      ]));
+    } finally {
+      reopened.close();
+    }
   });
 });
 

@@ -2,6 +2,7 @@ import bs58 from "bs58";
 import {
   bytesEqual,
   commitmentHash,
+  compareProtocolIds,
   netObligations,
   nettingExternalExecutionIntent,
   nettingInstrumentHash,
@@ -359,8 +360,8 @@ export async function prepareAuthoritativeNettingBatch(
     .flatMap((source) => source.obligations.map((entry) => ({ source, ...entry })))
     .sort((left, right) => {
       if (left.source.fillSequence !== right.source.fillSequence) return left.source.fillSequence < right.source.fillSequence ? -1 : 1;
-      const packageOrderComparison = left.source.packageOrderIdHex.localeCompare(right.source.packageOrderIdHex);
-      return packageOrderComparison !== 0 ? packageOrderComparison : left.obligation.legId.localeCompare(right.obligation.legId);
+      return compareProtocolIds(left.source.packageOrderIdHex, right.source.packageOrderIdHex)
+        || compareProtocolIds(left.obligation.legId, right.obligation.legId);
     })
     .map(({ obligation }, index): NettingObligationInput => Object.freeze({ ...obligation, sequence: BigInt(index + 1) }));
   const result = netObligations(sequenced, policy);

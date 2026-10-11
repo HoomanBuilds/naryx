@@ -10,6 +10,7 @@ import bs58 from "bs58";
 import Database from "better-sqlite3";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
+  activationConditionHash,
   assetRef,
   executionScheduleHash,
   parseProtocolJson,
@@ -18,6 +19,7 @@ import {
   STRATEGY_QUOTE_CONVENTION_ID,
   STRATEGY_RISK_CLASS_ID,
   toHex,
+  type ActivationConditionInput,
   type ExecutionScheduleInput,
   type StrategyPackageOrder,
 } from "@naryx/protocol-types";
@@ -26,6 +28,8 @@ import {
   createOrderActivationOwnerHandler,
   orderActivationCancellationHash,
   orderActivationCancellationTypedData,
+  orderActivationReadHash,
+  orderActivationReadTypedData,
 } from "../src/order-activation-owner-routes.js";
 
 const sol = assetRef("sol", "31".repeat(32), 9);
@@ -44,7 +48,7 @@ const schedule: ExecutionScheduleInput = {
   stopRule: "SKIP_FAILED_SLICE",
 };
 
-function scheduledOrder(owner: string, nonce: bigint): StrategyPackageOrder {
+function scheduledOrder(owner: string, nonce: bigint, conditionHash?: string): StrategyPackageOrder {
   return strategyPackageOrder({
     version: 1, environment: "testnet", templateId: "cash-and-carry-v1", templateVersion: 1,
     packageTemplateManifestHash: "33".repeat(32), graphHash: "34".repeat(32), seriesId: "sol-carry", seriesVersion: 1,
@@ -56,7 +60,9 @@ function scheduledOrder(owner: string, nonce: bigint): StrategyPackageOrder {
     maximumServiceFeesByAsset: [], maximumVenueFeesByAsset: [], maximumNetworkFeesByAsset: [],
     maximumRecoveryCostByAsset: [], maximumMarginIncrease: { asset: usdc, atoms: 0n },
     maximumResidualValue: { asset: usdc, atoms: 0n }, expiryUnit: "EVM_UNIX_SECONDS", expiryValue: 2_000n, nonce,
-    executionScheduleHash: executionScheduleHash(schedule),
+    ...(conditionHash === undefined
+      ? { executionScheduleHash: executionScheduleHash(schedule) }
+      : { packageOrderType: "CONDITIONAL", activationConditionHash: conditionHash }),
   });
 }
 
@@ -171,6 +177,111 @@ test("activations registered before the owner index existed are listed after reo
       reopened.close();
     }
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an owner's activation list is a summary unless the owner signs a fresh single-use read", async () => {
+  const alice = privateKeyToAccount(generatePrivateKey());
+  const mallory = privateKeyToAccount(generatePrivateKey());
+  const aliceOwner = alice.address.toLowerCase();
+  const solanaKeys = generateKeyPairSync("ed25519");
+  const solanaOwner = bs58.encode(solanaKeys.publicKey.export({ format: "der", type: "spki" }).subarray(12));
+  const condition: ActivationConditionInput = {
+    conditionVersion: 1,
+    metric: "BASIS",
+    comparator: "AT_OR_ABOVE",
+    threshold: 4_321n,
+    observationUnit: "EVM_UNIX_SECONDS",
+    maximumObservationAge: 30n,
+  };
+  const conditional = scheduledOrder(aliceOwner, 1n, toHex(activationConditionHash(condition)));
+  const scheduled = scheduledOrder(aliceOwner, 2n);
+  const solanaScheduled = scheduledOrder(solanaOwner, 3n);
+  const orders = new Map([conditional, scheduled, solanaScheduled].map((order) => [toHex(strategyPackageOrderHash(order)), order]));
+  const [conditionalHash, scheduledHash, solanaHash] = [...orders.keys()] as [string, string, string];
+  const dir = mkdtempSync(join(tmpdir(), "naryx-activation-read-"));
+  let now = NOW;
+  const store = new SqliteOrderActivationStore(join(dir, "activation.sqlite"), {
+    orders: { order: (hash) => {
+      const order = orders.get(hash);
+      return order === undefined ? undefined : { orderHashHex: hash, graphHashHex: toHex(order.graphHash), order, graph: {} as never, recordedAtMs: 1 };
+    } },
+    clock: () => now,
+  });
+  store.register({ orderHashHex: conditionalHash, condition });
+  store.register({ orderHashHex: scheduledHash, schedule });
+  store.register({ orderHashHex: solanaHash, schedule });
+  const handler = createOrderActivationOwnerHandler({ activations: store, clock: () => now });
+  const server = createServer((request, response) => {
+    if (!handler(request, response)) response.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/internal/terminal/order-activations`;
+  const list = async (query: Record<string, string>) => {
+    const response = await fetch(`${base}?${new URLSearchParams(query).toString()}`);
+    const text = await response.text();
+    return { status: response.status, text, body: parseProtocolJson(text) as Record<string, any> };
+  };
+  const evmRead = async (signer = alice, nonce = randomBytes(32).toString("hex"), expiresAtMs = now + 60_000) => {
+    const typed = orderActivationReadTypedData({ owner: aliceOwner, nonce, expiresAtMs });
+    const signature = await signer.signTypedData({
+      domain: typed.domain,
+      types: { OrderActivationRead: [...typed.types.OrderActivationRead] },
+      primaryType: typed.primaryType,
+      message: { readHash: typed.message.readHash as `0x${string}`, owner: aliceOwner as `0x${string}`,
+        nonce: typed.message.nonce as `0x${string}`, expiresAtMs: BigInt(expiresAtMs) },
+    });
+    return { owner: aliceOwner, nonce, expiresAtMs: String(expiresAtMs), signature };
+  };
+  try {
+    const summary = await list({ owner: aliceOwner });
+    assert.equal(summary.status, 200);
+    assert.equal(summary.body.disclosure, "SUMMARY");
+    assert.equal(/threshold|BASIS|metricLimits|attempts|limitPriceTicks/.test(summary.text), false);
+    const byHash = new Map((summary.body.activations as Record<string, any>[]).map((entry) => [entry.orderHashHex, entry]));
+    assert.deepEqual(Object.keys(byHash.get(conditionalHash)!).sort(), [
+      "executedQuantityAtoms", "kind", "nextActivation", "orderHashHex", "quantityAtoms", "registeredAtMs",
+      "remainingQuantityAtoms", "status", "updatedAtMs",
+    ]);
+    assert.deepEqual(
+      [byHash.get(conditionalHash)!.kind, byHash.get(conditionalHash)!.nextActivation, byHash.get(conditionalHash)!.remainingQuantityAtoms],
+      ["CONDITIONAL", null, 100n],
+    );
+    assert.deepEqual(byHash.get(scheduledHash)!.nextActivation, { unit: "EVM_UNIX_SECONDS", value: 1_000n });
+
+    const challenge = await fetch(`${base}/read-challenge`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ owner: aliceOwner, nonce: "ab".repeat(32), expiresAtMs: now + 60_000 }) });
+    const challengeBody = parseProtocolJson(await challenge.text()) as Record<string, any>;
+    assert.deepEqual([challenge.status, challengeBody.status, challengeBody.scheme], [200, "UNSIGNED_READ", "EIP712_SECP256K1"]);
+    const tooLong = await fetch(`${base}/read-challenge`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ owner: aliceOwner, nonce: "ab".repeat(32), expiresAtMs: now + 300_001 }) });
+    assert.equal(tooLong.status, 400);
+
+    // Another wallet's signature discloses nothing and spends nothing; the owner's own signature over the same nonce does.
+    const forged = await evmRead(mallory);
+    assert.deepEqual([(await list(forged)).status, (await list(forged)).body.error.code], [403, "INVALID_SIGNATURE"]);
+    const signed = await evmRead(alice, forged.nonce);
+    const full = await list(signed);
+    assert.equal(full.status, 200);
+    assert.equal(full.body.disclosure, "FULL");
+    const fullConditional = (full.body.activations as Record<string, any>[]).find((entry) => entry.orderHashHex === conditionalHash);
+    assert.equal(fullConditional?.condition.threshold, 4_321n);
+    const replay = await list(signed);
+    assert.deepEqual([replay.status, replay.body.error.code], [409, "NONCE_REPLAYED"]);
+
+    const expiring = await evmRead();
+    now += 60_000;
+    const expired = await list(expiring);
+    assert.deepEqual([expired.status, expired.body.error.code], [400, "INVALID_EXPIRY"]);
+
+    const solanaTerms = { owner: solanaOwner, nonce: "cd".repeat(32), expiresAtMs: now + 60_000 };
+    const solanaSignature = bs58.encode(sign(null, orderActivationReadHash(solanaTerms), solanaKeys.privateKey));
+    const solanaFull = await list({ ...solanaTerms, expiresAtMs: String(solanaTerms.expiresAtMs), signature: solanaSignature });
+    assert.deepEqual([solanaFull.status, solanaFull.body.disclosure, solanaFull.body.activations.length], [200, "FULL", 1]);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    store.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });

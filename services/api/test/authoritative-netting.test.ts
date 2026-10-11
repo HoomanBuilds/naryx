@@ -141,11 +141,11 @@ function graph(owner: string, reverse: boolean, nonce: bigint): PackageGraphInpu
     owner,
     strategyAccountRefs: ["strategy-account"],
     legs: [
-      leg("spot", "SPOT_SWAP", spotAdapter, spotMarket, reverse ? "SELL" : "BUY"),
+      leg("Spot", "SPOT_SWAP", spotAdapter, spotMarket, reverse ? "SELL" : "BUY"),
       leg("perp", "PERP_OPEN", perpAdapter, perpMarket, reverse ? "BUY" : "SELL"),
     ],
     dependencyEdges: [],
-    executionGroups: [{ groupId: "atomic", kind: "ALL_OR_NONE", legIds: ["spot", "perp"] }],
+    executionGroups: [{ groupId: "atomic", kind: "ALL_OR_NONE", legIds: ["Spot", "perp"] }],
     settlementClass: "ATOMIC_POSTCONDITION",
     policyHashes: {
       netting: nettingPolicyManifestHash(policy),
@@ -314,6 +314,12 @@ test("authoritative netting derives opposite package legs from signed durable st
   assert.deepEqual(
     prepared.batch.result.underlyings.map((entry) => [entry.instrumentId, entry.internalClearingPriceTicks, entry.internalQuoteAtoms]),
     [["sol-perp", 10n, 10n], ["sol-spot", 10n, 10n]],
+  );
+  // Leg ids sequence in byte order ("Spot" before "perp"), where locale collation would invert them.
+  assert.deepEqual(
+    [...prepared.batch.result.allocations].sort((left, right) => Number(left.sequence - right.sequence))
+      .map((allocation) => [toHex(allocation.packageOrderId), allocation.legId, allocation.sequence]),
+    [[id(100), "Spot", 1n], [id(100), "perp", 2n], [id(101), "Spot", 3n], [id(101), "perp", 4n]],
   );
   assert.deepEqual(
     await prepareNextAuthoritativeNettingBatch(exchange, strategies, policyInput, 1_999),

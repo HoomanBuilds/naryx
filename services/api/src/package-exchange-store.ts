@@ -12,6 +12,7 @@ import {
   cancelPackageBookEntry,
   clearPackageReopeningAuction,
   commitmentHash,
+  compareProtocolIds,
   crossBatchClearingPlan,
   crossBatchClearingPolicy,
   crossBatchClearingReceipt,
@@ -95,6 +96,7 @@ import type {
   PackageBookHalt,
   PackageBookHaltInput,
   PackageBookEntry,
+  PackageBookSide,
   PackageBookState,
   PackageMatchingPolicy,
   PackageMatchingPolicyInput,
@@ -742,6 +744,17 @@ CREATE TABLE IF NOT EXISTS package_book_trades (
   execution_class_id TEXT NOT NULL,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS package_book_order_terms (
+  package_order_id BLOB PRIMARY KEY REFERENCES package_book_settlement_commitments(package_order_id),
+  side TEXT NOT NULL CHECK (side IN ('BID', 'ASK')),
+  limit_price_ticks TEXT NOT NULL
+) STRICT;
+CREATE TRIGGER IF NOT EXISTS reject_order_terms_change
+  BEFORE UPDATE ON package_book_order_terms
+  BEGIN SELECT RAISE(ABORT, 'package order terms are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_order_terms_delete
+  BEFORE DELETE ON package_book_order_terms
+  BEGIN SELECT RAISE(ABORT, 'package order terms are append-only'); END;
 CREATE INDEX IF NOT EXISTS package_book_trades_by_class ON package_book_trades(execution_class_id, allocation_rowid);
 CREATE INDEX IF NOT EXISTS package_book_trades_by_time ON package_book_trades(execution_class_id, recorded_at_ms, allocation_rowid);
 CREATE TRIGGER IF NOT EXISTS reject_trade_change
@@ -867,15 +880,32 @@ export class SqlitePackageExchangeStore {
       if (String(journalMode).toLowerCase() !== "wal" || db.pragma("foreign_keys", { simple: true }) !== 1) {
         throw new PackageExchangeStoreError("PRAGMA_FAILED", "Durability pragmas were not applied.");
       }
-      const indexedTrades = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'package_book_trades'").get() !== undefined;
-      db.exec(SCHEMA_SQL);
-      // Stores created before trades were indexed index their existing trades once.
-      if (!indexedTrades) {
-        db.exec(
-          `INSERT INTO package_book_trades (allocation_rowid, allocation_hash, execution_class_id, recorded_at_ms)
-           SELECT rowid, allocation_hash, execution_class_id, recorded_at_ms FROM package_book_allocations WHERE json_array_length(allocation_json, '$.fills') > 0`,
-        );
-      }
+      const tableExists = (name: string) => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
+      const indexedTrades = tableExists("package_book_trades");
+      const recordedTerms = tableExists("package_book_order_terms");
+      // Schema creation and the one-time backfills commit together, so a crash cannot skip a backfill.
+      db.transaction(() => {
+        db.exec(SCHEMA_SQL);
+        // Stores created before order terms were recorded recover them once from each order's own allocation
+        // and from live book entries. A reopening order that already left the book keeps only its fill side.
+        if (!recordedTerms) {
+          db.exec(
+            `INSERT OR IGNORE INTO package_book_order_terms (package_order_id, side, limit_price_ticks)
+             SELECT a.taker_order_id, json_extract(a.allocation_json, '$.takerSide'), json_extract(a.allocation_json, '$.takerLimitPriceTicks.value')
+             FROM package_book_allocations a JOIN package_book_settlement_commitments c ON c.package_order_id = a.taker_order_id;
+             INSERT OR IGNORE INTO package_book_order_terms (package_order_id, side, limit_price_ticks)
+             SELECT e.entry_id, json_extract(e.entry_json, '$.side'), json_extract(e.entry_json, '$.priceTicks.value')
+             FROM package_book_entries e JOIN package_book_settlement_commitments c ON c.package_order_id = e.entry_id;`,
+          );
+        }
+        // Stores created before trades were indexed index their existing trades once.
+        if (!indexedTrades) {
+          db.exec(
+            `INSERT INTO package_book_trades (allocation_rowid, allocation_hash, execution_class_id, recorded_at_ms)
+             SELECT rowid, allocation_hash, execution_class_id, recorded_at_ms FROM package_book_allocations WHERE json_array_length(allocation_json, '$.fills') > 0`,
+          );
+        }
+      })();
     } catch (error) {
       db.close();
       throw error;
@@ -1185,6 +1215,7 @@ export class SqlitePackageExchangeStore {
         recordedAtMs,
       );
       if (authorization !== undefined) this.insertSettlementAuthorization(commitment, authorization);
+      this.insertOrderTerms(orderId, result.allocation.takerSide, result.allocation.takerLimitPriceTicks);
       this.db
         .prepare(
           "INSERT INTO package_book_allocations (allocation_hash, taker_order_id, execution_class_id, allocation_json, recorded_at_ms) VALUES (?, ?, ?, ?, ?)",
@@ -1393,6 +1424,7 @@ export class SqlitePackageExchangeStore {
         this.clock(),
       );
       if (authorization !== undefined) this.insertSettlementAuthorization(commitment, authorization);
+      this.insertOrderTerms(orderId, admitted.entry.side, admitted.entry.priceTicks);
       this.writeBook(admitted.state);
       return {
         entry: admitted.entry,
@@ -1918,11 +1950,11 @@ export class SqlitePackageExchangeStore {
             verifyNettingExternalExecutionIntent(intent, input.result, policy));
           return intent;
         })
-        .sort((left, right) => left.instrumentId.localeCompare(right.instrumentId));
+        .sort((left, right) => compareProtocolIds(left.instrumentId, right.instrumentId));
       const expectedExternalInstruments = input.result.underlyings
         .filter((summary) => summary.externalNetAtoms !== 0n)
         .map((summary) => summary.instrumentId)
-        .sort();
+        .sort(compareProtocolIds);
       if (
         externalIntents.length !== expectedExternalInstruments.length
         || externalIntents.some((intent, index) => intent.instrumentId !== expectedExternalInstruments[index])
@@ -1951,7 +1983,7 @@ export class SqlitePackageExchangeStore {
           strategyOrderHashHex: toHex(commitmentHash(entry.strategyOrderHashHex)),
           settlementReadinessHashHex: toHex(commitmentHash(entry.settlementReadinessHashHex)),
         }))
-        .sort((left, right) => left.packageOrderIdHex.localeCompare(right.packageOrderIdHex));
+        .sort((left, right) => compareProtocolIds(left.packageOrderIdHex, right.packageOrderIdHex));
       if (new Set(packages.map((entry) => entry.packageOrderIdHex)).size !== packages.length) {
         throw new PackageExchangeStoreError("INVALID_INPUT", "Prepared netting batch package ids repeat.");
       }
@@ -3036,17 +3068,20 @@ export class SqlitePackageExchangeStore {
 
   /**
    * A participant's package-book orders: every one resting in a book, plus the most recently
-   * committed ones. Filled quantity counts the order's continuous and reopening settlement
-   * obligations on either side; an order that left the book unfilled and was not cancelled by its
-   * owner (expiry, invalidation, an unfilled immediate remainder) is CLOSED.
+   * committed ones. Side and limit price come from the order terms recorded at submission, so they
+   * survive the order leaving the book; only a reopening order that left the book before terms were
+   * recorded falls back to its reopening fill side and has no price. Filled quantity counts the
+   * order's continuous and reopening settlement obligations on either side; an order that left the
+   * book unfilled and was not cancelled by its owner (expiry, invalidation, an unfilled immediate
+   * remainder) is CLOSED.
    */
   participantOrders(participantId: string, nowValue: bigint, recentLimit = 50): readonly PackageBookParticipantOrder[] {
     const rows = this.db.prepare(`
       SELECT c.package_order_id, c.execution_class_id, c.strategy_order_hash, c.commitment_json, c.recorded_at_ms,
-             e.entry_json, a.allocation_json, x.entry_id AS cancelled
+             e.entry_json, t.side, t.limit_price_ticks, x.entry_id AS cancelled
       FROM package_book_settlement_commitments c
       LEFT JOIN package_book_entries e ON e.entry_id = c.package_order_id AND e.execution_class_id = c.execution_class_id
-      LEFT JOIN package_book_allocations a ON a.taker_order_id = c.package_order_id
+      LEFT JOIN package_book_order_terms t ON t.package_order_id = c.package_order_id
       LEFT JOIN package_book_cancellations x ON x.execution_class_id = c.execution_class_id AND x.entry_id = c.package_order_id
       WHERE c.participant_id = ? AND (e.entry_id IS NOT NULL OR c.package_order_id IN (
         SELECT package_order_id FROM package_book_settlement_commitments WHERE participant_id = ?
@@ -3060,7 +3095,8 @@ export class SqlitePackageExchangeStore {
       commitment_json: unknown;
       recorded_at_ms: number;
       entry_json: unknown;
-      allocation_json: unknown;
+      side: "BID" | "ASK" | null;
+      limit_price_ticks: unknown;
       cancelled: unknown;
     }[];
     const fills = this.db.prepare(`
@@ -3074,7 +3110,6 @@ export class SqlitePackageExchangeStore {
         packageSettlementCommitment(parseProtocolJson(jsonText(row.commitment_json, "commitment_json")) as PackageSettlementCommitment));
       const entry = row.entry_json === null ? undefined
         : parseProtocolJson(jsonText(row.entry_json, "entry_json")) as PackageBookEntry;
-      const allocation = row.allocation_json === null ? undefined : this.decodeAllocation(row.execution_class_id, row.allocation_json);
       const obligations = fills.all(orderId, orderId) as { role: string; price_ticks: unknown; quantity_atoms: unknown }[];
       const filledQuantity = obligations.reduce((sum, fill) => sum + storedBigInt(fill.quantity_atoms, "quantity_atoms"), 0n);
       const reopeningSide = obligations.find((fill) => fill.role === "BID" || fill.role === "ASK");
@@ -3087,8 +3122,9 @@ export class SqlitePackageExchangeStore {
         executionClassId: row.execution_class_id,
         strategyOrderHashHex: toHex(hashBytes(row.strategy_order_hash, "strategy_order_hash")),
         state,
-        side: entry?.side ?? allocation?.takerSide ?? (reopeningSide?.role as "BID" | "ASK" | undefined) ?? null,
-        priceTicks: entry?.priceTicks ?? allocation?.takerLimitPriceTicks ?? null,
+        side: row.side ?? entry?.side ?? (reopeningSide?.role as "BID" | "ASK" | undefined) ?? null,
+        priceTicks: row.limit_price_ticks !== null ? storedBigInt(row.limit_price_ticks, "limit_price_ticks", true)
+          : entry?.priceTicks ?? null,
         quantity: commitment.quantity,
         filledQuantity,
         remainingQuantity: state === "OPEN" ? entry!.quantity : 0n,
@@ -3596,6 +3632,12 @@ export class SqlitePackageExchangeStore {
       else if (previous !== json) update.run(json, entry.entryId, classId);
     }
     for (const key of stored.keys()) if (!kept.has(key)) remove.run(Buffer.from(key, "hex"), classId);
+  }
+
+  private insertOrderTerms(orderId: Uint8Array, side: PackageBookSide, limitPriceTicks: bigint): void {
+    this.db
+      .prepare("INSERT INTO package_book_order_terms (package_order_id, side, limit_price_ticks) VALUES (?, ?, ?)")
+      .run(orderId, side, sequenceText(limitPriceTicks));
   }
 
   private decodeAllocation(executionClassId: string, json: unknown): PackageAllocation {

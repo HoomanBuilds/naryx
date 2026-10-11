@@ -4,6 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import bs58 from "bs58";
 import {
   CONDITION_METRIC,
+  compareProtocolIds,
   metricObservationAttestation,
   metricObservationAttestationHash,
   parseProtocolJson,
@@ -219,6 +220,6 @@ export class SqliteMetricObservationStore {
         observedAtValue: attestation.observedAtValue,
       }));
     }
-    return Object.freeze([...selected.values()].sort((left, right) => left.metric.localeCompare(right.metric)));
+    return Object.freeze([...selected.values()].sort((left, right) => compareProtocolIds(left.metric, right.metric)));
   }
 }

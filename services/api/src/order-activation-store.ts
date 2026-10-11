@@ -153,6 +153,13 @@ CREATE TABLE IF NOT EXISTS order_activation_owner_cancellations (
   recorded_at_ms INTEGER NOT NULL,
   PRIMARY KEY (owner, nonce)
 ) STRICT;
+CREATE TABLE IF NOT EXISTS order_activation_owner_reads (
+  owner TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  expires_at_ms INTEGER NOT NULL,
+  recorded_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (owner, nonce)
+) STRICT;
 CREATE UNIQUE INDEX IF NOT EXISTS one_reserved_activation_attempt
   ON order_activation_attempts(order_hash) WHERE status = 'RESERVED';
 CREATE UNIQUE INDEX IF NOT EXISTS one_activation_attempt_per_slice
@@ -816,6 +823,24 @@ export class SqliteOrderActivationStore {
       `).run(input.owner, input.nonce, hashBytes(input.orderHashHex), input.expiresAtMs, input.signature, now);
       if (spent.changes !== 1) throw new OrderActivationStoreError("NONCE_REPLAYED", "This signed cancellation was already used.");
       return this.cancelWaiting(input.orderHashHex);
+    });
+  }
+
+  /**
+   * Spends an owner's verified read token once. Only an unexpired token is recorded, and expired
+   * ones are pruned, so the table holds at most the tokens still inside their lifetime.
+   */
+  spendOwnerRead(input: Readonly<{ owner: string; nonce: string; expiresAtMs: number }>): void {
+    this.transaction(() => {
+      const now = this.clock();
+      if (!Number.isSafeInteger(input.expiresAtMs) || input.expiresAtMs <= now) {
+        throw new OrderActivationStoreError("READ_EXPIRED", "The signed read has expired.");
+      }
+      this.db.prepare("DELETE FROM order_activation_owner_reads WHERE expires_at_ms <= ?").run(now);
+      const spent = this.db.prepare(`
+        INSERT OR IGNORE INTO order_activation_owner_reads (owner, nonce, expires_at_ms, recorded_at_ms) VALUES (?, ?, ?, ?)
+      `).run(input.owner, input.nonce, input.expiresAtMs, now);
+      if (spent.changes !== 1) throw new OrderActivationStoreError("NONCE_REPLAYED", "This signed read was already used.");
     });
   }
 
