@@ -81,6 +81,7 @@ const definitions = Object.freeze([
     templateId: 'external-inventory-hedge-v1',
     legTypes: ['treasury-hedge'],
     ratios: [-1n],
+    nettingFamilies: ['PERP_OPEN', 'PERP_INCREASE', 'PERP_DECREASE', 'PERP_CLOSE'],
     markets: [{ role: 'treasury-hedge', entrySide: 'SELL', binding: primary }],
   }),
   Object.freeze({
@@ -89,6 +90,7 @@ const definitions = Object.freeze([
     templateId: 'perpetual-funding-spread-v1',
     legTypes: ['funding-long', 'funding-short'],
     ratios: [1n, -1n],
+    nettingFamilies: ['PERP_OPEN', 'PERP_INCREASE', 'PERP_DECREASE', 'PERP_CLOSE'],
     markets: [
       { role: 'funding-long', entrySide: 'BUY', binding: primary },
       { role: 'funding-short', entrySide: 'SELL', binding: secondary },
@@ -100,6 +102,7 @@ const definitions = Object.freeze([
     templateId: 'hedge-migration-v1',
     legTypes: ['source-hedge', 'destination-hedge'],
     ratios: [-1n, -1n],
+    nettingFamilies: ['PERP_OPEN', 'PERP_CLOSE'],
     markets: [
       { role: 'source-hedge', entrySide: 'SELL', binding: primary },
       { role: 'destination-hedge', entrySide: 'SELL', binding: secondary },
@@ -111,6 +114,7 @@ const definitions = Object.freeze([
     templateId: 'delta-neutral-rebalance-v1',
     legTypes: ['perp-adjustment'],
     ratios: [-1n],
+    nettingFamilies: ['PERP_INCREASE', 'PERP_DECREASE'],
     markets: [{ role: 'perp-adjustment', entrySide: 'SELL', binding: primary }],
   }),
 ]);
@@ -123,6 +127,8 @@ const profiles = [];
 const preparationFiles = [];
 const quoteFiles = [];
 const graphRecords = [];
+const nettingPolicies = new Map();
+const nettingPolicyFiles = [];
 
 const record = (kind, ref, template) => protocol.domainRegistryRecord({
   recordVersion: 1,
@@ -227,6 +233,37 @@ for (const definition of definitions) {
     supportedFirmnessClassIds: ['firm-testnet-capacity-v1'],
   };
   const executionClassHash = protocol.seriesExecutionClassHash(classDocument, classSupport);
+  const nettingPolicy = protocol.nettingPolicyManifest({
+    schemaVersion: 1,
+    manifestVersion: 1,
+    nettingPolicyVersion: 2,
+    environment: 'testnet',
+    executionClassId: classDocument.executionClassId,
+    executionClassVersion: classDocument.executionClassVersion,
+    executionClassManifestHash: executionClassHash,
+    settlementClass: 'BATCHED_IOC_WITH_RECOVERY',
+    allocationRule: 'PRO_RATA_SEQUENCE',
+    externalExecutionMode: 'EXACT_NET_ONLY',
+    clearingRule: 'LIMIT_MIDPOINT_BUYER_FAVOR',
+    maximumObligations: 32,
+    maximumBatchWindowMilliseconds: 1_000n,
+    instruments: definition.markets.flatMap((market) => definition.nettingFamilies.map((family) => ({
+      instrumentId: `${market.role}-${family.toLowerCase().replaceAll('_', '-')}`,
+      domain,
+      adapter: market.binding.adapter,
+      venue: market.binding.venue,
+      market: market.binding.market,
+      quantityAsset: baseAsset,
+      quoteAsset,
+      legFamily: family,
+      quantityIncrementAtoms: 1_000_000n,
+      priceTickQuoteAtoms: 1n,
+    }))),
+  });
+  nettingPolicies.set(definition.profileId, nettingPolicy);
+  const nettingPolicyPath = `solver/${definition.profileId}-netting-policy.json`;
+  writeProtocol(nettingPolicyPath, nettingPolicy);
+  nettingPolicyFiles.push(nettingPolicyPath);
   const activeRecords = [
     record('ASSET', baseAsset, template),
     record('ASSET', quoteAsset, template),
@@ -253,6 +290,7 @@ for (const definition of definitions) {
     executionClassId: classDocument.executionClassId,
     executionClassVersion: classDocument.executionClassVersion,
     executionClassManifestHash: executionClassHash,
+    nettingPolicyHash: protocol.nettingPolicyManifestHash(nettingPolicy),
     domain,
     settlementAccount: tradingAccount,
     baseAsset,
@@ -347,6 +385,54 @@ for (const definition of definitions) {
   quoteFiles.push(quotePath);
 }
 
+const crossBatchPolicy = protocol.crossBatchClearingPolicy({
+  version: 1,
+  policyId: 'hypercore-testnet-cross-batch-v1',
+  domain,
+  adapter: primary.adapter,
+  expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS',
+  maximumSourceIntents: 32,
+  maximumSourceBatches: 16,
+  maximumExpirySpread: 30_000n,
+});
+const crossBatchPolicyPath = 'solver/hyperliquid-testnet-cross-batch-policy.json';
+writeProtocol(crossBatchPolicyPath, crossBatchPolicy);
+
+const fundingDefinition = definitions.find((value) => value.profileId === 'btc-funding-spread-testnet');
+const fundingNettingPolicy = nettingPolicies.get('btc-funding-spread-testnet');
+if (fundingDefinition === undefined || fundingNettingPolicy === undefined) {
+  throw new Error('funding-spread netting activation is unavailable');
+}
+const fundingMarkets = new Map(fundingDefinition.markets.map((market) => [market.role, market.binding]));
+const fundingResidualPath = 'solver/btc-funding-spread-testnet-netting-residual.json';
+writeProtocol(fundingResidualPath, {
+  version: 1,
+  environment: 'TESTNET',
+  policy: fundingNettingPolicy,
+  bindings: fundingNettingPolicy.instruments.map((instrument) => {
+    const role = instrument.instrumentId.startsWith('funding-long-') ? 'funding-long' : 'funding-short';
+    const binding = fundingMarkets.get(role);
+    if (binding === undefined) throw new Error(`funding residual binding is missing: ${role}`);
+    return {
+      instrumentId: instrument.instrumentId,
+      marketBinding: {
+        adapter: binding.adapter,
+        venue: binding.venue,
+        market: binding.market,
+        assetId: binding.assetId,
+        sizeDecimals: binding.sizeDecimals,
+        maximumPriceDecimals: binding.maximumPriceDecimals,
+      },
+      evidenceBinding: {
+        assetId: binding.assetId,
+        marketKind: 'PERPETUAL',
+        baseFeeToken: 'BTC',
+        quoteFeeToken: 'USDC',
+      },
+    };
+  }),
+});
+
 const seriesSupport = {
   supportedTemplateIds: definitions.map((value) => value.templateId),
   supportedQuoteConventionIds: definitions.map((value) => protocol.requireStrategyTemplateDefinition(value.templateId).quoteConventionId),
@@ -395,5 +481,8 @@ writeFileSync(join(output, 'activation.json'), `${JSON.stringify({
   version: 1,
   preparationFiles,
   quoteFiles,
+  nettingPolicyFiles,
+  crossBatchPolicyFile: crossBatchPolicyPath,
+  residualExecutionFile: fundingResidualPath,
   allowedPerpetualCoins: ['BTC', 'sekaw:BTC'],
 }, null, 2)}\n`);

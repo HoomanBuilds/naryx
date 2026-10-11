@@ -5,6 +5,7 @@ import {
   adapterRef,
   assetAmount,
   assetRef,
+  commitmentHash,
   domainRef,
   exactPrice,
   manifestHash,
@@ -94,6 +95,7 @@ export interface HyperliquidNativeStrategyProfile {
   readonly executionClassId: string;
   readonly executionClassVersion: number;
   readonly executionClassManifestHash: Uint8Array;
+  readonly nettingPolicyHash: Uint8Array;
   readonly domain: DomainRef;
   readonly settlementAccount: string;
   readonly baseAsset: AssetRef;
@@ -186,7 +188,7 @@ function checkedProfile(value: unknown, index: number): HyperliquidNativeStrateg
   exactKeys(profile, [
     "profileId", "displayName", "templateId", "templateVersion",
     "packageTemplateManifestHash", "seriesId", "seriesVersion", "seriesManifestHash",
-    "executionClassId", "executionClassVersion", "executionClassManifestHash", "domain",
+    "executionClassId", "executionClassVersion", "executionClassManifestHash", "nettingPolicyHash", "domain",
     "settlementAccount", "baseAsset", "quoteAsset", "markets", "metricLimits", "bounds",
   ], context);
   if (typeof profile.profileId !== "string" || typeof profile.displayName !== "string"
@@ -340,6 +342,10 @@ function checkedProfile(value: unknown, index: number): HyperliquidNativeStrateg
     profile.executionClassManifestHash as Uint8Array,
     `${context}.executionClassManifestHash`,
   );
+  const nettingPolicyHash = commitmentHash(
+    profile.nettingPolicyHash as Uint8Array,
+    `${context}.nettingPolicyHash`,
+  );
   const lifecycleAction = templateId === STRATEGY_TEMPLATE_ID.HEDGE_MIGRATION
     ? "MIGRATE"
     : templateId === STRATEGY_TEMPLATE_ID.DELTA_NEUTRAL_REBALANCE ? "REBALANCE" : "ENTRY";
@@ -394,6 +400,7 @@ function checkedProfile(value: unknown, index: number): HyperliquidNativeStrateg
     executionClassId,
     executionClassVersion: positiveVersion(profile.executionClassVersion, `${context}.executionClassVersion`),
     executionClassManifestHash,
+    nettingPolicyHash,
     domain,
     settlementAccount,
     baseAsset,
@@ -648,7 +655,7 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
         }],
         settlementClass: "BATCHED_IOC_WITH_RECOVERY",
         policyHashes: {
-          netting: policyHash(profile, request, "netting"),
+          netting: profile.nettingPolicyHash,
           privacy: policyHash(profile, request, "privacy"),
           solver: policyHash(profile, request, "solver"),
           delivery: policyHash(profile, request, "delivery"),

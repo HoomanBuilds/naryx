@@ -8,6 +8,7 @@ import {
   adapterRef,
   assetAmount,
   assetRef,
+  commitmentHash,
   domainRef,
   manifestHash,
   packageGraph,
@@ -95,6 +96,7 @@ function profile(
     executionClassId: `${profileId}-execution`,
     executionClassVersion: 1,
     executionClassManifestHash: manifestHash("23".repeat(32)),
+    nettingPolicyHash: commitmentHash("24".repeat(32)),
     domain: domainRef("hypercore:testnet", 1, "11".repeat(32)),
     settlementAccount: "hypercore-testnet-account",
     baseAsset: assetRef("hypercore:testnet:btc", "31".repeat(32), 5),
@@ -199,6 +201,7 @@ test("loads reviewed profiles and creates treasury entry plus funding exit order
       ["PERP_CLOSE", "BUY", "FLOOR"],
     ]);
     assert.equal(validateStrategyTemplateGraph(funding.graph).valid, true);
+    assert.equal(toHex(funding.graph.policyHashes.netting), "24".repeat(32));
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
