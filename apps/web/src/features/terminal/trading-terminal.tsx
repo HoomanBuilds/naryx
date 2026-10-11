@@ -1,6 +1,7 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useSearchParams } from "next/navigation";
 import { encodeFunctionData, erc20Abi, formatEther, parseAbi } from "viem";
 import { useBalance, useReadContract } from "wagmi";
 import { fixtureMarketFeed } from "./market-feed";
@@ -57,7 +58,7 @@ import type {
 } from "./terminal-view-model";
 import { DOMAIN_META, DOMAIN_ORDER, EXIT_UNAVAILABLE, domainHealth, domainLive, useTerminal } from "./shell/terminal-context";
 import { annotateAttempt } from "./shell/attempt-index";
-import { TransactionLink, refreshOnReturn } from "./transaction-status";
+import { TransactionLink, claimTicketWatch, refreshOnReturn } from "./transaction-status";
 import { EVM_CHAINS, type EvmDomain } from "@/features/wallet/evm-config";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
@@ -78,6 +79,7 @@ import {
   type StrategyConfiguration,
 } from "./strategy-presets";
 import styles from "./trading-terminal.module.css";
+import { randomId } from "./secure-context";
 
 /** How long a prepared Devnet review stays signable. */
 const REVIEW_TTL_MS = 45_000;
@@ -89,6 +91,23 @@ const PACKAGE_DOMAIN_TO_TERMINAL: Readonly<Record<string, DomainId>> = Object.fr
   "hypercore:testnet": "hyperliquid",
 });
 const SLIPPAGE_OPTIONS: readonly SlippageBps[] = [5, 10, 25];
+
+// Reports the page's query on every same-route navigation. It sits in its own Suspense boundary so
+// reading the query never opts the whole terminal out of prerendering.
+function TradeLinkListener({ onChange }: { onChange(search: string): void }) {
+  const search = useSearchParams().toString();
+  useEffect(() => onChange(search), [onChange, search]);
+  return null;
+}
+
+function linkLane(search: string): DomainId | null {
+  const lane = new URLSearchParams(search).get("lane");
+  return lane !== null && (DOMAIN_ORDER as readonly string[]).includes(lane) ? lane as DomainId : null;
+}
+
+function onLane(market: { readonly domainIds: readonly string[] }, lane: DomainId): boolean {
+  return market.domainIds.some((domainId) => PACKAGE_DOMAIN_TO_TERMINAL[domainId] === lane);
+}
 
 // Storage throws when the browser blocks it; the choice then lasts for the page only.
 function readStoredPackageMarket(): string | null {
@@ -228,6 +247,10 @@ type HyperliquidFlowState = {
 };
 
 const HYPERLIQUID_ACTIVE_PACKAGE_STATES = new Set(["PENDING_ENTRY", "OPEN", "EXITING", "UNRESOLVED"]);
+
+const HYPERLIQUID_ENTRY_PENDING_COPY =
+  "An earlier Hyperliquid entry for this wallet is still settling. A new entry waits until it resolves, so a retry never opens a duplicate package. Track it on Activity.";
+const HYPERLIQUID_PENDING_POLL_MS = 10_000;
 
 const HYPERLIQUID_LANE_BLOCKED_COPY =
   "The shared testnet lane is paused while another package is reconciled. Your order waits; nothing has been sent.";
@@ -640,14 +663,14 @@ function HyperliquidExitPicker({
   return (
     <fieldset className={styles.exitPicker} disabled={locked}>
       <legend>Package to exit</legend>
-      {linkedMissing ? <p className={styles.reviewNotice}>The linked package is not open for this wallet; the oldest open package is selected instead.</p> : null}
+      {linkedMissing ? <p className={styles.reviewNotice}>The linked package is not open for this wallet. Choose the package to exit; none is preselected.</p> : null}
       {packages.length === 0 ? <p className={styles.reviewNotice}>This wallet has no open Hyperliquid testnet package.</p> : null}
       {packages.length === 1 && target !== null ? (
         <p className={styles.exitPickerOne} title={target.entryAttemptId}>
           Package {compact(target.entryAttemptId, 20, 6)}: {hyperliquidPackageSummary(target, account, baseSymbol)}
         </p>
       ) : null}
-      {packages.length > 1 ? packages.map((entry) => (
+      {packages.length > 1 || (packages.length === 1 && target === null) ? packages.map((entry) => (
         <label key={entry.entryAttemptId} className={styles.exitPickerOption} title={entry.entryAttemptId}>
           <input
             type="radio"
@@ -2001,25 +2024,47 @@ export function TradingTerminal({
   const fixtureFeed = useMemo(() => fixtureMarketFeed(snapshot), [snapshot]);
   const { markets: packageMarkets, status: packageMarketStatus } = usePublicPackageMarkets(publicApiBaseUrl);
   const [activePackageMarketId, setActivePackageMarketId] = useState<string | null>(packageMarketId);
+  // The page query, null until it has been read; a deep link resolves only against the loaded market list.
+  const [linkSearch, setLinkSearch] = useState<string | null>(null);
+  const appliedMarketLink = useRef<string | null>(null);
   useEffect(() => {
     if (publicApiBaseUrl === null) {
       setActivePackageMarketId(packageMarketId);
       return;
     }
-    if (packageMarkets.length === 0) return;
+    if (packageMarkets.length === 0 || linkSearch === null) return;
+    const params = new URLSearchParams(linkSearch);
+    const requested = params.get("market");
+    const lane = linkLane(linkSearch);
+    // A link is applied once per navigation; a later market-list refresh keeps the trader's pick.
+    const linkKey = `${requested ?? ""}\n${lane ?? ""}`;
+    const freshLink = appliedMarketLink.current !== linkKey;
+    appliedMarketLink.current = linkKey;
     setActivePackageMarketId((current) => {
-      const requested = new URLSearchParams(window.location.search).get("market");
-      const stored = readStoredPackageMarket();
-      const candidates = [requested, current, stored, packageMarketId, packageMarkets[0]?.packageMarketId];
-      const selected = candidates.find((candidate) => candidate !== null && candidate !== undefined
-        && packageMarkets.some((market) => market.packageMarketId === candidate)) ?? null;
+      const listed = (candidate: string | null | undefined) => candidate !== null && candidate !== undefined
+        && packageMarkets.some((market) => market.packageMarketId === candidate);
+      const laneFits = (candidate: string | null | undefined) => lane === null
+        || packageMarkets.some((market) => market.packageMarketId === candidate && onLane(market, lane));
+      const remembered = [current, readStoredPackageMarket(), packageMarketId, packageMarkets[0]?.packageMarketId];
+      const linked = !freshLink ? [] : requested !== null
+        ? [requested]
+        : lane !== null
+          ? [...remembered.filter(laneFits), packageMarkets.find((market) => onLane(market, lane))?.packageMarketId]
+          : [];
+      const selected = [...linked, ...remembered].find(listed) ?? null;
       if (selected !== null) storePackageMarket(selected);
       return selected;
     });
-  }, [packageMarketId, packageMarkets, publicApiBaseUrl]);
-  const resolvedPackageMarketId = packageMarkets.some((market) => market.packageMarketId === activePackageMarketId)
-    ? activePackageMarketId
-    : packageMarkets[0]?.packageMarketId ?? activePackageMarketId;
+  }, [linkSearch, packageMarketId, packageMarkets, publicApiBaseUrl]);
+  // With a public market API nothing resolves until its list loads, so a deep link never shows a default
+  // market's book first.
+  const packageMarketsPending = publicApiBaseUrl !== null && packageMarkets.length === 0
+    && (packageMarketStatus === null || packageMarketStatus.state === "loading");
+  const resolvedPackageMarketId = packageMarketsPending
+    ? null
+    : packageMarkets.some((market) => market.packageMarketId === activePackageMarketId)
+      ? activePackageMarketId
+      : packageMarkets[0]?.packageMarketId ?? activePackageMarketId;
   const selectedPackageMarket = packageMarkets.find((market) => market.packageMarketId === resolvedPackageMarketId) ?? null;
   const selectedPackageTemplateId = selectedPackageMarket?.templateId ?? null;
   const selectedPackageDomainIds = selectedPackageMarket?.domainIds.join("\n") ?? "";
@@ -2051,8 +2096,13 @@ export function TradingTerminal({
         ? current
         : template.actions[0]?.action ?? "ENTRY");
     }
-    if (domains.length > 0 && !domains.includes(selectedDomain)) setSelectedDomain(domains[0] as DomainId);
-  }, [packageMarkets, resolvedPackageMarketId, selectedDomain, selectedPackageDomainIds, selectedPackageTemplateId,
+    if (domains.length > 0 && !domains.includes(selectedDomain)) {
+      // A linked lane the market trades on wins over the market's first lane.
+      const lane = linkSearch === null ? null : linkLane(linkSearch);
+      if (lane !== null && lane === selectedDomain && !packageMarkets.some((market) => onLane(market, lane))) return;
+      setSelectedDomain(lane !== null && domains.includes(lane) ? lane : domains[0] as DomainId);
+    }
+  }, [linkSearch, packageMarkets, resolvedPackageMarketId, selectedDomain, selectedPackageDomainIds, selectedPackageTemplateId,
     selectedStrategyTemplateId, setSelectedDomain, strategyTemplates]);
   const applyStrategyConfiguration = useCallback((configuration: StrategyConfiguration) => {
     const template = strategyTemplates.find((candidate) => candidate.templateId === configuration.templateId);
@@ -2081,16 +2131,16 @@ export function TradingTerminal({
     }
     return null;
   }, [packageMarkets, setSelectedDomain, snapshot.ticket.quoteModes, strategyTemplates]);
-  const sharedStrategyApplied = useRef(false);
+  // The query whose strategy link was applied; a new same-route navigation applies its own link.
+  const sharedStrategyApplied = useRef<string | null>(null);
   const packageMarketLoading = packageMarketStatus?.state === "loading";
   useEffect(() => {
-    if (sharedStrategyApplied.current) return;
-    const params = new URLSearchParams(window.location.search);
-    const lane = params.get("lane");
-    const laneDomain = lane !== null && (DOMAIN_ORDER as readonly string[]).includes(lane) ? lane as DomainId : null;
+    if (linkSearch === null || sharedStrategyApplied.current === linkSearch) return;
+    const params = new URLSearchParams(linkSearch);
+    const laneDomain = linkLane(linkSearch);
     const linked = params.get("package");
     const linkedId = linked !== null && /^[A-Za-z0-9._:-]{1,200}$/.test(linked) ? linked : null;
-    const shared = readSharedStrategyConfiguration(window.location.search);
+    const shared = readSharedStrategyConfiguration(linkSearch);
     if (shared === null) {
       const templateId = params.get("template");
       const action = params.get("action");
@@ -2098,7 +2148,7 @@ export function TradingTerminal({
       if (templateId !== null && (privateApiBaseUrl !== null || publicApiBaseUrl !== null) && !strategyProgramSettled) return;
       // and for the market list, so the linked template is not replaced by the first market's.
       if (templateId !== null && publicApiBaseUrl !== null && packageMarketLoading) return;
-      sharedStrategyApplied.current = true;
+      sharedStrategyApplied.current = linkSearch;
       const domain = laneDomain ?? selectedDomain;
       if (laneDomain !== null) setSelectedDomain(laneDomain);
       if (linkedId !== null) setLinkedPackageId(linkedId);
@@ -2125,10 +2175,10 @@ export function TradingTerminal({
     }
     if (!strategyTemplates.some((template) => template.templateId === shared.templateId) && privateApiBaseUrl !== null) return;
     if (shared.packageMarketId !== null && publicApiBaseUrl !== null && packageMarkets.length === 0) return;
-    sharedStrategyApplied.current = true;
+    sharedStrategyApplied.current = linkSearch;
     applyStrategyConfiguration(shared);
     if (linkedId !== null) setLinkedPackageId(linkedId);
-  }, [applyStrategyConfiguration, packageMarketLoading, packageMarkets, privateApiBaseUrl, publicApiBaseUrl, selectedDomain,
+  }, [applyStrategyConfiguration, linkSearch, packageMarketLoading, packageMarkets, privateApiBaseUrl, publicApiBaseUrl, selectedDomain,
     setSelectedDomain, strategyProgramSettled, strategyTemplates]);
   const { feed, status: publicFeedStatus } = usePublicMarketFeed(
     publicApiBaseUrl,
@@ -2182,12 +2232,13 @@ export function TradingTerminal({
     (hyperliquidFlow.attempt !== null || hyperliquidFlow.execution !== null)
     ? hyperliquidAccount?.packages.find((entry) => entry.entryAttemptId === hyperliquidFlow.exitTarget) ?? null
     : null;
+  const linkedExitMissing = linkedPackageId !== null && hyperliquidExitChoice === null && hyperliquidAccount !== null &&
+    !hyperliquidOpenPackages.some((entry) => entry.entryAttemptId === linkedPackageId);
+  // A linked package that is not open never falls back to another package; the trader picks one.
   const hyperliquidExitTarget = selectedDomain !== "hyperliquid" || mode !== "exit" ? null
     : pinnedExitTarget
       ?? hyperliquidOpenPackages.find((entry) => entry.entryAttemptId === (hyperliquidExitChoice ?? linkedPackageId))
-      ?? hyperliquidOpenPackages[0] ?? null;
-  const linkedExitMissing = linkedPackageId !== null && hyperliquidExitChoice === null && hyperliquidAccount !== null &&
-    !hyperliquidOpenPackages.some((entry) => entry.entryAttemptId === linkedPackageId);
+      ?? (linkedExitMissing ? null : hyperliquidOpenPackages[0] ?? null);
 
   const ticketKey = JSON.stringify({
     selectedDomain,
@@ -2329,7 +2380,7 @@ export function TradingTerminal({
       order: null,
       quote: null,
       attempt: null,
-      executeKey: crypto.randomUUID(),
+      executeKey: randomId(),
       signed: false,
       progress: null,
       execution: null,
@@ -2486,6 +2537,18 @@ export function TradingTerminal({
   const hyperliquidPackages = currentHyperliquidFlow?.account?.packages ?? [];
   const hyperliquidActivePackages = hyperliquidPackages.filter((entry) => HYPERLIQUID_ACTIVE_PACKAGE_STATES.has(entry.state)).length;
   const hyperliquidLimit = currentHyperliquidFlow?.context?.maxOpenPackagesPerOwner ?? null;
+  // An entry whose handoff may still run for this wallet: sent for execution with no recorded result.
+  const [hyperliquidUnsettled, setHyperliquidUnsettled] = useState<Readonly<{
+    owner: string;
+    attempt: HyperliquidSelectedAttempt;
+    executeKey: string;
+  }> | null>(null);
+  const hyperliquidStepRunning = useRef(false);
+  const hyperliquidLedgerPending = hyperliquidPackages.some((entry) => entry.state === "PENDING_ENTRY");
+  const hyperliquidUnsettledOther = hyperliquidUnsettled !== null && hyperliquidUnsettled.owner === hyperliquidOwner
+    && hyperliquidUnsettled.attempt.attemptId !== currentHyperliquidFlow?.attempt?.attemptId;
+  const hyperliquidEntryPending = mode === "entry" && hyperliquidOwner !== null
+    && (hyperliquidLedgerPending || hyperliquidUnsettledOther);
   const evmTarget: EvmDomain | null = selectedDomain === "base" || selectedDomain === "arbitrum" ? selectedDomain : null;
   const evmOnTarget = evmTarget !== null && evmWallet.onChain(evmTarget);
   // A Base exit closes the whole open package read from chain, so it needs no ticket preview.
@@ -2804,8 +2867,14 @@ export function TradingTerminal({
         return none("Preparing testnet account", currentHyperliquidFlow?.error ?? "Discovering the active Hyperliquid testnet order context.");
       }
       const reason = currentHyperliquidFlow.error;
+      if (nextHyperliquidStep === "create" && mode === "exit" && linkedExitMissing && hyperliquidOpenPackages.length > 0) {
+        return none("Choose a package", "The package your link named is not open for this wallet. Pick the package to exit.");
+      }
       if (nextHyperliquidStep === "create" && mode === "exit" && hyperliquidExitTarget?.state !== "OPEN") {
         return none("No open package", reason ?? "This wallet has no open Hyperliquid testnet package to exit.");
+      }
+      if (hyperliquidEntryPending && nextHyperliquidStep !== "execute" && nextHyperliquidStep !== "restart") {
+        return none("Entry pending", HYPERLIQUID_ENTRY_PENDING_COPY);
       }
       if (nextHyperliquidStep === "create" && mode === "entry" && hyperliquidLimit !== null && hyperliquidActivePackages >= hyperliquidLimit) {
         return none("Package limit reached", reason ?? "Exit your open Hyperliquid testnet package before entering another.");
@@ -2924,10 +2993,13 @@ export function TradingTerminal({
     evmWallet.switching,
     executionGateUp,
     hyperliquidActivePackages,
+    hyperliquidEntryPending,
     hyperliquidFlowEnabled,
     hyperliquidLimit,
     hyperliquidExitTarget,
+    hyperliquidOpenPackages.length,
     hyperliquidOwner,
+    linkedExitMissing,
     mode,
     nextArbitrumStep,
     nextBaseStep,
@@ -2985,7 +3057,7 @@ export function TradingTerminal({
         setExecutionError({ ticketKey, message: "The prior review expired. Prepare a fresh Devnet transaction." });
         return;
       }
-      const key = idempotency?.ticketKey === ticketKey ? idempotency.key : crypto.randomUUID();
+      const key = idempotency?.ticketKey === ticketKey ? idempotency.key : randomId();
       if (idempotency?.ticketKey !== ticketKey) setIdempotency({ ticketKey, key });
       const next = await prepareExecution(key);
       if (!currentExecutionReview) throw new Error("Prepare and review the Devnet transaction first.");
@@ -3039,10 +3111,10 @@ export function TradingTerminal({
     setExecutionError(null);
     try {
       const key = currentExecutionReview
-        ? crypto.randomUUID()
+        ? randomId()
         : idempotency?.ticketKey === ticketKey
           ? idempotency.key
-          : crypto.randomUUID();
+          : randomId();
       setIdempotency({ ticketKey, key });
       let exitSize: string | undefined;
       if (mode === "entry") {
@@ -3111,6 +3183,7 @@ export function TradingTerminal({
     const signature = observationSignature;
     const idempotencyKey = observationIdempotencyKey;
     const ticket = observationTicketKey;
+    const releaseWatch = claimTicketWatch(idempotencyKey);
     const controller = new AbortController();
     let active = true;
     let inFlight = false;
@@ -3170,6 +3243,7 @@ export function TradingTerminal({
       window.clearInterval(interval);
       stopReturnRefresh();
       controller.abort();
+      releaseWatch();
     };
   }, [
     privateProvider,
@@ -3225,7 +3299,7 @@ export function TradingTerminal({
           settlementAccount: wallet.selectedAccount.address,
           size,
           slippageBps: slippage,
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: randomId(),
         });
         setLocalFlow({ ...base, order, busy: null, error: null });
         return;
@@ -3244,7 +3318,7 @@ export function TradingTerminal({
       if (step === "quote") {
         const quote = await privateProvider.requestLocalQuote(
           base.order.order,
-          crypto.randomUUID(),
+          randomId(),
         );
         setLocalFlow({ ...base, quote, busy: null, error: null });
         return;
@@ -3273,20 +3347,34 @@ export function TradingTerminal({
     // A new pick starts a new exit; the flow re-reads the ledger for the new ticket.
     setHyperliquidFlow((previous) => previous === null || previous.busy !== null ? previous : {
       ...previous, order: null, quote: null, attempt: null, signed: false, progress: null, execution: null,
-      exitTarget: null, executeKey: crypto.randomUUID(), error: null,
+      exitTarget: null, executeKey: randomId(), error: null,
     });
   }
 
+  // One step at a time: a double click or a re-submit while a step runs is ignored.
   async function handleHyperliquidStep(
+    step: "create" | "quote" | "select" | "execute" | "restart",
+  ) {
+    if (hyperliquidStepRunning.current) return;
+    hyperliquidStepRunning.current = true;
+    try {
+      await runHyperliquidStep(step);
+    } finally {
+      hyperliquidStepRunning.current = false;
+    }
+  }
+
+  async function runHyperliquidStep(
     step: "create" | "quote" | "select" | "execute" | "restart",
   ) {
     if (!privateProvider || !currentHyperliquidFlow?.context || !currentHyperliquidFlow.owner ||
         !runtimeHealth?.hyperliquidTestnet.available) return;
+    if (hyperliquidEntryPending && step !== "execute" && step !== "restart") return;
     let base = currentHyperliquidFlow;
     const context = currentHyperliquidFlow.context;
     const owner = currentHyperliquidFlow.owner;
     if (step === "restart") {
-      setHyperliquidFlow({ ...base, order: null, quote: null, attempt: null, signed: false, exitTarget: null, executeKey: crypto.randomUUID(), busy: null, error: null });
+      setHyperliquidFlow({ ...base, order: null, quote: null, attempt: null, signed: false, exitTarget: null, executeKey: randomId(), busy: null, error: null });
       return;
     }
     setHyperliquidFlow({ ...base, busy: step, error: null });
@@ -3297,14 +3385,14 @@ export function TradingTerminal({
         const order = exitTarget !== null
           ? await privateProvider.createHyperliquidExitOrder(context, owner, {
             slippageBps: slippage,
-            idempotencyKey: crypto.randomUUID(),
+            idempotencyKey: randomId(),
             // Always names the package the trader chose; the service's oldest-package default is never relied on.
             entryAttemptId: exitTarget.entryAttemptId,
           })
           : await privateProvider.createHyperliquidOrder(context, owner, {
             size,
             slippageBps: slippage,
-            idempotencyKey: crypto.randomUUID(),
+            idempotencyKey: randomId(),
           });
         setHyperliquidFlow({ ...base, order, exitTarget: exitTarget?.entryAttemptId ?? null, busy: null, error: null });
         return;
@@ -3313,7 +3401,7 @@ export function TradingTerminal({
       if (step === "quote") {
         const quote = await privateProvider.requestHyperliquidQuote(
           base.order.order,
-          crypto.randomUUID(),
+          randomId(),
         );
         setHyperliquidFlow({ ...base, quote, busy: null, error: null });
         return;
@@ -3347,6 +3435,7 @@ export function TradingTerminal({
           .catch(() => undefined);
       }, 2_000);
       let execution: HyperliquidTerminalExecutionResult;
+      if (mode === "entry") setHyperliquidUnsettled({ owner, attempt, executeKey: key });
       try {
         execution = await privateProvider.executeHyperliquidTestnet(attempt, key);
       } catch (cause) {
@@ -3370,6 +3459,7 @@ export function TradingTerminal({
         window.clearInterval(poll);
       }
       const account = await privateProvider.getHyperliquidAccount(context, owner).catch(() => base.account);
+      setHyperliquidUnsettled((current) => current?.executeKey === key ? null : current);
       setHyperliquidFlow({ ...base, account, execution, progress: null, busy: null, error: null });
       if (!mounted.current) {
         const filled = execution.packageStatus === "COMPLETED_EXACT" || execution.packageStatus === "COMPLETED_BOUNDED";
@@ -3387,6 +3477,48 @@ export function TradingTerminal({
     }
   }
 
+  // A blocked entry resolves on its own: the uncertain handoff is read from the executor's record and
+  // the ledger is re-read, so the ticket unblocks once nothing is in flight.
+  const hyperliquidPendingContext = currentHyperliquidFlow?.context ?? null;
+  const hyperliquidPendingWatch = hyperliquidEntryPending && !hyperliquidFlowBusy && privateProvider !== null
+    && hyperliquidOwner !== null && hyperliquidPendingContext !== null;
+  useEffect(() => {
+    if (!hyperliquidPendingWatch || !privateProvider || hyperliquidOwner === null || hyperliquidPendingContext === null) return;
+    const controller = new AbortController();
+    const owner = hyperliquidOwner;
+    const context = hyperliquidPendingContext;
+    const unsettled = hyperliquidUnsettled?.owner === owner ? hyperliquidUnsettled : null;
+    let inFlight = false;
+    const check = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        if (unsettled !== null) {
+          const progress = await privateProvider.getHyperliquidAttemptProgress(unsettled.attempt, unsettled.executeKey, controller.signal);
+          if (progress.state === "COMPLETED" || progress.state === "NOT_STARTED") {
+            setHyperliquidUnsettled((current) => current?.executeKey === unsettled.executeKey ? null : current);
+          }
+        }
+        const account = await privateProvider.getHyperliquidAccount(context, owner, controller.signal);
+        setHyperliquidFlow((previous) => previous !== null && previous.owner === owner && previous.busy === null
+          ? { ...previous, account }
+          : previous);
+      } catch {
+        // A failed read keeps the entry blocked and is retried on the next tick.
+      } finally {
+        inFlight = false;
+      }
+    };
+    void check();
+    const timer = window.setInterval(() => void check(), HYPERLIQUID_PENDING_POLL_MS);
+    const stopReturnRefresh = refreshOnReturn(() => void check());
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+      stopReturnRefresh();
+    };
+  }, [hyperliquidOwner, hyperliquidPendingContext, hyperliquidPendingWatch, hyperliquidUnsettled, privateProvider]);
+
   const baseFlowMissing = currentBaseFlow === null;
   useEffect(() => {
     if (!privateProvider || !baseOwner || !baseFlowMissing) return;
@@ -3400,7 +3532,7 @@ export function TradingTerminal({
       order: null,
       quote: null,
       attempt: null,
-      idempotencyKey: crypto.randomUUID(),
+      idempotencyKey: randomId(),
       preparation: null,
       transactionHash: null,
       observation: null,
@@ -3459,6 +3591,7 @@ export function TradingTerminal({
   const baseIdempotencyKey = currentBaseFlow?.idempotencyKey ?? null;
   useEffect(() => {
     if (!privateProvider || !baseObservedHash || baseObservationDone || !baseAttemptId || !baseIdempotencyKey) return;
+    const releaseWatch = claimTicketWatch(baseIdempotencyKey);
     const controller = new AbortController();
     let inFlight = false;
     const poll = async () => {
@@ -3490,6 +3623,7 @@ export function TradingTerminal({
       controller.abort();
       window.clearInterval(timer);
       stopReturnRefresh();
+      releaseWatch();
     };
   }, [baseAttemptId, baseIdempotencyKey, baseObservationDone, baseObservedHash, privateProvider]);
 
@@ -3516,7 +3650,7 @@ export function TradingTerminal({
     });
     try {
       if (step === "restart") {
-        setBaseFlow({ ...base, order: null, quote: null, attempt: null, preparation: null, idempotencyKey: crypto.randomUUID(), busy: null, error: null });
+        setBaseFlow({ ...base, order: null, quote: null, attempt: null, preparation: null, idempotencyKey: randomId(), busy: null, error: null });
         return;
       }
       if (step === "setup" || step === "withdraw") {
@@ -3529,7 +3663,7 @@ export function TradingTerminal({
       if (step === "create" && mode === "exit") {
         const order = await privateProvider.createBaseExitOrder(account, {
           slippageBps: slippage,
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: randomId(),
         });
         setBaseFlow({ ...base, order, busy: null, error: null });
         return;
@@ -3538,14 +3672,14 @@ export function TradingTerminal({
         const order = await privateProvider.createBaseOrder(account, {
           size,
           slippageBps: slippage,
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: randomId(),
         });
         setBaseFlow({ ...base, order, busy: null, error: null });
         return;
       }
       if (!base.order) throw new Error("Create the package order first.");
       if (step === "quote") {
-        const quote = await privateProvider.requestBaseQuote(base.order, crypto.randomUUID());
+        const quote = await privateProvider.requestBaseQuote(base.order, randomId());
         const next = { ...base, quote };
         setBaseFlow({ ...next, account: await readAccount(next), busy: null, error: null });
         return;
@@ -3587,7 +3721,7 @@ export function TradingTerminal({
       const restart = step === "execute" && /expired|admission|would revert/i.test(message);
       setBaseFlow((previous) => ({
         ...(previous ?? base),
-        ...(restart ? { order: null, quote: null, attempt: null, preparation: null, idempotencyKey: crypto.randomUUID() } : {}),
+        ...(restart ? { order: null, quote: null, attempt: null, preparation: null, idempotencyKey: randomId() } : {}),
         busy: null,
         error: restart ? `${message} Create a fresh order to re-quote.` : message,
       }));
@@ -3608,7 +3742,7 @@ export function TradingTerminal({
       order: null,
       quote: null,
       attempt: null,
-      idempotencyKey: crypto.randomUUID(),
+      idempotencyKey: randomId(),
       authorization: null,
       approveHash: null,
       approved: false,
@@ -3679,6 +3813,7 @@ export function TradingTerminal({
       (currentArbitrumFlow.spotTakenInKind && currentArbitrumFlow.observation?.lifecycle !== "CLOSED"));
   useEffect(() => {
     if (!privateProvider || !arbitrumObserve || !arbitrumAttemptId || !arbitrumIdempotencyKey) return;
+    const releaseWatch = claimTicketWatch(arbitrumIdempotencyKey);
     const controller = new AbortController();
     let inFlight = false;
     const poll = async () => {
@@ -3714,6 +3849,7 @@ export function TradingTerminal({
       controller.abort();
       window.clearInterval(timer);
       stopReturnRefresh();
+      releaseWatch();
     };
   }, [arbitrumAttemptId, arbitrumIdempotencyKey, arbitrumObserve, privateProvider]);
 
@@ -3732,7 +3868,7 @@ export function TradingTerminal({
         return;
       }
       if (step === "restart") {
-        done({ order: null, quote: null, attempt: null, authorization: null, approveHash: null, approved: false, idempotencyKey: crypto.randomUUID() });
+        done({ order: null, quote: null, attempt: null, authorization: null, approveHash: null, approved: false, idempotencyKey: randomId() });
         return;
       }
       if (step === "create") {
@@ -3740,14 +3876,14 @@ export function TradingTerminal({
           contextId: arbitrumContextId,
           size,
           slippageBps: slippage,
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: randomId(),
         });
         done({ order });
         return;
       }
       if (!flow.order) throw new Error("Create the package order first.");
       if (step === "quote") {
-        done({ quote: await privateProvider.requestArbitrumQuote(flow.order, crypto.randomUUID()) });
+        done({ quote: await privateProvider.requestArbitrumQuote(flow.order, randomId()) });
         return;
       }
       if (!flow.quote) throw new Error("Request and review a signed quote first.");
@@ -3869,6 +4005,7 @@ export function TradingTerminal({
         done({ reclaimHash: null, reclaimed: false });
         throw new Error("The reclaim transaction reverted. The solver may have reserved the package; check the observation.");
       }
+      if (flow.attempt) annotateAttempt(flow.attempt.attemptId, { reclaimed: true });
       done({ reclaimHash: hash, reclaimed: true });
     } catch (cause) {
       const raw = cause instanceof Error ? cause.message : "Arbitrum Sepolia action failed.";
@@ -3881,7 +4018,7 @@ export function TradingTerminal({
       const restart = (step === "prepare" || step === "sign") && /expired|admission/i.test(message);
       setArbitrumFlow((previous) => ({
         ...(previous ?? flow),
-        ...(restart ? { order: null, quote: null, attempt: null, authorization: null, idempotencyKey: crypto.randomUUID() } : {}),
+        ...(restart ? { order: null, quote: null, attempt: null, authorization: null, idempotencyKey: randomId() } : {}),
         busy: null,
         error: restart ? `${message} Create a fresh order to re-quote.` : message,
       }));
@@ -3973,6 +4110,9 @@ export function TradingTerminal({
 
   return (
     <div className={styles.terminalShell}>
+      <Suspense fallback={null}>
+        <TradeLinkListener onChange={setLinkSearch} />
+      </Suspense>
       <main className={styles.terminalGrid}>
         <div className={styles.areaInstrument}>
           <InstrumentBar

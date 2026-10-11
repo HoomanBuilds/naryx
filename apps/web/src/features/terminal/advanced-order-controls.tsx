@@ -7,6 +7,7 @@ import {
   type ActivationConditionInput,
   type DerivedAdvancedOrderView,
   type ExecutionScheduleInput,
+  type OrderActivationSummaryView,
   type OrderActivationView,
   type PreparedAdvancedOrderAttemptView,
 } from "@naryx/sdk";
@@ -26,6 +27,32 @@ import styles from "./trading-terminal.module.css";
 type AdvancedMode = "IMMEDIATE" | "CONDITIONAL" | "SCHEDULED" | "PACKAGE_TWAP";
 type ConditionMetric = ActivationConditionInput["metric"];
 type Comparator = ActivationConditionInput["comparator"];
+
+// The full view comes back from derivation; the public poll returns only the summary.
+type ActivationDisplay = Readonly<{
+  status: OrderActivationView["status"];
+  kind: OrderActivationSummaryView["kind"];
+  executedAtoms: bigint;
+  reservedAttemptId: string | null;
+}>;
+
+function fullDisplay(view: OrderActivationView): ActivationDisplay {
+  return Object.freeze({
+    status: view.status,
+    kind: view.order.packageOrderType as OrderActivationSummaryView["kind"],
+    executedAtoms: view.progress.executedQuantity,
+    reservedAttemptId: view.attempts.find((attempt) => attempt.status === "RESERVED")?.attemptId ?? null,
+  });
+}
+
+function summaryDisplay(view: OrderActivationSummaryView): ActivationDisplay {
+  return Object.freeze({
+    status: view.status,
+    kind: view.kind,
+    executedAtoms: view.executedQuantityAtoms,
+    reservedAttemptId: view.reservedAttemptId,
+  });
+}
 
 const INTEGER = /^-?(?:0|[1-9][0-9]*)$/;
 const POSITIVE = /^[1-9][0-9]*$/;
@@ -137,7 +164,9 @@ export function AdvancedOrderControls({
   const [maximumSliceQuantity, setMaximumSliceQuantity] = useState("");
   const [aggregateLimitPrice, setAggregateLimitPrice] = useState("");
   const [stopRule, setStopRule] = useState<ExecutionScheduleInput["stopRule"]>("STOP_ON_FIRST_FAILURE");
-  const [activation, setActivation] = useState<OrderActivationView | null>(derivedOrder?.activation ?? null);
+  const [activation, setActivation] = useState<ActivationDisplay | null>(
+    derivedOrder === null ? null : fullDisplay(derivedOrder.activation),
+  );
   const [busy, setBusy] = useState(false);
   const [prepared, setPrepared] = useState<PreparedAdvancedOrderAttemptView | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -188,7 +217,7 @@ export function AdvancedOrderControls({
       try {
         const next = await client.getOrderActivation(derivedOrder.orderHash);
         if (!stopped) {
-          setActivation(next);
+          setActivation(summaryDisplay(next));
           setError(null);
         }
       } catch (cause) {
@@ -244,7 +273,7 @@ export function AdvancedOrderControls({
         ...(schedule === undefined ? {} : { schedule }),
         ...(atSlot === undefined ? {} : { atSlot }),
       });
-      setActivation(result.activation);
+      setActivation(fullDisplay(result.activation));
       onDerived(result);
       // The service now lists the derived order for its owner, so it survives a reload.
       void queryClient.invalidateQueries({ queryKey: [ORDER_ACTIVATIONS_QUERY] });
@@ -273,7 +302,7 @@ export function AdvancedOrderControls({
   }
 
   if (derivedOrder !== null && activation !== null) {
-    const reservedAttempt = activation.attempts.find((attempt) => attempt.status === "RESERVED");
+    const reservedAttemptId = activation.reservedAttemptId;
     return (
       <div className={styles.strategyDomainReview}>
         <div className={styles.evidenceHeading}>
@@ -281,24 +310,22 @@ export function AdvancedOrderControls({
           <span>{activation.status}</span>
         </div>
         <div className={styles.reviewGrid}>
-          <span>Order type</span><strong>{activation.order.packageOrderType.replaceAll("_", " ")}</strong>
-          <span>Executed quantity</span><strong>{activation.progress.executedQuantity.toString()} atoms</strong>
-          <span>Completed attempts</span><strong>{activation.progress.attemptedSlices}</strong>
-          <span>Failed attempts</span><strong>{activation.progress.failedSlices}</strong>
+          <span>Order type</span><strong>{activation.kind.replaceAll("_", " ")}</strong>
+          <span>Executed quantity</span><strong>{activation.executedAtoms.toString()} atoms</strong>
           <span>Advanced order</span><strong title={derivedOrder.orderHash}>{derivedOrder.orderHash.slice(0, 10)}...{derivedOrder.orderHash.slice(-8)}</strong>
           {prepared === null ? null : <><span>Executable child</span><strong title={prepared.orderHash}>{prepared.orderHash.slice(0, 10)}...{prepared.orderHash.slice(-8)}</strong></>}
         </div>
         <p className={styles.fieldContext} role="status">
           The activation runtime accepts authoritative observations and creates at most one reserved child attempt. The exact child still requires the normal owner package-book authorization.
         </p>
-        {reservedAttempt === undefined ? null : (
+        {reservedAttemptId === null ? null : (
           <button
             type="button"
             className={styles.primaryAction}
             disabled={busy}
-            onClick={() => void prepareReservedAttempt(reservedAttempt.attemptId)}
+            onClick={() => void prepareReservedAttempt(reservedAttemptId)}
           >
-            {busy ? "Preparing executable slice" : reservedAttempt.childOrderHashHex === undefined ? "Prepare executable slice" : "Load executable slice"}
+            {busy ? "Preparing executable slice" : "Prepare executable slice"}
           </button>
         )}
         <button type="button" className={styles.secondaryAction} disabled={busy} onClick={() => {

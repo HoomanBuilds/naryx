@@ -3,6 +3,7 @@
 import { useState, useSyncExternalStore } from "react";
 import type { DomainId, PackageMode, QuoteMode, SlippageBps } from "./terminal-view-model";
 import styles from "./trading-terminal.module.css";
+import { randomId } from "./secure-context";
 
 const STORAGE_KEY = "naryx.terminal.strategy-presets.v1";
 const CHANGE_EVENT = "naryx-strategy-presets";
@@ -180,7 +181,7 @@ export function StrategyPresetControls({
     const preset: StrategyPreset = {
       ...valid,
       version: 1,
-      id: crypto.randomUUID(),
+      id: randomId(),
       name: trimmed,
       createdAtMs: Date.now(),
     };

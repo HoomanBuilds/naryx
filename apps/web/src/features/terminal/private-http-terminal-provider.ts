@@ -12,6 +12,7 @@ import { fromProtocolJson } from "@naryx/sdk";
 import bs58 from "bs58";
 import { decodeFunctionData, hashTypedData, parseAbi } from "viem";
 import { parseSolanaDevnetAccountStatus, type SolanaDevnetAccountStatus } from "./solana-devnet-onboarding";
+import { randomId, requireSubtleCrypto } from "./secure-context";
 
 const SOLANA_DEVNET_GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 const MAX_TRANSACTION_BYTES = 1232;
@@ -503,8 +504,13 @@ export type OwnerPackageEntry = Readonly<{
 
 export type OrderActivationStatus = "WAITING" | "COMPLETED" | "STOPPED" | "CANCELLED" | "EXPIRED";
 
-/** One advanced order from GET /internal/terminal/order-activations, reduced to what the terminal shows. */
+/**
+ * One advanced order from GET /internal/terminal/order-activations, reduced to what the terminal shows.
+ * The default list is the public SUMMARY; trigger terms, schedule terms, and slice counts come only
+ * from the owner's signed FULL read and are null otherwise.
+ */
 export type OwnerOrderActivation = Readonly<{
+  disclosure: "SUMMARY" | "FULL";
   orderHash: string;
   sourceOrderHash: string | null;
   owner: string;
@@ -513,18 +519,20 @@ export type OwnerOrderActivation = Readonly<{
   /** The schedule's aggregate limit, or the order's economic quantity for a conditional order. */
   quantityAtoms: bigint;
   executedAtoms: bigint;
-  attemptedSlices: number;
-  failedSlices: number;
+  attemptedSlices: number | null;
+  failedSlices: number | null;
   lastAttemptedSliceIndex: number | null;
   /** A reserved child attempt may be executing; the service refuses cancellation until it resolves. */
   attemptReserved: boolean;
+  /** The earliest window the next scheduled slice may activate, while the order is WAITING. */
+  nextSlice: Readonly<{ unit: string; value: bigint }> | null;
   condition: Readonly<{ metric: string; comparator: "AT_OR_ABOVE" | "AT_OR_BELOW"; threshold: bigint; unit: string }> | null;
   schedule: Readonly<{ timeUnit: string; startValue: bigint; sliceInterval: bigint; sliceCount: number }> | null;
   registeredAtMs: number;
   updatedAtMs: number;
 }>;
 
-/** What the owner's wallet signs to cancel one advanced order, rebuilt locally from the verified terms. */
+/** What the owner's wallet signs to cancel or fully read advanced orders, rebuilt locally from the verified terms. */
 export type OrderActivationCancellationChallenge =
   | Readonly<{ scheme: "EIP712_SECP256K1"; typedData: unknown }>
   | Readonly<{ scheme: "ED25519"; message: Uint8Array }>;
@@ -1555,12 +1563,9 @@ function requireRuntimeHealth(
 }
 
 const READINESS_HASH_PATTERN = /^[0-9a-f]{64}$/;
-const READINESS_DOMAIN_IDS = new Set([
-  "svm:devnet",
-  BASE_SEPOLIA_DOMAIN_ID,
-  ARBITRUM_SEPOLIA_DOMAIN_ID,
-  HYPERLIQUID_DOMAIN_ID,
-]);
+// The service's testnet cap policy accepts any domain matching this pattern, so a newly registered
+// domain is not rejected here; lanes still match readiness entries by exact domain id.
+const READINESS_DOMAIN_ID_PATTERN = /^[a-z0-9]+:[A-Za-z0-9._-]{1,64}$/;
 
 function requireReadinessAtoms(value: unknown, name: string): string {
   if (typeof value !== "string" || !EVM_DECIMAL_PATTERN.test(value)) {
@@ -1592,7 +1597,7 @@ function requireExecutionReadinessStatus(value: unknown): ExecutionReadinessStat
       "maxPrincipalAtomsPerOwnerPerDay", "maxRecoveryLossAtomsPerOperation",
       "authorizedPrincipalAtomsToday", "latestAuthorization",
     ], `Execution readiness domain ${index}`);
-    if (typeof entry.domainId !== "string" || !READINESS_DOMAIN_IDS.has(entry.domainId) || seen.has(entry.domainId)) {
+    if (typeof entry.domainId !== "string" || !READINESS_DOMAIN_ID_PATTERN.test(entry.domainId) || seen.has(entry.domainId)) {
       throw new Error(`Execution readiness domain ${index} identity is invalid.`);
     }
     seen.add(entry.domainId);
@@ -4008,6 +4013,9 @@ function requireArbitrumAsyncObservation(
 }
 
 const ACTIVATION_CANCELLATION_DOMAIN = "NARYX/order-activation-cancellation/v1";
+const ACTIVATION_READ_DOMAIN = "NARYX/order-activation-read/v1";
+/** The service accepts a signed read up to five minutes out; a shorter window tolerates clock skew. */
+const ACTIVATION_READ_LIFETIME_MS = 120_000;
 const ACTIVATION_EVM_OWNER = /^0x(?!0{40}$)[0-9a-f]{40}$/;
 const ACTIVATION_SOLANA_OWNER = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const ACTIVATION_STATUSES: ReadonlySet<unknown> = new Set(["WAITING", "COMPLETED", "STOPPED", "CANCELLED", "EXPIRED"]);
@@ -4090,7 +4098,9 @@ function requireOwnerOrderActivation(value: unknown, owner: string): OwnerOrderA
     requireHex32(attempt.attemptId, "Advanced order attempt id");
     if (attempt.status === "RESERVED") attemptReserved = true;
   }
+  const nextSliceIndex = lastAttemptedSliceIndex === null ? 0 : lastAttemptedSliceIndex + 1;
   return Object.freeze({
+    disclosure: "FULL",
     orderHash,
     sourceOrderHash,
     owner,
@@ -4102,11 +4112,98 @@ function requireOwnerOrderActivation(value: unknown, owner: string): OwnerOrderA
     failedSlices,
     lastAttemptedSliceIndex,
     attemptReserved,
+    nextSlice: value.status === "WAITING" && schedule !== null && nextSliceIndex < schedule.sliceCount
+      ? Object.freeze({ unit: schedule.timeUnit, value: schedule.startValue + schedule.sliceInterval * BigInt(nextSliceIndex) })
+      : null,
     condition,
     schedule,
     registeredAtMs: activationCount(value.registeredAtMs, "Advanced order registration time"),
     updatedAtMs: activationCount(value.updatedAtMs, "Advanced order update time"),
   });
+}
+
+const ACTIVATION_SUMMARY_KEYS = [
+  "executedQuantityAtoms", "kind", "nextActivation", "orderHashHex", "quantityAtoms", "registeredAtMs",
+  "remainingQuantityAtoms", "reservedAttemptId", "status", "updatedAtMs",
+].join(",");
+
+/** One entry of the owner list's SUMMARY disclosure; the list itself binds the owner. */
+function requireOwnerOrderActivationSummary(value: unknown, owner: string): OwnerOrderActivation {
+  if (!isRecord(value)) throw new Error("Advanced order summary is invalid.");
+  const keys = Object.keys(value).filter((key) => key !== "sourceOrderHashHex").sort().join(",");
+  const kind = value.kind;
+  if (keys !== ACTIVATION_SUMMARY_KEYS || (kind !== "CONDITIONAL" && kind !== "SCHEDULED" && kind !== "PACKAGE_TWAP")
+      || !ACTIVATION_STATUSES.has(value.status)) {
+    throw new Error("Advanced order summary is invalid.");
+  }
+  const orderHash = requireHex32(value.orderHashHex, "Advanced order hash");
+  const sourceOrderHash = value.sourceOrderHashHex === undefined ? null : requireHex32(value.sourceOrderHashHex, "Advanced source order hash");
+  const status = value.status as OrderActivationStatus;
+  const quantityAtoms = activationAtoms(value.quantityAtoms, "Advanced order quantity");
+  const executedAtoms = activationAtoms(value.executedQuantityAtoms, "Advanced order executed quantity");
+  const remainingAtoms = activationAtoms(value.remainingQuantityAtoms, "Advanced order remaining quantity");
+  if (quantityAtoms === BigInt(0) || executedAtoms > quantityAtoms
+      || remainingAtoms !== (status === "WAITING" ? quantityAtoms - executedAtoms : BigInt(0))) {
+    throw new Error("Advanced order summary quantities are inconsistent.");
+  }
+  let nextSlice: OwnerOrderActivation["nextSlice"] = null;
+  if (value.nextActivation !== null) {
+    const next = value.nextActivation;
+    if (!isRecord(next) || !ACTIVATION_UNITS.has(next.unit) || kind === "CONDITIONAL" || status !== "WAITING") {
+      throw new Error("Advanced order next activation is invalid.");
+    }
+    nextSlice = Object.freeze({ unit: next.unit as string, value: activationAtoms(next.value, "Advanced order next activation") });
+  }
+  const reservedAttemptId = value.reservedAttemptId === null ? null : requireHex32(value.reservedAttemptId, "Advanced order reserved attempt");
+  return Object.freeze({
+    disclosure: "SUMMARY",
+    orderHash,
+    sourceOrderHash,
+    owner,
+    kind,
+    status,
+    quantityAtoms,
+    executedAtoms,
+    attemptedSlices: null,
+    failedSlices: null,
+    lastAttemptedSliceIndex: null,
+    attemptReserved: reservedAttemptId !== null,
+    nextSlice,
+    condition: null,
+    schedule: null,
+    registeredAtMs: activationCount(value.registeredAtMs, "Advanced order registration time"),
+    updatedAtMs: activationCount(value.updatedAtMs, "Advanced order update time"),
+  });
+}
+
+/**
+ * An owner list in the disclosure it was asked for. A service that predates disclosures sends full
+ * documents without the field, which still parse. Any entry that does not parse fails the read closed.
+ */
+function parseOwnerOrderActivationList(
+  payload: unknown,
+  owner: string,
+  expected: OwnerOrderActivation["disclosure"],
+): readonly OwnerOrderActivation[] {
+  if (!isRecord(payload) || payload.version !== 1 || payload.owner !== owner || !Array.isArray(payload.activations)) {
+    throw new Error("Advanced order list does not bind this owner.");
+  }
+  const disclosure = payload.disclosure ?? "FULL";
+  if (disclosure !== "SUMMARY" && disclosure !== "FULL") throw new Error("Advanced order list disclosure is unsupported.");
+  if (expected === "FULL" && disclosure !== "FULL") throw new Error("The service did not return the full advanced-order details.");
+  const activations = payload.activations.map((entry) => disclosure === "SUMMARY"
+    ? requireOwnerOrderActivationSummary(entry, owner)
+    : requireOwnerOrderActivation(entry, owner));
+  if (new Set(activations.map((entry) => entry.orderHash)).size !== activations.length) {
+    throw new Error("Advanced order list repeats an order.");
+  }
+  return Object.freeze(activations);
+}
+
+/** The 32 bytes the service binds a signed full read to; recomputed here so the wallet never signs unchecked terms. */
+async function orderActivationReadHash(terms: Readonly<{ owner: string; nonce: string; expiresAtMs: number }>): Promise<Uint8Array> {
+  const encoded = new TextEncoder().encode(JSON.stringify([ACTIVATION_READ_DOMAIN, terms.owner, terms.nonce, terms.expiresAtMs]));
+  return new Uint8Array(await requireSubtleCrypto().digest("SHA-256", encoded));
 }
 
 /** The 32 bytes the service binds a cancellation to; recomputed here so the wallet never signs unchecked terms. */
@@ -4116,7 +4213,7 @@ async function orderActivationCancellationHash(
   const encoded = new TextEncoder().encode(JSON.stringify([
     ACTIVATION_CANCELLATION_DOMAIN, terms.orderHash, terms.owner, terms.nonce, terms.expiresAtMs,
   ]));
-  return new Uint8Array(await crypto.subtle.digest("SHA-256", encoded));
+  return new Uint8Array(await requireSubtleCrypto().digest("SHA-256", encoded));
 }
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -5172,7 +5269,7 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     const authorized = await this.#postJson(`/internal/terminal/orders/${orderHashHex}/authorize`, { signature }, signal);
     if (!authorized.ok) throw await serviceFailure(authorized, `${label} order authorization`);
     const quoted = await this.#postJson(
-      `/internal/terminal/orders/${orderHashHex}/quote`, { idempotencyKey: crypto.randomUUID() }, signal,
+      `/internal/terminal/orders/${orderHashHex}/quote`, { idempotencyKey: randomId() }, signal,
     );
     if (!quoted.ok) throw await serviceFailure(quoted, `${label} solver quote`);
     const quote = await quoted.json() as unknown;
@@ -5273,14 +5370,67 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     } catch {
       throw new Error("Advanced order list is invalid.");
     }
-    if (!isRecord(payload) || payload.version !== 1 || payload.owner !== owner || !Array.isArray(payload.activations)) {
-      throw new Error("Advanced order list does not bind this owner.");
+    return parseOwnerOrderActivationList(payload, owner, "SUMMARY");
+  }
+
+  /**
+   * The owner's full advanced-order documents under a single-use signed read: the service binds the
+   * owner, a fresh 32-byte nonce, and a short expiry; the terms and their hash are checked here before
+   * the wallet signs.
+   */
+  async readOwnerOrderActivationsFull(
+    owner: string,
+    sign: (challenge: OrderActivationCancellationChallenge) => Promise<string>,
+    signal?: AbortSignal,
+  ): Promise<readonly OwnerOrderActivation[]> {
+    const evm = ACTIVATION_EVM_OWNER.test(owner);
+    if (!evm && !ACTIVATION_SOLANA_OWNER.test(owner)) throw new Error("Wallet address has no supported signature scheme.");
+    const nonce = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
+    const expiresAtMs = Date.now() + ACTIVATION_READ_LIFETIME_MS;
+    const prepared = await this.#postJson("/internal/terminal/order-activations/read-challenge", { owner, nonce, expiresAtMs }, signal);
+    if (prepared.status === 404) throw new Error("Signed advanced-order reads are not served by this private terminal service.");
+    if (!prepared.ok) throw new Error(prepared.status === 400 ? "The service refused the read expiry. Check this device's clock, then retry." : "The signed read could not be prepared.");
+    const terms = await prepared.json() as unknown;
+    const readHash = await orderActivationReadHash({ owner, nonce, expiresAtMs });
+    if (!isRecord(terms) || terms.version !== 1 || terms.status !== "UNSIGNED_READ" || terms.owner !== owner
+        || terms.nonce !== nonce || terms.expiresAtMs !== expiresAtMs
+        || terms.scheme !== (evm ? "EIP712_SECP256K1" : "ED25519") || terms.readHash !== bytesToHex(readHash)) {
+      throw new Error("Advanced order read terms do not match this owner, nonce, and expiry.");
     }
-    const activations = payload.activations.map((entry) => requireOwnerOrderActivation(entry, owner));
-    if (new Set(activations.map((entry) => entry.orderHash)).size !== activations.length) {
-      throw new Error("Advanced order list repeats an order.");
+    const challenge: OrderActivationCancellationChallenge = evm ? {
+      scheme: "EIP712_SECP256K1",
+      typedData: {
+        domain: { name: "Naryx Order Activation", version: "1" },
+        types: {
+          OrderActivationRead: [
+            { name: "readHash", type: "bytes32" },
+            { name: "owner", type: "address" },
+            { name: "nonce", type: "bytes32" },
+            { name: "expiresAtMs", type: "uint256" },
+          ],
+        },
+        primaryType: "OrderActivationRead",
+        message: { readHash: `0x${bytesToHex(readHash)}`, owner, nonce: `0x${nonce}`, expiresAtMs: BigInt(expiresAtMs) },
+      },
+    } : { scheme: "ED25519", message: readHash };
+    const signed = await sign(challenge);
+    const signature = evm ? signed.toLowerCase() : signed;
+    if (!evm) requireCanonicalBase58Signature(signature, "Read signature");
+    else if (!EVM_SIGNATURE_PATTERN.test(signature)) throw new Error("Wallet returned an invalid read signature.");
+    const query = new URLSearchParams({ owner, nonce, expiresAtMs: String(expiresAtMs), signature });
+    const response = await fetch(`${this.#baseUrl}/internal/terminal/order-activations?${query.toString()}`, {
+      method: "GET", cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer", signal,
+    });
+    if (response.status === 403) throw new Error("The service did not accept this signature as the owner's read.");
+    if (response.status === 409) throw new Error("This signed read was already used or expired. Sign a fresh one.");
+    if (!response.ok) throw new Error("Full advanced-order details are temporarily unavailable.");
+    let payload: unknown;
+    try {
+      payload = fromProtocolJson(await response.json() as unknown);
+    } catch {
+      throw new Error("Advanced order list is invalid.");
     }
-    return Object.freeze(activations);
+    return parseOwnerOrderActivationList(payload, owner, "FULL");
   }
 
   /**

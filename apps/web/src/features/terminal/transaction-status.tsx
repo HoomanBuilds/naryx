@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useSyncExternalStore, type ReactNode } from "react";
 import type { DomainId } from "./terminal-view-model";
 import shellStyles from "./shell/shell.module.css";
 
@@ -27,6 +27,43 @@ export function refreshOnReturn(refresh: () => void): () => void {
   };
   document.addEventListener("visibilitychange", onVisible);
   return () => document.removeEventListener("visibilitychange", onVisible);
+}
+
+// Observation keys an open Trade ticket is polling itself, so the shell watcher does not read them twice.
+const ticketWatched = new Map<string, number>();
+const ticketWatchListeners = new Set<() => void>();
+let ticketWatchedSnapshot: ReadonlySet<string> = new Set();
+const NO_TICKET_WATCHES: ReadonlySet<string> = new Set();
+
+function publishTicketWatches() {
+  ticketWatchedSnapshot = new Set(ticketWatched.keys());
+  ticketWatchListeners.forEach((listener) => listener());
+}
+
+/** Marks an observation key as polled by the Trade ticket until the returned release runs. */
+export function claimTicketWatch(idempotencyKey: string): () => void {
+  ticketWatched.set(idempotencyKey, (ticketWatched.get(idempotencyKey) ?? 0) + 1);
+  publishTicketWatches();
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const count = (ticketWatched.get(idempotencyKey) ?? 1) - 1;
+    if (count > 0) ticketWatched.set(idempotencyKey, count);
+    else ticketWatched.delete(idempotencyKey);
+    publishTicketWatches();
+  };
+}
+
+export function useTicketWatchedKeys(): ReadonlySet<string> {
+  return useSyncExternalStore(
+    (listener) => {
+      ticketWatchListeners.add(listener);
+      return () => { ticketWatchListeners.delete(listener); };
+    },
+    () => ticketWatchedSnapshot,
+    () => NO_TICKET_WATCHES,
+  );
 }
 
 /** The transaction reference as a link to its testnet explorer page, or plain text when none applies. */

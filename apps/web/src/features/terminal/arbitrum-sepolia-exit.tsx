@@ -15,8 +15,9 @@ import {
   type PrivateHttpTerminalProvider,
 } from "./private-http-terminal-provider";
 import { annotateAttempt } from "./shell/attempt-index";
-import { TransactionLink, refreshOnReturn } from "./transaction-status";
+import { TransactionLink, claimTicketWatch, refreshOnReturn } from "./transaction-status";
 import styles from "./trading-terminal.module.css";
+import { randomId } from "./secure-context";
 
 /**
  * Arbitrum Sepolia full-close exit, in the same progressive steps as the entry: the service builds
@@ -110,7 +111,7 @@ function finished(observation: ArbitrumAsyncObservation | null): boolean {
 function freshFlow(owner: string, account: ArbitrumAccountStatus | null, error: string | null): ExitFlow {
   return {
     owner, account, exitOrder: null, quote: null, attempt: null, authorization: null,
-    idempotencyKey: crypto.randomUUID(), observation: null, observationNote: null, takeSpotHash: null, busy: null, error,
+    idempotencyKey: randomId(), observation: null, observationNote: null, takeSpotHash: null, busy: null, error,
   };
 }
 
@@ -167,6 +168,7 @@ export function useArbitrumSepoliaExit(input: Readonly<{
   const observing = enabled && current?.authorization?.signed === true && !finished(current.observation);
   useEffect(() => {
     if (!provider || !observing || !attemptId || !idempotencyKey) return;
+    const releaseWatch = claimTicketWatch(idempotencyKey);
     const controller = new AbortController();
     let inFlight = false;
     const poll = async () => {
@@ -194,6 +196,7 @@ export function useArbitrumSepoliaExit(input: Readonly<{
       controller.abort();
       window.clearInterval(timer);
       stopReturnRefresh();
+      releaseWatch();
     };
   }, [attemptId, idempotencyKey, observing, provider]);
 
@@ -287,12 +290,12 @@ export function useArbitrumSepoliaExit(input: Readonly<{
       }
       const account = flowAtStart.account!;
       if (nextStep === "create") {
-        done({ exitOrder: await provider.createArbitrumExitOrder(account, { contextId, slippageBps, idempotencyKey: crypto.randomUUID() }) });
+        done({ exitOrder: await provider.createArbitrumExitOrder(account, { contextId, slippageBps, idempotencyKey: randomId() }) });
         return;
       }
       const exitOrder = flowAtStart.exitOrder!;
       if (nextStep === "quote") {
-        const quote = await provider.requestArbitrumQuote(exitOrder.order, crypto.randomUUID());
+        const quote = await provider.requestArbitrumQuote(exitOrder.order, randomId());
         if (quote.route.action !== "EXIT") throw new Error("The solver quote is not an exit.");
         done({ quote });
         return;
@@ -343,7 +346,7 @@ export function useArbitrumSepoliaExit(input: Readonly<{
       const restart = (nextStep === "prepare" || nextStep === "sign") && /expired|admission|deadline/i.test(message);
       setFlow((previous) => ({
         ...(previous ?? flowAtStart),
-        ...(restart ? { exitOrder: null, quote: null, attempt: null, authorization: null, idempotencyKey: crypto.randomUUID() } : {}),
+        ...(restart ? { exitOrder: null, quote: null, attempt: null, authorization: null, idempotencyKey: randomId() } : {}),
         busy: null,
         error: restart ? `${message} Create a fresh exit order.` : message,
       }));

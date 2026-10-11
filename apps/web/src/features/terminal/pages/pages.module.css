@@ -624,9 +624,14 @@
   font-weight: 600;
 }
 
+.cardHead > div {
+  min-width: 0;
+}
+
 .cardHead p {
   color: var(--text-dim);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .cardHead > :last-child:not(h2):not(p) {

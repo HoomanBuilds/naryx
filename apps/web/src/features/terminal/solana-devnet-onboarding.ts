@@ -2,6 +2,7 @@
 
 import bs58 from "bs58";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { requireSubtleCrypto } from "./secure-context";
 
 /**
  * Solana Devnet account onboarding. The private service reads which per-wallet accounts are still
@@ -133,7 +134,7 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 }
 
 async function anchorDiscriminator(name: string): Promise<Uint8Array> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`global:${name}`));
+  const digest = await requireSubtleCrypto().digest("SHA-256", new TextEncoder().encode(`global:${name}`));
   return new Uint8Array(digest).slice(0, 8);
 }
 
@@ -423,6 +424,19 @@ export async function getSolanaDevnetSlot(): Promise<number> {
   const slot = await devnetRpc("getSlot", [{ commitment: "finalized" }]);
   if (typeof slot !== "number" || !Number.isSafeInteger(slot) || slot <= 0) throw new Error("Devnet RPC returned an invalid slot.");
   return slot;
+}
+
+/**
+ * True only when Devnet has no status for the signature and its finalized block height is past the
+ * transaction's last valid height, so the transaction can no longer land.
+ */
+export async function solanaDevnetTransactionExpired(signature: string, lastValidBlockHeight: number): Promise<boolean> {
+  if (await devnetRpc("getGenesisHash", []) !== SOLANA_DEVNET_GENESIS_HASH) throw new Error("The Devnet RPC endpoint is not Solana Devnet.");
+  const result = await devnetRpc("getSignatureStatuses", [[signature], { searchTransactionHistory: true }]);
+  if (!isRecord(result) || !Array.isArray(result.value)) throw new Error("Devnet RPC returned invalid signature statuses.");
+  if (result.value[0] !== null) return false;
+  const height = await devnetRpc("getBlockHeight", [{ commitment: "finalized" }]);
+  return typeof height === "number" && height > lastValidBlockHeight;
 }
 
 export async function waitForSolanaDevnetFinality(signature: string, lastValidBlockHeight: number): Promise<void> {

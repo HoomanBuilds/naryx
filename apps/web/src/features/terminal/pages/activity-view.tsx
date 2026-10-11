@@ -17,6 +17,7 @@ import {
   useActivationOwners,
   useCancelOrderActivation,
   useOwnerOrderActivations,
+  useRevealOrderActivationDetails,
 } from "../advanced-order-activations";
 import { ReadState, publicClient, readFailure } from "./public-read";
 import { TransactionLink } from "../transaction-status";
@@ -574,6 +575,7 @@ export function ActivityView() {
   const participants = useActivationOwners();
   const advanced = useOwnerOrderActivations(participants);
   const advancedCancel = useCancelOrderActivation();
+  const advancedReveal = useRevealOrderActivationDetails();
   const participantQueries = useQueries({
     queries: participants.map((participantId) => ({
       queryKey: ["participant-package-orders", publicApiBaseUrl, participantId],
@@ -945,8 +947,19 @@ export function ActivityView() {
         <div className={styles.cardHead}>
           <div>
             <h2 id="advanced-orders-title">Advanced orders</h2>
-            <p>Conditional, scheduled, and TWAP orders the connected wallets own: every waiting order plus the most recent finished ones. Cancelling needs the owner&apos;s signature.</p>
+            <p>Conditional, scheduled, and TWAP orders the connected wallets own: every waiting order plus the most recent finished ones. Trigger and schedule terms stay private until the owner signs a one-time read. Cancelling needs the owner&apos;s signature.</p>
+            {advancedReveal.state !== null && advancedReveal.state.phase !== "busy" ? (
+              <p className={styles.readNote} role={advancedReveal.state.phase === "error" ? "alert" : "status"}>{advancedReveal.state.text}</p>
+            ) : null}
           </div>
+          <button
+            type="button"
+            className={styles.ghost}
+            disabled={advancedReveal.busy || advanced.activations.length === 0}
+            onClick={() => void advancedReveal.reveal(participants)}
+          >
+            {advancedReveal.busy ? (advancedReveal.awaitingWallet ? "Confirm in your wallet" : "Reading") : "Show full terms"}
+          </button>
         </div>
         <div className={styles.scroll}>
           <table className={styles.table}>
@@ -999,7 +1012,8 @@ export function ActivityView() {
                     </td>
                     <td>
                       <span className={statePill(activation.status)}>{stateText(activation.status)}</span>
-                      {activation.failedSlices > 0 ? <small className={styles.cellDetail}>{activation.failedSlices} of {activation.attemptedSlices} slices failed</small> : null}
+                      {activation.failedSlices !== null && activation.failedSlices > 0
+                        ? <small className={styles.cellDetail}>{activation.failedSlices} of {activation.attemptedSlices} slices failed</small> : null}
                     </td>
                     <td className={styles.num} title="Quantity in asset atoms">
                       {activation.executedAtoms.toString()} / {(activation.quantityAtoms - activation.executedAtoms).toString()}

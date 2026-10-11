@@ -53,9 +53,9 @@ function parseTemplate(value: unknown, withCapabilities: boolean): StrategyProgr
         !Number.isSafeInteger(action.minimumLegs) || !Number.isSafeInteger(action.maximumLegs) ||
         action.minimumLegs < 1 || action.maximumLegs < action.minimumLegs ||
         !Array.isArray(action.settlementClasses) || !action.settlementClasses.every((item) => typeof item === "string") ||
-        !Array.isArray(action.legRoles) || (withCapabilities &&
-        (action.activation !== "EXECUTABLE_BY_QUALIFIED_LANE" && action.activation !== "ADAPTER_ACTIVATION_REQUIRED") ||
-        !Array.isArray(action.qualifiedLanes) || !action.qualifiedLanes.every((item) => typeof item === "string"))) {
+        !Array.isArray(action.legRoles) || (withCapabilities && (
+          (action.activation !== "EXECUTABLE_BY_QUALIFIED_LANE" && action.activation !== "ADAPTER_ACTIVATION_REQUIRED") ||
+          !Array.isArray(action.qualifiedLanes) || !action.qualifiedLanes.every((item) => typeof item === "string")))) {
       throw new Error("Strategy program action is invalid.");
     }
     const legRoles = action.legRoles.map((leg) => {

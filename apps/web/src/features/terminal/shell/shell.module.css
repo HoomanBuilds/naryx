@@ -369,11 +369,12 @@
   outline-offset: 2px;
 }
 
+/* Bottom left on desktop, clear of the ticket column and above the pinned status bar. */
 .notices {
   position: fixed;
   z-index: 50;
-  top: 64px;
-  right: 16px;
+  bottom: 40px;
+  left: 16px;
   display: flex;
   width: min(360px, calc(100vw - 32px));
   flex-direction: column;
@@ -402,8 +403,10 @@
 
 .notice p {
   flex: 1;
+  min-width: 0;
   margin: 0;
   color: var(--text-primary);
+  overflow-wrap: anywhere;
 }
 
 .notice a {
@@ -448,7 +451,19 @@
   }
 }
 
+/* Narrow layouts stack the ticket and pin trade actions to the bottom, so notices sit at the top. */
+@media (max-width: 1023px) {
+  .notices {
+    top: 60px;
+    bottom: auto;
+  }
+}
+
 @media (max-width: 720px) {
+  .notices {
+    top: calc(8px + env(safe-area-inset-top));
+  }
+
   .header {
     position: static;
     height: auto;

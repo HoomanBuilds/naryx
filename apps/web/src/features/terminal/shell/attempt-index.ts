@@ -23,6 +23,10 @@ export type RecordedAttempt = Readonly<{
   transactionHash?: string;
   /** The idempotency key the service binds this attempt's status reads to. */
   idempotencyKey?: string;
+  /** The unreserved funding went back to the wallet, so nothing is left to observe. */
+  reclaimed?: true;
+  /** The final outcome the watcher read, so a reload does not poll a settled attempt again. */
+  settled?: "ok" | "bad";
 }>;
 
 const KEY = "naryx.terminal.attempts";
@@ -66,7 +70,9 @@ function isAttempt(value: unknown): value is RecordedAttempt {
     typeof entry.flow === "string" && FLOWS.includes(entry.flow) &&
     typeof entry.createdAt === "number" && Number.isSafeInteger(entry.createdAt) &&
     (entry.transactionHash === undefined || (typeof entry.transactionHash === "string" && TRANSACTION.test(entry.transactionHash))) &&
-    (entry.idempotencyKey === undefined || (typeof entry.idempotencyKey === "string" && IDEMPOTENCY_KEY.test(entry.idempotencyKey)));
+    (entry.idempotencyKey === undefined || (typeof entry.idempotencyKey === "string" && IDEMPOTENCY_KEY.test(entry.idempotencyKey))) &&
+    (entry.reclaimed === undefined || entry.reclaimed === true) &&
+    (entry.settled === undefined || entry.settled === "ok" || entry.settled === "bad");
 }
 
 function readRaw(): string | null {
@@ -112,7 +118,10 @@ function write(raw: string) {
 }
 
 /** Adds the submitted transaction and its observation key to an attempt this browser recorded. */
-export function annotateAttempt(attemptId: string, submitted: Readonly<{ transactionHash?: string; idempotencyKey?: string }>) {
+export function annotateAttempt(
+  attemptId: string,
+  submitted: Readonly<{ transactionHash?: string; idempotencyKey?: string; reclaimed?: true; settled?: "ok" | "bad" }>,
+) {
   const current = snapshot();
   const known = current.find((entry) => entry.attemptId === attemptId);
   if (known === undefined) return;

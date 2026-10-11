@@ -4,6 +4,7 @@ import { useState, useSyncExternalStore } from "react";
 import { NaryxClient, type CandlePage } from "@naryx/sdk";
 import type { PublicPackageOpportunity } from "../public-market-feed";
 import styles from "./pages.module.css";
+import { randomId } from "../secure-context";
 
 const STORAGE_KEY = "naryx.terminal.paper-positions.v1";
 const STORAGE_EVENT = "naryx-paper-positions";
@@ -172,7 +173,7 @@ export function PaperTradingLab({
   const openPaperPosition = () => {
     if (selected === null || entry === null) return;
     const position: PaperPosition = Object.freeze({
-      id: crypto.randomUUID(),
+      id: randomId(),
       packageMarketId: selected.packageMarketId,
       seriesId: selected.seriesId,
       direction,

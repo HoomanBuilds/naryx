@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { useRef } from "react";
 import { NaryxApiError, NaryxClient, type VerifiedNativeClearingDomain, type VerifiedRiskDomain } from "@naryx/sdk";
 import { formatAtomicAmount } from "../format";
 import styles from "./pages.module.css";
@@ -37,6 +38,16 @@ const ZERO = BigInt(0);
 const EVENT_PAGE = 500;
 const EVENT_PAGES = 10;
 const RECENT_EVENTS = 5;
+// Clearing state moves slowly; a hidden tab does not poll at all and catches up when it returns.
+const CLEARING_REFRESH_MS = 60_000;
+const CLEARING_RETRY_MS = 180_000;
+
+function clearingRefreshInterval(query: { state: { status: string } }): number {
+  return query.state.status === "error" ? CLEARING_RETRY_MS : CLEARING_REFRESH_MS;
+}
+
+/** Where a domain's event scan stopped and the latest events per owned account, bounded. */
+type EventTail = Readonly<{ after: number; recent: ReadonlyMap<string, readonly ClearingEvent[]>; partial: boolean }>;
 
 function abs(value: bigint): bigint {
   return value < ZERO ? -value : value;
@@ -84,23 +95,41 @@ function mentions(value: unknown, id: string, depth = 0): boolean {
   return Object.values(value).some((entry) => mentions(entry, id, depth + 1));
 }
 
-async function domainEvents(client: NaryxClient, clearingDomainId: string): Promise<Readonly<{ events: readonly ClearingEvent[]; partial: boolean }>> {
-  const events: ClearingEvent[] = [];
-  let after = 0;
+/**
+ * Reads only events after the last scanned sequence and keeps the latest few per account. A long
+ * history is scanned a bounded number of pages per poll, so later polls catch up to the head.
+ */
+async function tailDomainEvents(
+  client: NaryxClient,
+  clearingDomainId: string,
+  accountIds: readonly string[],
+  previous: EventTail | undefined,
+): Promise<EventTail> {
+  const recent = new Map(accountIds.map((id) => [id, [...(previous?.recent.get(id) ?? [])]]));
+  let after = previous?.after ?? 0;
   for (let page = 0; page < EVENT_PAGES; page += 1) {
     const batch = await client.getNativeClearingEvents(clearingDomainId, { after, limit: EVENT_PAGE });
-    events.push(...batch);
-    if (batch.length < EVENT_PAGE) return { events, partial: false };
-    after = batch[batch.length - 1]!.sequence;
+    for (const event of batch) {
+      for (const [id, events] of recent) {
+        if (!mentions(event.payload, id)) continue;
+        events.push(event);
+        if (events.length > RECENT_EVENTS) events.shift();
+      }
+    }
+    if (batch.length > 0) after = batch[batch.length - 1]!.sequence;
+    if (batch.length < EVENT_PAGE) return { after, recent, partial: false };
   }
-  return { events, partial: true };
+  return { after, recent, partial: true };
 }
 
 export function useNativeClearing(baseUrl: string | null, owners: readonly string[]): NativeClearingState {
+  // Per base URL, domain, and account set; a changed account set rescans that domain from the start.
+  const tails = useRef(new Map<string, EventTail>());
   const query = useQuery({
     queryKey: ["native-clearing", baseUrl, owners],
     enabled: baseUrl !== null && owners.length > 0,
-    refetchInterval: 30_000,
+    refetchInterval: clearingRefreshInterval,
+    refetchIntervalInBackground: false,
     queryFn: async ({ signal }) => {
       const client = new NaryxClient({ baseUrl: baseUrl!.replace(/\/+$/, "") });
       let domains: readonly VerifiedNativeClearingDomain[];
@@ -117,13 +146,15 @@ export function useNativeClearing(baseUrl: string | null, owners: readonly strin
         try {
           const mine = (await client.getNativeClearingAccounts(id)).filter((account) => owners.includes(account.ownerId));
           if (mine.length === 0) return [];
+          const tailKey = `${baseUrl}|${id}|${mine.map((account) => account.accountId).sort().join(",")}`;
           const [mark, history] = await Promise.all([
             client.getNativeClearingMark(id).catch((error: unknown) => {
               if (signal.aborted || apiStatus(error) !== 404) throw error;
               return null;
             }),
-            domainEvents(client, id),
+            tailDomainEvents(client, id, mine.map((account) => account.accountId), tails.current.get(tailKey)),
           ]);
+          tails.current.set(tailKey, history);
           eventsPartial ||= history.partial;
           const nowMs = BigInt(Date.now());
           return mine.map((account) => Object.freeze({
@@ -131,7 +162,7 @@ export function useNativeClearing(baseUrl: string | null, owners: readonly strin
             account,
             health: accountHealth(account, domain, mark, nowMs),
             markAgeMs: mark === null ? null : nowMs - mark.observedAtMs,
-            events: Object.freeze(history.events.filter((event) => mentions(event.payload, account.accountId)).slice(-RECENT_EVENTS).reverse()),
+            events: Object.freeze([...(history.recent.get(account.accountId) ?? [])].reverse()),
           }));
         } catch (error) {
           if (signal.aborted) throw error;
@@ -257,7 +288,7 @@ export function NativeClearingCard({ state, connected }: { state: NativeClearing
           </table>
         </div>
       )}
-      {state.eventsPartial ? <p className={styles.notice}>Event history is long; only the first {EVENT_PAGE * EVENT_PAGES} domain events were scanned.</p> : null}
+      {state.eventsPartial ? <p className={styles.notice}>Event history is long; {EVENT_PAGE * EVENT_PAGES} more domain events are scanned each refresh until the latest are reached.</p> : null}
     </section>
   );
 }
@@ -268,7 +299,8 @@ export function useRiskDomains(baseUrl: string | null, ids: readonly string[]) {
   return useQuery({
     queryKey: ["risk-domains", baseUrl, ids],
     enabled: baseUrl !== null && ids.length > 0,
-    refetchInterval: 30_000,
+    refetchInterval: clearingRefreshInterval,
+    refetchIntervalInBackground: false,
     queryFn: async ({ signal }) => {
       const client = new NaryxClient({ baseUrl: baseUrl!.replace(/\/+$/, "") });
       return Promise.all(ids.map(async (id): Promise<RiskDomainView> => {
