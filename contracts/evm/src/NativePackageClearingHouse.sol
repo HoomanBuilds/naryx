@@ -225,7 +225,11 @@ contract NativePackageClearingHouse is ReentrancyGuard {
 
     function deposit(bytes32 accountId, uint256 amount) external nonReentrant {
         Account storage account_ = _ownedAccount(accountId);
-        _requireUnlocked(accountId);
+        bytes32 curedAuctionId = accountLock[accountId];
+        if (curedAuctionId != bytes32(0)) {
+            if (_auctions[curedAuctionId].defaultedAccountId != accountId) revert AccountLocked();
+            _requireLiveMark();
+        }
         if (amount == 0) revert InvalidAccount();
         uint256 beforeBalance = collateralToken.balanceOf(address(this));
         collateralToken.safeTransferFrom(msg.sender, address(this), amount);
@@ -233,6 +237,14 @@ contract NativePackageClearingHouse is ReentrancyGuard {
         account_.collateralQuoteAtoms += amount;
         account_.sequence += 1;
         emit CollateralDeposited(accountId, amount, account_.sequence);
+        if (curedAuctionId != bytes32(0)) {
+            // A deposit into an account under its own default auction is a cure: it must restore maintenance
+            // margin (status 1 or 2) at the live mark, so a bankrupt account also needs non-negative equity.
+            // A partial cure reverts, which keeps the auctioned account hash fixed until settlement.
+            uint8 status = _status(account_, currentMark.priceTicks);
+            if (status != 1 && status != 2) revert MarginViolation();
+            _cancelAuction(curedAuctionId);
+        }
     }
 
     function withdraw(bytes32 accountId, uint256 amount) external nonReentrant {
@@ -461,9 +473,16 @@ contract NativePackageClearingHouse is ReentrancyGuard {
     function settleDefaultAuction(bytes32 auctionId) external {
         DefaultAuction storage auction_ = _auctions[auctionId];
         _requireLiveMark();
+        if (auction_.defaultedAccountId == bytes32(0) || auction_.settled || block.timestamp < auction_.closeAt) {
+            revert AuctionUnavailable();
+        }
+        uint8 defaultedStatus = _status(_accounts[auction_.defaultedAccountId], currentMark.priceTicks);
+        if (defaultedStatus != 3 && defaultedStatus != 4) {
+            _cancelAuction(auctionId);
+            return;
+        }
         if (
-            auction_.defaultedAccountId == bytes32(0) || auction_.settled || block.timestamp < auction_.closeAt
-                || block.timestamp > auction_.bestBidValidUntil || block.timestamp > auction_.markValidUntil
+            block.timestamp > auction_.bestBidValidUntil || block.timestamp > auction_.markValidUntil
                 || auction_.bestBackstopAccountId == bytes32(0)
         ) revert AuctionUnavailable();
         if (
@@ -504,6 +523,11 @@ contract NativePackageClearingHouse is ReentrancyGuard {
         {
             revert AuctionUnavailable();
         }
+        _cancelAuction(auctionId);
+    }
+
+    function _cancelAuction(bytes32 auctionId) private {
+        DefaultAuction storage auction_ = _auctions[auctionId];
         auction_.settled = true;
         delete accountLock[auction_.defaultedAccountId];
         if (auction_.bestBackstopAccountId != bytes32(0)) delete accountLock[auction_.bestBackstopAccountId];

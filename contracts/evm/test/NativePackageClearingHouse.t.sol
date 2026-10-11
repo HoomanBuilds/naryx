@@ -234,6 +234,67 @@ contract NativePackageClearingHouseTest is Test {
         assertTrue(clearing.auction(auctionId).settled);
     }
 
+    function testRecoveredMarkAtSettlementCancelsWithoutTransfer() public {
+        _openUnderMarginedLong(keccak256("authorization-9"));
+        clearing.publishMark(keccak256("mark-dip"), 84, 2, uint64(block.timestamp + 600));
+        bytes32 auctionId = keccak256("auction-5");
+        clearing.openDefaultAuction(auctionId, LONG_ACCOUNT);
+        vm.prank(vm.addr(BACKSTOP_KEY));
+        clearing.bidDefaultAuction(auctionId, BACKSTOP_ACCOUNT, 76, uint64(block.timestamp + 600));
+        clearing.publishMark(keccak256("mark-recovered"), 85, 3, uint64(block.timestamp + 600));
+        vm.warp(block.timestamp + 60);
+
+        clearing.settleDefaultAuction(auctionId);
+
+        assertTrue(clearing.auction(auctionId).settled);
+        assertEq(clearing.account(LONG_ACCOUNT).positionAtoms, 1);
+        assertEq(clearing.account(BACKSTOP_ACCOUNT).positionAtoms, 0);
+        assertEq(clearing.accountLock(LONG_ACCOUNT), bytes32(0));
+        assertEq(clearing.accountLock(BACKSTOP_ACCOUNT), bytes32(0));
+        vm.expectRevert(NativePackageClearingHouse.AuctionUnavailable.selector);
+        clearing.settleDefaultAuction(auctionId);
+    }
+
+    function testOwnerCureDepositCancelsAuction() public {
+        _openUnderMarginedLong(keccak256("authorization-10"));
+        clearing.publishMark(keccak256("mark-dip"), 84, 2, uint64(block.timestamp + 600));
+        bytes32 auctionId = keccak256("auction-6");
+        clearing.openDefaultAuction(auctionId, LONG_ACCOUNT);
+        vm.prank(vm.addr(BACKSTOP_KEY));
+        clearing.bidDefaultAuction(auctionId, BACKSTOP_ACCOUNT, 76, uint64(block.timestamp + 600));
+        address owner = vm.addr(LONG_KEY);
+        token.mint(owner, 1_000);
+        vm.startPrank(owner);
+        token.approve(address(clearing), 1_000);
+        vm.expectRevert(NativePackageClearingHouse.MarginViolation.selector);
+        clearing.deposit(LONG_ACCOUNT, 999);
+        clearing.deposit(LONG_ACCOUNT, 1_000);
+        vm.stopPrank();
+
+        assertEq(clearing.accountStatus(LONG_ACCOUNT), 2);
+        assertTrue(clearing.auction(auctionId).settled);
+        assertEq(clearing.accountLock(LONG_ACCOUNT), bytes32(0));
+        assertEq(clearing.accountLock(BACKSTOP_ACCOUNT), bytes32(0));
+        vm.warp(block.timestamp + 60);
+        vm.expectRevert(NativePackageClearingHouse.AuctionUnavailable.selector);
+        clearing.settleDefaultAuction(auctionId);
+    }
+
+    function testLockedBackstopCannotDeposit() public {
+        _openUnderMarginedLong(keccak256("authorization-11"));
+        clearing.publishMark(keccak256("mark-dip"), 84, 2, uint64(block.timestamp + 600));
+        bytes32 auctionId = keccak256("auction-7");
+        clearing.openDefaultAuction(auctionId, LONG_ACCOUNT);
+        address backstopOwner = vm.addr(BACKSTOP_KEY);
+        token.mint(backstopOwner, 1);
+        vm.startPrank(backstopOwner);
+        clearing.bidDefaultAuction(auctionId, BACKSTOP_ACCOUNT, 84, uint64(block.timestamp + 600));
+        token.approve(address(clearing), 1);
+        vm.expectRevert(NativePackageClearingHouse.AccountLocked.selector);
+        clearing.deposit(BACKSTOP_ACCOUNT, 1);
+        vm.stopPrank();
+    }
+
     function _openUnderMarginedLong(bytes32 authorizationHash) private {
         vm.prank(vm.addr(LONG_KEY));
         clearing.withdraw(LONG_ACCOUNT, 975_000);
