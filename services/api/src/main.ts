@@ -341,6 +341,7 @@ if (process.env.NARYX_SOLANA_DEVNET_RUNTIME_ENABLED === "true") {
       bindings: new HttpSolanaDevnetBindingSource(
         process.env.NARYX_SOLANA_DEVNET_BINDING_ORIGIN ?? "",
       ),
+      lookupTables: () => loadSolanaDevnetRuntimeManifest(solanaDevnetManifestPath).lookupTables,
     });
   } catch (error) {
     solanaDevnetRuntimeError = error;

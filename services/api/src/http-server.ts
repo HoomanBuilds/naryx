@@ -2376,7 +2376,10 @@ export function createPrivateTerminalRequestHandler(
         return;
       }
       try {
-        const preparationRequest = parseExecutionPreparationRequest(await readJson(request));
+        const preparationRequest = parseExecutionPreparationRequest(
+          await readJson(request),
+          terminalMarkets.solana?.descriptor,
+        );
         await requireExecutionReadiness("SOLANA_DEVNET_PREPARE", {
           idempotencyKey: preparationRequest.idempotencyKey,
         });
@@ -2396,6 +2399,7 @@ export function createPrivateTerminalRequestHandler(
           reject(response, 400, error.code, error.message);
           return;
         }
+        console.error("Devnet preparation failed:", error instanceof Error ? error.message : "unknown error");
         reject(response, 502, "EXECUTION_PREPARATION_FAILED", "Devnet preparation failed closed.");
       }
       return;

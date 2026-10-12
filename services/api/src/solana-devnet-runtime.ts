@@ -13,6 +13,7 @@ import {
   type SolanaDeploymentIdentityReadPort,
   type SolanaDevnetProgramExpectation,
   type SolanaLookupTableConfig,
+  type SolanaMaterializationRequest,
   type SolanaReadOnlyRpc,
 } from "@naryx/adapter-solana";
 import { bytesEqual, fromProtocolJson, parseProtocolJson, type DomainRef, type PackageAdmissionInput } from "@naryx/protocol-types";
@@ -86,6 +87,7 @@ export type SolanaDevnetRuntimeOptions = Readonly<{
   materializerRpc?: SolanaReadOnlyRpc;
   observationRpc?: SolanaDevnetReadOnlyRpc & { getMultipleAccounts(addresses: readonly string[], minContextSlot: number): Promise<{ contextSlot: number; accounts: readonly ({ owner: string; data: Uint8Array } | null)[] }> };
   currentSlot?: () => Promise<bigint>;
+  lookupTables?: () => readonly SolanaLookupTableConfig[];
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -247,15 +249,18 @@ export async function createSolanaDevnetRuntime(options: SolanaDevnetRuntimeOpti
     bindings: checkedBindingSource(options.bindings, manifest.programs, deploymentRpc, manifest),
   });
   const lifecycleRecorder = new SolanaDevnetLifecycleStoreRecorder(options.lifecycle);
-  return createSolanaDevnetExecutionPorts({
-    contextProvider,
-    materializer: new SolanaUnsignedTransactionMaterializer(materializerRpc, {
+  const materializer = {
+    materialize: (input: SolanaMaterializationRequest) => new SolanaUnsignedTransactionMaterializer(materializerRpc, {
       environment: "devnet",
       domain: manifest.domain,
       rpcUrl: options.rpcUrl,
       expectedGenesisHash: manifest.expectedGenesisHash,
-      lookupTables: manifest.lookupTables,
-    }),
+      lookupTables: options.lookupTables?.() ?? manifest.lookupTables,
+    }).materialize(input),
+  };
+  return createSolanaDevnetExecutionPorts({
+    contextProvider,
+    materializer,
     store: new SqlitePreparedSolanaDevnetStore(options.preparedStorePath),
     rpc: observationRpc,
     lifecycleRecorder,

@@ -3,7 +3,10 @@ import { getCompiledTransactionMessageDecoder } from "@solana/transaction-messag
 import { getTransactionDecoder, getTransactionEncoder } from "@solana/transactions";
 import bs58 from "bs58";
 import { formatDecimalAtoms, parseDecimalAtoms } from "./decimal.js";
-import { PRIVATE_TERMINAL_PACKAGE_MANIFEST_V1 as manifest } from "./private-terminal-manifest.js";
+import {
+  PRIVATE_TERMINAL_PACKAGE_MANIFEST_V1 as manifest,
+  type TerminalMarketDescriptor,
+} from "./private-terminal-manifest.js";
 import {
   isPackageMode,
   isSlippageBps,
@@ -50,7 +53,7 @@ const EVIDENCE_KEYS = [
   "serializedTransactionBytes",
 ] as const;
 const LOOKUP_KEYS = ["address", "addresses", "contentCommitment", "contextSlot"] as const;
-const SIZE_PATTERN = /^(?:0|[1-9]\d{0,5})(?:\.\d{1,6})?$/;
+const SIZE_PATTERN = /^(?:0|[1-9]\d{0,39})(?:\.(\d{1,36}))?$/;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
 const FAILURE_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 const HEX_32_PATTERN = /^[0-9a-f]{64}$/;
@@ -188,22 +191,31 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
   return keys.length === expected.length && expected.every((key, index) => keys[index] === key);
 }
 
-function canonicalSize(atoms: bigint): string {
-  const fixed = formatDecimalAtoms(atoms, manifest.baseDecimals);
+type ExecutionSizeLimits = Pick<TerminalMarketDescriptor, "baseDecimals" | "maximumSizeAtoms">;
+
+function canonicalSize(atoms: bigint, limits: ExecutionSizeLimits): string {
+  const fixed = formatDecimalAtoms(atoms, limits.baseDecimals);
   const [whole, fraction = ""] = fixed.split(".");
   const trimmedFraction = fraction.replace(/0+$/, "");
   return trimmedFraction.length === 0 ? whole! : `${whole}.${trimmedFraction}`;
 }
 
-function requireCanonicalSize(value: unknown): string {
-  if (typeof value !== "string" || !SIZE_PATTERN.test(value)) {
+function requireCanonicalSize(value: unknown, limits: ExecutionSizeLimits): string {
+  if (typeof value !== "string") {
     throw new ExecutionValidationError(
       "INVALID_SIZE",
-      "Size must be a canonical positive decimal string with at most six decimal places.",
+      "Size must be a canonical positive decimal string within the active asset precision.",
     );
   }
-  const atoms = parseDecimalAtoms(value, manifest.baseDecimals);
-  if (atoms <= 0n || atoms > manifest.maximumSizeAtoms || canonicalSize(atoms) !== value) {
+  const matched = SIZE_PATTERN.exec(value);
+  if (matched === null || (matched[1]?.length ?? 0) > limits.baseDecimals) {
+    throw new ExecutionValidationError(
+      "INVALID_SIZE",
+      "Size must be a canonical positive decimal string within the active asset precision.",
+    );
+  }
+  const atoms = parseDecimalAtoms(value, limits.baseDecimals);
+  if (atoms <= 0n || atoms > limits.maximumSizeAtoms || canonicalSize(atoms, limits) !== value) {
     throw new ExecutionValidationError("INVALID_SIZE", "Size is outside the supported canonical range.");
   }
   return atoms.toString();
@@ -246,7 +258,10 @@ function requireSignature(value: unknown): string {
   return value;
 }
 
-export function parseExecutionPreparationRequest(value: unknown): NormalizedCashCarryExecutionRequest {
+export function parseExecutionPreparationRequest(
+  value: unknown,
+  sizeLimits: ExecutionSizeLimits = manifest,
+): NormalizedCashCarryExecutionRequest {
   if (!isRecord(value)) {
     throw new ExecutionValidationError("INVALID_BODY", "Request body must be a JSON object.");
   }
@@ -262,7 +277,7 @@ export function parseExecutionPreparationRequest(value: unknown): NormalizedCash
   if (!isPackageMode(value.mode)) {
     throw new ExecutionValidationError("INVALID_MODE", "Mode must be entry or exit.");
   }
-  const sizeAtoms = requireCanonicalSize(value.size);
+  const sizeAtoms = requireCanonicalSize(value.size, sizeLimits);
   if (!isSlippageBps(value.slippageBps)) {
     throw new ExecutionValidationError("INVALID_SLIPPAGE", "Slippage choice is not supported.");
   }
