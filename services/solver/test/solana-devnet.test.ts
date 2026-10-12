@@ -22,6 +22,7 @@ import {
   previewTestPerpShortAdjustment,
   pythObservationAgeMs,
   reservationIdFor,
+  solanaResourceSubjectId,
   type QuoteLevelState,
   type TestPerpMarketState,
 } from '../src/solana-devnet-wire.js';
@@ -43,6 +44,13 @@ test('reservation ids match the protocol firm reservation identity', () => {
   assert.deepEqual(
     reservationIdFor(domain, solverId, orderHash, nonce),
     Uint8Array.from(firmReservationId({ domain, solverId, orderHash, reservationNonce: BigInt(`0x${Buffer.from(nonce).toString('hex')}`) })),
+  );
+});
+
+test('derives the canonical Solana resource subject identity', () => {
+  assert.equal(
+    Buffer.from(solanaResourceSubjectId('ADAPTER', 'naryx.solana.spot-firm-reservation')).toString('hex'),
+    'a63891640d3cb1969e0cbd7600549d24bdd97d09f6b3a2eecf42503ece059e6e',
   );
 });
 
@@ -173,8 +181,8 @@ test('keeps a standing level per side that a quote made a lead time from now can
   for (const quoteTtlSlots of [SOLANA_DEVNET_MIN_QUOTE_TTL_SLOTS, 451n, 1_499n]) {
     const ttlConfig = { ...(config as object), quoteTtlSlots } as never;
     const fresh = { ...ask, expirySlot: standingLevelExpiry(at(1_000n, []), ttlConfig, 2)! };
-    const keeps = quoteTtlSlots - standingLevelLeadSlots(quoteTtlSlots) - quoteTtlSlots / 3n;
-    assert.ok(keeps >= (5n * quoteTtlSlots) / 12n && keeps >= 125n);
+    const keeps = quoteTtlSlots - standingLevelLeadSlots(quoteTtlSlots) - (quoteTtlSlots * 2n) / 3n;
+    assert.ok(keeps >= quoteTtlSlots / 6n && keeps >= 50n);
     assert.equal(standingLevelExpiry(at(1_000n + keeps - 1n, [fresh]), ttlConfig, 2), undefined);
     assert.equal(standingLevelExpiry(at(1_000n + keeps, [fresh]), ttlConfig, 2), 1_000n + keeps + quoteTtlSlots);
   }

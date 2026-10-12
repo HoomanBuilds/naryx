@@ -270,7 +270,7 @@ function chainAccounts(trader: PublicKey, order: PackageOrder): Map<string, { ow
   for (let slotIndex = 0; slotIndex < 32; slotIndex += 1) {
     const side = slotIndex === 0 ? QUOTE_SIDE_ASK : slotIndex === 1 ? QUOTE_SIDE_BID : 0;
     page.bytes(settlementClassIdentityHash).bytes(reservationPolicyHash).i128(0n).u64(BigInt(70 + slotIndex)).u64(2n).u64(1n)
-      .u64(1n).u64(100n).u64(0n).u64(SLOT + 300n).u64(100n).u8(side === 0 ? 0 : 1).u8(side).u8(2).bytes(new Uint8Array(13));
+      .u64(1n).u64(100n).u64(0n).u64(SLOT + 450n).u64(100n).u8(side === 0 ? 0 : 1).u8(side).u8(2).bytes(new Uint8Array(13));
   }
   const strategy = PublicKey.findProgramAddressSync(
     [Buffer.from('test-perp-strategy'), trader.toBuffer(), Buffer.from(manifest.testPerp.strategyIdHex, 'hex')], programId('perp_adapter'),
@@ -380,6 +380,10 @@ test('a signed Solana firm entry with a nonzero perp taker fee is admitted under
   const atCap = templatePolicy(entryFee);
   const order = packageOrder('ENTRY', trader, atCap.orderCaps);
   const signed = await signThroughSolver(order, atCap.feePolicy);
+  for (const name of ['riskDomainIndex', 'riskDomainRecord']) {
+    const binding = signed.route.accountBindings.find((candidate) => candidate.routeBindingId === firmRouteBindingId(name));
+    assert.equal(binding?.ownerIdentity, programs.core!.programId);
+  }
   const admitted = admit(order, signed, atCap.feePolicy, atCap.accountModeClass);
   const fee = (asset: AssetRef) => admitted.quote.expectedNormalizedVenueFeesByAsset.find((entry) => compareBytes(assetKey(entry.asset), assetKey(asset)) === 0)?.atoms;
   assert.equal(fee(quote), entryFee);

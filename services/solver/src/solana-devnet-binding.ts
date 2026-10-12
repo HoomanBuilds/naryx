@@ -59,6 +59,7 @@ import {
   reservationIdFor,
   sameDomain,
   sha256,
+  solanaResourceSubjectId,
   testPerpOraclePricePerLot,
   type FirmQuoteLockState,
   type FirmReservationState,
@@ -363,9 +364,21 @@ export function createSolanaDevnetBindingService(dependencies: SolanaDevnetBindi
         const program = programAddress(manifest, { core: 'core', reservation: 'reservation', packageBook: 'package_book', perpAdapter: 'perp_adapter', perpVenue: 'perp_venue' }[name]);
         return [name, { programId: program.programId, programDataAddress: program.programDataAddress, codeIdentity: program.codeIdentity }];
       })) as unknown as FirmCashCarryBinding['deployments'];
+      const resourceIdentity = {
+        spotAdapter: ['ADAPTER', route.legs[0]!.adapter.adapterId],
+        perpAdapter: ['ADAPTER', route.legs[1]!.adapter.adapterId],
+        spotMarket: ['MARKET', route.legs[0]!.market.subjectId],
+        perpMarket: ['MARKET', route.legs[1]!.market.subjectId],
+        spotVenue: ['VENUE', route.legs[0]!.venue.subjectId],
+        perpVenue: ['VENUE', route.legs[1]!.venue.subjectId],
+        baseAsset: ['ASSET', route.legs[0]!.baseAsset.assetId],
+        quoteAsset: ['ASSET', route.legs[0]!.quoteAsset.assetId],
+      } as const;
       const resource = (name: typeof SOLANA_DEVNET_RESOURCE_NAMES[number]) => {
         const value = config.resources[name];
+        const [kind, protocolId] = resourceIdentity[name];
         return {
+          subjectId: solanaResourceSubjectId(kind, protocolId),
           manifestHash: value.manifestHash,
           subjectAddress: value.subjectAddress,
           programId: value.programId,
@@ -659,6 +672,7 @@ export function createSolanaDevnetBindingServer(
           sendJson(response, status, { error: { code: error.code, message: error.message } });
           return;
         }
+        console.error('Solana Devnet binding failed:', error instanceof Error ? error.message : 'unknown error');
         sendJson(response, 502, { error: { code: 'BINDING_FAILED', message: 'Solana Devnet binding failed closed' } });
       }
     })();

@@ -34,6 +34,19 @@ export function sha256(...parts: readonly Uint8Array[]): Uint8Array {
   return Uint8Array.from(digest.digest());
 }
 
+export function solanaResourceSubjectId(
+  kind: 'ADAPTER' | 'ASSET' | 'MARKET' | 'VENUE',
+  protocolId: string,
+): Uint8Array {
+  if (protocolId.length === 0 || !/^[\x20-\x7e]+$/.test(protocolId)) fail('resource protocol id is invalid');
+  return sha256(
+    Buffer.from('NARYX/solana-devnet/resource-subject/v1', 'ascii'),
+    Buffer.from(kind, 'ascii'),
+    Buffer.of(0),
+    Buffer.from(protocolId, 'ascii'),
+  );
+}
+
 export function accountDiscriminator(name: string): Buffer {
   return createHash('sha256').update(`account:${name}`).digest().subarray(0, 8);
 }

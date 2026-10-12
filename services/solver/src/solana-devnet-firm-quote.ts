@@ -280,6 +280,8 @@ function accountBindings(
     reservationVault: accounts.reservation!, solverQuote: accounts.solver!, traderBase: accounts.trader!,
     traderQuote: accounts.trader!, executorBase: accounts.executorAuthority!, executorQuote: accounts.executorAuthority!,
   };
+  const coreOwned = new Set(['riskDomainIndex', 'riskDomainRecord']);
+  const coreProgramId = programAddress(manifest, 'core').programId;
   return Object.entries(accounts).map(([name, identity]) => {
     const program = programCode[name];
     const adapter = legAdapter[name];
@@ -289,6 +291,7 @@ function accountBindings(
       ...(adapter === undefined ? {} : { adapter, adapterBindingId: 'program' }),
       accountIdentity: identity,
       ...(program === undefined ? {} : { codeIdentity: toHex(programAddress(manifest, program).codeIdentity) }),
+      ...(coreOwned.has(name) ? { ownerIdentity: coreProgramId } : {}),
       ...(authority === undefined ? {} : { ownerIdentity: TOKEN_PROGRAM_ID.toBase58(), authorityIdentity: authority }),
       ...(name === 'trader' ? { authorityIdentity: identity } : {}),
     };
@@ -550,22 +553,19 @@ export function packageBookLevelInstructions(input: Readonly<{
 }
 
 /**
- * How far ahead a standing level must stay usable: a quarter of the quote TTL. A quote needs a level
- * expiring beyond a third of the TTL from its own slot, so a level written with a full TTL keeps
- * satisfying this lead for at least 5/12 of the TTL after it is written. The configured minimum TTL
- * makes that several refresh cycles, so a fresh level is not rewritten on the next one.
+ * How far ahead a standing level must stay usable. A quote needs two-thirds of its TTL remaining for
+ * reservation funding, quote locking, wallet signing, and submission. Keeping another sixth ahead
+ * lets the standing-liquidity loop refresh before user quotes fall below that execution window.
  */
 export function standingLevelLeadSlots(quoteTtlSlots: bigint): bigint {
-  return quoteTtlSlots / 4n;
+  return quoteTtlSlots / 6n;
 }
 
 /**
  * Standing liquidity, as an exchange market maker keeps it: one firm level per side (the ask that
  * entries fill, the bid that exits fill) that a quote made `standingLevelLeadSlots` from now can
  * still use, at full capacity. Without it the first quote after a level ages out waits for a Devnet
- * write to finalize, which outlasts the API's quote request. A level written now (expiry now + quote
- * TTL) stops satisfying the lead 5/12 of the TTL later, so this writes about once per side per that
- * window. Returns how many levels it wrote.
+ * write to finalize, which outlasts the API's quote request. Returns how many levels it wrote.
  */
 export async function refreshSolanaDevnetStandingLevels(
   dependencies: Pick<SolanaDevnetFirmQuoteDependencies, 'manifest' | 'config' | 'rpc' | 'writer' | 'key'>,
@@ -601,8 +601,8 @@ export function standingLevelExpiry(
   const units = maxUnits < config.levelCapacityUnits ? maxUnits : config.levelCapacityUnits;
   if (units <= 0n) return undefined;
   const quotedAt = state.slot + standingLevelLeadSlots(config.quoteTtlSlots);
-  // The window a quote at that slot applies: expiry beyond a third of the TTL, within the TTL.
-  const usable = selectFirmLevel(state, config as SolanaDevnetSolverConfig, units, quotedAt + config.quoteTtlSlots / 3n,
+  // The window a quote at that slot applies: at least two-thirds of the TTL remains.
+  const usable = selectFirmLevel(state, config as SolanaDevnetSolverConfig, units, quotedAt + (config.quoteTtlSlots * 2n) / 3n,
     quotedAt + config.quoteTtlSlots, side);
   return usable === undefined ? state.slot + config.quoteTtlSlots : undefined;
 }
@@ -837,8 +837,8 @@ export function createSolanaDevnetFirmQuotePort(
     const units = order.quantity.atoms / config.series.spotBaseAtomsPerPackageUnit;
     const latestExpiry = order.expiryValue < state.slot + config.quoteTtlSlots ? order.expiryValue : state.slot + config.quoteTtlSlots;
     if (latestExpiry - state.slot > state.reservationClass.maxTtlSlots) fail('quote TTL exceeds the reservation class TTL');
-    // A route expiry must leave time to fund, lock, and sign; at least a third of the TTL.
-    const minimumExpiry = state.slot + config.quoteTtlSlots / 3n;
+    // A route expiry must leave time to fund, lock, sign, and submit on Devnet.
+    const minimumExpiry = state.slot + (config.quoteTtlSlots * 2n) / 3n;
     let level = selectFirmLevel(state, config, units, minimumExpiry, latestExpiry, side);
     if (level === undefined) {
       if (dependencies.writer === undefined) fail('no usable firm level and solver writes are disabled');

@@ -47,6 +47,22 @@ function fail(message: string): never {
   throw new Error(`Solana Devnet RPC: ${message}`);
 }
 
+const RPC_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
+
+function retryDelay(response: Response, attempt: number): number | undefined {
+  if (response.status !== 429 || attempt >= RPC_RETRY_DELAYS_MS.length) return undefined;
+  const retryAfter = response.headers.get('retry-after');
+  if (retryAfter !== null) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1_000, 5_000);
+  }
+  return RPC_RETRY_DELAYS_MS[attempt];
+}
+
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function record(value: unknown, context: string): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) fail(`${context} is malformed`);
   return value as Record<string, unknown>;
@@ -86,19 +102,28 @@ export class HttpSolanaDevnetSolverRpc implements SolanaDevnetObservationReadPor
   }
 
   async #call(method: string, params: readonly unknown[]): Promise<unknown> {
-    const response = await fetch(this.#url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-      redirect: 'error',
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!response.ok) fail(`${method} returned HTTP ${response.status}`);
-    const envelope = await response.json() as { result?: unknown; error?: { message?: unknown } };
-    if (envelope.error !== undefined || !('result' in envelope)) {
-      fail(`${method} failed${typeof envelope.error?.message === 'string' ? `: ${envelope.error.message.slice(0, 200)}` : ''}`);
+    for (let attempt = 0; ; attempt += 1) {
+      const response = await fetch(this.#url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+        redirect: 'error',
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) {
+        const delay = retryDelay(response, attempt);
+        if (delay !== undefined) {
+          await wait(delay);
+          continue;
+        }
+        fail(`${method} returned HTTP ${response.status}`);
+      }
+      const envelope = await response.json() as { result?: unknown; error?: { message?: unknown } };
+      if (envelope.error !== undefined || !('result' in envelope)) {
+        fail(`${method} failed${typeof envelope.error?.message === 'string' ? `: ${envelope.error.message.slice(0, 200)}` : ''}`);
+      }
+      return envelope.result;
     }
-    return envelope.result;
   }
 
   async getGenesisHash(): Promise<string> {

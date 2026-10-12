@@ -336,6 +336,7 @@ export function createInternalAtomicQuoteRequestHandler(
         reject(response, status, error.code, error.message);
         return;
       }
+      console.error('Atomic entry quote failed:', error instanceof Error ? error.message : 'unknown error');
       reject(response, 502, 'QUOTE_FAILED', 'atomic entry quote failed closed');
     }
   };
