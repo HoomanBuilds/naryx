@@ -1151,17 +1151,18 @@ test('compiles separate solver lock and atomic trader firm entry from the genera
   assert.equal(result.solverLock.authorityRole, 'SOLVER');
   assert.equal(result.solverLock.instructions.length, 1);
   assert.equal(result.traderEntry.authorityRole, 'TRADER');
-  assert.equal(result.traderEntry.instructions.length, 3);
+  assert.equal(result.traderEntry.instructions.length, 4);
   assert(result.solverLock.instructions.every((instruction) => instruction instanceof TransactionInstruction));
   assert(result.traderEntry.instructions.every((instruction) => instruction instanceof TransactionInstruction));
   assert(result.traderEntry.instructions[0]!.programId.equals(ComputeBudgetProgram.programId));
-  assert(result.traderEntry.instructions[1]!.programId.equals(Ed25519Program.programId));
-  assert.deepEqual(Array.from(result.traderEntry.instructions[1]!.data.subarray(112)), Array.from(result.executionDigest));
+  assert(result.traderEntry.instructions[1]!.programId.equals(ComputeBudgetProgram.programId));
+  assert(result.traderEntry.instructions[2]!.programId.equals(Ed25519Program.programId));
+  assert.deepEqual(Array.from(result.traderEntry.instructions[2]!.data.subarray(112)), Array.from(result.executionDigest));
   assert.deepEqual(result.publicExit, { status: 'EVIDENCE_REQUIRED', code: 'PUBLIC_EXIT_BINDING_REQUIRED' });
   assert.deepEqual(result.solverLock.messageSize, { status: 'UNPROVEN', reason: 'RECENT_BLOCKHASH_AND_ALT_CONTENTS_REQUIRED' });
 
   const coder = new BorshCoder(coreIdl);
-  const decoded = coder.instruction.decode(result.traderEntry.instructions[2]!.data);
+  const decoded = coder.instruction.decode(result.traderEntry.instructions[3]!.data);
   assert.equal(decoded?.name, 'execute_firm_cash_and_carry');
   assert.deepEqual((decoded?.data as { args: { action: object } }).args.action, { Entry: {} });
   const expectedData = coder.instruction.encode('execute_firm_cash_and_carry', {
@@ -1186,7 +1187,7 @@ test('compiles separate solver lock and atomic trader firm entry from the genera
     quote_args: quoteArgsForCoder(binding),
     firm_quote_atoms: new BN('50'),
   });
-  assert.deepEqual(result.traderEntry.instructions[2]!.data, expectedData);
+  assert.deepEqual(result.traderEntry.instructions[3]!.data, expectedData);
 });
 
 test('rejects wrong domain, commitments, authority roles, token program, and IDL account shape', () => {
@@ -1521,7 +1522,7 @@ test('compiles a Devnet test perp firm entry against the devnet-test-perp core I
   const { binding, testPerp, testAdmission, testBinding } = testPerpFixture();
   assert.equal(testBinding.coreIdl.address, new PublicKey(testBinding.deployments.core.programId).toBase58());
   const result = compileFirmCashCarryPlan(testAdmission, testBinding);
-  const entryKeys = result.traderEntry.instructions[2]!.keys.map((key) => key.pubkey.toBase58());
+  const entryKeys = result.traderEntry.instructions[3]!.keys.map((key) => key.pubkey.toBase58());
   const strategyIndex = entryKeys.indexOf(binding.accounts.riseStrategy.address as string);
   assert.deepEqual(entryKeys.slice(strategyIndex + 1, strategyIndex + 7), NARYX_TEST_PERP_ACCOUNT_NAMES.map((name) => testPerp[name]));
   assert(result.traderEntry.resolvedAddressCount < 64);
@@ -1576,12 +1577,12 @@ test('compiles a firm buy-back exit for the test perp and fails closed on entry-
   const result = compileFirmCashCarryExitPlan(exitAdmission, exitBinding);
   assert.equal(result.kind, 'MULTI_TRANSACTION_FIRM_CASH_CARRY_EXIT_PLAN');
   assert.equal(result.traderExit.authorityRole, 'TRADER');
-  const instruction = result.traderExit.instructions[2]!;
+  const instruction = result.traderExit.instructions[3]!;
   const decoded = new BorshCoder(testPerpIdl).instruction.decode(instruction.data);
   assert.equal(decoded?.name, 'execute_firm_cash_and_carry');
   assert.deepEqual((decoded?.data as { args: { action: object } }).args.action, { Exit: {} });
   assert.equal((decoded?.data as { quote_args: { expected_side: number } }).quote_args.expected_side, 1);
-  assert.deepEqual(Array.from(result.traderExit.instructions[1]!.data.subarray(112)), Array.from(result.executionDigest));
+  assert.deepEqual(Array.from(result.traderExit.instructions[2]!.data.subarray(112)), Array.from(result.executionDigest));
   assert.equal(instruction.keys.filter((key) => key.isSigner).length, 1);
   const firmInstruction = testPerpIdl.instructions.find((item) => item.name === 'execute_firm_cash_and_carry')!;
   const flatten = (items: typeof firmInstruction.accounts): { name: string }[] =>

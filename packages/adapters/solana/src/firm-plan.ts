@@ -53,6 +53,7 @@ const RESERVATION_CLASS_VERSION = 2;
 // Fixed firm entry addresses other than the perp venue accounts: 59 with the eight Rise accounts.
 const FIXED_FIRM_ENTRY_BASE_ADDRESS_COUNT = 51;
 const MAX_RESOLVED_ADDRESSES = 64;
+const FIRM_ROUTE_HEAP_BYTES = 256 * 1024;
 const LEGACY_TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
 const FIRM_RESERVATION_ADAPTER_CLASS = 'naryx.solana.spot-firm-reservation';
@@ -1372,6 +1373,7 @@ function compileFirmInstructions(admission: PackageAdmission, binding: AnyFirmCa
   const digest = executionDigest(admission, binding, addresses);
   const entryInstructions = Object.freeze([
     ComputeBudgetProgram.setComputeUnitLimit({ units: binding.computeUnitLimit }),
+    ComputeBudgetProgram.requestHeapFrame({ bytes: FIRM_ROUTE_HEAP_BYTES }),
     Ed25519Program.createInstructionWithPublicKey({
       publicKey: identities.solver.toBytes(),
       message: digest,
