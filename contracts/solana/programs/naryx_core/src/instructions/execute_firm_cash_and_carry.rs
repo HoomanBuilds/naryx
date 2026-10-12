@@ -27,10 +27,8 @@ use crate::{
     instructions::{
         cash_carry_strategy::validate_strategy_authority,
         execute_cash_and_carry::{
-            economic_package_commitment, encode_consume_capacity_instruction,
-            enforce_postconditions, execution_units, hash_pubkeys, live_program_code_identity,
-            quote_intent_commitment, quoted_execution_digest, reconstruct_admission,
-            require_solver_signature, resource_admission_commitment, resource_record_keys,
+            encode_consume_capacity_instruction, enforce_postconditions, execution_units,
+            live_program_code_identity, reconstruct_admission, resource_record_keys,
             validate_basic_inputs, validate_cash_carry_risk_domain, validate_expiry,
             validate_package_book_accounts, validate_preconditions,
             validate_quote_series_binding_pair, validate_resource_indices, CashCarryAction,
@@ -41,7 +39,8 @@ use crate::{
             PACKAGE_BOOK_QUOTE_SIDE_BID, ROUTE_ACCOUNTS_DOMAIN,
         },
         resource_registry::{
-            validate_cash_carry_admission, verify_code_identity, CashCarryResources,
+            validate_cash_carry_admission, verify_code_identity, CashCarryAdmission,
+            CashCarryResources,
         },
     },
     perp_venue::{
@@ -54,8 +53,9 @@ use crate::{
     reservation_policy::reservation_policy_hash,
     state::{
         CashCarryExecutionReceipt, CashCarryNonce, CashCarrySeriesBindingIndex,
-        CashCarrySeriesBindingRecord, CashCarryStrategyAuthority, OpenCashCarryPackage,
-        ProtocolConfig, SolverRegistry, FIRM_RESERVATION_SPOT_ADAPTER_CLASS_ID,
+        CashCarrySeriesBindingRecord, CashCarryStrategyAuthority, ManifestRef,
+        OpenCashCarryPackage, ProtocolConfig, SettlementClass, SolverRegistry,
+        FIRM_RESERVATION_SPOT_ADAPTER_CLASS_ID,
     },
     wire::{DomainRef, ProtocolId, HASH_BYTE_LENGTH},
     CashCarryResourceAccountsBumps, CashCarryRiskDomainAccountsBumps,
@@ -76,6 +76,11 @@ const RESERVATION_CLASS_VERSION: u16 = 2;
 const RESERVATION_DOMAIN_IDENTITY_DOMAIN: &[u8] = b"CON/v1/domain-ref-identity";
 const RESERVATION_ID_DOMAIN: &[u8] = b"CON/v1/reservation-id";
 const FIRM_EXECUTION_DIGEST_DOMAIN: &[u8] = b"NARYX/firm-cash-carry-execution/v1";
+const CASH_CARRY_EXECUTION_DIGEST_DOMAIN: &[u8] = b"NARYX/cash-carry-execution/v1";
+const QUOTED_EXECUTION_DIGEST_DOMAIN: &[u8] = b"NARYX/quoted-cash-carry-execution/v1";
+const QUOTE_INTENT_DOMAIN: &[u8] = b"NARYX/cash-carry-quote-intent/v1";
+const RESOURCE_COMMITMENT_DOMAIN: &[u8] = b"NARYX/cash-carry-resources/v1";
+const ECONOMIC_PACKAGE_COMMITMENT_DOMAIN: &[u8] = b"NARYX/cash-carry-economic-package/v1";
 const FIRM_QUOTE_LOCK_SEED: &[u8] = b"firm-quote-lock";
 const FIRM_QUOTE_ARGS_DOMAIN: &[u8] = b"NARYX/firm-quote-args/v1";
 const RESERVATION_ACTION_ENTRY: u8 = 1;
@@ -85,10 +90,79 @@ pub const FIRM_AUXILIARY_PROGRAM_COUNT: usize = 2;
 pub const MAX_FIRM_RISE_EXTRA_ACCOUNTS: usize =
     64 - FIRM_FIXED_ACCOUNT_COUNT - FIRM_AUXILIARY_PROGRAM_COUNT;
 
-fn firm_quote_args_hash(quote: &CashCarryQuoteArgs) -> Result<[u8; 32]> {
-    let mut bytes = Vec::new();
-    quote.serialize(&mut bytes)?;
-    Ok(hashv(&[FIRM_QUOTE_ARGS_DOMAIN, &bytes]).to_bytes())
+struct FixedPreimage<const N: usize> {
+    bytes: [u8; N],
+    len: usize,
+}
+
+impl<const N: usize> FixedPreimage<N> {
+    fn new() -> Self {
+        Self {
+            bytes: [0; N],
+            len: 0,
+        }
+    }
+
+    fn extend(&mut self, value: &[u8]) {
+        let end = self.len + value.len();
+        assert!(end <= N, "fixed preimage overflow");
+        self.bytes[self.len..end].copy_from_slice(value);
+        self.len = end;
+    }
+
+    fn push(&mut self, value: u8) {
+        self.extend(&[value]);
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+fn append_domain<const N: usize>(data: &mut FixedPreimage<N>, domain: &DomainRef) {
+    let id = domain.domain_id().as_bytes();
+    data.extend(&(id.len() as u32).to_be_bytes());
+    data.extend(id);
+    data.extend(&domain.domain_manifest_version().to_be_bytes());
+    data.extend(&domain.domain_manifest_hash());
+}
+
+fn append_manifest<const N: usize>(data: &mut FixedPreimage<N>, identity: &ManifestRef) {
+    data.extend(&identity.subject_id);
+    data.extend(&identity.manifest_version.to_be_bytes());
+    data.extend(&identity.manifest_hash);
+}
+
+fn append_protocol_id<const N: usize>(data: &mut FixedPreimage<N>, value: &str) {
+    data.extend(&(value.len() as u32).to_be_bytes());
+    data.extend(value.as_bytes());
+}
+
+fn append_key<const N: usize>(data: &mut FixedPreimage<N>, key: Pubkey) {
+    data.extend(key.as_ref());
+}
+
+fn firm_quote_args_hash(quote: &CashCarryQuoteArgs) -> [u8; 32] {
+    let mut bytes = FixedPreimage::<384>::new();
+    bytes.extend(&quote.package_book_code_identity);
+    bytes.extend(&quote.series_manifest_hash);
+    bytes.extend(&quote.execution_class_manifest_hash);
+    bytes.extend(&quote.expected_reference_sequence.to_le_bytes());
+    bytes.extend(&quote.expected_shard_sequence.to_le_bytes());
+    bytes.push(quote.slot_index);
+    bytes.extend(&quote.level_id.to_le_bytes());
+    bytes.extend(&quote.expected_level_sequence.to_le_bytes());
+    bytes.push(quote.expected_side);
+    bytes.extend(&quote.package_size_units.to_le_bytes());
+    bytes.extend(&quote.expected_package_price.to_le_bytes());
+    bytes.extend(&quote.expected_max_fee_atoms.to_le_bytes());
+    bytes.extend(&quote.expected_expiry_slot.to_le_bytes());
+    bytes.extend(&quote.expected_settlement_class_identity_hash);
+    bytes.push(quote.expected_quote_mode);
+    bytes.extend(&quote.expected_reservation_policy_hash);
+    bytes.extend(&quote.reservation_id);
+    bytes.extend(&quote.expected_fill_commitment);
+    hashv(&[FIRM_QUOTE_ARGS_DOMAIN, bytes.as_slice()]).to_bytes()
 }
 
 #[account]
@@ -112,6 +186,7 @@ pub struct FirmQuoteLock {
     pub expiry_slot: u64,
     pub consumed: bool,
     pub bump: u8,
+    pub quote: CashCarryQuoteArgs,
 }
 
 #[derive(AnchorSerialize)]
@@ -359,7 +434,7 @@ pub fn lock_firm_quote_handler<'info>(
         bytes.len() == 32 && bytes.as_slice() == quote.expected_fill_commitment.as_ref(),
         ErrorCode::CashCarryQuoteReturnDataInvalid
     );
-    let quote_args_hash = firm_quote_args_hash(&quote)?;
+    let quote_args_hash = firm_quote_args_hash(&quote);
     ctx.accounts.quote_lock.set_inner(FirmQuoteLock {
         domain: domain.clone(),
         solver: ctx.accounts.solver.key(),
@@ -379,12 +454,13 @@ pub fn lock_firm_quote_handler<'info>(
         expiry_slot: quote.expected_expiry_slot,
         consumed: false,
         bump: ctx.bumps.quote_lock,
+        quote,
     });
     Ok(())
 }
 
 #[derive(Accounts)]
-#[instruction(order_hash: [u8; HASH_BYTE_LENGTH], quote_hash: [u8; HASH_BYTE_LENGTH], route_hash: [u8; HASH_BYTE_LENGTH], args: CashCarryExecutionArgs)]
+#[instruction(order_hash: [u8; HASH_BYTE_LENGTH], args: CashCarryExecutionArgs)]
 pub struct ExecuteFirmCashAndCarry<'info> {
     #[account(mut)]
     pub trader: Signer<'info>,
@@ -486,12 +562,14 @@ pub struct FirmSettlementAccounts<'info> {
 pub(crate) fn handler<'info>(
     ctx: Context<'info, ExecuteFirmCashAndCarry<'info>>,
     order_hash: [u8; 32],
-    quote_hash: [u8; 32],
-    route_hash: [u8; 32],
     args: CashCarryExecutionArgs,
-    quote: CashCarryQuoteArgs,
-    firm_quote_atoms: u64,
 ) -> Result<()> {
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: handler");
+    let quote_hash = ctx.accounts.quote_lock.quote_hash;
+    let route_hash = ctx.accounts.quote_lock.route_hash;
+    let quote = ctx.accounts.quote_lock.quote.clone();
+    let firm_quote_atoms = ctx.accounts.quote_lock.quote_atoms;
     validate_basic_inputs(order_hash, quote_hash, route_hash, &args)?;
     #[cfg(feature = "devnet-test-perp")]
     if args.action == CashCarryAction::Exit {
@@ -527,6 +605,8 @@ pub(crate) fn handler<'info>(
     let domain = ctx.accounts.config.domain.clone();
     let resources = &ctx.accounts.resources;
     let admission = reconstruct_admission(resources, &args, domain.clone())?;
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: admission");
     validate_cash_carry_admission(
         &ctx.accounts.config,
         &admission,
@@ -542,6 +622,8 @@ pub(crate) fn handler<'info>(
         },
     )?;
     validate_resource_indices(resources, true)?;
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: resources");
     validate_cash_carry_risk_domain(
         &ctx.accounts.risk.risk_domain_index,
         &ctx.accounts.risk.risk_domain_record,
@@ -553,6 +635,8 @@ pub(crate) fn handler<'info>(
         &args,
         &domain,
     )?;
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: risk");
     let risk_policy = &ctx.accounts.risk.risk_domain_record.policy;
     let risk_series = risk_policy
         .eligible_series
@@ -577,6 +661,8 @@ pub(crate) fn handler<'info>(
         &args,
         execution_slot,
     )?;
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: firm accounts");
 
     validate_quote_series_binding_pair(
         &ctx.accounts.config,
@@ -586,13 +672,15 @@ pub(crate) fn handler<'info>(
         &args,
         &quote,
     )?;
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: series");
     let quote_account_keys = [
         ctx.accounts.quote_lock.key(),
         ctx.accounts.series_index.key(),
         ctx.accounts.series_record.key(),
     ];
     let quote_evidence = QuoteEvidence {
-        intent_commitment: quote_intent_commitment(
+        intent_commitment: firm_quote_intent_commitment(
             &domain,
             &ctx.accounts.solver.key(),
             &ctx.accounts.quote_lock.key(),
@@ -605,8 +693,8 @@ pub(crate) fn handler<'info>(
         fill_commitment: quote.expected_fill_commitment,
     };
     let resource_commitment =
-        resource_admission_commitment(&admission, &resource_record_keys(resources));
-    let economic_commitment = economic_package_commitment(
+        firm_resource_admission_commitment(&admission, &resource_record_keys(resources));
+    let economic_commitment = firm_economic_package_commitment(
         &admission,
         &[
             resources.perp_adapter_record.key(),
@@ -617,22 +705,19 @@ pub(crate) fn handler<'info>(
         ],
     );
     let route_commitment = firm_route_accounts_commitment(&ctx);
-    let package_commitment = hash_pubkeys(
-        PACKAGE_ACCOUNTS_DOMAIN,
-        &[
-            ctx.accounts.firm.trader_base.key(),
-            ctx.accounts.firm.trader_quote.key(),
-            ctx.accounts.rise_strategy.key(),
-        ],
-    );
-    let quoted_digest = quoted_execution_digest(
+    let package_commitment = firm_package_accounts_commitment(&[
+        ctx.accounts.firm.trader_base.key(),
+        ctx.accounts.firm.trader_quote.key(),
+        ctx.accounts.rise_strategy.key(),
+    ]);
+    let quoted_digest = firm_quoted_execution_digest(
+        &ctx,
         &domain,
         order_hash,
         quote_hash,
         route_hash,
         &args,
         resource_commitment,
-        &firm_execution_account_keys(&ctx),
         quote_evidence,
     );
     let digest = hashv(&[
@@ -641,11 +726,8 @@ pub(crate) fn handler<'info>(
         &firm_quote_atoms.to_be_bytes(),
     ])
     .to_bytes();
-    require_solver_signature(
-        &ctx.accounts.runtime.instructions_sysvar,
-        &ctx.accounts.solver.key(),
-        &digest,
-    )?;
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: commitments");
     let (perp_base_lots, perp_limit_ticks, spot_quote_limit_atoms) =
         execution_units(&admission, resources)?;
     require!(
@@ -659,6 +741,8 @@ pub(crate) fn handler<'info>(
     let pre_base = ctx.accounts.firm.trader_base.amount;
     let pre_quote = ctx.accounts.firm.trader_quote.amount;
     fund_executor_quote(&ctx, firm_quote_atoms)?;
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: funded");
     consume_reservation(
         &ctx,
         b"consume_reservation",
@@ -667,6 +751,8 @@ pub(crate) fn handler<'info>(
         route_hash,
         args.nonce,
     )?;
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: reservation consumed");
     ctx.accounts.firm.executor_base.reload()?;
     ctx.accounts.firm.executor_quote.reload()?;
     validate_reservation_delivery(
@@ -675,6 +761,8 @@ pub(crate) fn handler<'info>(
         ctx.accounts.firm.executor_quote.amount,
     )?;
     deliver_base(&ctx, args.spot_quantity_atoms)?;
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: base delivered");
     execute_rise(
         &ctx,
         PerpMarketOrderArgs {
@@ -686,15 +774,21 @@ pub(crate) fn handler<'info>(
         },
         true,
     )?;
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: perp entered");
     ctx.accounts.firm.trader_base.reload()?;
     ctx.accounts.firm.trader_quote.reload()?;
     ctx.accounts.firm.executor_base.reload()?;
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: token accounts reloaded");
     require!(
         ctx.accounts.firm.executor_base.amount == 0,
         ErrorCode::CashCarryPostconditionFailed
     );
     let (post_rise_base_lots, post_collateral) =
         perp_position_and_collateral(&ctx.accounts.rise_strategy, &ctx.accounts.rise)?;
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: post position read");
     let spot_quote_delta_atoms = enforce_postconditions(
         &args,
         pre_base,
@@ -712,6 +806,8 @@ pub(crate) fn handler<'info>(
         ErrorCode::CashCarryPostconditionFailed
     );
     ctx.accounts.quote_lock.consumed = true;
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: postconditions");
 
     let entry_receipt = ctx.accounts.receipt.key();
     ctx.accounts.receipt.set_inner(CashCarryExecutionReceipt {
@@ -748,11 +844,15 @@ pub(crate) fn handler<'info>(
         risk_series: risk_series.clone(),
         bump: ctx.bumps.receipt,
     });
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: receipt written");
     ctx.accounts.nonce_marker.set_inner(CashCarryNonce {
         order_hash,
         execution_digest: digest,
         bump: ctx.bumps.nonce_marker,
     });
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: nonce written");
     ctx.accounts.open_package.set_inner(OpenCashCarryPackage {
         version: OPEN_PACKAGE_VERSION,
         domain: domain.clone(),
@@ -773,6 +873,8 @@ pub(crate) fn handler<'info>(
         risk_series: risk_series.clone(),
         bump: ctx.bumps.open_package,
     });
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: package written");
     emit!(CashCarryExecutionRecorded {
         receipt: entry_receipt,
         domain,
@@ -807,6 +909,8 @@ pub(crate) fn handler<'info>(
         risk_policy_manifest_hash: risk_policy.manifest_hash,
         risk_series,
     });
+    #[cfg(feature = "devnet-test-perp")]
+    msg!("firm entry: event emitted");
     Ok(())
 }
 
@@ -909,7 +1013,7 @@ fn execute_firm_exit<'info>(
         &args,
         &quote,
     )?;
-    let economic_commitment = economic_package_commitment(
+    let economic_commitment = firm_economic_package_commitment(
         &admission,
         &[
             resources.perp_adapter_record.key(),
@@ -919,14 +1023,11 @@ fn execute_firm_exit<'info>(
             resources.quote_asset_record.key(),
         ],
     );
-    let package_commitment = hash_pubkeys(
-        PACKAGE_ACCOUNTS_DOMAIN,
-        &[
-            ctx.accounts.firm.trader_base.key(),
-            ctx.accounts.firm.trader_quote.key(),
-            ctx.accounts.rise_strategy.key(),
-        ],
-    );
+    let package_commitment = firm_package_accounts_commitment(&[
+        ctx.accounts.firm.trader_base.key(),
+        ctx.accounts.firm.trader_quote.key(),
+        ctx.accounts.rise_strategy.key(),
+    ]);
     validate_open_package_identity(
         &ctx.accounts.open_package,
         ctx.accounts.trader.key(),
@@ -941,7 +1042,7 @@ fn execute_firm_exit<'info>(
         ctx.accounts.series_record.key(),
     ];
     let quote_evidence = QuoteEvidence {
-        intent_commitment: quote_intent_commitment(
+        intent_commitment: firm_quote_intent_commitment(
             &domain,
             &ctx.accounts.solver.key(),
             &ctx.accounts.quote_lock.key(),
@@ -954,16 +1055,16 @@ fn execute_firm_exit<'info>(
         fill_commitment: quote.expected_fill_commitment,
     };
     let resource_commitment =
-        resource_admission_commitment(&admission, &resource_record_keys(resources));
+        firm_resource_admission_commitment(&admission, &resource_record_keys(resources));
     let route_commitment = firm_route_accounts_commitment(&ctx);
-    let quoted_digest = quoted_execution_digest(
+    let quoted_digest = firm_quoted_execution_digest(
+        &ctx,
         &domain,
         order_hash,
         quote_hash,
         route_hash,
         &args,
         resource_commitment,
-        &firm_execution_account_keys(&ctx),
         quote_evidence,
     );
     let digest = hashv(&[
@@ -972,11 +1073,6 @@ fn execute_firm_exit<'info>(
         &firm_quote_atoms.to_be_bytes(),
     ])
     .to_bytes();
-    require_solver_signature(
-        &ctx.accounts.runtime.instructions_sysvar,
-        &ctx.accounts.solver.key(),
-        &digest,
-    )?;
     let (perp_base_lots, perp_limit_ticks, min_spot_quote_out_atoms) =
         execution_units(&admission, resources)?;
     require!(
@@ -1328,9 +1424,15 @@ fn validate_firm_accounts(
     let reservation_code =
         live_program_code_identity(&firm.reservation_program, &firm.reservation_program_data)?;
     let domain = &accounts.config.domain;
+    let domain_length = (domain.domain_id().len() as u32).to_be_bytes();
+    let domain_version = domain.domain_manifest_version().to_be_bytes();
+    let domain_hash = domain.domain_manifest_hash();
     let domain_identity = hashv(&[
         RESERVATION_DOMAIN_IDENTITY_DOMAIN,
-        &domain.canonical_bytes(),
+        &domain_length,
+        domain.domain_id().as_bytes(),
+        &domain_version,
+        &domain_hash,
     ])
     .to_bytes();
     let (class, class_bump) = Pubkey::find_program_address(
@@ -1485,10 +1587,15 @@ fn validate_firm_accounts(
     );
     let reservation_wire = FirmReservationWire::deserialize(&mut &reservation_data[8..])
         .map_err(|_| error!(ErrorCode::CashCarryQuoteAccountMismatch))?;
+    let solver_id_length = (reservation_wire.solver_id.as_str().len() as u32).to_be_bytes();
     let canonical_id = hashv(&[
         RESERVATION_ID_DOMAIN,
-        &domain.canonical_bytes(),
-        &reservation_wire.solver_id.canonical_bytes(),
+        &domain_length,
+        domain.domain_id().as_bytes(),
+        &domain_version,
+        &domain_hash,
+        &solver_id_length,
+        reservation_wire.solver_id.as_str().as_bytes(),
         &order_hash,
         &reservation_wire.reservation_nonce,
     ])
@@ -1599,7 +1706,7 @@ fn validate_quote_lock(
     firm_quote_atoms: u64,
     current_slot: u64,
 ) -> Result<()> {
-    let quote_args_hash = firm_quote_args_hash(quote)?;
+    let quote_args_hash = firm_quote_args_hash(quote);
     require!(
         !lock.consumed
             && lock.domain == *domain
@@ -1624,88 +1731,261 @@ fn validate_quote_lock(
     Ok(())
 }
 
-fn firm_route_accounts_commitment(ctx: &Context<ExecuteFirmCashAndCarry>) -> [u8; 32] {
-    let accounts = &ctx.accounts;
-    let mut keys = vec![
-        accounts.firm.trader_base.key(),
-        accounts.firm.trader_quote.key(),
-        accounts.firm.executor_base.key(),
-        accounts.firm.executor_quote.key(),
-        accounts.firm.solver_quote.key(),
-        accounts.firm.reservation_class.key(),
-        accounts.firm.reservation_capacity.key(),
-        accounts.firm.reservation.key(),
-        accounts.firm.live_pair.key(),
-        accounts.firm.reservation_vault.key(),
-        accounts.quote_lock.key(),
-        accounts.series_index.key(),
-        accounts.series_record.key(),
-        accounts.risk.risk_domain_index.key(),
-        accounts.risk.risk_domain_record.key(),
-        accounts.rise_strategy.key(),
-    ];
-    keys.extend(perp_venue_account_keys(&accounts.rise));
-    keys.extend(ctx.remaining_accounts.iter().map(AccountInfo::key));
-    hash_pubkeys(ROUTE_ACCOUNTS_DOMAIN, &keys)
+#[inline(never)]
+fn firm_quote_intent_commitment(
+    domain: &DomainRef,
+    solver: &Pubkey,
+    consumer_authority: &Pubkey,
+    order_hash: [u8; 32],
+    quote_hash: [u8; 32],
+    route_hash: [u8; 32],
+    args: &CashCarryQuoteArgs,
+    quote_account_keys: &[Pubkey; 3],
+) -> [u8; 32] {
+    let mut data = FixedPreimage::<768>::new();
+    append_domain(&mut data, domain);
+    data.extend(solver.as_ref());
+    data.extend(consumer_authority.as_ref());
+    data.extend(&order_hash);
+    data.extend(&quote_hash);
+    data.extend(&route_hash);
+    data.extend(&args.package_book_code_identity);
+    data.extend(&args.series_manifest_hash);
+    data.extend(&args.execution_class_manifest_hash);
+    data.extend(&args.expected_reference_sequence.to_be_bytes());
+    data.extend(&args.expected_shard_sequence.to_be_bytes());
+    data.push(args.slot_index);
+    data.extend(&args.level_id.to_be_bytes());
+    data.extend(&args.expected_level_sequence.to_be_bytes());
+    data.push(args.expected_side);
+    data.extend(&args.package_size_units.to_be_bytes());
+    data.extend(&args.expected_package_price.to_be_bytes());
+    data.extend(&args.expected_max_fee_atoms.to_be_bytes());
+    data.extend(&args.expected_expiry_slot.to_be_bytes());
+    data.extend(&args.expected_settlement_class_identity_hash);
+    data.push(args.expected_quote_mode);
+    data.extend(&args.expected_reservation_policy_hash);
+    data.extend(&args.reservation_id);
+    data.extend(&args.expected_fill_commitment);
+    data.extend(&(quote_account_keys.len() as u32).to_be_bytes());
+    for key in quote_account_keys {
+        data.extend(key.as_ref());
+    }
+    hashv(&[QUOTE_INTENT_DOMAIN, data.as_slice()]).to_bytes()
 }
 
-fn firm_execution_account_keys(ctx: &Context<ExecuteFirmCashAndCarry>) -> Vec<Pubkey> {
+fn append_admission_suffix<const N: usize>(
+    data: &mut FixedPreimage<N>,
+    admission: &CashCarryAdmission,
+) {
+    append_protocol_id(data, admission.template.id.as_str());
+    data.extend(&admission.template.version.to_be_bytes());
+    data.extend(&admission.template.manifest_hash);
+    data.push(match admission.settlement.class {
+        SettlementClass::AtomicPostcondition => 1,
+    });
+    data.extend(&admission.settlement.version.to_be_bytes());
+    data.extend(&admission.settlement.manifest_hash);
+    data.push(admission.quote_decimals);
+}
+
+#[inline(never)]
+fn firm_resource_admission_commitment(
+    admission: &CashCarryAdmission,
+    record_keys: &[Pubkey; 8],
+) -> [u8; 32] {
+    let mut data = FixedPreimage::<1024>::new();
+    append_domain(&mut data, &admission.domain);
+    for identity in [
+        &admission.spot_adapter,
+        &admission.perp_adapter,
+        &admission.spot_market,
+        &admission.perp_market,
+        &admission.spot_venue,
+        &admission.perp_venue,
+        &admission.base_asset,
+        &admission.quote_asset,
+    ] {
+        append_manifest(&mut data, identity);
+    }
+    append_admission_suffix(&mut data, admission);
+    for key in record_keys {
+        data.extend(key.as_ref());
+    }
+    hashv(&[RESOURCE_COMMITMENT_DOMAIN, data.as_slice()]).to_bytes()
+}
+
+#[inline(never)]
+fn firm_economic_package_commitment(
+    admission: &CashCarryAdmission,
+    record_keys: &[Pubkey; 5],
+) -> [u8; 32] {
+    let mut data = FixedPreimage::<768>::new();
+    append_domain(&mut data, &admission.domain);
+    for identity in [
+        &admission.perp_adapter,
+        &admission.perp_market,
+        &admission.perp_venue,
+        &admission.base_asset,
+        &admission.quote_asset,
+    ] {
+        append_manifest(&mut data, identity);
+    }
+    append_admission_suffix(&mut data, admission);
+    for key in record_keys {
+        data.extend(key.as_ref());
+    }
+    hashv(&[ECONOMIC_PACKAGE_COMMITMENT_DOMAIN, data.as_slice()]).to_bytes()
+}
+
+#[inline(never)]
+fn firm_package_accounts_commitment(keys: &[Pubkey; 3]) -> [u8; 32] {
+    let mut data = FixedPreimage::<128>::new();
+    data.extend(&(keys.len() as u32).to_be_bytes());
+    for key in keys {
+        data.extend(key.as_ref());
+    }
+    hashv(&[PACKAGE_ACCOUNTS_DOMAIN, data.as_slice()]).to_bytes()
+}
+
+#[inline(never)]
+fn firm_route_accounts_commitment(ctx: &Context<ExecuteFirmCashAndCarry>) -> [u8; 32] {
     let accounts = &ctx.accounts;
-    let resources = &accounts.resources;
-    let mut keys = vec![
-        crate::id(),
-        accounts.trader.key(),
-        accounts.config.key(),
-        accounts.solver_registry.key(),
-        accounts.risk.risk_domain_index.key(),
-        accounts.risk.risk_domain_record.key(),
-        accounts.solver.key(),
-        accounts.receipt.key(),
-        accounts.nonce_marker.key(),
-        accounts.open_package.key(),
-        accounts.executor_authority.key(),
-        resources.spot_adapter_index.key(),
-        resources.perp_adapter_index.key(),
-        resources.spot_market_index.key(),
-        resources.perp_market_index.key(),
-        resources.spot_venue_index.key(),
-        resources.perp_venue_index.key(),
-        resources.base_asset_index.key(),
-        resources.quote_asset_index.key(),
-    ];
-    keys.extend(resource_record_keys(resources));
-    keys.extend([
-        accounts.firm.reservation_program.key(),
-        accounts.firm.reservation_program_data.key(),
-        accounts.firm.core_program.key(),
-        accounts.firm.core_program_data.key(),
-        accounts.perp_adapter_program.key(),
-        accounts.perp_adapter_program_data.key(),
-        accounts.perp_venue_program.key(),
-        accounts.perp_venue_program_data.key(),
+    let mut data = FixedPreimage::<896>::new();
+    let key_count = 16 + PERP_VENUE_ACCOUNT_COUNT + ctx.remaining_accounts.len();
+    data.extend(&(key_count as u32).to_be_bytes());
+    for key in [
+        accounts.firm.trader_base.key(),
+        accounts.firm.trader_quote.key(),
+        accounts.firm.executor_base.key(),
+        accounts.firm.executor_quote.key(),
+        accounts.firm.solver_quote.key(),
         accounts.firm.reservation_class.key(),
         accounts.firm.reservation_capacity.key(),
         accounts.firm.reservation.key(),
         accounts.firm.live_pair.key(),
         accounts.firm.reservation_vault.key(),
-        accounts.firm.solver_quote.key(),
-        accounts.firm.trader_base.key(),
-        accounts.firm.trader_quote.key(),
-        accounts.firm.executor_base.key(),
-        accounts.firm.executor_quote.key(),
         accounts.quote_lock.key(),
         accounts.series_index.key(),
         accounts.series_record.key(),
+        accounts.risk.risk_domain_index.key(),
+        accounts.risk.risk_domain_record.key(),
         accounts.rise_strategy.key(),
-    ]);
-    keys.extend(perp_venue_account_keys(&accounts.rise));
-    keys.extend([
-        accounts.runtime.token_program.key(),
-        accounts.runtime.instructions_sysvar.key(),
-        accounts.system_program.key(),
-    ]);
-    keys.extend(ctx.remaining_accounts.iter().map(AccountInfo::key));
-    keys
+    ] {
+        append_key(&mut data, key);
+    }
+    for key in perp_venue_account_keys(&accounts.rise) {
+        append_key(&mut data, key);
+    }
+    for account in ctx.remaining_accounts {
+        append_key(&mut data, account.key());
+    }
+    hashv(&[ROUTE_ACCOUNTS_DOMAIN, data.as_slice()]).to_bytes()
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn firm_quoted_execution_digest(
+    ctx: &Context<ExecuteFirmCashAndCarry>,
+    domain: &DomainRef,
+    order_hash: [u8; 32],
+    quote_hash: [u8; 32],
+    route_hash: [u8; 32],
+    args: &CashCarryExecutionArgs,
+    resource_admission_commitment: [u8; 32],
+    quote_evidence: QuoteEvidence,
+) -> [u8; 32] {
+    let accounts = &ctx.accounts;
+    let resources = &accounts.resources;
+    let mut data = FixedPreimage::<2560>::new();
+    append_domain(&mut data, domain);
+    data.extend(&order_hash);
+    data.extend(&quote_hash);
+    data.extend(&route_hash);
+    data.push(args.action.discriminant());
+    data.push(u8::from(args.recovery));
+    data.extend(&args.spot_quantity_atoms.to_be_bytes());
+    data.extend(&args.perp_quantity_atoms.to_be_bytes());
+    data.extend(&args.spot_limit_quote_atoms_per_base_lot.to_be_bytes());
+    data.extend(&args.perp_limit_quote_atoms_per_base_lot.to_be_bytes());
+    data.extend(&args.package_notional_atoms.to_be_bytes());
+    data.extend(&args.spot_sqrt_price_limit.to_be_bytes());
+    data.extend(&args.minimum_rise_collateral_quote_lots.to_be_bytes());
+    data.extend(&args.client_order_id.to_be_bytes());
+    data.extend(&args.expiry_slot.to_be_bytes());
+    data.extend(&args.nonce.to_be_bytes());
+    data.extend(&args.risk_domain_id);
+    data.extend(&args.risk_policy_version.to_be_bytes());
+    data.push(args.risk_series_index);
+    data.extend(&args.risk_net_quote_atoms.to_be_bytes());
+    data.extend(&args.risk_margin_quote_atoms.to_be_bytes());
+    data.extend(&args.risk_recovery_reserve_quote_atoms.to_be_bytes());
+    data.extend(&args.risk_observation_age_ms.to_be_bytes());
+    data.extend(&args.risk_time_to_unwind_ms.to_be_bytes());
+    data.extend(&resource_admission_commitment);
+    let key_count = 52 + PERP_VENUE_ACCOUNT_COUNT + ctx.remaining_accounts.len();
+    data.extend(&(key_count as u32).to_be_bytes());
+    append_key(&mut data, crate::id());
+    append_key(&mut data, accounts.trader.key());
+    append_key(&mut data, accounts.config.key());
+    append_key(&mut data, accounts.solver_registry.key());
+    append_key(&mut data, accounts.risk.risk_domain_index.key());
+    append_key(&mut data, accounts.risk.risk_domain_record.key());
+    append_key(&mut data, accounts.solver.key());
+    append_key(&mut data, accounts.receipt.key());
+    append_key(&mut data, accounts.nonce_marker.key());
+    append_key(&mut data, accounts.open_package.key());
+    append_key(&mut data, accounts.executor_authority.key());
+    append_key(&mut data, resources.spot_adapter_index.key());
+    append_key(&mut data, resources.perp_adapter_index.key());
+    append_key(&mut data, resources.spot_market_index.key());
+    append_key(&mut data, resources.perp_market_index.key());
+    append_key(&mut data, resources.spot_venue_index.key());
+    append_key(&mut data, resources.perp_venue_index.key());
+    append_key(&mut data, resources.base_asset_index.key());
+    append_key(&mut data, resources.quote_asset_index.key());
+    for key in resource_record_keys(resources) {
+        append_key(&mut data, key);
+    }
+    append_key(&mut data, accounts.firm.reservation_program.key());
+    append_key(&mut data, accounts.firm.reservation_program_data.key());
+    append_key(&mut data, accounts.firm.core_program.key());
+    append_key(&mut data, accounts.firm.core_program_data.key());
+    append_key(&mut data, accounts.perp_adapter_program.key());
+    append_key(&mut data, accounts.perp_adapter_program_data.key());
+    append_key(&mut data, accounts.perp_venue_program.key());
+    append_key(&mut data, accounts.perp_venue_program_data.key());
+    append_key(&mut data, accounts.firm.reservation_class.key());
+    append_key(&mut data, accounts.firm.reservation_capacity.key());
+    append_key(&mut data, accounts.firm.reservation.key());
+    append_key(&mut data, accounts.firm.live_pair.key());
+    append_key(&mut data, accounts.firm.reservation_vault.key());
+    append_key(&mut data, accounts.firm.solver_quote.key());
+    append_key(&mut data, accounts.firm.trader_base.key());
+    append_key(&mut data, accounts.firm.trader_quote.key());
+    append_key(&mut data, accounts.firm.executor_base.key());
+    append_key(&mut data, accounts.firm.executor_quote.key());
+    append_key(&mut data, accounts.quote_lock.key());
+    append_key(&mut data, accounts.series_index.key());
+    append_key(&mut data, accounts.series_record.key());
+    append_key(&mut data, accounts.rise_strategy.key());
+    for key in perp_venue_account_keys(&accounts.rise) {
+        append_key(&mut data, key);
+    }
+    append_key(&mut data, accounts.runtime.token_program.key());
+    append_key(&mut data, accounts.runtime.instructions_sysvar.key());
+    append_key(&mut data, accounts.system_program.key());
+    for account in ctx.remaining_accounts {
+        append_key(&mut data, account.key());
+    }
+    let base = hashv(&[CASH_CARRY_EXECUTION_DIGEST_DOMAIN, data.as_slice()]).to_bytes();
+    hashv(&[
+        QUOTED_EXECUTION_DIGEST_DOMAIN,
+        &base,
+        &quote_evidence.intent_commitment,
+        &quote_evidence.fill_commitment,
+    ])
+    .to_bytes()
 }
 
 fn fund_executor_quote(ctx: &Context<ExecuteFirmCashAndCarry>, amount: u64) -> Result<()> {
@@ -1732,7 +2012,9 @@ fn consume_reservation(
 ) -> Result<()> {
     let accounts = &ctx.accounts;
     let firm = &accounts.firm;
-    let mut data = hashv(&[b"global:", instruction_name]).to_bytes()[..8].to_vec();
+    let discriminator = hashv(&[b"global:", instruction_name]).to_bytes();
+    let mut data = Vec::with_capacity(112);
+    data.extend_from_slice(&discriminator[..8]);
     ConsumeReservationArgs {
         package_nonce,
         order_hash,
@@ -1953,7 +2235,7 @@ mod tests {
             order_hash,
             quote_hash,
             route_hash,
-            quote_args_hash: firm_quote_args_hash(&quote).unwrap(),
+            quote_args_hash: firm_quote_args_hash(&quote),
             series_manifest_hash: quote.series_manifest_hash,
             execution_class_manifest_hash: quote.execution_class_manifest_hash,
             fill_commitment: quote.expected_fill_commitment,
@@ -1963,6 +2245,7 @@ mod tests {
             expiry_slot: quote.expected_expiry_slot,
             consumed: false,
             bump: 1,
+            quote: quote.clone(),
         };
         let check = |lock: &FirmQuoteLock, quote: &CashCarryQuoteArgs, amount: u64, slot: u64| {
             validate_quote_lock(

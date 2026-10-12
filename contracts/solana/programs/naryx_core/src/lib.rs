@@ -16,7 +16,7 @@ pub use {
     wire::*,
 };
 
-declare_id!("Dd7gZZRLVi6FLSnYdoB9mSWb45yGZNWnE47Wa5JWrWrL");
+declare_id!("4kX6XtrVw4i31sAUKNXCgmBMpVSR6afHJGvxJ1XXDiVm");
 
 #[cfg(not(feature = "conformance"))]
 #[program]
@@ -302,21 +302,9 @@ pub mod naryx_core {
     pub fn execute_firm_cash_and_carry<'info>(
         ctx: Context<'info, ExecuteFirmCashAndCarry<'info>>,
         order_hash: [u8; HASH_BYTE_LENGTH],
-        quote_hash: [u8; HASH_BYTE_LENGTH],
-        route_hash: [u8; HASH_BYTE_LENGTH],
         args: CashCarryExecutionArgs,
-        quote_args: CashCarryQuoteArgs,
-        firm_quote_atoms: u64,
     ) -> Result<()> {
-        instructions::execute_firm_cash_and_carry::handler(
-            ctx,
-            order_hash,
-            quote_hash,
-            route_hash,
-            args,
-            quote_args,
-            firm_quote_atoms,
-        )
+        instructions::execute_firm_cash_and_carry::handler(ctx, order_hash, args)
     }
 
     pub fn lock_firm_quote<'info>(

@@ -178,13 +178,22 @@ pub struct CashCarrySeriesBindingIndex {
 }
 
 pub fn protocol_id_identity_hash(id: &ProtocolId) -> [u8; HASH_BYTE_LENGTH] {
-    let canonical = id.canonical_bytes();
-    hashv(&[PROTOCOL_ID_IDENTITY_DOMAIN, canonical.as_ref()]).to_bytes()
+    let length = (id.as_str().len() as u32).to_be_bytes();
+    hashv(&[PROTOCOL_ID_IDENTITY_DOMAIN, &length, id.as_str().as_bytes()]).to_bytes()
 }
 
 pub fn domain_ref_identity_hash(domain: &DomainRef) -> [u8; HASH_BYTE_LENGTH] {
-    let canonical = domain.canonical_bytes();
-    hashv(&[DOMAIN_REF_IDENTITY_DOMAIN, canonical.as_ref()]).to_bytes()
+    let length = (domain.domain_id().len() as u32).to_be_bytes();
+    let version = domain.domain_manifest_version().to_be_bytes();
+    let manifest_hash = domain.domain_manifest_hash();
+    hashv(&[
+        DOMAIN_REF_IDENTITY_DOMAIN,
+        &length,
+        domain.domain_id().as_bytes(),
+        &version,
+        &manifest_hash,
+    ])
+    .to_bytes()
 }
 
 pub fn settlement_class_identity_hash(discriminant: u8, version: u32) -> [u8; HASH_BYTE_LENGTH] {

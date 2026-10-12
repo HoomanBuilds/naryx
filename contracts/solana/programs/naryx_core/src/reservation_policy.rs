@@ -19,6 +19,9 @@ pub fn reservation_policy_hash(
     consumer_program_data: Pubkey,
     consumer_code_identity: [u8; 32],
 ) -> [u8; 32] {
+    let domain_length = (domain.domain_id().len() as u32).to_be_bytes();
+    let domain_version = domain.domain_manifest_version().to_be_bytes();
+    let domain_hash = domain.domain_manifest_hash();
     hashv(&[
         RESERVATION_POLICY_DOMAIN,
         reservation_program.as_ref(),
@@ -26,7 +29,10 @@ pub fn reservation_policy_hash(
         &reservation_code_identity,
         reservation_class.as_ref(),
         &reservation_class_version.to_be_bytes(),
-        &domain.canonical_bytes(),
+        &domain_length,
+        domain.domain_id().as_bytes(),
+        &domain_version,
+        &domain_hash,
         base_mint.as_ref(),
         quote_mint.as_ref(),
         consumer_program.as_ref(),

@@ -1287,7 +1287,7 @@ function compileFirmInstructions(admission: PackageAdmission, binding: AnyFirmCa
   const entryIdl = idlInstruction(
     binding.coreIdl,
     'execute_firm_cash_and_carry',
-    ['order_hash', 'quote_hash', 'route_hash', 'args', 'quote_args', 'firm_quote_atoms'],
+    ['order_hash', 'args'],
     entryIdlSpecs(profile),
   );
   const coder = new BorshCoder(binding.coreIdl);
@@ -1360,11 +1360,7 @@ function compileFirmInstructions(admission: PackageAdmission, binding: AnyFirmCa
     ],
     data: coder.instruction.encode('execute_firm_cash_and_carry', {
       order_hash: Array.from(admission.orderHash),
-      quote_hash: Array.from(admission.quoteHash),
-      route_hash: Array.from(admission.routeHash),
       args: borshExecutionArgs(binding.executionArgs, isExit(binding)),
-      quote_args: quoteArgs,
-      firm_quote_atoms: bn(binding.firmQuoteAtoms),
     }),
   });
 
@@ -1374,11 +1370,6 @@ function compileFirmInstructions(admission: PackageAdmission, binding: AnyFirmCa
   const entryInstructions = Object.freeze([
     ComputeBudgetProgram.setComputeUnitLimit({ units: binding.computeUnitLimit }),
     ComputeBudgetProgram.requestHeapFrame({ bytes: FIRM_ROUTE_HEAP_BYTES }),
-    Ed25519Program.createInstructionWithPublicKey({
-      publicKey: identities.solver.toBytes(),
-      message: digest,
-      signature: binding.solverSignature,
-    }),
     firmEntryInstruction,
   ]);
   requireCondition(lockInstruction.keys.filter((key) => key.isSigner).length === 1 && lockInstruction.keys[0]?.pubkey.equals(identities.solver) === true, 'firm lock must require only solver authority');

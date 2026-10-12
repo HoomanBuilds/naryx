@@ -1,5 +1,5 @@
 {
-  "address": "Dd7gZZRLVi6FLSnYdoB9mSWb45yGZNWnE47Wa5JWrWrL",
+  "address": "4kX6XtrVw4i31sAUKNXCgmBMpVSR6afHJGvxJ1XXDiVm",
   "metadata": {
     "name": "naryx_core",
     "version": "0.1.0",
@@ -3658,42 +3658,12 @@
           }
         },
         {
-          "name": "quote_hash",
-          "type": {
-            "array": [
-              "u8",
-              32
-            ]
-          }
-        },
-        {
-          "name": "route_hash",
-          "type": {
-            "array": [
-              "u8",
-              32
-            ]
-          }
-        },
-        {
           "name": "args",
           "type": {
             "defined": {
               "name": "CashCarryExecutionArgs"
             }
           }
-        },
-        {
-          "name": "quote_args",
-          "type": {
-            "defined": {
-              "name": "CashCarryQuoteArgs"
-            }
-          }
-        },
-        {
-          "name": "firm_quote_atoms",
-          "type": "u64"
         }
       ]
     },
@@ -4264,7 +4234,7 @@
         },
         {
           "name": "program",
-          "address": "Dd7gZZRLVi6FLSnYdoB9mSWb45yGZNWnE47Wa5JWrWrL"
+          "address": "4kX6XtrVw4i31sAUKNXCgmBMpVSR6afHJGvxJ1XXDiVm"
         },
         {
           "name": "program_data"
@@ -10909,6 +10879,14 @@
           {
             "name": "bump",
             "type": "u8"
+          },
+          {
+            "name": "quote",
+            "type": {
+              "defined": {
+                "name": "CashCarryQuoteArgs"
+              }
+            }
           }
         ]
       }

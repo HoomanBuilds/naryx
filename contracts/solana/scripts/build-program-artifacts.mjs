@@ -210,7 +210,7 @@ try {
   );
   requireNames(
     firmEntry.args,
-    ["order_hash", "quote_hash", "route_hash", "args", "quote_args", "firm_quote_atoms"],
+    ["order_hash", "args"],
     "firm entry argument",
   );
   requireNames(

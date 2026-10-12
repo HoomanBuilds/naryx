@@ -116,7 +116,7 @@ pub struct CashCarryExecutionArgs {
     pub risk_time_to_unwind_ms: u64,
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug, InitSpace, PartialEq, Eq)]
 pub struct CashCarryQuoteArgs {
     pub package_book_code_identity: [u8; 32],
     pub series_manifest_hash: [u8; 32],

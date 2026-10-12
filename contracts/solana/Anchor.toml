@@ -6,7 +6,7 @@ resolution = true
 skip-lint = false
 
 [programs.devnet]
-naryx_core = "Dd7gZZRLVi6FLSnYdoB9mSWb45yGZNWnE47Wa5JWrWrL"
+naryx_core = "4kX6XtrVw4i31sAUKNXCgmBMpVSR6afHJGvxJ1XXDiVm"
 naryx_inventory_adapter = "EbY7MezVnmueWnyUb5QXe6jr4Cxe95Znh1FhZiPf633c"
 naryx_inventory_reservation = "6PhTV2dQczEcPnFdda6jcftTqdUpR8KaNucaCJB6iRHz"
 naryx_multi_strategy = "CDaUbFWSG6rh5mgjAr63157Ha7upZmza5SF47xgSaxqj"
@@ -16,7 +16,7 @@ naryx_test_perp_adapter = "H6YQpuLPKTWq7gVcqTa7c5sax7WubnpgG5cdohgZvxT1"
 
 [programs.localnet]
 naryx_conformance_venue = "ERGvPwyenaZDcAr9cyni7paeXPQ72NKC75ozz1fjCY7y"
-naryx_core = "Dd7gZZRLVi6FLSnYdoB9mSWb45yGZNWnE47Wa5JWrWrL"
+naryx_core = "4kX6XtrVw4i31sAUKNXCgmBMpVSR6afHJGvxJ1XXDiVm"
 naryx_inventory_adapter = "EbY7MezVnmueWnyUb5QXe6jr4Cxe95Znh1FhZiPf633c"
 naryx_inventory_reservation = "6PhTV2dQczEcPnFdda6jcftTqdUpR8KaNucaCJB6iRHz"
 naryx_multi_strategy = "CDaUbFWSG6rh5mgjAr63157Ha7upZmza5SF47xgSaxqj"

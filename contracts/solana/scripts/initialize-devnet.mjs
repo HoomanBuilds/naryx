@@ -147,6 +147,8 @@ export function parsePlan(value) {
   if (new Set(Object.values(subjects)).size !== Object.keys(subjects).length) throw new Error("plan protocol subject ids must be distinct");
   const parsed = {
     domain: parsedDomain,
+    resourceManifestVersion: Number(positiveInteger(String(plan.resourceManifestVersion ?? 1), "plan.resourceManifestVersion", 0xffffffffn)),
+    templateVersion: Number(positiveInteger(String(plan.templateVersion ?? 1), "plan.templateVersion", 0xffffffffn)),
     environment: typeof plan.environment === "string" ? plan.environment : "devnet",
     configDelaySlots: positiveInteger(String(plan.configDelaySlots), "plan.configDelaySlots", 432_000n),
     roles: { canceller: publicKey(roles.canceller, "plan.roles.canceller"), pauser: publicKey(roles.pauser, "plan.roles.pauser") },
@@ -269,9 +271,9 @@ export function deriveDevnetLayout(plan, programs, keys) {
   const register = (name, kind, protocolSubjectId, document) => {
     const full = { kind, protocolSubjectId, domain: domainDocument, ...document };
     documents[name] = full;
-    identities[name] = { protocolSubjectId, subjectId: resourceSubjectId(kind, protocolSubjectId), manifestVersion: 1, manifestHash: resourceManifestHash(full) };
+    identities[name] = { protocolSubjectId, subjectId: resourceSubjectId(kind, protocolSubjectId), manifestVersion: plan.resourceManifestVersion, manifestHash: resourceManifestHash(full) };
   };
-  const ref = (name) => ({ protocolSubjectId: identities[name].protocolSubjectId, manifestVersion: 1, manifestHash: hexOf(identities[name].manifestHash) });
+  const ref = (name) => ({ protocolSubjectId: identities[name].protocolSubjectId, manifestVersion: plan.resourceManifestVersion, manifestHash: hexOf(identities[name].manifestHash) });
   register("baseAsset", "asset", plan.base.mint.toBase58(), { mint: plan.base.mint.toBase58(), tokenProgram: TOKEN_PROGRAM_ID.toBase58(), decimals: plan.base.decimals });
   register("quoteAsset", "asset", plan.quote.mint.toBase58(), { mint: plan.quote.mint.toBase58(), tokenProgram: TOKEN_PROGRAM_ID.toBase58(), decimals: plan.quote.decimals });
   const program = (name) => ({ programId: programs[name].programId.toBase58(), programDataAddress: programs[name].programDataAddress.toBase58(), codeIdentity: hexOf(programs[name].codeIdentity) });
@@ -289,7 +291,7 @@ export function deriveDevnetLayout(plan, programs, keys) {
   };
   register("spotMarket", "market", plan.subjects.spotMarket, { role: "SPOT", subjectAddress: reservationClass.toBase58(), ...program("reservation"), venue: ref("spotVenue"), baseAsset: ref("baseAsset"), quoteAsset: ref("quoteAsset"), units: spotUnits });
   register("perpMarket", "market", plan.subjects.perpMarket, { role: "PERP", subjectAddress: market.toBase58(), ...program("perp_venue"), venue: ref("perpVenue"), baseAsset: ref("baseAsset"), quoteAsset: ref("quoteAsset"), units: perpUnits });
-  const template = { id: TEMPLATE_ID, version: 1, manifestHash: plan.descriptors.templateManifestHash };
+  const template = { id: TEMPLATE_ID, version: plan.templateVersion, manifestHash: plan.descriptors.templateManifestHash };
   const settlement = { class: "ATOMIC_POSTCONDITION", version: 1, manifestHash: plan.descriptors.settlementManifestHash };
   const descriptorDocument = (value) => ({ ...value, manifestHash: hexOf(value.manifestHash) });
   const spotClass = { id: FIRM_SPOT_CLASS_ID, version: 1, manifestHash: plan.descriptors.spotAdapterClassManifestHash };
@@ -309,7 +311,7 @@ export function deriveDevnetLayout(plan, programs, keys) {
   const records = {};
   for (const [name, identity] of Object.entries(identities)) {
     indexes[name] = pda([Buffer.from("naryx-resource-index"), Buffer.from(kindSeed[name]), identity.subjectId], core);
-    records[name] = pda([Buffer.from("naryx-resource-record"), Buffer.from(kindSeed[name]), identity.subjectId, u32be(1)], core);
+    records[name] = pda([Buffer.from("naryx-resource-record"), Buffer.from(kindSeed[name]), identity.subjectId, u32be(identity.manifestVersion)], core);
   }
   const binding = {
     schemaVersion: 1,
@@ -318,7 +320,7 @@ export function deriveDevnetLayout(plan, programs, keys) {
     seriesManifestHash: plan.series.seriesManifestHash,
     executionClassManifestHash: plan.series.executionClassManifestHash,
     templateIdentityHash: protocolIdIdentityHash(TEMPLATE_ID),
-    templateVersion: 1,
+    templateVersion: plan.templateVersion,
     templateManifestHash: plan.descriptors.templateManifestHash,
     settlementClassIdentityHash: atomicPostconditionIdentityHash(),
     baseAsset: identities.baseAsset,
@@ -411,8 +413,8 @@ export function serviceFragments(plan, programs, layout, release) {
     };
   });
   const id = layout.identities;
-  const versioned = (name) => ({ subjectId: id[name].protocolSubjectId, manifestVersion: 1, manifestHash: id[name].manifestHash });
-  const adapterRef = (name) => ({ adapterId: id[name].protocolSubjectId, adapterManifestVersion: 1, adapterManifestHash: id[name].manifestHash });
+  const versioned = (name) => ({ subjectId: id[name].protocolSubjectId, manifestVersion: id[name].manifestVersion, manifestHash: id[name].manifestHash });
+  const adapterRef = (name) => ({ adapterId: id[name].protocolSubjectId, adapterManifestVersion: id[name].manifestVersion, adapterManifestHash: id[name].manifestHash });
   const resource = (name, subjectAddress, programId, codeIdentity, adapterClassId) => ({
     manifestHash: id[name].manifestHash,
     subjectAddress: subjectAddress.toBase58(),
@@ -483,7 +485,7 @@ export function serviceFragments(plan, programs, layout, release) {
     },
     orderContext: {
       templateId: TEMPLATE_ID,
-      templateVersion: 1,
+      templateVersion: plan.templateVersion,
       packageTemplateManifestHash: plan.descriptors.templateManifestHash,
       baseAsset: assetRef("baseAsset", plan.base),
       quoteAsset: assetRef("quoteAsset", plan.quote),
@@ -560,7 +562,7 @@ async function main() {
   const provider = new AnchorProvider(connection, new Wallet(payer), { commitment: "confirmed" });
   const idlDirectory = flags["idl-dir"] === undefined ? undefined : absolutePath(flags["idl-dir"], "--idl-dir");
   const idlPath = (name) => (idlDirectory === undefined ? defaultIdlPath(name) : `${idlDirectory}/${name}.json`);
-  const core = new Program(loadIdl(idlPath("naryx_core"), programs.core.programId, ["initialize", "propose_asset", "propose_initial_cash_carry_series_binding"]), provider);
+  const core = new Program(loadIdl(idlPath("naryx_core"), programs.core.programId, ["initialize", "propose_domain", "activate_domain", "propose_asset", "propose_initial_cash_carry_series_binding"]), provider);
   const reservation = new Program(loadIdl(idlPath("naryx_inventory_reservation"), programs.reservation.programId, ["initialize_class"]), provider);
   const book = new Program(loadIdl(idlPath("naryx_package_book"), programs.package_book.programId, ["initialize_class", "initialize_shard"]), provider);
   const venue = new Program(loadIdl(idlPath("naryx_test_perp"), programs.perp_venue.programId, ["initialize_market"]), provider);
@@ -603,10 +605,8 @@ async function main() {
     const info = owned(await fetchAccount(layout.config), programs.core.programId, "protocol config");
     if (info === null) return {};
     const config = decode(core, "protocolConfig", info);
-    if (config.domain.domainId !== plan.domain.domainId || config.domain.domainManifestVersion !== plan.domain.domainManifestVersion
-      || !Buffer.from(config.domain.domainManifestHash).equals(plan.domain.domainManifestHash)
-      || !config.proposer.equals(proposer.publicKey) || !config.executor.equals(executor.publicKey)) {
-      throw new Error("existing protocol config does not match the plan domain or governance roles");
+    if (!config.proposer.equals(proposer.publicKey) || !config.executor.equals(executor.publicKey)) {
+      throw new Error("existing protocol config does not match the plan governance roles");
     }
     return { done: true };
   }, async () => ({
@@ -619,6 +619,39 @@ async function main() {
       programData: programs.core.programDataAddress, config: layout.config, systemProgram: web3.SystemProgram.programId,
     }).instruction()],
     signers: [upgradeAuthority],
+  }));
+
+  const domainMatches = (domain) => domain.domainId === plan.domain.domainId
+    && domain.domainManifestVersion === plan.domain.domainManifestVersion
+    && Buffer.from(domain.domainManifestHash).equals(plan.domain.domainManifestHash);
+  await run("core.propose_domain", ["core.initialize"], async () => {
+    const config = decode(core, "protocolConfig", await fetchAccount(layout.config));
+    if (domainMatches(config.domain)) return { done: true };
+    if (config.domain.domainManifestVersion >= plan.domain.domainManifestVersion) {
+      throw new Error("existing protocol domain is not older than the planned domain");
+    }
+    if (config.pendingDomain !== null) {
+      if (domainMatches(config.pendingDomain.domain)) return { done: true };
+      throw new Error("existing protocol config has a different pending domain");
+    }
+    return {};
+  }, async () => ({
+    instructions: [await core.methods.proposeDomain(
+      plan.domain.domainManifestVersion,
+      Array.from(plan.domain.domainManifestHash),
+    ).accountsStrict({ proposer: proposer.publicKey, config: layout.config }).instruction()],
+    signers: [proposer],
+  }));
+  await run("core.activate_domain", ["core.propose_domain"], async () => {
+    const config = decode(core, "protocolConfig", await fetchAccount(layout.config));
+    if (domainMatches(config.domain)) return { done: true };
+    if (config.pendingDomain === null || !domainMatches(config.pendingDomain.domain)) {
+      throw new Error("protocol config has no pending planned domain");
+    }
+    return { waitSlot: BigInt(config.pendingDomain.activationSlot.toString()) };
+  }, async () => ({
+    instructions: [await core.methods.activateDomain().accountsStrict({ executor: executor.publicKey, config: layout.config }).instruction()],
+    signers: [executor],
   }));
 
   // 2. Solver registration and entry unpause, each proposed and then activated after the delay.
@@ -705,7 +738,7 @@ async function main() {
   }));
 
   // 4. Inventory reservation class consumed by core.
-  await run("reservation.initialize_class", ["core.initialize"], async () => {
+  await run("reservation.initialize_class", ["core.activate_domain"], async () => {
     const info = owned(await fetchAccount(layout.reservationClass), programs.reservation.programId, "reservation class");
     if (info === null) return {};
     const state = decode(reservation, "reservationClass", info);
@@ -730,7 +763,7 @@ async function main() {
   }));
 
   // 5. Package book class with firm onchain quotes consumed by core.
-  await run("package_book.initialize_class", ["core.initialize"], async () => {
+  await run("package_book.initialize_class", ["core.activate_domain"], async () => {
     const info = owned(await fetchAccount(layout.packageBookClass), programs.package_book.programId, "package book class");
     if (info === null) return {};
     const state = decode(book, "packageBookClass", info);
@@ -767,8 +800,8 @@ async function main() {
   });
   const programData = (name) => programs[name].programDataAddress;
   const proposals = {
-    baseAsset: ["core.initialize"],
-    quoteAsset: ["core.initialize"],
+    baseAsset: ["core.activate_domain"],
+    quoteAsset: ["core.activate_domain"],
     spotVenue: ["activate.baseAsset", "activate.quoteAsset", "reservation.initialize_class"],
     perpVenue: ["activate.baseAsset", "activate.quoteAsset", "test_perp.initialize_market"],
     spotMarket: ["activate.spotVenue"],
@@ -845,7 +878,9 @@ async function main() {
         if (index === undefined) return {};
         const expected = layout.identities[name];
         if (sameRef(index.activeIdentity, expected) || sameRef(index.pendingIdentity, expected)) return { done: true };
-        throw new Error(`${name} index holds a different identity than the plan`);
+        if (!index.pendingRecord.equals(web3.PublicKey.default)) throw new Error(`${name} index has a different pending identity`);
+        if (index.latestVersion >= expected.manifestVersion) throw new Error(`${name} index is not older than the planned identity`);
+        return {};
       }, async () => ({ instructions: [await builders[name]().instruction()], signers: [proposer] }));
     }
     for (const name of wave) {
@@ -854,12 +889,19 @@ async function main() {
         if (index.activeRecord.equals(layout.records[name])) return { done: true };
         if (!index.pendingRecord.equals(layout.records[name])) throw new Error(`${name} has no pending registration for the planned record`);
         return { waitSlot: BigInt(index.activationSlot.toString()) };
-      }, async () => ({
-        instructions: [await core.methods.activateInitialResource().accountsStrict({
-          executor: executor.publicKey, config: layout.config, index: layout.indexes[name], record: layout.records[name],
-        }).instruction()],
-        signers: [executor],
-      }));
+      }, async () => {
+        const index = await resourceIndex(name);
+        const initial = index.activeRecord.equals(web3.PublicKey.default);
+        const method = initial ? core.methods.activateInitialResource() : core.methods.activateResourceVersion();
+        const accounts = {
+          executor: executor.publicKey,
+          config: layout.config,
+          index: layout.indexes[name],
+          ...(initial ? {} : { previousRecord: index.activeRecord }),
+          record: layout.records[name],
+        };
+        return { instructions: [await method.accountsStrict(accounts).instruction()], signers: [executor] };
+      });
     }
   }
 
@@ -925,35 +967,41 @@ async function main() {
     const index = await riskDomainIndex();
     if (index === undefined) return {};
     if (index.activeRecord.equals(layout.riskDomainRecord) || index.pendingRecord.equals(layout.riskDomainRecord)) return { done: true };
-    throw new Error("risk domain index holds a different policy than the plan");
+    if (!index.pendingRecord.equals(web3.PublicKey.default)) throw new Error("risk domain index has a different pending policy");
+    if (index.latestVersion >= plan.riskDomain.policyVersion) throw new Error("risk domain index is not older than the planned policy");
+    return {};
   }, async () => {
     const policy = layout.riskDomainPolicy;
+    const args = {
+      riskDomainId: Array.from(plan.riskDomain.riskDomainId),
+      policy: {
+        schemaVersion: policy.schemaVersion,
+        manifestVersion: policy.manifestVersion,
+        manifestHash: Array.from(policy.manifestHash),
+        domainRefIdentityHash: Array.from(policy.domainRefIdentityHash),
+        accountingAsset: anchorRef(policy.accountingAsset),
+        grossCapQuoteAtoms: new BN(policy.grossCapQuoteAtoms.toString()),
+        netCapQuoteAtoms: new BN(policy.netCapQuoteAtoms.toString()),
+        minimumMarginFloorQuoteAtoms: new BN(policy.minimumMarginFloorQuoteAtoms.toString()),
+        maximumLeverageBps: new BN(policy.maximumLeverageBps.toString()),
+        maximumStalenessMs: new BN(policy.maximumStalenessMs.toString()),
+        maximumTimeToUnwindMs: new BN(policy.maximumTimeToUnwindMs.toString()),
+        requiredRecoveryReserveQuoteAtoms: new BN(policy.requiredRecoveryReserveQuoteAtoms.toString()),
+        aggregateHaircutBps: policy.aggregateHaircutBps,
+        eligibleSeries: policy.eligibleSeries.map((series) => ({
+          seriesId: Array.from(series.seriesId), manifestVersion: series.manifestVersion, manifestHash: Array.from(series.manifestHash),
+        })),
+        dependencyLimits: policy.dependencyLimits.map((dependency) => ({
+          dependencyId: Array.from(dependency.dependencyId),
+          maximumGrossQuoteAtoms: new BN(dependency.maximumGrossQuoteAtoms.toString()),
+        })),
+      },
+    };
+    const method = await riskDomainIndex() === undefined
+      ? core.methods.proposeInitialRiskDomain(args)
+      : core.methods.proposeRiskDomainVersion(args);
     return {
-      instructions: [await core.methods.proposeInitialRiskDomain({
-        riskDomainId: Array.from(plan.riskDomain.riskDomainId),
-        policy: {
-          schemaVersion: policy.schemaVersion,
-          manifestVersion: policy.manifestVersion,
-          manifestHash: Array.from(policy.manifestHash),
-          domainRefIdentityHash: Array.from(policy.domainRefIdentityHash),
-          accountingAsset: anchorRef(policy.accountingAsset),
-          grossCapQuoteAtoms: new BN(policy.grossCapQuoteAtoms.toString()),
-          netCapQuoteAtoms: new BN(policy.netCapQuoteAtoms.toString()),
-          minimumMarginFloorQuoteAtoms: new BN(policy.minimumMarginFloorQuoteAtoms.toString()),
-          maximumLeverageBps: new BN(policy.maximumLeverageBps.toString()),
-          maximumStalenessMs: new BN(policy.maximumStalenessMs.toString()),
-          maximumTimeToUnwindMs: new BN(policy.maximumTimeToUnwindMs.toString()),
-          requiredRecoveryReserveQuoteAtoms: new BN(policy.requiredRecoveryReserveQuoteAtoms.toString()),
-          aggregateHaircutBps: policy.aggregateHaircutBps,
-          eligibleSeries: policy.eligibleSeries.map((series) => ({
-            seriesId: Array.from(series.seriesId), manifestVersion: series.manifestVersion, manifestHash: Array.from(series.manifestHash),
-          })),
-          dependencyLimits: policy.dependencyLimits.map((dependency) => ({
-            dependencyId: Array.from(dependency.dependencyId),
-            maximumGrossQuoteAtoms: new BN(dependency.maximumGrossQuoteAtoms.toString()),
-          })),
-        },
-      }).accountsStrict({
+      instructions: [await method.accountsStrict({
         payer: payer.publicKey, proposer: proposer.publicKey, config: layout.config,
         index: layout.riskDomainIndex, record: layout.riskDomainRecord, systemProgram: web3.SystemProgram.programId,
       }).instruction()],
@@ -965,12 +1013,21 @@ async function main() {
     if (index.activeRecord.equals(layout.riskDomainRecord)) return { done: true };
     if (!index.pendingRecord.equals(layout.riskDomainRecord)) throw new Error("risk domain has no pending planned policy");
     return { waitSlot: BigInt(index.activationSlot.toString()) };
-  }, async () => ({
-    instructions: [await core.methods.activateInitialRiskDomain().accountsStrict({
-      executor: executor.publicKey, config: layout.config, index: layout.riskDomainIndex, record: layout.riskDomainRecord,
-    }).instruction()],
-    signers: [executor],
-  }));
+  }, async () => {
+    const index = await riskDomainIndex();
+    const initial = index.activeRecord.equals(web3.PublicKey.default);
+    const method = initial ? core.methods.activateInitialRiskDomain() : core.methods.activateRiskDomainVersion();
+    return {
+      instructions: [await method.accountsStrict({
+        executor: executor.publicKey,
+        config: layout.config,
+        index: layout.riskDomainIndex,
+        ...(initial ? {} : { previousRecord: index.activeRecord }),
+        record: layout.riskDomainRecord,
+      }).instruction()],
+      signers: [executor],
+    };
+  });
 
   // 9. The solver's package book shard, signed by the solver key.
   await run("package_book.initialize_shard", ["package_book.initialize_class"], async () => {
