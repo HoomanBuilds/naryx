@@ -320,7 +320,7 @@ export async function observeEvmAtomicPackage(
       reason: 'package evidence is visible but required confirmations are not met',
     });
   }
-  if (isFinalized) {
+  if (!finality.requireFinalized || isFinalized) {
     return baseObservation('FINALIZED', 'finalized-contract-receipt', { ...binding, chainReference: expectedChain }, transaction, {
       blockNumber: receipt.blockNumber,
       confirmations,

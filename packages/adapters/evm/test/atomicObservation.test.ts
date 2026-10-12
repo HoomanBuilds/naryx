@@ -150,6 +150,16 @@ test('confirmed but unfinalized package stays confirmed when finality is require
   assert.equal(observed.evidenceGrade, 'contract-state');
 });
 
+test('confirmation policy finalizes without a finalized block', async () => {
+  const port = fixturePort({
+    receipt: { status: 'success', blockNumber: 100n, logs: [packageVerifiedLog()] },
+    head: { latestBlock: 110n, finalizedBlock: null },
+  });
+  const observed = await observeEvmAtomicPackage(port, binding, transactionHash, confirmationsPolicy);
+  assert.equal(observed.lifecycle, 'FINALIZED');
+  assert.equal(observed.evidenceGrade, 'finalized-contract-receipt');
+});
+
 test('missing, reverted, and log-free transactions never read as package completion', async () => {
   const missing = await observeEvmAtomicPackage(fixturePort({ receipt: null }), binding, transactionHash, confirmationsPolicy);
   assert.equal(missing.lifecycle, 'NOT_FOUND');
