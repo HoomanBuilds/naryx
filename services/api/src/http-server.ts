@@ -2432,6 +2432,7 @@ export function createPrivateTerminalRequestHandler(
           reject(response, 400, error.code, error.message);
           return;
         }
+        console.error("Devnet observation failed:", error instanceof Error ? error.message : "unknown error");
         reject(response, 502, "EXECUTION_OBSERVATION_FAILED", "Devnet observation failed closed.");
       }
       return;

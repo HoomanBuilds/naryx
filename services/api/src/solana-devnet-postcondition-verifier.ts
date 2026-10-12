@@ -75,7 +75,7 @@ function verifyReceipt(record: PreparedSolanaDevnetRecord, receipt: DecodedCashC
 function verifyOpenPackage(record: PreparedSolanaDevnetRecord, receipt: DecodedCashCarryExecutionReceipt, open: DecodedOpenCashCarryPackage): void {
   const expected = record.postconditionBinding;
   if (expected === undefined) throw new Error("Solana postcondition binding is missing.");
-  requireEqual(open.version, 2, "open package version");
+  requireEqual(open.version, 3, "open package version");
   requireEqual(open.domain.domainId, receipt.domain.domainId, "open package domain id");
   requireEqual(open.domain.domainManifestVersion, receipt.domain.domainManifestVersion, "open package domain version");
   requireEqual(hex(open.domain.domainManifestHash), hex(receipt.domain.domainManifestHash), "open package domain hash");

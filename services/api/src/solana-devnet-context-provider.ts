@@ -48,10 +48,10 @@ export type SolanaDevnetContextProviderOptions = Readonly<{
  * (a lagging RPC node) or ahead (finality advanced while the solver read and signed) of the
  * admission slot. Expiry stays enforced at both slots: admission checks `slot < expiry` and the plan
  * compiler checks `binding.currentSlot < expiry`, and the program re-checks against its own clock.
- * About 64 seconds of Devnet slots either way.
+ * About two minutes of Devnet slots ahead, bounded again by the signed quote expiry.
  */
 export const SOLANA_DEVNET_MAX_BINDING_SLOT_LAG = 32n;
-export const SOLANA_DEVNET_MAX_BINDING_SLOT_ADVANCE = 160n;
+export const SOLANA_DEVNET_MAX_BINDING_SLOT_ADVANCE = 300n;
 
 export function solanaDevnetBindingSlotWithinWindow(admittedSlot: bigint, bindingSlot: bigint): boolean {
   return typeof bindingSlot === "bigint"

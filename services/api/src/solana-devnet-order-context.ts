@@ -605,8 +605,10 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
     }
     const traderQuoteAtoms = traderQuote === null || traderQuote === undefined || traderQuote.owner !== TOKEN_PROGRAM_ID
       ? 0n : decodeTokenAccount(traderQuote.data).amount;
-    const entry = sizeAtoms === 0n ? undefined : priceTestPerpShortEntry(market, snapshot.oraclePricePerLot, sizeAtoms);
-    // The core requires prefunded collateral at or above initial margin after the taker fee.
+    const collateralPricePerLot = (snapshot.oraclePricePerLot * (BPS + BigInt(config.maxSlippageBps)) + BPS - 1n) / BPS;
+    const entry = sizeAtoms === 0n ? undefined : priceTestPerpShortEntry(market, collateralPricePerLot, sizeAtoms);
+    // Fund against the order context's maximum admitted price move so a normal oracle update between
+    // onboarding and preparation does not leave the position a few atoms short.
     const requiredCollateral = entry === undefined ? 0n : entry.initialMarginAtoms + entry.feeAtoms;
     const collateral = positionState?.collateralAtoms ?? 0n;
     const steps: SolanaDevnetOnboardingStep[] = [];
@@ -757,7 +759,7 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
     const [openAccount, positionAccount] = await port.getAccounts([derived.openPackage, derived.position], slot);
     if (openAccount === null || openAccount === undefined || openAccount.owner !== core) fail("owner has no open package");
     const open = decodeOpenCashCarryPackage(manifest.coreIdl, openAccount.data);
-    if (open.version !== 2 || open.trader !== owner || open.domain.domainId !== manifest.domain.domainId
+    if (open.version !== 3 || open.trader !== owner || open.domain.domainId !== manifest.domain.domainId
       || open.domain.domainManifestVersion !== manifest.domain.domainManifestVersion
       || Buffer.compare(Buffer.from(open.domain.domainManifestHash), Buffer.from(manifest.domain.domainManifestHash)) !== 0
       || open.spotQuantityAtoms !== open.perpQuantityAtoms) {

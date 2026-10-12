@@ -81,7 +81,7 @@ function receiptData(action: 1 | 2, recovery: boolean, receiptAddress: string): 
 function openPackageData(receiptAddress: string): Uint8Array {
   return Buffer.concat([
     discriminator("OpenCashCarryPackage"),
-    Buffer.from([2]),
+    Buffer.from([3]),
     domain(),
     Buffer.from(bs58.decode(address(21))),
     Buffer.from(bs58.decode(receiptAddress)),

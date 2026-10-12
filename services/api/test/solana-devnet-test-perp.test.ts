@@ -59,8 +59,8 @@ test("prices the test perp from a fully verified, fresh, tight Pyth SOL/USD upda
 
 test("accepts a binding slot only inside the bounded window around the admission slot", () => {
   assert.equal(solanaDevnetBindingSlotWithinWindow(1_000n, 1_000n), true);
-  assert.equal(solanaDevnetBindingSlotWithinWindow(1_000n, 1_160n), true);
-  assert.equal(solanaDevnetBindingSlotWithinWindow(1_000n, 1_161n), false);
+  assert.equal(solanaDevnetBindingSlotWithinWindow(1_000n, 1_300n), true);
+  assert.equal(solanaDevnetBindingSlotWithinWindow(1_000n, 1_301n), false);
   assert.equal(solanaDevnetBindingSlotWithinWindow(1_000n, 968n), true);
   assert.equal(solanaDevnetBindingSlotWithinWindow(1_000n, 967n), false);
 });
