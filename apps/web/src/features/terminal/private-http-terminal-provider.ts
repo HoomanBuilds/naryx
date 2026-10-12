@@ -12,7 +12,7 @@ import { fromProtocolJson } from "@naryx/sdk";
 import bs58 from "bs58";
 import { decodeFunctionData, hashTypedData, parseAbi } from "viem";
 import { parseSolanaDevnetAccountStatus, type SolanaDevnetAccountStatus } from "./solana-devnet-onboarding";
-import { randomId, requireSubtleCrypto } from "./secure-context";
+import { requireSubtleCrypto } from "./secure-context";
 
 const SOLANA_DEVNET_GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 const MAX_TRANSACTION_BYTES = 1232;
@@ -707,6 +707,7 @@ export type HyperliquidSelectedAttempt = Readonly<{
 }>;
 
 export type HyperliquidLegExecutionEvidence = Readonly<{
+  legId: string;
   role: "SPOT" | "PERPETUAL";
   clientOrderId: string;
   requestedSignedBaseAtoms: string;
@@ -1508,6 +1509,7 @@ const SETTLEMENT_CLASSES = new Set<PackageLifecycleReceipt["settlementClass"]>([
 ]);
 const CANONICAL_UNSIGNED_PATTERN = /^(0|[1-9][0-9]*)$/;
 const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const MAX_UINT64_BIGINT = (BigInt(1) << BigInt(64)) - BigInt(1);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1826,12 +1828,17 @@ function requireProtocolId(value: unknown, name: string): string {
   return id;
 }
 
-function requireCanonicalUnsigned(value: unknown, name: string, positive: boolean): string {
+function requireCanonicalUnsigned(
+  value: unknown,
+  name: string,
+  positive: boolean,
+  maximum = MAX_SAFE_INTEGER_BIGINT,
+): string {
   if (typeof value !== "string" || !CANONICAL_UNSIGNED_PATTERN.test(value)) {
     throw new Error(`${name} is invalid.`);
   }
   const parsed = BigInt(value);
-  if (parsed > MAX_SAFE_INTEGER_BIGINT || (positive && parsed === BigInt(0))) {
+  if (parsed > maximum || (positive && parsed === BigInt(0))) {
     throw new Error(`${name} is invalid.`);
   }
   return value;
@@ -2131,7 +2138,7 @@ function requireLocalOrderRecord(
     domainManifestHashHex: requireHex32(value.domainManifestHashHex, "Order domain manifest hash"),
     owner: value.owner as string,
     settlementAccount: value.settlementAccount as string,
-    nonceDecimal: requireCanonicalUnsigned(value.nonceDecimal, "Order nonce", true),
+    nonceDecimal: requireCanonicalUnsigned(value.nonceDecimal, "Order nonce", true, MAX_UINT64_BIGINT),
     status: "UNSIGNED_CREATED",
     createdAtMs,
     orderBytes,
@@ -2297,7 +2304,7 @@ function requireHyperliquidOrderCreateResponse(
       domainManifestHashHex: context.domain.domainManifestHash,
       owner,
       settlementAccount: context.tradingAccount,
-      nonceDecimal: requireCanonicalUnsigned(order.nonceDecimal, "Hyperliquid order nonce", true),
+      nonceDecimal: requireCanonicalUnsigned(order.nonceDecimal, "Hyperliquid order nonce", true, MAX_UINT64_BIGINT),
       status: "UNSIGNED_CREATED",
       createdAtMs,
       orderBytes,
@@ -2568,10 +2575,11 @@ function requireHyperliquidLegEvidence(
   if (!isRecord(value)) throw new Error(`${role} execution evidence is invalid.`);
   requireExactKeys(value, [
     "clientOrderId", "evidenceCommitment", "feeAssetDecimals", "feeAssetId", "feeAtoms",
-    "filledSignedBaseAtoms", "grossQuoteAtoms", "requestedSignedBaseAtoms", "role",
+    "filledSignedBaseAtoms", "grossQuoteAtoms", "legId", "requestedSignedBaseAtoms", "role",
     "venueFeeQuoteAtoms",
   ], `${role} execution evidence`);
-  if (value.role !== role || typeof value.clientOrderId !== "string"
+  if (typeof value.legId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value.legId)
+    || value.role !== role || typeof value.clientOrderId !== "string"
     || !/^0x[0-9a-f]{32}$/.test(value.clientOrderId)) {
     throw new Error(`${role} execution evidence binding is invalid.`);
   }
@@ -2582,6 +2590,7 @@ function requireHyperliquidLegEvidence(
     throw new Error(`${role} fee asset is invalid.`);
   }
   return Object.freeze({
+    legId: value.legId,
     role,
     clientOrderId: value.clientOrderId,
     requestedSignedBaseAtoms: requireHyperliquidAtoms(
@@ -5269,7 +5278,7 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     const authorized = await this.#postJson(`/internal/terminal/orders/${orderHashHex}/authorize`, { signature }, signal);
     if (!authorized.ok) throw await serviceFailure(authorized, `${label} order authorization`);
     const quoted = await this.#postJson(
-      `/internal/terminal/orders/${orderHashHex}/quote`, { idempotencyKey: randomId() }, signal,
+      `/internal/terminal/orders/${orderHashHex}/quote`, { idempotencyKey }, signal,
     );
     if (!quoted.ok) throw await serviceFailure(quoted, `${label} solver quote`);
     const quote = await quoted.json() as unknown;
