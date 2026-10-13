@@ -37,6 +37,7 @@ export * from './strategy-plan.js';
 export * from './multi-strategy-account.js';
 export * from './multi-strategy-receipt.js';
 export * from './multi-strategy-materializer.js';
+export * from './multi-strategy-stage.js';
 export * from './inventory-materializer.js';
 export * from './venue-materializers.js';
 export * from './netting-residual.js';
