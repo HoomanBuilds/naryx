@@ -21,7 +21,7 @@ pub const ACCOUNT_ADAPTER_CLASS_ID: &str = "naryx.solana.account-transfer";
 pub const ESCROW_ADAPTER_CLASS_ID: &str = "naryx.solana.cross-domain-escrow";
 pub const CASH_AND_CARRY_TEMPLATE_ID: &str = "cash-and-carry-v1";
 pub const SUPPORTED_ADAPTER_CLASS_VERSION: u32 = 1;
-pub const SUPPORTED_TEMPLATE_VERSION: u32 = 1;
+pub const MAX_SUPPORTED_TEMPLATE_VERSION: u32 = 2;
 pub const SUPPORTED_SETTLEMENT_VERSION: u32 = 1;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace, Debug)]
@@ -127,7 +127,7 @@ pub fn supports_multi_strategy_adapter_class(
 }
 
 pub fn supports_template(template: &DescriptorRef) -> bool {
-    if template.version != SUPPORTED_TEMPLATE_VERSION
+    if !(1..=MAX_SUPPORTED_TEMPLATE_VERSION).contains(&template.version)
         || template.manifest_hash == [0u8; HASH_BYTE_LENGTH]
     {
         return false;
@@ -215,6 +215,19 @@ mod tests {
         assert!(!supports_multi_strategy_adapter_class(
             ExecutionRole::Spot,
             &descriptor(FIRM_RESERVATION_SPOT_ADAPTER_CLASS_ID)
+        ));
+    }
+
+    #[test]
+    fn template_registration_accepts_current_and_previous_versions() {
+        assert!(supports_template(&descriptor("treasury-inventory-hedge-v1")));
+        assert!(supports_template(
+            &DescriptorRef::new("treasury-inventory-hedge-v1", 2, [1u8; HASH_BYTE_LENGTH])
+                .unwrap()
+        ));
+        assert!(!supports_template(
+            &DescriptorRef::new("treasury-inventory-hedge-v1", 3, [1u8; HASH_BYTE_LENGTH])
+                .unwrap()
         ));
     }
 }
