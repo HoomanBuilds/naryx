@@ -5,6 +5,7 @@ import type { MarketFeed } from "../market-feed";
 import type { PublicPackageMarket } from "../public-market-feed";
 import type { TerminalViewModel } from "../terminal-view-model";
 import { ChainIcon, PairIcon } from "@/features/brand/chain-icons";
+import { marketAssetLabel } from "../market-label";
 import styles from "./pro.module.css";
 
 // Compact labels for the dense header; the full label stays available as the tooltip.
@@ -56,12 +57,12 @@ export function InstrumentBar({
   // The last basis is shown as the headline price, so the snapshot's own basis metric is not repeated.
   const selectedMarket = packageMarkets.find((market) => market.packageMarketId === packageMarketId) ?? null;
   const marketIdentity = packageMarketId ?? snapshot.market.packageId;
-  const marketBase = selectedMarket?.underlyingRefs[0] ?? snapshot.market.base;
-  const marketQuote = selectedMarket?.quoteAsset ?? snapshot.market.quote;
+  const marketBase = marketAssetLabel(selectedMarket?.underlyingRefs[0] ?? snapshot.market.base);
+  const marketQuote = marketAssetLabel(selectedMarket?.quoteAsset ?? snapshot.market.quote);
   const marketStrategy = selectedMarket?.templateId ?? snapshot.market.strategy;
   const underlyings = selectedMarket === null
-    ? `${snapshot.market.base}/${snapshot.market.quote}`
-    : `${[...new Set(selectedMarket.underlyingRefs)].join(" + ")}/${selectedMarket.quoteAsset ?? snapshot.market.quote}`;
+    ? `${marketAssetLabel(snapshot.market.base)}/${marketAssetLabel(snapshot.market.quote)}`
+    : `${[...new Set(selectedMarket.underlyingRefs)].map(marketAssetLabel).join(" + ")}/${marketAssetLabel(selectedMarket.quoteAsset ?? snapshot.market.quote)}`;
   const metrics = selectedMarket?.templateId !== null && selectedMarket?.templateId !== undefined
     && selectedMarket.templateId !== "cash-and-carry-v1"
     ? []

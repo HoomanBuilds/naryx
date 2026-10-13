@@ -1360,7 +1360,7 @@
 .quoteCandidateGrid {
   display: grid;
   gap: 6px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
 }
 
 .quoteCandidate,
@@ -1393,9 +1393,10 @@
 
 .quoteCandidate > span,
 .quoteCandidateSelected > span {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(0, 1fr);
   gap: 8px;
+  min-width: 0;
 }
 
 .quoteCandidate small,
@@ -1406,6 +1407,7 @@
 
 .quoteCandidate strong,
 .quoteCandidateSelected strong {
+  min-width: 0;
   overflow: hidden;
   font-family: var(--font-geist-mono), monospace;
   font-size: 10px;

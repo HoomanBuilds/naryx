@@ -6,6 +6,7 @@ import { usePersistedFlag, usePersistedSetting } from "../persisted-setting";
 import { MarketAlerts } from "../market-alerts";
 import { usePublicPackageMarkets, usePublicPackageOpportunities, usePublicSeriesCurve } from "../public-market-feed";
 import { useTerminal } from "../shell/terminal-context";
+import { marketAssetLabel } from "../market-label";
 import { MarketTransparency } from "./market-transparency";
 import { PaperTradingLab } from "./paper-trading-lab";
 import { RegistryBrowser } from "./registry-browser";
@@ -317,7 +318,7 @@ export function MarketsView() {
                         <span className={styles.cellStack}>
                           <strong>{human(market.templateId)}</strong>
                           <small className={styles.cellDetail}>
-                            {market.underlyingRefs.length === 0 ? "Assets unavailable" : market.underlyingRefs.join(" + ")} / {market.quoteAsset ?? "quote unavailable"}
+                            {market.underlyingRefs.length === 0 ? "Assets unavailable" : market.underlyingRefs.map(marketAssetLabel).join(" + ")} / {marketAssetLabel(market.quoteAsset)}
                           </small>
                         </span>
                       </td>

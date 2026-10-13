@@ -6501,6 +6501,7 @@ export function GeneralizedStrategyPreparationPanel({
               const quote = candidate.review;
               const selected = quote.quoteHash === quoteHash;
               const totalCost = BigInt(quote.passThroughCostAtoms) + BigInt(quote.serviceFeeAtoms);
+              const quoteAssetLabel = quote.quoteAsset.length > 18 ? compact(quote.quoteAsset, 5, 4) : quote.quoteAsset;
               return (
                 <button
                   key={quote.quoteHash}
@@ -6513,9 +6514,9 @@ export function GeneralizedStrategyPreparationPanel({
                     <strong>{quote.solverId}</strong>
                     <small>{quoteOriginLabel(candidate.origin)}</small>
                   </span>
-                  <span><small>Net outcome</small><strong>{formatAtomicAmount(quote.netOutcomeAtoms, quote.quoteDecimals, quote.quoteAsset)}</strong></span>
-                  <span><small>Total cost</small><strong>{formatAtomicAmount(totalCost, quote.quoteDecimals, quote.quoteAsset)}</strong></span>
-                  <span><small>Margin</small><strong>{formatAtomicAmount(quote.marginDeltaAtoms, quote.quoteDecimals, quote.quoteAsset)}</strong></span>
+                  <span><small>Net outcome</small><strong title={quote.quoteAsset}>{formatAtomicAmount(quote.netOutcomeAtoms, quote.quoteDecimals, quoteAssetLabel)}</strong></span>
+                  <span><small>Total cost</small><strong title={quote.quoteAsset}>{formatAtomicAmount(totalCost, quote.quoteDecimals, quoteAssetLabel)}</strong></span>
+                  <span><small>Margin</small><strong title={quote.quoteAsset}>{formatAtomicAmount(quote.marginDeltaAtoms, quote.quoteDecimals, quoteAssetLabel)}</strong></span>
                   <span><small>Settlement</small><strong>{quote.settlementClass.replaceAll("_", " ")}</strong></span>
                   <span><small>Valid until</small><strong>{expiryText(quote.validUntilUnit, quote.validUntilValue)}</strong></span>
                 </button>
