@@ -71,10 +71,10 @@ class Chain implements EvmOptionSpreadReadPort {
     switch (request.functionName) {
       case 'collateral': return QUOTE_TOKEN;
       case 'oracle': return ORACLE;
-      case 'expiry': return 2_000n;
-      case 'takerFeeBps': return 10n;
-      case 'initialMarginBps': return 2_000n;
-      case 'maintenanceMarginBps': return 1_000n;
+      case 'expiry': return 2_000;
+      case 'takerFeeBps': return 10;
+      case 'initialMarginBps': return 2_000;
+      case 'maintenanceMarginBps': return 1_000;
       case 'collateralScale': return 10n ** 12n;
       case 'oraclePriceWad': return 100n * 10n ** 18n;
       case 'currentFundingIndex': return -50n;
@@ -268,6 +268,24 @@ test('prices treasury hedge increases and decreases with directional margin', as
     currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW },
   });
   assert.equal(decrease.legEconomics[1]?.marginDelta.atoms, 0n);
+});
+
+test('rejects an unsafe numeric market field', async () => {
+  class UnsafeExpiryChain extends Chain {
+    override async readContract(request: Readonly<{
+      address: Address;
+      abi: Abi;
+      functionName: string;
+      args?: readonly unknown[];
+    }>): Promise<unknown> {
+      return request.functionName === 'expiry' ? Number.MAX_SAFE_INTEGER + 1 : super.readContract(request);
+    }
+  }
+  const port = createEvmTreasuryHedgeGeneralizedPricing(pricing(new UnsafeExpiryChain()));
+  await assert.rejects(
+    port.quote({ documents: documents(99n), currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW } }),
+    /market expiry is invalid/,
+  );
 });
 
 test('matches quoted atomic prices to WAD prices across asset decimals', () => {

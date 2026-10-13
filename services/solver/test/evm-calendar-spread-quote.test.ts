@@ -172,10 +172,10 @@ class Chain implements EvmOptionSpreadReadPort {
       switch (request.functionName) {
         case 'collateral': return QUOTE_TOKEN;
         case 'oracle': return ORACLE;
-        case 'expiry': return near ? 87_400n : 173_800n;
-        case 'takerFeeBps': return 10n;
-        case 'initialMarginBps': return 2_000n;
-        case 'maintenanceMarginBps': return 1_000n;
+        case 'expiry': return near ? 87_400 : 173_800;
+        case 'takerFeeBps': return 10;
+        case 'initialMarginBps': return 2_000;
+        case 'maintenanceMarginBps': return 1_000;
         case 'collateralScale': return 10n ** 12n;
         case 'oraclePriceWad': return 100n * 10n ** 18n;
         case 'currentFundingIndex': return 0n;

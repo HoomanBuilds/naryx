@@ -122,8 +122,9 @@ function checkedHash(value: Hex, context: string): Hex {
 }
 
 function checkedBigInt(value: unknown, context: string): bigint {
-  requireCondition(typeof value === 'bigint' && value >= 0n, `${context} is invalid`);
-  return value;
+  requireCondition((typeof value === 'bigint' && value >= 0n)
+    || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0), `${context} is invalid`);
+  return BigInt(value);
 }
 
 function tuple(value: unknown, length: number, context: string): readonly unknown[] {
