@@ -1990,6 +1990,14 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         throw new RequestError(409, "UNSUPPORTED_ENVIRONMENT", "Package-book order preparation is limited to local and testnet strategy orders.");
       }
       requireBookClock(strategy.executionClassId, strategy.expiryUnit);
+      const state = book(strategy.executionClassId);
+      const matchingPolicy = exchange.getMatchingPolicy(state.matchingPolicyHash);
+      if (matchingPolicy === undefined) throw new RequestError(500, "INTERNAL_ERROR", "Book policy is unavailable.");
+      const resting = strategy.packageOrderType === "LIMIT"
+        && (strategy.packageTimeInForce === "GTD" || strategy.packageTimeInForce === "GTC");
+      if (resting && strategy.economicQuantity.atoms < matchingPolicy.minimumExecutionQuantity) {
+        throw new RequestError(409, "MINIMUM_QUANTITY_UNFILLABLE", "The package quantity is below the market minimum.");
+      }
       const draft: PackageTakerOrderInput = {
         orderId: "00".repeat(32),
         executionClassId: strategy.executionClassId,
@@ -1998,7 +2006,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         timeInForce: strategy.packageTimeInForce,
         limitPriceTicks: BigInt(body.limitPriceTicks),
         quantity: strategy.economicQuantity.atoms,
-        minimumQuantity: strategy.economicQuantity.atoms,
+        minimumQuantity: resting ? matchingPolicy.minimumExecutionQuantity : strategy.economicQuantity.atoms,
         participantId: strategy.owner,
         commonControlGroupId: strategy.owner,
         ...(strategy.packageTimeInForce === "GTD" ? { expiresAtValue: strategy.expiryValue } : {}),

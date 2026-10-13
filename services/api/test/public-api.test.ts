@@ -772,6 +772,31 @@ test("EVM owners authorize, amend, and cancel native package-book orders with ch
       recordedAtMs: 1,
     });
 
+    strategies.set(id(7_103), {
+      orderHashHex: id(7_103),
+      graphHashHex: id(7_102),
+      order: {
+        environment: "local",
+        executionClassId: CLASS,
+        graphHash: commitmentHash(id(7_102)),
+        owner: participantId,
+        settlementAccount: participantId,
+        economicQuantity: { atoms: 20n },
+        packageOrderType: "LIMIT",
+        packageTimeInForce: "GTD",
+        expiryUnit: "SOLANA_SLOT",
+        expiryValue: 2_000n,
+      },
+      graph: {},
+      recordedAtMs: 1,
+    });
+    const larger = await get("/v1/package-book/orders/prepare", post({
+      strategyOrderHash: id(7_103), side: "ASK", limitPriceTicks: "103",
+    }));
+    assert.equal(larger.status, 200, larger.text);
+    assert.equal((larger.body as { order: { quantity: bigint; minimumQuantity: bigint } }).order.quantity, 20n);
+    assert.equal((larger.body as { order: { minimumQuantity: bigint } }).order.minimumQuantity, 10n);
+
     const preparedResponse = await get("/v1/package-book/orders/prepare", post({
       strategyOrderHash: id(7_101),
       side: "ASK",
