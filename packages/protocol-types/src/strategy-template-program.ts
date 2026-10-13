@@ -470,6 +470,12 @@ export function requireStrategyTemplateDefinition(templateId: string): StrategyT
   return found;
 }
 
+export function supportsStrategyTemplateVersion(templateId: string, templateVersion: number): boolean {
+  const definition = requireStrategyTemplateDefinition(templateId);
+  return templateVersion === definition.templateVersion
+    || (definition.templateId === STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE && templateVersion === 2);
+}
+
 export function validateStrategyTemplateGraph(input: PackageGraphInput): StrategyTemplateGraphValidation {
   const graph = packageGraph(input, 'validateStrategyTemplateGraph.graph');
   const found = BY_ID.get(graph.templateId);
@@ -477,7 +483,7 @@ export function validateStrategyTemplateGraph(input: PackageGraphInput): Strateg
     return Object.freeze({ valid: false as const, reasons: Object.freeze(['TEMPLATE_UNSUPPORTED'] as const) });
   }
   const reasons = new Set<StrategyTemplateGraphRejection>();
-  if (graph.templateVersion !== found.templateVersion) reasons.add('TEMPLATE_VERSION_UNSUPPORTED');
+  if (!supportsStrategyTemplateVersion(found.templateId, graph.templateVersion)) reasons.add('TEMPLATE_VERSION_UNSUPPORTED');
   const spec = found.actionSpecs.find((candidate) => candidate.action === graph.lifecycleAction);
   if (spec === undefined) {
     reasons.add('ACTION_UNSUPPORTED');

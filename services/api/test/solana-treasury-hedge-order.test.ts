@@ -144,6 +144,33 @@ test("creates dependency-ordered Solana treasury hedge lifecycle orders", async 
   }
 });
 
+test("admits a versioned treasury profile without changing its strategy semantics", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "naryx-solana-treasury-v2-"));
+  const path = join(directory, "profiles.json");
+  try {
+    const versioned = {
+      ...profile(),
+      templateVersion: 2,
+      seriesVersion: 3,
+      executionClassId: "solana-devnet-treasury-hedge-domain-5-atomic",
+      domain: domainRef("svm:devnet", 5, "71".repeat(32)),
+    };
+    writeFileSync(path, stringifyProtocolJson({ version: 1, environment: "testnet", profiles: [versioned] }));
+    const port = createSolanaTreasuryHedgeOrderPort({
+      profiles: loadSolanaTreasuryHedgeProfiles(path),
+      intake,
+      currentSlot: async () => CURRENT_SLOT,
+    });
+    const created = await port.create(request("ENTRY"));
+    assert.equal(created.order.templateVersion, 2);
+    assert.equal(created.graph.templateVersion, 2);
+    assert.equal(created.graph.legs[0]?.domain.domainManifestVersion, 5);
+    assert.equal(created.order.executionClassId, versioned.executionClassId);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("rejects stale expiry and a forged lifecycle state", async () => {
   const port = createSolanaTreasuryHedgeOrderPort({
     profiles: [profile()],

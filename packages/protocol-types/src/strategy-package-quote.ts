@@ -45,7 +45,7 @@ import {
   type ProtocolId,
   compareProtocolIds,
 } from './primitives.js';
-import { requireStrategyTemplateDefinition } from './strategy-template-program.js';
+import { requireStrategyTemplateDefinition, supportsStrategyTemplateVersion } from './strategy-template-program.js';
 
 export const STRATEGY_PACKAGE_QUOTE_VERSION = 1;
 export const STRATEGY_QUOTE_MAX_LEG_ECONOMICS = 32;
@@ -351,7 +351,7 @@ export function strategyPackageQuote(
   object(input, context);
   if (input.version !== STRATEGY_PACKAGE_QUOTE_VERSION) throw new MalformedInputError(`${context}.version`, `version must equal ${STRATEGY_PACKAGE_QUOTE_VERSION}`);
   const definition = requireStrategyTemplateDefinition(input.templateId);
-  if (input.templateVersion !== definition.templateVersion) throw new MalformedInputError(`${context}.templateVersion`, 'unsupported template version');
+  if (!supportsStrategyTemplateVersion(definition.templateId, input.templateVersion)) throw new MalformedInputError(`${context}.templateVersion`, 'unsupported template version');
   const quoteConventionId = protocolId(input.quoteConventionId, `${context}.quoteConventionId`);
   const riskClassId = protocolId(input.riskClassId, `${context}.riskClassId`);
   if (quoteConventionId !== definition.quoteConventionId) throw new MalformedInputError(`${context}.quoteConventionId`, 'quote convention does not match the template');
@@ -389,7 +389,7 @@ export function strategyPackageQuote(
     graphHash: commitmentHash(input.graphHash, `${context}.graphHash`),
     routeHash: commitmentHash(input.routeHash, `${context}.routeHash`),
     templateId: definition.templateId,
-    templateVersion: definition.templateVersion,
+    templateVersion: input.templateVersion,
     packageTemplateManifestHash: manifestHash(input.packageTemplateManifestHash, `${context}.packageTemplateManifestHash`),
     seriesId: protocolId(input.seriesId, `${context}.seriesId`),
     seriesVersion,

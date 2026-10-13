@@ -8,6 +8,7 @@ import {
   strategyEconomicsMetrics,
   strategyPackageReceipt,
   requireStrategyTemplateDefinition,
+  supportsStrategyTemplateVersion,
   strategyTemplateDefinitions,
   type StrategyEconomicsInput,
   type StrategyPackageReceiptInput,
@@ -30,6 +31,13 @@ const economics: readonly StrategyEconomicsInput[] = [
 ];
 
 describe('strategy template program', () => {
+  test('only the treasury template accepts its versioned domain manifest', () => {
+    assert.equal(supportsStrategyTemplateVersion(STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE, 1), true);
+    assert.equal(supportsStrategyTemplateVersion(STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE, 2), true);
+    assert.equal(supportsStrategyTemplateVersion(STRATEGY_TEMPLATE_ID.TREASURY_INVENTORY_HEDGE, 3), false);
+    assert.equal(supportsStrategyTemplateVersion(STRATEGY_TEMPLATE_ID.CASH_AND_CARRY, 2), false);
+  });
+
   test('every declared template has executable economics and lifecycle rules', () => {
     const definitions = strategyTemplateDefinitions();
     assert.equal(definitions.length, Object.keys(STRATEGY_TEMPLATE_ID).length);

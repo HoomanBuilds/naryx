@@ -1625,6 +1625,7 @@ export {
   strategyTemplateDefinitions,
   strategyTemplateDefinition,
   requireStrategyTemplateDefinition,
+  supportsStrategyTemplateVersion,
   validateStrategyTemplateGraph,
   type StrategyTemplateId,
   type StrategyTemplateLegRule,
