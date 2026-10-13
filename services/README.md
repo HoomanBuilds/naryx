@@ -1,13 +1,39 @@
 # services
 
-Long-running Naryx runtimes. Each service owns one responsibility and talks to the others over a published protocol, never by importing their internals.
+Long-running Naryx runtimes. Each service owns one responsibility and talks to the others over a published protocol, never by importing their internals. The first-party terminal is an API client, not a privileged execution process.
 
 | Directory | Responsibility |
 |---|---|
-| `api/` | Public API and the authoritative order, quote, authorization, submission-attempt, nonce, recovery, and outbox store. Order and quote lifecycle, RFQ delivery, quote selection, preflight, domain action compilation, and settlement coordination. |
-| `solver/` | Reference solver runtime. Venue market-data ingestion, implied and direct quote generation, cost modelling, quote signing, inventory and exposure limits, and capacity reservation. |
-| `indexer/` | Chain event indexing, venue fill reconciliation, finality and reorg handling, normalized receipt construction, and evidence-grade attribution. Read-only with respect to venues and holds no signer. |
-| `keeper/` | Lifecycle and risk automation. Strategy health evaluation, pre-authorized rebalance, roll, scheduled exit, funding settlement, bounded recovery driving, and dependency and qualification monitoring. |
+| [`api/`](api/README.md) | Public market API and the authoritative order, quote, authorization, submission-attempt, recovery, and outbox stores. It composes the terminal's preparation and lifecycle boundary. |
+| [`solver/`](solver/README.md) | Reference solver runtime for direct and implied package quotes, quote signing, market depth, inventory limits, and capacity reservation. Its Hyperliquid testnet executor is a separately gated path. |
+| [`indexer/`](indexer/README.md) | Read-only chain event projection, finality and reorg handling, normalized receipts, and accounting exports. It holds no venue signer. |
+| [`keeper/`](keeper/README.md) | Reconciliation, dependency monitoring, bounded recovery, and pre-authorized lifecycle automation. It does not receive a general trading key. |
+
+## Runtime flow
+
+```text
+Web terminal and external SDK
+             |
+             v
+Public market API and private terminal API
+             |                    \
+             v                     v
+      Solver quote protocol     Durable order and attempt stores
+             |                     |
+             v                     v
+      Venue adapters        Keeper and indexer observation
+                    \       /
+                     v     v
+                  Verified outcome and receipt
+```
+
+The API's public listener serves market data and the solver protocol. Its private listener serves operator terminal preparation and health. The solver signs quotes with an externally managed key; the keeper observes venue state and drives only bounded authorized actions; the indexer projects onchain evidence. A quote response, submission acknowledgement, and terminal settlement are different states.
+
+## State and deployment
+
+The API, solver, and keeper use explicit external database or journal paths. The EVM indexer stores event projections and reorg state. Service environment examples are in each workspace; generated runtime files and signing keys stay outside the repository. The [testnet go-live guide](../deployments/GO-LIVE.md) describes process startup, release-manifest generation, health checks, and the AWS host layout.
+
+Run a service's focused suite from the repository root with `npm test --prefix services/api`, `npm test --prefix services/solver`, `npm test --prefix services/indexer`, or `npm test --prefix services/keeper`. Its workspace README lists the necessary environment variables and any live testnet dependencies.
 
 ## Allowed dependencies
 
@@ -24,4 +50,4 @@ Services sit above the adapters and below the web app. `services/solver` reaches
 - A keeper action is bound to a signed condition, cost bound, risk bound, and expiry. A keeper never receives a general trading key.
 - No mainnet write until the readiness gates pass.
 
-Responsibilities, dependency direction, and build order are specified in the repository architecture document. These directories carry no package manifest until a slice has a real reason to add one, and that manifest comes from an official generator.
+For implementation boundaries and no-mainnet-write rules, read [AGENTS.md](../AGENTS.md).

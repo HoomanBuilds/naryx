@@ -1,25 +1,79 @@
-# apps/web
+# Naryx web
 
-The Naryx web application: the public landing page at `/` and the package trading terminal at `/trade`, on the Next.js App Router.
+The Next.js application has a public website at `/` and a six-view trading terminal. It is the first-party client for the same package markets, quotes, lifecycle records, and receipts exposed by the Naryx services. It holds no solver key or service signing authority.
 
-```bash
-npm run dev      # development server
-npm run lint
-npm run build
-```
+## Routes
 
-The web app talks to Naryx services over HTTP only. It holds no signing authority or service credentials; wallets sign in the browser through their own extensions.
+| Route | What a user can do |
+|---|---|
+| `/` | Understand the product and open the terminal. |
+| `/trade` | Select a domain and strategy market, inspect candles and package depth, prepare a bounded order, compare whole-package quotes, sign, and track entry or exit. |
+| `/markets` | Search canonical strategy markets, inspect quote conventions and executable depth, and compare opportunities. |
+| `/portfolio` | Inspect balances, positions, strategy accounts, risk domains, clearing, and scenario views. |
+| `/activity` | Inspect submitted attempts, terminal outcomes, receipts, and evidence. |
+| `/liquidity` | Inspect maker quote shards, solver capacity, and liquidity quality. |
+| `/network` | Inspect domain readiness, settlement semantics, qualification, and recovery capacity. |
+
+The terminal supports Solana Devnet, Base Sepolia, Arbitrum Sepolia, and Hyperliquid Testnet. A domain appears as executable only while its service reports an available runtime and execution-readiness gate. The UI does not promote a compiled or deployed module into an executable market on its own.
+
+## User flow
+
+1. Choose the network and a versioned strategy market. The market view shows the package's economics and the settlement class for that domain.
+2. Enter size and bounded execution terms. The service prepares an unsigned action and quotes the entire strategy rather than just a leg price.
+3. Review net outcome, cost, margin, expiry, fees, and recovery terms. Wallet signing happens in the user's browser.
+4. Follow the attempt until its onchain or venue evidence supports a terminal state. Portfolio and Activity show the resulting position, exit, or unresolved recovery state.
+
+The account and asset identifiers used for signing remain exact. The dense trading header and market table use short human-readable labels where the identity is known; the underlying identifier remains available for inspection.
+
+## Data and trust boundaries
+
+`src/features/terminal/shell/` owns the shared header, selected domain, service health, wallet context, and transaction watch. `pages/` owns the six terminal views. `pro/` owns the chart, depth, ticket-side widgets, and market bar. `private-http-terminal-provider.ts` talks to the private terminal API; `public-market-feed.ts` uses the public v1 API and stream.
+
+| Label | Meaning in the terminal |
+|---|---|
+| `EXECUTABLE` | A current qualified quote or book level that the relevant execution path can attempt under its stated limits. |
+| `OBSERVED` | A market trade, position, receipt, or other past event reported by a source. It is not an executable price. |
+| `INDICATIVE` or `MODELED` | An estimate, scenario, or preview; it cannot by itself settle a transaction. |
+| `FIXTURE` | Local deterministic presentation data when the service is not configured. It is not testnet liquidity. |
+
+The chart supports OHLC candles, volume, moving averages, and basis, spot, or perpetual views when the underlying observations exist. The public feed loads package books and tape from the API, follows `/v1/stream`, and resynchronizes over HTTP. A signed market catalogue enriches listed markets only after its hash and Ed25519 signature verify against the configured public authority. Stale or unavailable data is labeled rather than silently replaced with a fabricated live price.
+
+The app imports `@naryx/sdk` over its public client boundary. It does not import service internals, venue adapters, or contract source. Browser environment variables are public build inputs, never places for private keys.
 
 ## Configuration
 
-| Variable | Effect |
+Copy [`.env.example`](.env.example) to a local ignored `.env.local` and fill only the services you are running. Do not commit the result. The important variables are:
+
+| Variable | Purpose |
 |---|---|
-| `NEXT_PUBLIC_PRIVATE_TERMINAL_API_BASE_URL` | The private terminal service for previews, order preparation, lifecycle, and receipts. Without it the terminal runs on the local conformance provider and says so. |
-| `NEXT_PUBLIC_NARYX_PUBLIC_API_BASE_URL` | The public v1 market API. |
-| `NEXT_PUBLIC_NARYX_PACKAGE_MARKET_ID` | The package market (execution class) the terminal shows from the public API. |
-| `NEXT_PUBLIC_NARYX_CATALOGUE_AUTHORITY` | The trusted testnet catalogue authority identifier. |
-| `NEXT_PUBLIC_NARYX_CATALOGUE_PUBLIC_KEY` | The trusted authority's base58 Ed25519 public key. It is public and compiled into the browser bundle. |
+| `NEXT_PUBLIC_PRIVATE_TERMINAL_API_BASE_URL` | Private API origin for preparation, previews, lifecycle, and receipts. Required for testnet execution. |
+| `NEXT_PUBLIC_NARYX_PUBLIC_API_BASE_URL` | Public v1 origin for package markets, books, tape, and streams. |
+| `NEXT_PUBLIC_NARYX_PACKAGE_MARKET_ID` | Initial package market shown in the terminal. |
+| `NEXT_PUBLIC_NARYX_CATALOGUE_AUTHORITY` and `NEXT_PUBLIC_NARYX_CATALOGUE_PUBLIC_KEY` | Pinned authority for signed market metadata. |
+| `NEXT_PUBLIC_*_RPC_URL` and testnet quote token variables | Optional testnet wallet balance endpoints and quote-token identities, as enumerated in `.env.example`. |
+| `NEXT_PUBLIC_SITE_URL` | Absolute URL for metadata, sitemap, and social previews. |
 
-With both public API variables set, the terminal reads executable package depth and the observed package tape, then follows them over the public API WebSocket stream (`/v1/stream`), polling every few seconds only while the stream is down; rebuilds candles from observed trades only, and labels its market data `OBSERVED`. The market catalogue enriches those books only after its hash and Ed25519 signature verify against the two pinned catalogue variables. Leg prices are not public market data, so the spot and perpetual series say so rather than showing a model. Without the variables, or until the API first answers, market data stays on the deterministic fixture under its `FIXTURE` label and chart watermark. After a failed poll the last observed data stays on screen and the status bar marks the feed stale with the reason.
+`NEXT_PUBLIC_*` values are compiled into the client bundle. Rebuild after changing them. With no API origin, the terminal uses a clearly labeled local conformance fixture and cannot execute a testnet package. With a configured API, service health and domain readiness govern action availability. The [testnet go-live guide](../../deployments/GO-LIVE.md) describes the generated production environment and host configuration.
 
-The terminal never presents fixture, modeled, or indicative values as executable market data, and it shows the public deployment and mainnet-write restrictions in its status bar.
+## Local development
+
+Use Node.js 22 and npm with the committed lockfile:
+
+```bash
+npm ci
+npm run build:dependencies
+npm run dev
+```
+
+Open `http://localhost:3000` for the website or `http://localhost:3000/trade` for the terminal. These commands run from `apps/web`. Focused static checks are:
+
+```bash
+npm run lint
+npx tsc --noEmit
+```
+
+The release build is `npm run build`. Its `prebuild` step builds the local SDK and protocol dependencies. The deployment record is generated outside this app under [`deployments/`](../../deployments/README.md); the browser never reads a deployer or solver secret.
+
+## Scope of the current release
+
+The interface exposes broad strategy construction and risk views, but each route's live capability depends on exact template, adapter, domain, market, and service activation. Test assets, test liquidity, and controlled walkthrough data must not be represented as organic trading activity. Mainnet write actions are disabled by repository policy.
