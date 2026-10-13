@@ -379,11 +379,16 @@ if (explicitlyEnabled("NARYX_SOLANA_DEVNET_ORDER_CONTEXT_ENABLED")) {
   }
 }
 let publicSolanaSlot: bigint | undefined;
+let publicSolanaSlotObservedAtMs = 0;
 if (solanaDevnetOrderRuntime !== undefined) {
   const runtime = solanaDevnetOrderRuntime;
   const context = runtime.contexts(runtime.config.contextId);
   if (context !== undefined) {
-    const refresh = async () => { publicSolanaSlot = await runtime.clock.currentClock(context); };
+    const refresh = async () => {
+      const slot = await runtime.clock.currentClock(context);
+      publicSolanaSlot = slot;
+      publicSolanaSlotObservedAtMs = Date.now();
+    };
     try {
       await refresh();
     } catch (error) {
@@ -393,7 +398,7 @@ if (solanaDevnetOrderRuntime !== undefined) {
   }
 }
 const publicMarket = loadPublicMarketRuntime(process.env, Date.now, (unit) =>
-  unit === "SOLANA_SLOT" ? publicSolanaSlot : undefined);
+  unit === "SOLANA_SLOT" && Date.now() - publicSolanaSlotObservedAtMs <= 15_000 ? publicSolanaSlot : undefined);
 // The async observation port the terminal serves; after the executor handoff below, it advances the solver too.
 let arbitrumRuntime: Pick<Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>>, "observe"> | undefined;
 let arbitrumAdmittingRuntime: Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>> | undefined;

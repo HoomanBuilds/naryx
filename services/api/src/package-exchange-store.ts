@@ -3075,7 +3075,7 @@ export class SqlitePackageExchangeStore {
    * book unfilled and was not cancelled by its owner (expiry, invalidation, an unfilled immediate
    * remainder) is CLOSED.
    */
-  participantOrders(participantId: string, nowValue: bigint, recentLimit = 50): readonly PackageBookParticipantOrder[] {
+  participantOrders(participantId: string, nowValue: bigint | ((executionClassId: string) => bigint), recentLimit = 50): readonly PackageBookParticipantOrder[] {
     const rows = this.db.prepare(`
       SELECT c.package_order_id, c.execution_class_id, c.strategy_order_hash, c.commitment_json, c.recorded_at_ms,
              e.entry_json, t.side, t.limit_price_ticks, x.entry_id AS cancelled
@@ -3113,7 +3113,8 @@ export class SqlitePackageExchangeStore {
       const obligations = fills.all(orderId, orderId) as { role: string; price_ticks: unknown; quantity_atoms: unknown }[];
       const filledQuantity = obligations.reduce((sum, fill) => sum + storedBigInt(fill.quantity_atoms, "quantity_atoms"), 0n);
       const reopeningSide = obligations.find((fill) => fill.role === "BID" || fill.role === "ASK");
-      const expired = entry?.expiresAtValue !== undefined && entry.expiresAtValue <= nowValue;
+      const current = typeof nowValue === "bigint" ? nowValue : nowValue(row.execution_class_id);
+      const expired = entry?.expiresAtValue !== undefined && entry.expiresAtValue <= current;
       const state: PackageBookParticipantOrderState = entry !== undefined ? (expired ? "EXPIRED" : "OPEN")
         : row.cancelled !== null ? "CANCELLED"
           : filledQuantity >= commitment.quantity ? "FILLED" : "CLOSED";

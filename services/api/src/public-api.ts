@@ -215,6 +215,7 @@ const MAX_CANDLES_PER_REQUEST = 1_000;
 export type PublicExchangeStore = Pick<
   SqlitePackageExchangeStore,
   | "getBook"
+  | "getOpenExecutionClass"
   | "getMatchingPolicy"
   | "getAllocation"
   | "settlementCommitment"
@@ -353,11 +354,6 @@ export interface PublicApiOptions {
   readonly clockMs?: () => number;
 }
 
-const BOOK_EXPIRY_UNIT = Object.freeze({
-  UNIX_SECONDS: "EVM_UNIX_SECONDS",
-  UNIX_MILLISECONDS: "HYPERLIQUID_UNIX_MILLISECONDS",
-} as const);
-
 class RequestError extends Error {
   readonly status: number;
   readonly code: string;
@@ -475,15 +471,6 @@ function solverSummary(entry: { documentHashHex: string; subjectVersion: number;
  */
 export function createPublicApiHandler(options: PublicApiOptions) {
   const { exchange, registry, solverState, delivery, nowValue } = options;
-  const requireBookClock = (unit: string): void => {
-    if (options.clockUnit !== undefined && unit !== BOOK_EXPIRY_UNIT[options.clockUnit]) {
-      throw new RequestError(
-        409,
-        "CLOCK_UNIT_MISMATCH",
-        `This package book expires orders in ${BOOK_EXPIRY_UNIT[options.clockUnit]}; the order expiry uses ${unit}.`,
-      );
-    }
-  };
   const pinnedSuiteIds = options.pinnedSuiteIds ?? [];
   const { windowMs, maxRequests } = options.rateLimit;
   const clockMs = options.clockMs ?? Date.now;
@@ -526,6 +513,30 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     if (unit === "EVM_UNIX_SECONDS") return BigInt(Math.floor(clockMs() / 1_000));
     if (unit === "HYPERLIQUID_UNIX_MILLISECONDS") return BigInt(clockMs());
     return undefined;
+  }
+
+  function bookClock(classId: string): { unit: string; value: bigint } {
+    const executionClass = exchange.getOpenExecutionClass(classId);
+    if (executionClass === undefined) throw new RequestError(404, "BOOK_NOT_FOUND", "Package market is not open.");
+    if (executionClass.domains.length !== 1) {
+      throw new RequestError(409, "BOOK_CLOCK_UNSUPPORTED", "A multi-domain package book needs an explicit clock policy.");
+    }
+    const domainId = executionClass.domains[0]?.domainId;
+    const unit = domainId?.startsWith("svm:") ? "SOLANA_SLOT"
+      : domainId?.startsWith("eip155:") ? "EVM_UNIX_SECONDS"
+        : domainId?.startsWith("hypercore:") ? "HYPERLIQUID_UNIX_MILLISECONDS" : undefined;
+    if (unit === undefined) throw new RequestError(409, "BOOK_CLOCK_UNSUPPORTED", "Package market has no supported clock.");
+    const value = nowIn(unit);
+    if (value === undefined) throw new RequestError(503, "BOOK_CLOCK_UNAVAILABLE", "Package market clock is unavailable.");
+    return { unit, value };
+  }
+
+  function requireBookClock(classId: string, unit: string): bigint {
+    const clock = bookClock(classId);
+    if (unit !== clock.unit) {
+      throw new RequestError(409, "CLOCK_UNIT_MISMATCH", `This package book expires orders in ${clock.unit}; the order expiry uses ${unit}.`);
+    }
+    return clock.value;
   }
 
   function requireCoordination() {
@@ -863,11 +874,14 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         };
         if (state === undefined) return { ...terms, open: false as const };
         if (state.halted) return { ...terms, open: true as const, halted: true as const };
+        const clock = bookClock(executionClass.executionClassId);
         return {
           ...terms,
           open: true as const,
           halted: false as const,
-          index: executablePackageIndex(packageBookLevels(state, "BID", now), packageBookLevels(state, "ASK", now), sizes),
+          asOfUnit: clock.unit,
+          asOfValue: clock.value,
+          index: executablePackageIndex(packageBookLevels(state, "BID", clock.value), packageBookLevels(state, "ASK", clock.value), sizes),
         };
       }),
     };
@@ -1379,9 +1393,12 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const now = nowValue();
       const markets = exchange.listBooks().map((entry) => {
         const state = book(entry.executionClassId);
-        const index = executablePackageIndex(packageBookLevels(state, "BID", now), packageBookLevels(state, "ASK", now), [1n]);
+        const clock = bookClock(entry.executionClassId);
+        const index = executablePackageIndex(packageBookLevels(state, "BID", clock.value), packageBookLevels(state, "ASK", clock.value), [1n]);
         return {
           packageMarketId: entry.executionClassId,
+          asOfUnit: clock.unit,
+          asOfValue: clock.value,
           halted: entry.halted,
           matchingPolicyHash: toHex(state.matchingPolicyHash),
           bestBidTicks: index.bestBidTicks,
@@ -1395,7 +1412,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     if ((match = /^\/v1\/package-book\/([^/]+)\/implied-provenance$/.exec(path)) !== null) {
       onlyParams(url, []);
       const state = book(id(match[1], "Package market id"));
-      const now = nowValue();
+      const now = bookClock(state.executionClassId).value;
       return {
         packageMarketId: state.executionClassId,
         asOfValue: now,
@@ -1465,7 +1482,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     }
     if ((match = /^\/v1\/markets\/([^/]+)\/package-depth$/.exec(path)) !== null) {
       onlyParams(url, []);
-      return packageDepthView(book(id(match[1], "Package market id")), nowValue());
+      const state = book(id(match[1], "Package market id"));
+      return packageDepthView(state, bookClock(state.executionClassId).value);
     }
     if ((match = /^\/v1\/markets\/([^/]+)\/package-tape$/.exec(path)) !== null) {
       onlyParams(url, ["after", "limit"]);
@@ -1501,7 +1519,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       onlyParams(url, ["sizes"]);
       const state = book(id(match[1], "Package market id"));
       const sizes = sizesParam(url);
-      const now = nowValue();
+      const now = bookClock(state.executionClassId).value;
       return {
         packageMarketId: state.executionClassId,
         asOfValue: now,
@@ -1569,7 +1587,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         .filter((entry) => !entry.halted)
         .flatMap((entry) => {
           const state = book(entry.executionClassId);
-          const index = executablePackageIndex(packageBookLevels(state, "BID", now), packageBookLevels(state, "ASK", now), [size as bigint]);
+          const clock = bookClock(entry.executionClassId);
+          const index = executablePackageIndex(packageBookLevels(state, "BID", clock.value), packageBookLevels(state, "ASK", clock.value), [size as bigint]);
           const bid = index.executable.bids[0];
           const ask = index.executable.asks[0];
           const bidFillable = bid?.averagePriceTicks !== undefined;
@@ -1616,7 +1635,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       onlyParams(url, []);
       const participantId = id(match[1], "Participant id");
       const now = nowValue();
-      return { version: 1, participantId, asOfValue: now, orders: exchange.participantOrders(participantId, now) };
+      return { version: 1, participantId, asOfValue: now, orders: exchange.participantOrders(participantId, (classId) => bookClock(classId).value) };
     }
     if ((match = /^\/v1\/package-book\/orders\/([0-9a-f]{64})\/settlement-readiness$/.exec(path)) !== null) {
       onlyParams(url, []);
@@ -1970,7 +1989,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       if (strategy.environment !== "local" && strategy.environment !== "testnet") {
         throw new RequestError(409, "UNSUPPORTED_ENVIRONMENT", "Package-book order preparation is limited to local and testnet strategy orders.");
       }
-      requireBookClock(strategy.expiryUnit);
+      requireBookClock(strategy.executionClassId, strategy.expiryUnit);
       const draft: PackageTakerOrderInput = {
         orderId: "00".repeat(32),
         executionClassId: strategy.executionClassId,
@@ -2136,7 +2155,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const commitment = packageSettlementCommitment(
         object(body.settlementCommitment, "settlementCommitment") as unknown as PackageSettlementCommitmentInput,
       );
-      requireBookClock(commitment.validUntilUnit);
+      const bookNow = requireBookClock(order.executionClassId, commitment.validUntilUnit);
       if (
         commitment.executionClassId !== order.executionClassId
         || !bytesEqual(commitment.packageOrderId, orderHash)
@@ -2219,7 +2238,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       }
       strategyStore.lockPackageExecution(toHex(commitment.strategyOrderHash), orderHash);
       if (reopeningOrderPath) {
-        const result = exchange.queueReopeningOrder(executionClassId, order, nowValue(), commitment, settlementAuthorization);
+        const result = exchange.queueReopeningOrder(executionClassId, order, bookNow, commitment, settlementAuthorization);
         return {
           accepted: true,
           queuedForReopening: true,
@@ -2230,7 +2249,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           settlementCommitmentHash: result.settlementCommitmentHashHex,
         };
       }
-      const result = exchange.submitOrder(executionClassId, order, nowValue(), commitment, settlementAuthorization);
+      const result = exchange.submitOrder(executionClassId, order, bookNow, commitment, settlementAuthorization);
       if (!result.accepted) return { accepted: false, packageMarketId: executionClassId, orderId: toHex(orderHash), rejection: result.rejection };
       const matchingPolicy = exchange.getMatchingPolicy(result.allocation.matchingPolicyHash);
       if (matchingPolicy === undefined) throw new RequestError(500, "INTERNAL_ERROR", "Book policy is unavailable.");
@@ -2439,7 +2458,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const policy = exchange.getMatchingPolicy(state.matchingPolicyHash);
       if (policy === undefined) throw new RequestError(500, "INTERNAL_ERROR", "Book policy is unavailable.");
       // Runs against the current book in memory only; nothing is persisted or reserved.
-      const result = matchPackageOrder(policy, state, body.order as PackageTakerOrderInput, nowValue());
+      const result = matchPackageOrder(policy, state, body.order as PackageTakerOrderInput, bookClock(classId).value);
       return result.accepted ? { accepted: true, simulated: true, allocation: result.allocation } : { accepted: false, simulated: true, rejection: result.rejection };
     }
     if (path === "/v1/netting/simulate") {

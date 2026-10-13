@@ -50,7 +50,7 @@ import {
   type PublicApiOptions,
 } from "../src/index.js";
 import { DOMAIN_MANIFEST, operatorKeys, signedSolverManifest } from "./registry-fixtures.js";
-import { CALENDAR_SERIES, CLASS, CLASS_SUPPORT, NEAR_BASIS_SERIES, NOW, SERIES, SERIES_SUPPORT, id, impliedAsk, order, registerAll, settlement } from "./exchange-fixtures.js";
+import { CALENDAR_SERIES, CLASS, CLASS_SUPPORT, NEAR_BASIS_SERIES, NOW, POLICY, SERIES, SERIES_SUPPORT, executionClass, id, impliedAsk, order, registerAll, settlement } from "./exchange-fixtures.js";
 
 const NETTING_POLICY: NettingPolicyManifestInput = {
   schemaVersion: 1,
@@ -114,7 +114,7 @@ async function withMarket(
 ): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "naryx-market-"));
   const store = new SqlitePackageExchangeStore(join(dir, "exchange.sqlite"), { seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT });
-  const handler = createPublicApiHandler({ exchange: store, nowValue: () => NOW, rateLimit: { windowMs: 60_000, maxRequests: 1_000 }, ...overrides });
+  const handler = createPublicApiHandler({ exchange: store, nowValue: () => NOW, unitClock: (unit) => unit === "SOLANA_SLOT" ? NOW : undefined, rateLimit: { windowMs: 60_000, maxRequests: 1_000 }, ...overrides });
   const server = createServer((request, response) => {
     if (!handler(request, response)) {
       response.statusCode = 418;
@@ -895,7 +895,7 @@ test("package books refuse orders whose expiry clock differs from the book clock
     assert.equal(refused.status, 409);
     assert.equal((refused.body as { error: { code: string } }).error.code, "CLOCK_UNIT_MISMATCH");
 
-    strategies.set(id(7_201), strategy("EVM_UNIX_SECONDS", NOW + 60n));
+    strategies.set(id(7_201), strategy("SOLANA_SLOT", NOW + 60n));
     const prepared = await prepare();
     assert.equal(prepared.status, 200, prepared.text);
     const { order: packageOrder, settlementCommitment } = prepared.body as {
@@ -909,12 +909,38 @@ test("package books refuse orders whose expiry clock differs from the book clock
       assert.equal(response.status, 409, `${path} ${response.text}`);
     }
   }, {
-    clockUnit: "UNIX_SECONDS",
     strategyPackages: {
       order: (orderHashHex: string) => strategies.get(orderHashHex),
       lockPackageExecution: () => undefined,
     } as never,
   });
+});
+
+test("EVM and HyperCore books use their own domain clocks for depth", async () => {
+  await withMarket(async (get, store) => {
+    registerAll(store);
+    for (const [classId, domainId, expiry, unit, current] of [
+      ["evm-clock-book", "eip155:84532", 1_500n, "EVM_UNIX_SECONDS", 1_000n],
+      ["hypercore-clock-book", "hypercore:testnet", 1_500_000n, "HYPERLIQUID_UNIX_MILLISECONDS", 1_000_000n],
+    ] as const) {
+      const policy = { ...POLICY, executionClassId: classId };
+      const registered = store.registerMatchingPolicy(policy);
+      store.registerExecutionClass(executionClass({
+        executionClassId: classId,
+        domains: [domainRef(domainId, 1, id(8_000))],
+        matchingPolicyHash: registered.documentHashHex,
+      }));
+      store.openBook(classId, 1);
+      const posted = order(classId === "evm-clock-book" ? 8_001 : 8_002, {
+        executionClassId: classId,
+        expiresAtValue: expiry,
+      });
+      store.submitOrder(classId, posted, current, settlement(posted, { validUntilUnit: unit }));
+      const depth = await get(`/v1/markets/${classId}/package-depth`);
+      assert.equal(depth.status, 200, depth.text);
+      assert.equal((depth.body as { asks: readonly unknown[] }).asks.length, 1);
+    }
+  }, { nowValue: () => 1_000_000n, clockMs: () => 1_000_000 });
 });
 
 test("registries, strategy series, and package markets are listed from their stores", async () => {
