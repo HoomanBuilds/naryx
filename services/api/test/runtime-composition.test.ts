@@ -25,6 +25,7 @@ const ENABLED = {
 const solanaPorts = {
   preparation: { prepare: async () => ({}) },
   observation: { observe: async () => ({}) },
+  preparedAttempt: () => ({ attemptId: "solana-cash-carry-test", transactionHash: null }),
 } as unknown as PrivateTerminalExecutionPorts;
 const evmPorts = {
   authorization: { prepare: async () => ({}) },
@@ -87,6 +88,7 @@ test("runtime composition exposes only explicitly enabled complete boundaries", 
   assert.equal(evmCalls, 1);
   assert.equal(enabled.solanaDevnet.preparation, solanaPorts.preparation);
   assert.equal(enabled.solanaDevnet.observation, solanaPorts.observation);
+  assert.equal(enabled.solanaDevnet.preparedAttempt, solanaPorts.preparedAttempt);
   assert.equal(enabled.evmTestnet.authorization, evmPorts.authorization);
   assert.equal(enabled.evmTestnet.preparation, evmPorts.preparation);
   assert.equal(enabled.evmTestnet.atomicObservation, evmPorts.atomicObservation);

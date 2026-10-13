@@ -195,6 +195,7 @@ export function composePrivateTerminalRuntime(
           solanaDevnet = Object.freeze({
             preparation: candidate.preparation,
             observation: candidate.observation,
+            ...(typeof candidate.preparedAttempt === "function" ? { preparedAttempt: candidate.preparedAttempt } : {}),
           });
           solanaHealth = health(true, null);
         } else {
