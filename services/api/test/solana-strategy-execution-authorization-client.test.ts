@@ -96,3 +96,42 @@ test('rejects a transaction that already contains the owner signature', async ()
   );
   await assert.rejects(client.authorize(quoteHash), /authorization transaction signatures are invalid/);
 });
+
+test('accepts owner-only stage steps for the requested quote', async () => {
+  const programId = Keypair.generate().publicKey.toBase58();
+  const stageAddress = Keypair.generate().publicKey.toBase58();
+  const data = Buffer.from([0x36, 0x8f, 0xe3, 0x6b, 0x8f, 0xf1, 0x5a, 0x11, 1]);
+  const client = new HttpSolanaStrategyExecutionAuthorizationClient('http://127.0.0.1:8788', async (input) => {
+    assert.equal(String(input), 'http://127.0.0.1:8788/internal/strategy-executions/stage-solana');
+    return new Response(stringifyProtocolJson({
+      version: 1,
+      stage: {
+        version: 1,
+        owner: owner.publicKey.toBase58(),
+        solver: solver.publicKey.toBase58(),
+        programId,
+        orderHash: '22'.repeat(32),
+        quoteHash,
+        stageAddress,
+        payloadHash: '33'.repeat(32),
+        ready: false,
+        steps: [{
+          kind: 'INITIALIZE_STAGE',
+          label: 'Create immutable execution stage',
+          instructions: [{
+            programId,
+            accounts: [
+              { pubkey: owner.publicKey.toBase58(), isSigner: true, isWritable: true },
+              { pubkey: stageAddress, isSigner: false, isWritable: true },
+            ],
+            dataBase64: data.toString('base64'),
+          }],
+        }],
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  });
+  const stage = await client.stage(quoteHash);
+  assert.equal(stage.ready, false);
+  assert.equal(stage.stageAddress, stageAddress);
+  assert.equal(stage.steps.length, 1);
+});

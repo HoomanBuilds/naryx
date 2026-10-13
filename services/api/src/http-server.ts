@@ -1728,7 +1728,9 @@ export function createPrivateTerminalRequestHandler(
       return;
     }
 
-    if (url.pathname === '/internal/terminal/strategy-executions/authorize-solana') {
+    if (url.pathname === '/internal/terminal/strategy-executions/authorize-solana'
+      || url.pathname === '/internal/terminal/strategy-executions/stage-solana') {
+      const stageRequest = url.pathname.endsWith('/stage-solana');
       if (request.method !== 'POST') {
         response.setHeader('Allow', 'POST, OPTIONS');
         reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
@@ -1749,13 +1751,20 @@ export function createPrivateTerminalRequestHandler(
             'Request must contain only quoteHash.',
           );
         }
-        const authorization = await solanaStrategyExecutionAuthorization.authorize(
-          (requestBody as { quoteHash: string }).quoteHash,
-        );
-        sendJson(response, 200, {
-          status: 'OWNER_SIGNATURE_REQUIRED',
-          authorization: toProtocolJson(authorization),
-        });
+        const quoteHash = (requestBody as { quoteHash: string }).quoteHash;
+        if (stageRequest) {
+          const stage = await solanaStrategyExecutionAuthorization.stage(quoteHash);
+          sendJson(response, 200, {
+            status: stage.ready ? 'READY' : 'WALLET_TRANSACTIONS_REQUIRED',
+            stage: toProtocolJson(stage),
+          });
+        } else {
+          const authorization = await solanaStrategyExecutionAuthorization.authorize(quoteHash);
+          sendJson(response, 200, {
+            status: 'OWNER_SIGNATURE_REQUIRED',
+            authorization: toProtocolJson(authorization),
+          });
+        }
       } catch (error) {
         if (error instanceof SolanaStrategyExecutionAuthorizationClientError) {
           const status = error.code === 'NOT_FOUND' ? 404 : error.code === 'INVALID_REQUEST' ? 400 : 502;

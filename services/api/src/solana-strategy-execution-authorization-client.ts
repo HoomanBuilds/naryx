@@ -42,6 +42,28 @@ export interface AuthorizedSolanaStrategyExecution {
 
 export interface SolanaStrategyExecutionAuthorizationPort {
   authorize(quoteHash: string): Promise<AuthorizedSolanaStrategyExecution>;
+  stage(quoteHash: string): Promise<SolanaStrategyStagePreparation>;
+}
+
+export interface SolanaStrategyStagePreparation {
+  readonly version: 1;
+  readonly owner: string;
+  readonly solver: string;
+  readonly programId: string;
+  readonly orderHash: string;
+  readonly quoteHash: string;
+  readonly stageAddress: string;
+  readonly payloadHash: string;
+  readonly ready: boolean;
+  readonly steps: readonly Readonly<{
+    kind: 'INITIALIZE_STAGE' | 'WRITE_STAGE' | 'SEAL_STAGE' | 'CANCEL_STAGE';
+    label: string;
+    instructions: readonly Readonly<{
+      programId: string;
+      accounts: readonly Readonly<{ pubkey: string; isSigner: boolean; isWritable: boolean }>[];
+      dataBase64: string;
+    }>[];
+  }>[];
 }
 
 export class SolanaStrategyExecutionAuthorizationClientError extends Error {
@@ -261,6 +283,78 @@ export function validateAuthorizedSolanaStrategyExecution(
   });
 }
 
+export function validateSolanaStrategyStagePreparation(value: unknown, expectedQuoteHash: string): SolanaStrategyStagePreparation {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return fail('stage response must be an object');
+  const root = value as Record<string, unknown>;
+  if (Object.keys(root).sort().join(',') !== 'stage,version' || root.version !== 1
+    || typeof root.stage !== 'object' || root.stage === null || Array.isArray(root.stage)) {
+    return fail('stage response fields are invalid');
+  }
+  const stage = root.stage as Record<string, unknown>;
+  if (stage.version !== 1 || typeof stage.ready !== 'boolean' || !Array.isArray(stage.steps)
+    || stage.steps.length > 12 || stage.ready !== (stage.steps.length === 0)) {
+    return fail('stage readiness fields are invalid');
+  }
+  const owner = address(stage.owner, 'stage owner');
+  const solver = address(stage.solver, 'stage solver');
+  const expectedProgram = address(stage.programId, 'stage program');
+  const stageAddress = address(stage.stageAddress, 'stage account');
+  if (owner === solver || hash(stage.quoteHash, 'stage quote') !== expectedQuoteHash) {
+    return fail('stage signer or quote identity is invalid');
+  }
+  const steps = stage.steps.map((value, index) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return fail(`stage step ${index} is invalid`);
+    const step = value as Record<string, unknown>;
+    if ((step.kind !== 'INITIALIZE_STAGE' && step.kind !== 'WRITE_STAGE'
+      && step.kind !== 'SEAL_STAGE' && step.kind !== 'CANCEL_STAGE')
+      || typeof step.label !== 'string' || !Array.isArray(step.instructions) || step.instructions.length !== 1) {
+      return fail(`stage step ${index} fields are invalid`);
+    }
+    const instruction = step.instructions[0] as Record<string, unknown>;
+    if (typeof instruction !== 'object' || instruction === null || Array.isArray(instruction)
+      || !Array.isArray(instruction.accounts)) return fail(`stage instruction ${index} is invalid`);
+    const programId = address(instruction.programId, `stage instruction ${index} program`);
+    if (programId !== expectedProgram) return fail(`stage instruction ${index} program differs from the package program`);
+    const accounts = instruction.accounts.map((raw, accountIndex) => {
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return fail(`stage account ${index}:${accountIndex} is invalid`);
+      const account = raw as Record<string, unknown>;
+      if (typeof account.isSigner !== 'boolean' || typeof account.isWritable !== 'boolean') {
+        return fail(`stage account ${index}:${accountIndex} flags are invalid`);
+      }
+      return Object.freeze({
+        pubkey: address(account.pubkey, `stage account ${index}:${accountIndex}`),
+        isSigner: account.isSigner,
+        isWritable: account.isWritable,
+      });
+    });
+    if (accounts.filter((account) => account.isSigner).length !== 1
+      || accounts[0]?.pubkey !== owner || accounts[0]?.isSigner !== true
+      || !accounts.some((account) => account.pubkey === stageAddress && account.isWritable)) {
+      return fail(`stage instruction ${index} signer or stage account is invalid`);
+    }
+    const dataBase64 = instruction.dataBase64;
+    const data = base64(dataBase64, `stage instruction ${index} data`);
+    if (data.length < 8 || data.length > 768) return fail(`stage instruction ${index} data length is invalid`);
+    return Object.freeze({
+      kind: step.kind,
+      label: step.label,
+      instructions: Object.freeze([Object.freeze({ programId, accounts: Object.freeze(accounts), dataBase64: dataBase64 as string })]),
+    });
+  });
+  return Object.freeze({
+    version: 1,
+    owner,
+    solver,
+    programId: expectedProgram,
+    orderHash: hash(stage.orderHash, 'stage order'),
+    quoteHash: expectedQuoteHash,
+    stageAddress,
+    payloadHash: hash(stage.payloadHash, 'stage payload'),
+    ready: stage.ready,
+    steps: Object.freeze(steps),
+  }) as SolanaStrategyStagePreparation;
+}
+
 export class HttpSolanaStrategyExecutionAuthorizationClient implements SolanaStrategyExecutionAuthorizationPort {
   readonly #origin: string;
   readonly #fetch: typeof fetch;
@@ -268,6 +362,34 @@ export class HttpSolanaStrategyExecutionAuthorizationClient implements SolanaStr
   constructor(endpoint: string, fetchImplementation: typeof fetch = fetch) {
     this.#origin = loopbackOrigin(endpoint);
     this.#fetch = fetchImplementation;
+  }
+
+  async stage(quoteHashValue: string): Promise<SolanaStrategyStagePreparation> {
+    let normalized: string;
+    try {
+      normalized = toHex(commitmentHash(quoteHashValue, 'quoteHash'));
+    } catch {
+      throw new SolanaStrategyExecutionAuthorizationClientError('INVALID_REQUEST',
+        'quoteHash must be 32 bytes of lowercase hex');
+    }
+    if (normalized !== quoteHashValue) {
+      throw new SolanaStrategyExecutionAuthorizationClientError('INVALID_REQUEST', 'quoteHash must be lowercase hex');
+    }
+    const response = await this.#fetch(`${this.#origin}/internal/strategy-executions/stage-solana`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quoteHash: quoteHashValue }),
+      redirect: 'error',
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (response.status === 404) {
+      throw new SolanaStrategyExecutionAuthorizationClientError('NOT_FOUND', 'Strategy package was not found');
+    }
+    if (!response.ok) {
+      throw new SolanaStrategyExecutionAuthorizationClientError('UPSTREAM_REJECTED',
+        `stage preparation failed with HTTP ${response.status}`);
+    }
+    return validateSolanaStrategyStagePreparation(await responseJson(response), quoteHashValue);
   }
 
   async authorize(quoteHashValue: string): Promise<AuthorizedSolanaStrategyExecution> {

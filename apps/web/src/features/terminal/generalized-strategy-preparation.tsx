@@ -384,6 +384,16 @@ type SolanaProvisioningPlan = Readonly<{
   }>[];
 }>;
 
+type SolanaExecutionStagePlan = Readonly<{
+  ready: boolean;
+  stageAddress: string;
+  steps: readonly Readonly<{
+    kind: "INITIALIZE_STAGE" | "WRITE_STAGE" | "SEAL_STAGE" | "CANCEL_STAGE";
+    label: string;
+    instructions: SolanaWalletInstructionBatch["instructions"];
+  }>[];
+}>;
+
 type AuthorizedSolanaExecution = Readonly<{
   transactionBytes: Uint8Array;
   owner: string;
@@ -932,6 +942,91 @@ function parseSolanaProvisioning(
     quoteFundingRequiredAtoms,
     steps: Object.freeze(steps),
   });
+}
+
+function parseSolanaExecutionStage(
+  payload: unknown,
+  expectedOwner: string,
+  expectedProgram: string,
+  review: StrategyPreparationReview,
+): SolanaExecutionStagePlan {
+  const root = record(decode(payload as Json), "Solana execution stage response");
+  const stage = record(root.stage, "Solana execution stage");
+  const ready = stage.ready;
+  const stageAddress = solanaAddress(stage.stageAddress, "Solana execution stage account");
+  const owner = solanaAddress(stage.owner, "Solana execution stage owner");
+  const solver = solanaAddress(stage.solver, "Solana execution stage solver");
+  const program = solanaAddress(stage.programId, "Solana execution stage program");
+  if (root.status !== (ready ? "READY" : "WALLET_TRANSACTIONS_REQUIRED")
+    || stage.version !== 1 || typeof ready !== "boolean" || owner !== expectedOwner
+    || solver === owner || program !== expectedProgram
+    || hash(stage.orderHash, "Solana execution stage order") !== review.orderHash
+    || hash(stage.quoteHash, "Solana execution stage quote") !== review.quoteHash
+    || !HASH.test(text(stage.payloadHash, "Solana execution stage payload hash"))) {
+    throw new Error("Solana execution stage changed the reviewed package.");
+  }
+  const allowedDiscriminators = {
+    INITIALIZE_STAGE: "368fe36b8ff15a11",
+    WRITE_STAGE: "5159f6c273b798c2",
+    SEAL_STAGE: "a4264b0f5a6538eb",
+    CANCEL_STAGE: "717fc85f95389764",
+  } as const;
+  const steps = list(stage.steps, "Solana execution stage steps").map((value, index) => {
+    const step = record(value, `Solana execution stage step ${index}`);
+    const kind = step.kind;
+    if (kind !== "INITIALIZE_STAGE" && kind !== "WRITE_STAGE"
+      && kind !== "SEAL_STAGE" && kind !== "CANCEL_STAGE") {
+      throw new Error(`Solana execution stage step ${index} is unsupported.`);
+    }
+    const rawInstructions = list(step.instructions, `Solana execution stage step ${index} instructions`);
+    if (rawInstructions.length !== 1) throw new Error(`Solana execution stage step ${index} must contain one instruction.`);
+    const instruction = record(rawInstructions[0], `Solana execution stage instruction ${index}`);
+    const accounts = list(instruction.accounts, `Solana execution stage accounts ${index}`).map((value, accountIndex) => {
+      const account = record(value, `Solana execution stage account ${index}:${accountIndex}`);
+      if (typeof account.isSigner !== "boolean" || typeof account.isWritable !== "boolean") {
+        throw new Error(`Solana execution stage account ${index}:${accountIndex} flags are invalid.`);
+      }
+      return Object.freeze({
+        pubkey: solanaAddress(account.pubkey, `Solana execution stage account ${index}:${accountIndex}`),
+        isSigner: account.isSigner,
+        isWritable: account.isWritable,
+      });
+    });
+    const expectedAccounts = kind === "INITIALIZE_STAGE" ? 4 : 3;
+    if (accounts.length !== expectedAccounts
+      || accounts[0]?.pubkey !== owner || accounts[0]?.isSigner !== true || accounts[0]?.isWritable !== true
+      || accounts[1]?.isSigner !== false || accounts[1]?.isWritable !== false
+      || accounts[2]?.pubkey !== stageAddress || accounts[2]?.isSigner !== false || accounts[2]?.isWritable !== true
+      || (kind === "INITIALIZE_STAGE" && accounts[3]?.pubkey !== "11111111111111111111111111111111")
+      || accounts.slice(1).some((account) => account.isSigner)) {
+      throw new Error(`Solana execution stage step ${index} changed its account permissions.`);
+    }
+    const data = base64Bytes(instruction.dataBase64, `Solana execution stage data ${index}`);
+    const discriminator = Array.from(data.subarray(0, 8), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    if (discriminator !== allowedDiscriminators[kind] || data.length > 768) {
+      throw new Error(`Solana execution stage step ${index} has an invalid instruction.`);
+    }
+    return Object.freeze({
+      kind,
+      label: text(step.label, `Solana execution stage label ${index}`),
+      instructions: Object.freeze([Object.freeze({
+        programId: solanaAddress(instruction.programId, `Solana execution stage program ${index}`),
+        accounts: Object.freeze(accounts),
+        data,
+      })]),
+    });
+  });
+  if (steps.length > 12 || ready !== (steps.length === 0)
+    || steps.some((step) => step.instructions[0]?.programId !== program)
+    || steps.filter((step) => step.kind === "INITIALIZE_STAGE").length > 1
+    || steps.filter((step) => step.kind === "SEAL_STAGE").length
+      !== (ready || steps[0]?.kind === "CANCEL_STAGE" ? 0 : 1)
+    || (steps[0]?.kind === "CANCEL_STAGE" && steps.length !== 1)
+    || steps.some((step, index) => step.kind === "INITIALIZE_STAGE" && index !== 0
+      || step.kind === "SEAL_STAGE" && index !== steps.length - 1)) {
+    throw new Error("Solana execution stage steps are inconsistent.");
+  }
+  return Object.freeze({ ready, stageAddress, steps: Object.freeze(steps) });
 }
 
 function parseAuthorizedSolanaExecution(
@@ -3520,7 +3615,7 @@ export function GeneralizedStrategyPreparationPanel({
       );
       const currentSlot = BigInt(await getSolanaDevnetSlot());
       const maximumTtl = BigInt(selectedSolanaProfile.bounds.maximumExpiryTtlSlots);
-      const ttl = maximumTtl < BigInt(600) ? maximumTtl : BigInt(600);
+      const ttl = maximumTtl < BigInt(1800) ? maximumTtl : BigInt(1800);
       const response = await fetch(`${privateApiBaseUrl}/internal/terminal/solana-treasury-hedge-orders/create`, {
         method: "POST",
         cache: "no-store",
@@ -3615,6 +3710,33 @@ export function GeneralizedStrategyPreparationPanel({
         throw new Error("Connect a Wallet Standard account with Solana Devnet v0 transaction support.");
       }
       if (solanaProvisioning?.ready !== true) throw new Error("Provision the isolated Solana strategy accounts first.");
+      if (selectedSolanaProfile === null) throw new Error("The selected Solana treasury hedge profile is unavailable.");
+      const loadStage = async () => {
+        const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/stage-solana`, {
+          method: "POST",
+          cache: "no-store",
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ quoteHash: review.quoteHash }),
+        });
+        if (!response.ok) throw new Error(await failureMessage(response));
+        return parseSolanaExecutionStage(
+          await response.json(), solanaOwner, selectedSolanaProfile.multiStrategyProgramId, review,
+        );
+      };
+      let stage = await loadStage();
+      for (let round = 0; round < 3 && !stage.ready; round += 1) {
+        for (const [index, step] of stage.steps.entries()) {
+          const { blockhash, lastValidBlockHeight } = await getSolanaDevnetBlockhash();
+          const transaction = buildSolanaWalletTransaction(step, solanaOwner, blockhash);
+          const signature = await sendSolanaTransaction(transaction);
+          setPendingTransaction({ chain: "solana", hash: signature, label: `Execution stage ${index + 1} of ${stage.steps.length}` });
+          await waitForSolanaDevnetFinality(signature, lastValidBlockHeight);
+        }
+        stage = await loadStage();
+      }
+      if (!stage.ready) throw new Error("Solana execution stage has not finalized. Retry after Devnet confirms it.");
       const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/authorize-solana`, {
         method: "POST",
         cache: "no-store",
@@ -3635,6 +3757,7 @@ export function GeneralizedStrategyPreparationPanel({
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Solana treasury hedge submission failed closed.");
     } finally {
+      setPendingTransaction(null);
       setSolanaExecutionBusy(false);
     }
   }
