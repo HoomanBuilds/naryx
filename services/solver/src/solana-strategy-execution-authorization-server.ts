@@ -45,11 +45,12 @@ async function body(request: IncomingMessage): Promise<Record<string, unknown>> 
 }
 
 export function createSolanaStrategyExecutionAuthorizationInternalHandler(
-  service: Pick<SolanaStrategyExecutionAuthorizationService, 'authorize'>,
+  service: Pick<SolanaStrategyExecutionAuthorizationService, 'authorize' | 'stage'>,
 ): (request: IncomingMessage, response: ServerResponse) => Promise<boolean> {
   return async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://solver.internal');
-    if (url.pathname !== '/internal/strategy-executions/authorize-solana' || url.search !== '') return false;
+    const stageRequest = url.pathname === '/internal/strategy-executions/stage-solana';
+    if ((!stageRequest && url.pathname !== '/internal/strategy-executions/authorize-solana') || url.search !== '') return false;
     if (!internal(request)) {
       return send(response, 403, {
         error: { code: 'FORBIDDEN', message: 'Solana execution authorization answers direct loopback callers only.' },
@@ -63,11 +64,12 @@ export function createSolanaStrategyExecutionAuthorizationInternalHandler(
       if (Object.keys(input).length !== 1 || typeof input.quoteHash !== 'string') {
         throw new Error('request must contain only quoteHash');
       }
-      const authorization = await service.authorize(commitmentHash(input.quoteHash, 'quoteHash'));
-      if (authorization === undefined) {
+      const quoteHash = commitmentHash(input.quoteHash, 'quoteHash');
+      const result = stageRequest ? await service.stage(quoteHash) : await service.authorize(quoteHash);
+      if (result === undefined) {
         return send(response, 404, { error: { code: 'NOT_FOUND', message: 'Admitted strategy package was not found.' } });
       }
-      return send(response, 200, { version: 1, authorization });
+      return send(response, 200, stageRequest ? { version: 1, stage: result } : { version: 1, authorization: result });
     } catch (error) {
       return send(response, 400, {
         error: {

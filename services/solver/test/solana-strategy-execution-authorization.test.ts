@@ -1,15 +1,18 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import {
   AddressLookupTableAccount,
   AddressLookupTableProgram,
   Keypair,
   PublicKey,
+  SystemProgram,
   VersionedTransaction,
 } from '@solana/web3.js';
 import {
   SOLANA_DEVNET_GENESIS_HASH,
   SolanaMultiStrategyTransactionMaterializer,
+  compileSolanaMultiStrategyStagePlan,
   type SolanaReadOnlyRpc,
 } from '@naryx/adapter-solana';
 import { domainRef, type Hash32 } from '@naryx/protocol-types';
@@ -18,6 +21,7 @@ import {
   type PreparedStrategyExecutionTransport,
   type SolanaTreasuryHedgeExecutionLane,
 } from '../src/index.js';
+import { solanaStrategyExecutionEnvelope } from '../src/solana-strategy-execution-authorization.js';
 
 const bytes = (byte: number) => new Uint8Array(32).fill(byte);
 const key = (byte: number) => new PublicKey(bytes(byte));
@@ -28,6 +32,8 @@ const program = key(3);
 const account = key(4);
 const tableAddress = key(5);
 const quoteHash = bytes(6) as Hash32;
+const tokenProgram = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+const executeDiscriminator = createHash('sha256').update('global:execute_multi_strategy').digest().subarray(0, 8);
 
 function prepared(): PreparedStrategyExecutionTransport {
   return Object.freeze({
@@ -58,9 +64,14 @@ function prepared(): PreparedStrategyExecutionTransport {
           accounts: Object.freeze([
             Object.freeze({ pubkey: owner.toBase58(), isSigner: true, isWritable: true }),
             Object.freeze({ pubkey: solver.publicKey.toBase58(), isSigner: true, isWritable: false }),
+            ...Array.from({ length: 12 }, (_, index) => Object.freeze({
+              pubkey: key(index + 20).toBase58(), isSigner: false, isWritable: index >= 6,
+            })),
+            Object.freeze({ pubkey: tokenProgram.toBase58(), isSigner: false, isWritable: false }),
+            Object.freeze({ pubkey: SystemProgram.programId.toBase58(), isSigner: false, isWritable: false }),
             Object.freeze({ pubkey: account.toBase58(), isSigner: false, isWritable: true }),
           ]),
-          data: Uint8Array.from([1, 2, 3]),
+          data: Uint8Array.from([...executeDiscriminator, 1, 2, 3]),
         }),
         executionHash: bytes(13),
         callsHash: bytes(14),
@@ -86,7 +97,25 @@ function prepared(): PreparedStrategyExecutionTransport {
   });
 }
 
-function lane(expectedSolver = solver.publicKey.toBase58()): SolanaTreasuryHedgeExecutionLane {
+function stageAccount(stale = false): Readonly<{ owner: string; data: Uint8Array }> {
+  const envelope = solanaStrategyExecutionEnvelope(prepared()).envelope;
+  const plan = compileSolanaMultiStrategyStagePlan(envelope);
+  const data = Buffer.alloc(128 + plan.payloadLength);
+  createHash('sha256').update('account:StrategyExecutionStage').digest().copy(data, 0, 0, 8);
+  owner.toBuffer().copy(data, 8);
+  solver.publicKey.toBuffer().copy(data, 40);
+  data.writeBigUInt64LE(1n, 72);
+  data.writeBigUInt64LE(500n, 80);
+  Buffer.from(plan.payloadHash).copy(data, 88);
+  if (stale) data[88] = data[88]! ^ 1;
+  data.writeUInt16LE(plan.payloadLength, 120);
+  data[122] = 1;
+  data.writeUInt32LE(plan.payloadLength, 124);
+  Buffer.from(envelope.instruction.data.subarray(8)).copy(data, 128);
+  return { owner: program.toBase58(), data };
+}
+
+function lane(expectedSolver = solver.publicKey.toBase58(), sealed = true, stale = false): SolanaTreasuryHedgeExecutionLane {
   const lookup = new AddressLookupTableAccount({
     key: tableAddress,
     state: {
@@ -119,7 +148,7 @@ function lane(expectedSolver = solver.publicKey.toBase58()): SolanaTreasuryHedge
       getGenesisHash: async () => SOLANA_DEVNET_GENESIS_HASH,
       getFinalizedSlot: async () => 100n,
       getBlockTime: async () => 1_000n,
-      getAccounts: async () => [],
+      getAccounts: async () => [sealed ? stageAccount(stale) : null],
       getTransactionObservation: async () => Object.freeze({ status: 'PENDING' as const }),
     },
     materializer: new SolanaMultiStrategyTransactionMaterializer(rpc, {
@@ -166,4 +195,37 @@ test('refuses to sign when the lane names another solver', async () => {
     },
   });
   await assert.rejects(service.authorize(quoteHash), /execution lane solver differs from the signing account/);
+});
+
+test('requires a sealed stage before signing and prepares owner-only upload instructions', async () => {
+  const service = new SolanaStrategyExecutionAuthorizationService({
+    preparations: { prepareByQuote: async () => prepared() },
+    lanes: [lane(solver.publicKey.toBase58(), false)],
+    signer: {
+      publicKey: solver.publicKey.toBase58(),
+      sign: (transaction) => transaction.sign([solver]),
+    },
+  });
+  const stage = await service.stage(quoteHash);
+  assert(stage !== undefined);
+  assert.equal(stage.ready, false);
+  assert.deepEqual(stage.steps.map((step) => step.kind), ['INITIALIZE_STAGE', 'WRITE_STAGE', 'SEAL_STAGE']);
+  assert(stage.steps.every((step) => step.instructions[0]?.accounts[0]?.pubkey === owner.toBase58()));
+  await assert.rejects(service.authorize(quoteHash), /execution stage is not sealed/);
+});
+
+test('returns an owner-signed cancel for a stale stage at the same nonce', async () => {
+  const service = new SolanaStrategyExecutionAuthorizationService({
+    preparations: { prepareByQuote: async () => prepared() },
+    lanes: [lane(solver.publicKey.toBase58(), true, true)],
+    signer: {
+      publicKey: solver.publicKey.toBase58(),
+      sign: (transaction) => transaction.sign([solver]),
+    },
+  });
+  const stage = await service.stage(quoteHash);
+  assert(stage !== undefined);
+  assert.equal(stage.ready, false);
+  assert.deepEqual(stage.steps.map((step) => step.kind), ['CANCEL_STAGE']);
+  await assert.rejects(service.authorize(quoteHash), /execution stage is not sealed/);
 });

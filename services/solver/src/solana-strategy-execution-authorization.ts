@@ -4,8 +4,9 @@ import {
   VersionedTransaction,
 } from '@solana/web3.js';
 import { bytesEqual, type DomainRef, type Hash32 } from '@naryx/protocol-types';
-import type { SolanaMultiStrategyEnvelope } from '@naryx/adapter-solana';
+import { compileSolanaMultiStrategyStagePlan, type SolanaMultiStrategyEnvelope } from '@naryx/adapter-solana';
 import type { SolanaTreasuryHedgeExecutionLane } from './solana-treasury-hedge-config.js';
+import { observeSolanaStrategyStage } from './solana-strategy-execution-stage.js';
 import type { PreparedStrategyExecutionTransport } from './strategy-execution-transport.js';
 import type { StrategyPreparationService } from './strategy-preparation-service.js';
 
@@ -48,6 +49,27 @@ export interface AuthorizedSolanaStrategyExecution {
     packetDataLimit: number;
     computeUnitLimit: number;
   }>;
+}
+
+export interface SolanaStrategyStagePreparation {
+  readonly version: 1;
+  readonly owner: string;
+  readonly solver: string;
+  readonly programId: string;
+  readonly orderHash: string;
+  readonly quoteHash: string;
+  readonly stageAddress: string;
+  readonly payloadHash: string;
+  readonly ready: boolean;
+  readonly steps: readonly Readonly<{
+    kind: 'INITIALIZE_STAGE' | 'WRITE_STAGE' | 'SEAL_STAGE' | 'CANCEL_STAGE';
+    label: string;
+    instructions: readonly Readonly<{
+      programId: string;
+      accounts: readonly Readonly<{ pubkey: string; isSigner: boolean; isWritable: boolean }>[];
+      dataBase64: string;
+    }>[];
+  }>[];
 }
 
 function requireCondition(condition: boolean, message: string): asserts condition {
@@ -158,6 +180,54 @@ export class SolanaStrategyExecutionAuthorizationService {
     this.#signer = input.signer;
   }
 
+  async stage(quoteHash: Hash32): Promise<SolanaStrategyStagePreparation | undefined> {
+    const prepared = await this.#preparations.prepareByQuote(quoteHash);
+    if (prepared === undefined) return undefined;
+    requireCondition(bytesEqual(prepared.quoteHash, quoteHash), 'preparation returned another quote');
+    const compiled = solanaStrategyExecutionEnvelope(prepared);
+    const lanes = this.#lanes.filter((lane) => sameDomain(lane.domain, compiled.domain));
+    requireCondition(lanes.length === 1, 'prepared domain does not resolve to exactly one execution lane');
+    const lane = lanes[0]!;
+    requireCondition(lane.solver === compiled.envelope.solver.toBase58()
+      && lane.solver === this.#signer.publicKey, 'stage solver differs from the configured signer');
+    const plan = compileSolanaMultiStrategyStagePlan(compiled.envelope);
+    const observed = await observeSolanaStrategyStage(lane.reader, compiled.envelope, plan);
+    const nextInstruction = !observed.exists ? 0 : 1 + Math.ceil(observed.writtenBytes / 512);
+    const pending = observed.stale ? [plan.cancelInstruction]
+      : observed.sealed ? [] : plan.instructions.slice(nextInstruction);
+    return Object.freeze({
+      version: 1,
+      owner: compiled.envelope.owner.toBase58(),
+      solver: compiled.envelope.solver.toBase58(),
+      programId: compiled.envelope.instruction.programId.toBase58(),
+      orderHash: hex(prepared.orderHash),
+      quoteHash: hex(prepared.quoteHash),
+      stageAddress: plan.address.toBase58(),
+      payloadHash: hex(plan.payloadHash),
+      ready: observed.sealed,
+      steps: Object.freeze(pending.map((instruction, index) => {
+        const number = nextInstruction + index;
+        const kind = observed.stale ? 'CANCEL_STAGE' : number === 0 ? 'INITIALIZE_STAGE'
+          : number === plan.instructions.length - 1 ? 'SEAL_STAGE' : 'WRITE_STAGE';
+        return Object.freeze({
+          kind: kind as SolanaStrategyStagePreparation['steps'][number]['kind'],
+          label: kind === 'INITIALIZE_STAGE' ? 'Create immutable execution stage'
+            : kind === 'SEAL_STAGE' ? 'Seal the complete execution payload'
+              : kind === 'CANCEL_STAGE' ? 'Cancel stale execution stage' : `Upload execution chunk ${number}`,
+          instructions: Object.freeze([Object.freeze({
+            programId: instruction.programId.toBase58(),
+            accounts: Object.freeze(instruction.keys.map((account) => Object.freeze({
+              pubkey: account.pubkey.toBase58(),
+              isSigner: account.isSigner,
+              isWritable: account.isWritable,
+            }))),
+            dataBase64: Buffer.from(instruction.data).toString('base64'),
+          })]),
+        });
+      })),
+    });
+  }
+
   async authorize(quoteHash: Hash32): Promise<AuthorizedSolanaStrategyExecution | undefined> {
     const prepared = await this.#preparations.prepareByQuote(quoteHash);
     if (prepared === undefined) return undefined;
@@ -173,10 +243,13 @@ export class SolanaStrategyExecutionAuthorizationService {
     const owner = compiled.envelope.instruction.keys[0];
     requireCondition(owner !== undefined && owner.isSigner && !owner.pubkey.equals(solver),
       'prepared execution owner signer is invalid');
+    const stagePlan = compileSolanaMultiStrategyStagePlan(compiled.envelope);
+    const stage = await observeSolanaStrategyStage(lane.reader, compiled.envelope, stagePlan);
+    requireCondition(stage.sealed, 'execution stage is not sealed');
     const materialized = await lane.materializer.materialize({
       domain: compiled.domain,
       payer: owner.pubkey,
-      envelope: compiled.envelope,
+      envelope: stagePlan.finalEnvelope,
       computeUnitLimit: lane.computeUnitLimit,
     });
     const transaction = VersionedTransaction.deserialize(materialized.transactionBytes);
