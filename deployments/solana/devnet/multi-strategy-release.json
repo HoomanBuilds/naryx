@@ -58,10 +58,16 @@
   },
   "testUsdcMint": "C1nHUYTHx7rrtsy5fdJ1RkAtaYgQxG9VX7jnCJcpBNBf",
   "lookupTable": {
-    "address": "6tu448Mx6S7N4N9fyxXWy5onZjqJQnavyyXwtH1ershS",
+    "address": "B7rV6mnGSmNp8XTUxKa6tZBTQv4L2v7UiqHFaEsHEGxh",
     "frozen": true,
     "addressCount": 50,
-    "freezeTransaction": "4MNpRtaPqkRBdeP4sv2XKNWAaFwYP79xbrggjErSQKey9RoepxA3Z7aRRsaqD2PBxLVnXKDPc8yPW39JvqfReXk"
+    "createTransaction": "3iBqAhTrXVjdHLtqrPChxtWkMDUYutzVnxumXcficzkoQmE3WtEs5Gz2revNHSyZm3JwXkEznWM1eHFzEYwZbkfL",
+    "extendTransactions": [
+      "5dULVmjLHtcGeipF6JCnKCNYEQopatwTSpc7nt3LnSY17m8F1Czrv1oAMkWzs3nfYkbqyLU6bcz99jMgbCwZogDk",
+      "2gLJPhnEhrzf4q9gHQGQfC1AeeLZgwFbQ62xKjWhCgjTyudTQuCWsayXnta1NpVwNF5bygMauj7fWB1FAxhSS2Ac",
+      "5DVoFBox3ZcLyYfapsvNhV5d4m3yG5Qqt7zeEUhhnnEARGrNTqj2Bkv1Mogt1aRMqcnAXjbwNNjKdQVB5Cf8TzmD"
+    ],
+    "freezeTransaction": "5z6CnyxMZqmNv4nme3RgcjhRugQHFww7t5cAA4vgGpjXMsT2XqzYSLDKQ1NTvcca2dFw1m3f3fGmF4uHaWvxBmm6"
   },
   "activation": {
     "configInitializeTransaction": "23ktd6rKrCkKS9o9ffJRX44VFFEocp174Vqc6mLgs4o3aFGDXKBv5EPTatFzDp7M8AwZkRHQubPjnwx7yh8KjVJv",
