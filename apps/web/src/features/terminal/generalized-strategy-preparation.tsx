@@ -2892,6 +2892,7 @@ export function GeneralizedStrategyPreparationPanel({
     setQuoteOrigin(origin);
     setSolanaExecutionSignature(null);
     setSolanaObservation(null);
+    setSolanaProvisioning(null);
     setEvmCollateral(null);
     setEvmCollateralCompletionKey("");
     resetNettingAllocation();
@@ -3563,7 +3564,7 @@ export function GeneralizedStrategyPreparationPanel({
   }
 
   async function provisionSolanaTreasuryHedge() {
-    if (privateApiBaseUrl === null || solanaOwner === null || !HASH.test(orderHash)) return;
+    if (privateApiBaseUrl === null || solanaOwner === null || !HASH.test(orderHash) || !HASH.test(quoteHash)) return;
     setSolanaProvisionBusy(true);
     setError(null);
     try {
@@ -3577,7 +3578,7 @@ export function GeneralizedStrategyPreparationPanel({
           credentials: "omit",
           referrerPolicy: "no-referrer",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ orderHash }),
+          body: JSON.stringify({ orderHash, quoteHash }),
         });
         if (!response.ok) throw new Error(await failureMessage(response));
         const expectedPackageId = lifecycleAction === "ENTRY" ? orderHash : selectedSolanaPosition?.packageId;
@@ -5616,7 +5617,7 @@ export function GeneralizedStrategyPreparationPanel({
                 <button
                   type="button"
                   className={styles.secondaryAction}
-                  disabled={solanaProvisionBusy || solanaProvisioning?.ready === true}
+                  disabled={solanaProvisionBusy || solanaProvisioning?.ready === true || !HASH.test(quoteHash)}
                   onClick={() => void provisionSolanaTreasuryHedge()}
                 >
                   {solanaProvisionBusy ? "Verifying isolated accounts" : solanaProvisioning?.ready
@@ -5636,7 +5637,9 @@ export function GeneralizedStrategyPreparationPanel({
                         selectedSolanaProfile.inventoryAsset.decimals, selectedSolanaProfile.inventoryAsset.assetId)} and ${formatAtomicAmount(
                         solanaProvisioning.quoteFundingRequiredAtoms, selectedSolanaProfile.quoteAsset.decimals,
                         selectedSolanaProfile.quoteAsset.assetId)}.`
-                      : "The wallet provisions isolated inventory, collateral, perpetual, and strategy accounts on Devnet."}
+                      : HASH.test(quoteHash)
+                        ? "The wallet provisions isolated inventory, collateral, perpetual, and strategy accounts on Devnet."
+                        : "Select a signed quote to provision its collateral with a bounded price cushion."}
               </p>
             </>
           ) : (
@@ -6631,6 +6634,7 @@ export function GeneralizedStrategyPreparationPanel({
           placeholder="64 lowercase hex characters"
           onChange={(event) => {
             setQuoteHash(event.target.value.trim());
+            setSolanaProvisioning(null);
             setQuoteReview(null);
             setQuoteOrigin(null);
             setReview(null);

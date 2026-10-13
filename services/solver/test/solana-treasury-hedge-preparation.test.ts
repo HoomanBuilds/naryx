@@ -11,6 +11,7 @@ import {
   adapterRef,
   assetAmount,
   assetRef,
+  commitmentHash,
   domainRef,
   packageGraph,
   packageGraphHash,
@@ -24,6 +25,7 @@ import {
 import { PublicKey } from '@solana/web3.js';
 import {
   SolanaTreasuryHedgeProvisioningResolver,
+  SolanaTreasuryHedgeProvisioningService,
   SolanaTreasuryHedgePreparationContextResolver,
   type SolanaTreasuryHedgePricingInput,
   type StoredStrategyPackageDocuments,
@@ -195,7 +197,7 @@ function documents(): StoredStrategyPackageDocuments {
     maximumVenueFeesByAsset: [{ asset: quoteAsset, maxAtoms: 200_000n }],
     maximumNetworkFeesByAsset: [],
     maximumRecoveryCostByAsset: [],
-    maximumMarginIncrease: assetAmount(quoteAsset, 31_000_000n),
+    maximumMarginIncrease: assetAmount(quoteAsset, 100_000_000n),
     maximumResidualValue: assetAmount(quoteAsset, 0n),
     expiryUnit: 'SOLANA_SLOT',
     expiryValue: 1_200n,
@@ -210,6 +212,7 @@ function documents(): StoredStrategyPackageDocuments {
     order,
     graph,
     quote: {
+      totalMarginDelta: amount(30_149_955n),
       serviceCharges: [
         { category: 'PROTOCOL', amount: amount(100_000n) },
         { category: 'SOLVER', amount: amount(50_000n) },
@@ -381,7 +384,7 @@ test('prepares a state-bound Solana treasury hedge entry from owner-controlled a
 test('reports the exact remaining Devnet collateral before Solana treasury hedge execution', async () => {
   const packageDocuments = documents();
   const rpc = setupRpc(packageDocuments);
-  const plan = await new SolanaTreasuryHedgeProvisioningResolver([{
+  const resolver = new SolanaTreasuryHedgeProvisioningResolver([{
     environment: 'testnet',
     templateManifest: template,
     activeRegistryRecords: [],
@@ -408,10 +411,27 @@ test('reports the exact remaining Devnet collateral before Solana treasury hedge
     testPerpMaximumBaseLots: 10_000n,
     maximumTransactionComputeUnits: 600_000,
     packageIds: { resolvePackageId: async () => undefined },
-  }]).resolve(packageDocuments);
+  }]);
+  const plan = await resolver.resolve(packageDocuments, packageDocuments.quote.totalMarginDelta.atoms);
   assert.equal(plan.packageId, packageDocuments.orderHashHex);
   assert.equal(plan.inventoryFundingRequiredAtoms, 0n);
-  assert.equal(plan.quoteFundingRequiredAtoms, 1_000_045n);
+  assert.equal(plan.quoteFundingRequiredAtoms, 3_164_996n);
   assert.equal(plan.ready, false);
   assert.deepEqual(plan.steps.map((step) => step.kind), ['CREATE_TOKEN_ACCOUNTS']);
+  assert.equal((await resolver.resolve(packageDocuments, 95_000_000n)).quoteFundingRequiredAtoms, 70_000_045n);
+  await assert.rejects(() => resolver.resolve(packageDocuments, 100_000_001n), /quoted margin exceeds the signed order cap/);
+  await assert.rejects(() => resolver.resolve(packageDocuments, -1n), /quoted margin direction conflicts/);
+  const service = new SolanaTreasuryHedgeProvisioningService({
+    getByOrder: async () => packageDocuments,
+    getByQuote: async () => packageDocuments,
+  }, resolver);
+  const quotedPlan = await service.provisionByQuote(
+    commitmentHash(packageDocuments.quoteHashHex, 'quoteHash'),
+    commitmentHash(packageDocuments.orderHashHex, 'orderHash'),
+  );
+  assert.equal(quotedPlan?.quoteFundingRequiredAtoms, 3_164_996n);
+  await assert.rejects(() => service.provisionByQuote(
+    commitmentHash(packageDocuments.quoteHashHex, 'quoteHash'),
+    commitmentHash(hash('b'), 'orderHash'),
+  ), /quote does not belong to the requested order/);
 });

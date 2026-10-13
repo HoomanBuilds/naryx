@@ -39,7 +39,7 @@ async function body(request: IncomingMessage): Promise<Record<string, unknown>> 
 }
 
 export function createSolanaTreasuryHedgeProvisioningInternalHandler(
-  service: Pick<SolanaTreasuryHedgeProvisioningService, 'provisionByOrder'>,
+  service: Pick<SolanaTreasuryHedgeProvisioningService, 'provisionByOrder' | 'provisionByQuote'>,
 ): (request: IncomingMessage, response: ServerResponse) => Promise<boolean> {
   return async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://solver.internal');
@@ -48,12 +48,16 @@ export function createSolanaTreasuryHedgeProvisioningInternalHandler(
     if (request.method !== 'POST') return send(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: 'Only POST is allowed.' } });
     try {
       const requestBody = await body(request);
-      if (Object.keys(requestBody).length !== 1 || typeof requestBody.orderHash !== 'string') {
-        throw new Error('request must contain only orderHash');
+      if (typeof requestBody.orderHash !== 'string' || Object.keys(requestBody).some((key) => key !== 'orderHash' && key !== 'quoteHash')
+        || (requestBody.quoteHash !== undefined && typeof requestBody.quoteHash !== 'string')) {
+        throw new Error('request must contain orderHash and optional quoteHash');
       }
-      const plan = await service.provisionByOrder(commitmentHash(requestBody.orderHash, 'orderHash'));
+      const orderHash = commitmentHash(requestBody.orderHash, 'orderHash');
+      const plan = typeof requestBody.quoteHash === 'string'
+        ? await service.provisionByQuote(commitmentHash(requestBody.quoteHash, 'quoteHash'), orderHash)
+        : await service.provisionByOrder(orderHash);
       if (plan === undefined) return send(response, 404, { error: { code: 'NOT_FOUND', message: 'Strategy order was not found.' } });
-      return send(response, 200, { version: 1, provisioning: plan });
+      return send(response, 200, { version: 1, orderHash: requestBody.orderHash, provisioning: plan });
     } catch (error) {
       return send(response, 400, {
         error: {

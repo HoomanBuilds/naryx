@@ -1702,10 +1702,16 @@ export function createPrivateTerminalRequestHandler(
       try {
         const requestBody = await readJson(request);
         if (typeof requestBody !== 'object' || requestBody === null || Array.isArray(requestBody)
-          || Object.keys(requestBody).length !== 1 || typeof (requestBody as { orderHash?: unknown }).orderHash !== 'string') {
-          throw new SolanaTreasuryHedgeProvisioningClientError('INVALID_REQUEST', 'Request must contain only orderHash.');
+          || typeof (requestBody as { orderHash?: unknown }).orderHash !== 'string'
+          || Object.keys(requestBody).some((key) => key !== 'orderHash' && key !== 'quoteHash')
+          || ((requestBody as { quoteHash?: unknown }).quoteHash !== undefined
+            && typeof (requestBody as { quoteHash?: unknown }).quoteHash !== 'string')) {
+          throw new SolanaTreasuryHedgeProvisioningClientError('INVALID_REQUEST', 'Request must contain orderHash and optional quoteHash.');
         }
-        const provisioning = await solanaTreasuryHedgeProvisioning.provision((requestBody as { orderHash: string }).orderHash);
+        const provisioning = await solanaTreasuryHedgeProvisioning.provision(
+          (requestBody as { orderHash: string }).orderHash,
+          (requestBody as { quoteHash?: string }).quoteHash,
+        );
         const fundingRequired = provisioning.inventoryFundingRequiredAtoms > 0n || provisioning.quoteFundingRequiredAtoms > 0n;
         sendJson(response, 200, {
           status: provisioning.ready ? 'READY' : fundingRequired ? 'FUNDING_REQUIRED' : 'WALLET_TRANSACTIONS_REQUIRED',

@@ -29,7 +29,7 @@ export type SolanaTreasuryHedgeProvisioningPlan = Readonly<{
 }>;
 
 export interface SolanaTreasuryHedgeProvisioningPort {
-  provision(orderHashHex: string): Promise<SolanaTreasuryHedgeProvisioningPlan>;
+  provision(orderHashHex: string, quoteHashHex?: string): Promise<SolanaTreasuryHedgeProvisioningPlan>;
 }
 
 export class SolanaTreasuryHedgeProvisioningClientError extends Error {
@@ -102,12 +102,15 @@ function plan(value: unknown, expectedOrderHash: string): SolanaTreasuryHedgePro
     throw new SolanaTreasuryHedgeProvisioningClientError('INVALID_RESPONSE', 'provisioning response must be an object');
   }
   const root = value as Record<string, unknown>;
-  if (Object.keys(root).sort().join(',') !== 'provisioning,version' || root.version !== 1
+  if (Object.keys(root).sort().join(',') !== 'orderHash,provisioning,version' || root.version !== 1
+    || root.orderHash !== expectedOrderHash
     || typeof root.provisioning !== 'object' || root.provisioning === null || Array.isArray(root.provisioning)) {
     throw new SolanaTreasuryHedgeProvisioningClientError('INVALID_RESPONSE', 'provisioning response fields are invalid');
   }
   const candidate = root.provisioning as Record<string, unknown>;
-  if (candidate.version !== 1 || candidate.domainId !== 'svm:devnet' || candidate.packageId !== expectedOrderHash
+  if (candidate.version !== 1 || candidate.domainId !== 'svm:devnet'
+    || typeof candidate.packageId !== 'string' || !/^[0-9a-f]{64}$/.test(candidate.packageId)
+    || /^0+$/.test(candidate.packageId)
     || typeof candidate.ready !== 'boolean' || typeof candidate.inventoryFundingRequiredAtoms !== 'bigint'
     || candidate.inventoryFundingRequiredAtoms < 0n || typeof candidate.quoteFundingRequiredAtoms !== 'bigint'
     || candidate.quoteFundingRequiredAtoms < 0n || !Array.isArray(candidate.steps)) {
@@ -162,7 +165,7 @@ export class HttpSolanaTreasuryHedgeProvisioningClient implements SolanaTreasury
     this.#fetch = fetchImplementation;
   }
 
-  async provision(orderHashHex: string): Promise<SolanaTreasuryHedgeProvisioningPlan> {
+  async provision(orderHashHex: string, quoteHashHex?: string): Promise<SolanaTreasuryHedgeProvisioningPlan> {
     let normalized: string;
     try {
       normalized = toHex(commitmentHash(orderHashHex, 'orderHash'));
@@ -172,10 +175,17 @@ export class HttpSolanaTreasuryHedgeProvisioningClient implements SolanaTreasury
     if (normalized !== orderHashHex) {
       throw new SolanaTreasuryHedgeProvisioningClientError('INVALID_REQUEST', 'orderHash must be lowercase hex');
     }
+    if (quoteHashHex !== undefined) {
+      try {
+        if (toHex(commitmentHash(quoteHashHex, 'quoteHash')) !== quoteHashHex) throw new Error();
+      } catch {
+        throw new SolanaTreasuryHedgeProvisioningClientError('INVALID_REQUEST', 'quoteHash must be 32 bytes of lowercase hex');
+      }
+    }
     const response = await this.#fetch(`${this.#origin}/internal/strategy-executions/solana-provision`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orderHash: orderHashHex }),
+      body: JSON.stringify({ orderHash: orderHashHex, ...(quoteHashHex === undefined ? {} : { quoteHash: quoteHashHex }) }),
       redirect: 'error',
       signal: AbortSignal.timeout(10_000),
     });

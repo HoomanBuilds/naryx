@@ -11,6 +11,7 @@ const strategyAccount = Keypair.generate().publicKey.toBase58();
 function responseFor(packageId: string) {
   return new Response(stringifyProtocolJson({
     version: 1,
+    orderHash,
     provisioning: {
       version: 1,
       domainId: 'svm:devnet',
@@ -47,11 +48,34 @@ test('accepts an unsigned Solana provisioning plan bound to the order', async ()
   assert.equal(result.steps[0]?.instructions[0]?.programId, SystemProgram.programId.toBase58());
 });
 
-test('rejects a Solana provisioning plan bound to another order', async () => {
+test('accepts a lifecycle Solana provisioning plan with a distinct package id', async () => {
   const client = new HttpSolanaTreasuryHedgeProvisioningClient(
     'http://127.0.0.1:8788',
     async () => responseFor('22'.repeat(32)),
   );
 
-  await assert.rejects(() => client.provision(orderHash), /provisioning plan identity is invalid/);
+  assert.equal((await client.provision(orderHash)).packageId, '22'.repeat(32));
+});
+
+test('binds quote-aware provisioning to its order and rejects invalid quote hashes', async () => {
+  const quoteHash = '33'.repeat(32);
+  const client = new HttpSolanaTreasuryHedgeProvisioningClient('http://127.0.0.1:8788', async (_input, init) => {
+    assert.deepEqual(JSON.parse(String(init?.body)), { orderHash, quoteHash });
+    return responseFor(orderHash);
+  });
+  assert.equal((await client.provision(orderHash, quoteHash)).packageId, orderHash);
+  await assert.rejects(() => client.provision(orderHash, 'BAD'), /quoteHash must be 32 bytes/);
+});
+
+test('rejects a Solana provisioning response for a different order', async () => {
+  const client = new HttpSolanaTreasuryHedgeProvisioningClient(
+    'http://127.0.0.1:8788',
+    async () => new Response(stringifyProtocolJson({
+      version: 1,
+      orderHash: '22'.repeat(32),
+      provisioning: { packageId: '22'.repeat(32) },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+  );
+
+  await assert.rejects(() => client.provision(orderHash), /provisioning response fields are invalid/);
 });

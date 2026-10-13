@@ -8,11 +8,13 @@ import {
   type AdapterRef,
   type DomainRef,
   type Hash32,
+  toHex,
 } from '@naryx/protocol-types';
 import { PublicKey, SystemProgram, TransactionInstruction } from '@solana/web3.js';
 import type {
   StoredStrategyPackageOrderDocuments,
   StrategyPackageOrderProvider,
+  StrategyPackageProvider,
 } from './http-strategy-package-provider.js';
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -171,7 +173,7 @@ export class SolanaTreasuryHedgeProvisioningResolver {
     this.#lanes = Object.freeze([...lanes]);
   }
 
-  async resolve(documents: StoredStrategyPackageOrderDocuments): Promise<SolanaTreasuryHedgeProvisioningPlan> {
+  async resolve(documents: StoredStrategyPackageOrderDocuments, quotedMarginAtoms?: bigint): Promise<SolanaTreasuryHedgeProvisioningPlan> {
     const matches = this.#lanes.filter((lane) => matchesLane(documents, lane));
     requireCondition(matches.length === 1, 'order must resolve to exactly one lane');
     const lane = matches[0]!;
@@ -260,7 +262,17 @@ export class SolanaTreasuryHedgeProvisioningResolver {
         && child.maxBaseLots >= lane.testPerpMaximumBaseLots, 'test perp strategy identity or capacity is invalid');
     }
     const quantity = u64(documents.order.economicQuantity.atoms, 'package quantity');
-    const requiredCollateral = u64(documents.order.maximumMarginIncrease.atoms, 'maximum margin increase');
+    const signedMarginCap = u64(documents.order.maximumMarginIncrease.atoms, 'maximum margin increase');
+    requireCondition(quotedMarginAtoms === undefined || (increasing ? quotedMarginAtoms >= 0n : quotedMarginAtoms <= 0n),
+      'quoted margin direction conflicts with the lifecycle action');
+    const quotedMargin = quotedMarginAtoms === undefined
+      ? signedMarginCap
+      : increasing ? u64(quotedMarginAtoms, 'quoted margin') : 0n;
+    requireCondition(quotedMargin <= signedMarginCap, 'quoted margin exceeds the signed order cap');
+    const cushion = quotedMarginAtoms === undefined || !increasing || quotedMargin === 0n
+      ? 0n : (quotedMargin + 9n) / 10n;
+    const requiredCollateral = quotedMargin + (cushion < signedMarginCap - quotedMargin
+      ? cushion : signedMarginCap - quotedMargin);
     const currentCollateral = position?.collateralAtoms ?? 0n;
     const inventoryRequirement = increasing ? quantity : 0n;
     const inventoryShortfall = inventoryRequirement > strategyInventoryAtoms
@@ -396,10 +408,10 @@ export class SolanaTreasuryHedgeProvisioningResolver {
 }
 
 export class SolanaTreasuryHedgeProvisioningService {
-  readonly #packages: StrategyPackageOrderProvider;
+  readonly #packages: StrategyPackageOrderProvider & StrategyPackageProvider;
   readonly #resolver: SolanaTreasuryHedgeProvisioningResolver;
 
-  constructor(packages: StrategyPackageOrderProvider, resolver: SolanaTreasuryHedgeProvisioningResolver) {
+  constructor(packages: StrategyPackageOrderProvider & StrategyPackageProvider, resolver: SolanaTreasuryHedgeProvisioningResolver) {
     this.#packages = packages;
     this.#resolver = resolver;
   }
@@ -407,5 +419,17 @@ export class SolanaTreasuryHedgeProvisioningService {
   async provisionByOrder(orderHash: Hash32): Promise<SolanaTreasuryHedgeProvisioningPlan | undefined> {
     const documents = await this.#packages.getByOrder(orderHash);
     return documents === undefined ? undefined : this.#resolver.resolve(documents);
+  }
+
+  async provisionByQuote(quoteHash: Hash32, orderHash: Hash32): Promise<SolanaTreasuryHedgeProvisioningPlan | undefined> {
+    const documents = await this.#packages.getByQuote(quoteHash);
+    if (documents === undefined) return undefined;
+    requireCondition(documents.orderHashHex === toHex(orderHash), 'quote does not belong to the requested order');
+    const hedgeMargin = documents.quote.legEconomics.find((leg) => leg.legId === 'treasury-hedge')?.marginDelta.atoms;
+    const inventoryMargin = documents.quote.legEconomics.find((leg) => leg.legId === 'inventory-position')?.marginDelta.atoms;
+    requireCondition(hedgeMargin !== undefined && inventoryMargin === 0n
+      && documents.quote.totalMarginDelta.atoms === hedgeMargin,
+    'quote margin does not match the treasury hedge');
+    return this.#resolver.resolve(documents, hedgeMargin);
   }
 }
