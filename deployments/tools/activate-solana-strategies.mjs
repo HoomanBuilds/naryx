@@ -102,7 +102,7 @@ const hedgeMarket = protocol.versionedManifestRef(
 );
 const definition = protocol.requireStrategyTemplateDefinition('treasury-inventory-hedge-v1');
 const series = {
-  seriesVersion: 3,
+  seriesVersion: 4,
   seriesId: 'solana-devnet-treasury-hedge-series',
   templateId: 'treasury-inventory-hedge-v1',
   templateVersion: template.templateVersion,
@@ -126,7 +126,7 @@ const seriesSupport = {
 const matchingPolicy = protocol.packageMatchingPolicy({
   matchingPolicyVersion: 1,
   environment: 'testnet',
-  executionClassId: `solana-devnet-treasury-hedge-domain-${domain.domainManifestVersion}-atomic`,
+  executionClassId: `solana-devnet-treasury-hedge-domain-${domain.domainManifestVersion}-atomic-v2`,
   allocationRule: 'PRICE_TIME',
   directVersusImpliedPriority: 'DIRECT_FIRST',
   selfMatchPolicy: 'CANCEL_INCOMING',
