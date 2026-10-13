@@ -339,7 +339,6 @@ export function ChartWorkspace({
             {entry.label}
           </button>
         ))}
-        <span className={feed.label === "FIXTURE" ? styles.labelFixture : feed.label === "UNAVAILABLE" ? styles.labelUnavailable : styles.labelObserved} title={feed.sourceNote}>{feed.label}</span>
         <button type="button" className={styles.iconButton} aria-label="Toggle full screen" title="Full screen" onClick={toggleFullscreen}>
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6V2.5H6M13.5 10v3.5H10M10 2.5h3.5V6M6 13.5H2.5V10" /></svg>
         </button>

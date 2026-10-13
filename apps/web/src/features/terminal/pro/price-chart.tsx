@@ -297,6 +297,7 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
   const shown = legend ?? lastLegend;
   const tone = shown === null ? undefined : shown.change >= 0 ? styles.up : styles.down;
   const intervalLabel = CHART_INTERVALS.find((entry) => entry.id === interval)?.label ?? interval;
+  const sourceLabel = meta.label ?? feed.label;
 
   return (
     <>
@@ -348,9 +349,12 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
       <div className={styles.chartBody}>
         <div className={styles.chartLegend} aria-live="off">
           <span className={styles.legendTitle}>{meta.title} <span>{meta.unit}</span> <span>{intervalLabel}</span></span>
-          {meta.label === undefined || meta.label === feed.label ? null : (
-            <span className={meta.label === "FIXTURE" ? styles.labelFixture : styles.labelObserved} title={meta.note}>{meta.label}</span>
-          )}
+          <span
+            className={sourceLabel === "FIXTURE" ? styles.labelFixture : sourceLabel === "OBSERVED" ? styles.labelObserved : styles.labelUnavailable}
+            title={meta.note ?? feed.sourceNote}
+          >
+            {sourceLabel}
+          </span>
           {shown === null ? null : (
             <span className={styles.legendValues}>
               <span>O<b className={tone}>{formatValue(shown.candle.open, meta.precision)}</b></span>
