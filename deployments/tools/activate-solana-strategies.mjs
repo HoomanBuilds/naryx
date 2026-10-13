@@ -9,8 +9,10 @@ import { parseArgs } from 'node:util';
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const protocol = await import(pathToFileURL(join(repository, 'packages/protocol-types/dist/index.js')).href);
 const requireFromSolver = createRequire(join(repository, 'services/solver/package.json'));
+const requireFromSolana = createRequire(join(repository, 'contracts/solana/package.json'));
 const { Connection, PublicKey } = requireFromSolver('@solana/web3.js');
-const { values } = parseArgs({ options: { source: { type: 'string' }, output: { type: 'string' } } });
+const { BorshAccountsCoder } = requireFromSolana('@anchor-lang/core');
+const { values } = parseArgs({ options: { source: { type: 'string' }, output: { type: 'string' }, preview: { type: 'boolean' } } });
 if (values.source === undefined || values.output === undefined) {
   throw new Error('usage: activate-solana-strategies.mjs --source <release> --output <directory>');
 }
@@ -28,7 +30,7 @@ const writeProtocol = (path, value) => {
 const digest = (label) => createHash('sha256').update(`NARYX/evm-testnet-activation/v1/${label}`).digest();
 const resourceSubjectId = (kind, id) => createHash('sha256')
   .update('NARYX/solana-devnet/resource-subject/v1', 'ascii')
-  .update(kind, 'ascii')
+  .update(kind.toLowerCase(), 'ascii')
   .update(Buffer.of(0))
   .update(id, 'ascii')
   .digest();
@@ -90,9 +92,14 @@ if (!template.supportedDomains.some((value) => value.domainId === domain.domainI
   throw new Error('combined treasury hedge template does not support the current Solana Devnet domain');
 }
 const templateHash = protocol.packageTemplateManifestHash(template);
-const venue = protocol.versionedManifestRef('venue:solana-devnet:treasury', 1, digest('solana-devnet/venue/treasury'));
+const inventoryVenue = protocol.versionedManifestRef('venue:solana-devnet:inventory', 1, digest('solana-devnet/venue/inventory'));
+const hedgeVenue = protocol.versionedManifestRef(
+  'naryx-devnet-test-perp-venue', domain.domainManifestVersion, legacySolver.resources.perpVenue.manifestHash,
+);
 const inventoryMarket = protocol.versionedManifestRef('market:solana-devnet:inventory', 1, digest('solana-devnet/market/inventory'));
-const hedgeMarket = protocol.versionedManifestRef('market:solana-devnet:perpetual', 1, digest('solana-devnet/market/perpetual'));
+const hedgeMarket = protocol.versionedManifestRef(
+  'naryx-devnet-test-perp-market', domain.domainManifestVersion, legacySolver.resources.perpMarket.manifestHash,
+);
 const definition = protocol.requireStrategyTemplateDefinition('treasury-inventory-hedge-v1');
 const series = {
   seriesVersion: 3,
@@ -157,15 +164,68 @@ const templateReference = {
   templateVersion: template.templateVersion,
   packageTemplateManifestHash: templateHash,
 };
+const programRecord = (name) => {
+  const value = releaseRecord.programs[name];
+  if (value === undefined) throw new Error(`Solana release program ${name} is missing`);
+  return value;
+};
+const connection = new Connection(rpcUrl, 'finalized');
+if (await connection.getGenesisHash() !== release.genesisHash) throw new Error('Solana RPC is not Devnet');
+const resourceCoder = new BorshAccountsCoder(legacyRuntime.coreIdl);
+const activeResource = async (kind, id, expectedHash) => {
+  const subject = resourceSubjectId(kind, id);
+  const [indexAddress] = PublicKey.findProgramAddressSync(
+    [Buffer.from('naryx-resource-index'), Buffer.from(kind.toLowerCase()), subject],
+    new PublicKey(programRecord('core').programId),
+  );
+  const account = await connection.getAccountInfo(indexAddress, 'finalized');
+  if (account === null || !account.owner.equals(new PublicKey(programRecord('core').programId))) {
+    throw new Error(`${kind} ${id} is not registered on Solana Devnet`);
+  }
+  const index = resourceCoder.decode('ResourceIndex', account.data);
+  if (index.active_identity === null
+    || !Buffer.from(index.active_identity.subject_id).equals(subject)
+    || !Buffer.from(index.active_identity.manifest_hash).equals(Buffer.from(expectedHash))) {
+    throw new Error(`${kind} ${id} active identity differs from the release`);
+  }
+  const version = index.active_identity.manifest_version;
+  const [recordAddress] = PublicKey.findProgramAddressSync(
+    [Buffer.from('naryx-resource-record'), Buffer.from(kind.toLowerCase()), subject,
+      Buffer.from([version >>> 24, version >>> 16, version >>> 8, version & 255])],
+    new PublicKey(programRecord('core').programId),
+  );
+  const recordAccount = await connection.getAccountInfo(recordAddress, 'finalized');
+  if (recordAccount === null || !recordAccount.owner.equals(new PublicKey(programRecord('core').programId))
+    || !index.active_record.equals(recordAddress)
+    || resourceCoder.decode('ResourceRecord', recordAccount.data).active !== true) {
+    throw new Error(`${kind} ${id} is not active on Solana Devnet`);
+  }
+  return version;
+};
+const inventoryAssetVersion = await activeResource('ASSET', inventoryAsset.assetId, inventoryAsset.assetManifestHash);
+const quoteAssetVersion = await activeResource('ASSET', quoteAsset.assetId, quoteAsset.assetManifestHash);
+const hedgeVenueVersion = await activeResource('VENUE', hedgeVenue.subjectId, hedgeVenue.manifestHash);
+const hedgeMarketVersion = await activeResource('MARKET', hedgeMarket.subjectId, hedgeMarket.manifestHash);
+if (hedgeVenueVersion !== hedgeVenue.manifestVersion || hedgeMarketVersion !== hedgeMarket.manifestVersion) {
+  throw new Error('perpetual venue or market version differs from the Solana Devnet release');
+}
 const resources = [
-  ['ASSET', inventoryAsset.assetId, 1, inventoryAsset.assetManifestHash],
-  ['ASSET', quoteAsset.assetId, 1, quoteAsset.assetManifestHash],
+  ['ASSET', inventoryAsset.assetId, inventoryAssetVersion, inventoryAsset.assetManifestHash],
+  ['ASSET', quoteAsset.assetId, quoteAssetVersion, quoteAsset.assetManifestHash],
   ['ADAPTER', inventoryAdapter.adapterId, 1, inventoryAdapter.adapterManifestHash],
   ['ADAPTER', hedgeAdapter.adapterId, 1, hedgeAdapter.adapterManifestHash],
-  ['VENUE', venue.subjectId, venue.manifestVersion, venue.manifestHash],
+  ['VENUE', inventoryVenue.subjectId, inventoryVenue.manifestVersion, inventoryVenue.manifestHash],
+  ['VENUE', hedgeVenue.subjectId, hedgeVenue.manifestVersion, hedgeVenue.manifestHash],
   ['MARKET', inventoryMarket.subjectId, inventoryMarket.manifestVersion, inventoryMarket.manifestHash],
   ['MARKET', hedgeMarket.subjectId, hedgeMarket.manifestVersion, hedgeMarket.manifestHash],
 ];
+if (!values.preview) {
+  for (const [kind, id, version, hash] of resources) {
+    if (await activeResource(kind, id, hash) !== version) {
+      throw new Error(`${kind} ${id} version differs from the Solana Devnet release`);
+    }
+  }
+}
 const activeRegistryRecords = resources.map(([recordKind, subjectId, subjectManifestVersion, subjectManifestHash]) =>
   protocol.domainRegistryRecord({
     recordVersion: 1,
@@ -199,8 +259,6 @@ const adapterSupport = [
   supportedSettlementClasses: ['ATOMIC_POSTCONDITION'],
 }));
 
-const connection = new Connection(rpcUrl, 'finalized');
-if (await connection.getGenesisHash() !== release.genesisHash) throw new Error('Solana RPC is not Devnet');
 const lookupAddress = new PublicKey(release.lookupTable.address);
 const lookup = await connection.getAddressLookupTable(lookupAddress, { commitment: 'finalized' });
 if (lookup.value === null || lookup.value.state.addresses.length !== release.lookupTable.addressCount) {
@@ -210,11 +268,6 @@ const lookupTables = [{
   address: lookupAddress.toBase58(),
   expectedAddresses: lookup.value.state.addresses.map((address) => address.toBase58()),
 }];
-const programRecord = (name) => {
-  const value = releaseRecord.programs[name];
-  if (value === undefined) throw new Error(`Solana release program ${name} is missing`);
-  return value;
-};
 const profile = {
   profileId: 'solana-devnet-treasury-hedge',
   displayName: 'Solana Devnet treasury hedge',
@@ -231,8 +284,8 @@ const profile = {
   multiStrategyProgramId: programRecord('multi_strategy').programId,
   inventoryAsset,
   quoteAsset,
-  inventory: { adapter: inventoryAdapter, venue, market: inventoryMarket },
-  hedge: { adapter: hedgeAdapter, venue, market: hedgeMarket },
+  inventory: { adapter: inventoryAdapter, venue: inventoryVenue, market: inventoryMarket },
+  hedge: { adapter: hedgeAdapter, venue: hedgeVenue, market: hedgeMarket },
   metricLimits: [],
   bounds: {
     minimumQuantityAtoms: 1_000_000n,
@@ -300,8 +353,8 @@ const lane = {
   solverCapabilityManifestHash: digest('solana-devnet/treasury-hedge/solver-capability'),
 };
 
-writeProtocol('api/solana-treasury-hedge-order-profiles.json', { version: 1, environment: 'testnet', profiles: [profile] });
-writeProtocol('solver/solana-treasury-hedge-runtime.json', { version: 1, environment: 'testnet', rpcUrl, lanes: [lane] });
+writeProtocol('api/solana-treasury-hedge-order-profiles.json', { version: 1, environment: values.preview ? 'preview' : 'testnet', profiles: [profile] });
+writeProtocol('solver/solana-treasury-hedge-runtime.json', { version: 1, environment: values.preview ? 'preview' : 'testnet', rpcUrl, lanes: [lane] });
 writeProtocol('api/public-market-bootstrap.json', {
   ...bootstrap,
   domainManifests: addImmutable(bootstrap.domainManifests, domainManifest,
@@ -331,6 +384,7 @@ writeProtocol('api/public-graph-context.json', {
 });
 writeFileSync(join(output, 'solana-strategy-activation.json'), `${JSON.stringify({
   version: 1,
+  preview: values.preview === true,
   profiles: 1,
   quoteLanes: 1,
   lookupTableAddresses: lookup.value.state.addresses.length,
