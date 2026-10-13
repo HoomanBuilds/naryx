@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { PublicPackageMarket } from "./public-market-feed";
+import { packageMarketChainName, packageMarketName, packageMarketVariant } from "./market-label";
 import styles from "./pages/pages.module.css";
 
 const STORAGE_KEY = "naryx.terminal.market-alerts.v1";
@@ -143,7 +144,7 @@ export function MarketAlerts({ markets }: { markets: readonly PublicPackageMarke
           <span>Package market</span>
           <select value={selectedMarketId} onChange={(event) => setMarketId(event.target.value)} disabled={markets.length === 0}>
             {markets.length === 0 ? <option value="">No published markets</option> : markets.map((market) => (
-              <option key={market.packageMarketId} value={market.packageMarketId}>{market.packageMarketId}</option>
+              <option key={market.packageMarketId} value={market.packageMarketId}>{packageMarketName(market)} / {packageMarketChainName(market)}{packageMarketVariant(market) ? ` / ${packageMarketVariant(market)}` : ""}</option>
             ))}
           </select>
         </label>
@@ -163,7 +164,7 @@ export function MarketAlerts({ markets }: { markets: readonly PublicPackageMarke
                 const active = triggered.some((candidate) => candidate.marketId === alert.marketId);
                 return (
                   <tr key={alert.marketId}>
-                    <td className={styles.mono}>{alert.marketId}</td>
+                    <td title={alert.marketId}>{market ? packageMarketName(market) : packageMarketName({ packageMarketId: alert.marketId })}</td>
                     <td className={styles.num}>&lt;= {alert.maximumSpreadTicks}</td>
                     <td className={styles.num}>{market?.spreadTicks?.toString() ?? "-"}</td>
                     <td><span className={active ? styles.pillOk : market?.halted ? styles.pillWarn : styles.pill}>{active ? "Triggered" : market?.halted ? "Halted" : "Watching"}</span></td>

@@ -914,28 +914,35 @@ a.ghost {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border-radius: 999px;
-  background: var(--field);
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: transparent;
   color: var(--text-secondary);
-  padding: 2px 9px;
+  padding: 2px 7px;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 500;
   white-space: nowrap;
 }
 
-.pillOk {
-  background: rgba(31, 194, 126, 0.12);
-  color: var(--up);
+.pillOk::before,
+.pillWarn::before,
+.pillBad::before {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  content: "";
 }
 
-.pillWarn {
-  background: rgba(255, 157, 61, 0.12);
-  color: var(--fixture);
+.pillOk::before {
+  background: var(--up);
 }
 
-.pillBad {
-  background: rgba(240, 81, 95, 0.12);
-  color: var(--down);
+.pillWarn::before {
+  background: var(--fixture);
+}
+
+.pillBad::before {
+  background: var(--down);
 }
 
 /* ---------------------------------------------------------------- chain status grid */

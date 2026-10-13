@@ -7,6 +7,8 @@ import { MarketAlerts } from "../market-alerts";
 import { usePublicPackageMarkets, usePublicPackageOpportunities, usePublicSeriesCurve } from "../public-market-feed";
 import { useTerminal } from "../shell/terminal-context";
 import { marketAssetLabel } from "../market-label";
+import { packageMarketName, packageMarketVariant } from "../market-label";
+import { chainOf } from "@/features/brand/chain-icons";
 import { MarketTransparency } from "./market-transparency";
 import { PaperTradingLab } from "./paper-trading-lab";
 import { RegistryBrowser } from "./registry-browser";
@@ -213,8 +215,8 @@ export function MarketsView() {
                     <td className={styles.num}>{index + 1}</td>
                     <td>
                       <span className={styles.cellStack}>
-                        <strong className={styles.mono}>{opportunity.packageMarketId}</strong>
-                        <small className={styles.cellDetail}>{opportunity.seriesId ?? "Series not published"}</small>
+                        <strong title={opportunity.packageMarketId}>{packageMarketName(opportunity)}</strong>
+                        <small className={styles.cellDetail}>{packageMarketVariant(opportunity) ?? "Package market"}</small>
                       </span>
                     </td>
                     <td className={styles.num}>{opportunity.bid?.averagePriceTicks.toString() ?? "-"}</td>
@@ -310,8 +312,8 @@ export function MarketsView() {
                     <tr key={market.packageMarketId}>
                       <td>
                         <span className={styles.cellStack}>
-                          <strong className={styles.mono}>{market.packageMarketId}</strong>
-                          <small className={styles.cellDetail}>{market.seriesId ?? (catalogue?.state === "verified" ? "Not in the verified catalogue" : "Series metadata unavailable")}</small>
+                          <strong title={market.packageMarketId}>{packageMarketName(market)}</strong>
+                          <small className={styles.cellDetail}>{packageMarketVariant(market) ?? (market.seriesId === null ? "Series metadata unavailable" : "Package market")}</small>
                         </span>
                       </td>
                       <td>
@@ -324,7 +326,7 @@ export function MarketsView() {
                       </td>
                       <td>
                         <span className={styles.cellStack}>
-                          <strong>{market.domainIds.length === 0 ? "Not published" : market.domainIds.join(" + ")}</strong>
+                          <strong title={market.domainIds.join(" + ")}>{market.domainIds.length === 0 ? "Not published" : market.domainIds.map((domain) => chainOf(domain)?.name ?? domain).join(" + ")}</strong>
                           <small className={styles.cellDetail}>{human(market.settlementClass)}</small>
                         </span>
                       </td>

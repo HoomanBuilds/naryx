@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import type { PublicPackageMarket, PublicPackageOpportunity } from "../public-market-feed";
+import { packageMarketName, packageMarketVariant } from "../market-label";
+import { chainOf } from "@/features/brand/chain-icons";
 import styles from "./pages.module.css";
 
 function text(value: string | null): string {
@@ -49,10 +51,10 @@ export function StrategyComparison({
             <tbody>
               {selected.map(({ market, opportunity }) => (
                 <tr key={market.packageMarketId}>
-                  <td><span className={styles.cellStack}><strong className={styles.mono}>{market.packageMarketId}</strong><small className={styles.cellDetail}>{market.seriesId ?? "Series not published"}</small></span></td>
+                  <td><span className={styles.cellStack}><strong title={market.packageMarketId}>{packageMarketName(market)}</strong><small className={styles.cellDetail}>{packageMarketVariant(market) ?? "Package market"}</small></span></td>
                   <td><span className={styles.cellStack}><strong>{text(market.templateId)}</strong><small className={styles.cellDetail}>{market.underlyingRefs.join(" + ") || "Assets not published"}</small></span></td>
                   <td>{text(market.settlementClass)}</td>
-                  <td>{market.domainIds.join(" + ") || "Not published"}</td>
+                  <td title={market.domainIds.join(" + ")}>{market.domainIds.map((domain) => chainOf(domain)?.name ?? domain).join(" + ") || "Not published"}</td>
                   <td className={styles.num}>{opportunity?.bid?.averagePriceTicks.toString() ?? "Not fillable"}</td>
                   <td className={styles.num}>{opportunity?.ask?.averagePriceTicks.toString() ?? "Not fillable"}</td>
                   <td className={styles.num}>{opportunity?.spreadAtSizeTicks?.toString() ?? "-"}</td>

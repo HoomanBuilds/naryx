@@ -3,6 +3,7 @@
 import { useState, useSyncExternalStore } from "react";
 import { NaryxClient, type CandlePage } from "@naryx/sdk";
 import type { PublicPackageOpportunity } from "../public-market-feed";
+import { packageMarketChainName, packageMarketName, packageMarketVariant } from "../market-label";
 import styles from "./pages.module.css";
 import { randomId } from "../secure-context";
 
@@ -230,7 +231,7 @@ export function PaperTradingLab({
         <label className={styles.field}>
           <span>Package market</span>
           <select value={selected?.packageMarketId ?? ""} onChange={(event) => setPackageMarketId(event.target.value)} disabled={opportunities.length === 0}>
-            {opportunities.map((opportunity) => <option key={opportunity.packageMarketId} value={opportunity.packageMarketId}>{opportunity.packageMarketId}</option>)}
+            {opportunities.map((opportunity) => <option key={opportunity.packageMarketId} value={opportunity.packageMarketId}>{packageMarketName(opportunity)} / {packageMarketChainName(opportunity)}{packageMarketVariant(opportunity) ? ` / ${packageMarketVariant(opportunity)}` : ""}</option>)}
           </select>
         </label>
         <label className={styles.field}>
@@ -280,7 +281,7 @@ export function PaperTradingLab({
                 const value = outcome(position, mark);
                 return (
                   <tr key={position.id}>
-                    <td><span className={styles.cellStack}><strong className={styles.mono}>{position.packageMarketId}</strong><small className={styles.cellDetail}>{position.seriesId ?? "Series not published"}</small></span></td>
+                    <td><span className={styles.cellStack}><strong title={position.packageMarketId}>{packageMarketName(position)}</strong><small className={styles.cellDetail}>{packageMarketVariant(position) ?? "Paper position"}</small></span></td>
                     <td>{position.direction}</td>
                     <td className={styles.num}>{position.quantity.toString()}</td>
                     <td className={styles.num}>{position.entryPriceTicks.toString()}</td>
