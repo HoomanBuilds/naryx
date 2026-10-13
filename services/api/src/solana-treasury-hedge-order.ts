@@ -92,6 +92,7 @@ export interface SolanaTreasuryHedgeOrderRequest {
   readonly expiryValue: string;
   readonly nonce: string;
   readonly expectedStrategyStateHash?: string;
+  readonly resting?: boolean;
 }
 
 export interface CreatedSolanaTreasuryHedgeOrder {
@@ -370,9 +371,9 @@ export function createSolanaTreasuryHedgeOrderPort(input: Readonly<{
       const fields = requestValue as Record<string, unknown>;
       const allowed = new Set([
         "profileId", "owner", "lifecycleAction", "quantityAtoms", "limitHedgePrice",
-        "expiryValue", "nonce", "expectedStrategyStateHash",
+        "expiryValue", "nonce", "expectedStrategyStateHash", "resting",
       ]);
-      const required = [...allowed].filter((name) => name !== "expectedStrategyStateHash");
+      const required = [...allowed].filter((name) => name !== "expectedStrategyStateHash" && name !== "resting");
       if (Object.keys(fields).some((name) => !allowed.has(name)) || required.some((name) => !(name in fields))
         || typeof fields.profileId !== "string" || typeof fields.owner !== "string"
         || typeof fields.quantityAtoms !== "string" || typeof fields.expiryValue !== "string"
@@ -380,7 +381,8 @@ export function createSolanaTreasuryHedgeOrderPort(input: Readonly<{
         || (fields.lifecycleAction !== "ENTRY" && fields.lifecycleAction !== "INCREASE"
           && fields.lifecycleAction !== "DECREASE" && fields.lifecycleAction !== "EXIT"
           && fields.lifecycleAction !== "EMERGENCY_UNWIND")
-        || (fields.expectedStrategyStateHash !== undefined && typeof fields.expectedStrategyStateHash !== "string")) {
+        || (fields.expectedStrategyStateHash !== undefined && typeof fields.expectedStrategyStateHash !== "string")
+        || (fields.resting !== undefined && typeof fields.resting !== "boolean")) {
         fail("INVALID_REQUEST", "Solana treasury hedge order request fields are invalid.");
       }
       const request = fields as unknown as SolanaTreasuryHedgeOrderRequest;
@@ -527,8 +529,8 @@ export function createSolanaTreasuryHedgeOrderPort(input: Readonly<{
         settlementAccount,
         lifecycleAction: request.lifecycleAction,
         settlementClass: "ATOMIC_POSTCONDITION",
-        packageOrderType: "MARKETABLE_LIMIT",
-        packageTimeInForce: "IOC",
+        packageOrderType: request.resting ? "LIMIT" : "MARKETABLE_LIMIT",
+        packageTimeInForce: request.resting ? "GTD" : "IOC",
         economicQuantity: assetAmount(profile.inventoryAsset, quantity),
         quoteAsset: profile.quoteAsset,
         metricLimits: profile.metricLimits,

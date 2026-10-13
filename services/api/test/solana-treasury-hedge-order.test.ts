@@ -122,7 +122,15 @@ test("creates dependency-ordered Solana treasury hedge lifecycle orders", async 
     assert.equal(entry.graph.dependencyEdges[0]?.toLegId, "treasury-hedge");
     assert.equal(entry.order.settlementAccount, entry.settlementAccount);
     assert.equal(entry.order.maximumMarginIncrease.atoms, 1_000_000n);
+    assert.equal(entry.order.packageOrderType, "MARKETABLE_LIMIT");
+    assert.equal(entry.order.packageTimeInForce, "IOC");
     assert.equal(validateStrategyTemplateGraph(entry.graph).valid, true);
+
+    const resting = await port.create({ ...request("ENTRY"), nonce: "5", resting: true });
+    assert.equal(resting.order.packageOrderType, "LIMIT");
+    assert.equal(resting.order.packageTimeInForce, "GTD");
+    await assert.rejects(port.create({ ...request("ENTRY"), resting: "true" }),
+      /Solana treasury hedge order request fields are invalid/);
 
     const increase = await port.create(request("INCREASE"));
     assert.equal(increase.graph.legs[1]?.legFamily, "PERP_INCREASE");
