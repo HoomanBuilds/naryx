@@ -95,6 +95,21 @@ pub struct MultiStrategyAccount {
 
 #[account]
 #[derive(InitSpace)]
+pub struct StrategyExecutionStage {
+    pub owner: Pubkey,
+    pub solver: Pubkey,
+    pub nonce: u64,
+    pub deadline_slot: u64,
+    pub expected_hash: [u8; 32],
+    pub payload_len: u16,
+    pub sealed: bool,
+    pub bump: u8,
+    #[max_len(4096)]
+    pub payload: Vec<u8>,
+}
+
+#[account]
+#[derive(InitSpace)]
 pub struct StrategyPosition {
     pub version: u8,
     pub package_id: [u8; 32],

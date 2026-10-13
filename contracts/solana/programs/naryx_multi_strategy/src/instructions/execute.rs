@@ -25,7 +25,7 @@ use crate::{
         BOUND_ADAPTER_DISCRIMINATOR, CALLS_HASH_DOMAIN, EVIDENCE_ROOT_DOMAIN,
         EXECUTION_HASH_DOMAIN, MAX_CPI_ACCOUNTS_PER_CALL, MAX_STRATEGY_CALLS,
         MULTI_STRATEGY_ACCOUNT_SEED, RECEIPT_HASH_DOMAIN, STRATEGY_POSITION_SEED,
-        STRATEGY_RECEIPT_SEED,
+        STRATEGY_RECEIPT_SEED, STRATEGY_STAGE_SEED,
     },
     error::ErrorCode,
     events::{
@@ -33,8 +33,8 @@ use crate::{
         StrategyFeesCollected,
     },
     state::{
-        MultiStrategyAccount, StrategyCallArgs, StrategyExecutionArgs, StrategyPosition,
-        StrategyReceipt,
+        MultiStrategyAccount, StrategyCallArgs, StrategyExecutionArgs, StrategyExecutionStage,
+        StrategyPosition, StrategyReceipt,
     },
 };
 
@@ -157,6 +157,149 @@ pub struct ExecuteMultiStrategyRecovery<'info> {
     )]
     pub receipt: Box<Account<'info, StrategyReceipt>>,
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(package_id: [u8; 32], nonce: u64)]
+pub struct ExecuteStagedMultiStrategy<'info> {
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    pub solver: Signer<'info>,
+    #[account(
+        seeds = [PROTOCOL_CONFIG_SEED],
+        bump = config.bump,
+        seeds::program = naryx_core::ID
+    )]
+    pub config: Box<Account<'info, ProtocolConfig>>,
+    #[account(
+        seeds = [SOLVER_REGISTRY_SEED],
+        bump = solver_registry.bump,
+        seeds::program = naryx_core::ID
+    )]
+    pub solver_registry: Box<Account<'info, SolverRegistry>>,
+    #[account(
+        seeds = [
+            FEE_POLICY_SEED,
+            fee_policy.domain_identity_hash.as_ref(),
+            fee_policy.direction.seed().as_ref(),
+            fee_policy.quote_asset.subject_id.as_ref()
+        ],
+        bump = fee_policy.bump,
+        seeds::program = naryx_core::ID
+    )]
+    pub fee_policy: Box<Account<'info, FeePolicyRecord>>,
+    #[account(
+        seeds = [RESOURCE_INDEX_SEED, ASSET_RESOURCE_SEED, quote_asset_index.subject_id.as_ref()],
+        bump = quote_asset_index.bump,
+        seeds::program = naryx_core::ID
+    )]
+    pub quote_asset_index: Box<Account<'info, ResourceIndex>>,
+    #[account(
+        seeds = [
+            RESOURCE_RECORD_SEED,
+            ASSET_RESOURCE_SEED,
+            quote_asset_record.manifest.identity.subject_id.as_ref(),
+            quote_asset_record.manifest.identity.manifest_version.to_be_bytes().as_ref()
+        ],
+        bump = quote_asset_record.bump,
+        seeds::program = naryx_core::ID
+    )]
+    pub quote_asset_record: Box<Account<'info, ResourceRecord>>,
+    pub quote_mint: Box<Account<'info, Mint>>,
+    #[account(mut)]
+    pub owner_fee_token: Box<Account<'info, TokenAccount>>,
+    #[account(mut)]
+    pub protocol_fee_token: Box<Account<'info, TokenAccount>>,
+    #[account(mut)]
+    pub solver_fee_token: Box<Account<'info, TokenAccount>>,
+    #[account(
+        mut,
+        seeds = [MULTI_STRATEGY_ACCOUNT_SEED, owner.key().as_ref()],
+        bump = strategy_account.bump,
+        has_one = owner @ ErrorCode::InvalidOwner,
+        has_one = config @ ErrorCode::InvalidConfiguration
+    )]
+    pub strategy_account: Box<Account<'info, MultiStrategyAccount>>,
+    #[account(
+        init_if_needed,
+        payer = owner,
+        space = 8 + StrategyPosition::INIT_SPACE,
+        seeds = [STRATEGY_POSITION_SEED, strategy_account.key().as_ref(), package_id.as_ref()],
+        bump
+    )]
+    pub position: Box<Account<'info, StrategyPosition>>,
+    #[account(
+        init,
+        payer = owner,
+        space = 8 + StrategyReceipt::INIT_SPACE,
+        seeds = [STRATEGY_RECEIPT_SEED, strategy_account.key().as_ref(), nonce.to_be_bytes().as_ref()],
+        bump
+    )]
+    pub receipt: Box<Account<'info, StrategyReceipt>>,
+    #[account(
+        mut,
+        close = owner,
+        seeds = [STRATEGY_STAGE_SEED, strategy_account.key().as_ref(), nonce.to_be_bytes().as_ref()],
+        bump = stage.bump,
+        has_one = owner @ ErrorCode::InvalidOwner,
+        has_one = solver @ ErrorCode::InvalidSolver
+    )]
+    pub stage: Box<Account<'info, StrategyExecutionStage>>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+pub fn execute_staged_handler<'info>(
+    ctx: Context<'info, ExecuteStagedMultiStrategy<'info>>,
+    package_id: [u8; 32],
+    nonce: u64,
+) -> Result<()> {
+    let stage = &ctx.accounts.stage;
+    require!(
+        stage.sealed
+            && stage.nonce == nonce
+            && stage.payload.len() == usize::from(stage.payload_len)
+            && hashv(&[&stage.payload]).to_bytes() == stage.expected_hash,
+        ErrorCode::InvalidStage
+    );
+    let mut bytes: &[u8] = &stage.payload;
+    let execution = StrategyExecutionArgs::deserialize(&mut bytes)
+        .map_err(|_| error!(ErrorCode::SerializationFailed))?;
+    let calls = Vec::<StrategyCallArgs>::deserialize(&mut bytes)
+        .map_err(|_| error!(ErrorCode::SerializationFailed))?;
+    require!(
+        bytes.is_empty()
+            && execution.package_id == package_id
+            && execution.nonce == nonce
+            && execution.deadline_slot == stage.deadline_slot
+            && execution.solver == ctx.accounts.solver.key()
+            && ctx.accounts.solver_registry.is_active(&ctx.accounts.solver.key()),
+        ErrorCode::InvalidStage
+    );
+    execute(
+        &ctx.accounts.owner,
+        &ctx.accounts.config,
+        &mut ctx.accounts.strategy_account,
+        &mut ctx.accounts.position,
+        &mut ctx.accounts.receipt,
+        Some(FeeCollectionAccounts {
+            policy: &ctx.accounts.fee_policy,
+            asset_index: &ctx.accounts.quote_asset_index,
+            asset_record: &ctx.accounts.quote_asset_record,
+            mint: &ctx.accounts.quote_mint,
+            source: &ctx.accounts.owner_fee_token,
+            protocol_recipient: &ctx.accounts.protocol_fee_token,
+            solver_recipient: &ctx.accounts.solver_fee_token,
+            token_program: &ctx.accounts.token_program,
+        }),
+        &ctx.remaining_accounts,
+        &execution,
+        &calls,
+        [0u8; 32],
+        false,
+        ctx.bumps.position,
+        ctx.bumps.receipt,
+    )
 }
 
 pub fn execute_handler<'info>(

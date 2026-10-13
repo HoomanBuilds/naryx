@@ -34,12 +34,13 @@ use {
     naryx_multi_strategy::{
         error::ErrorCode, MultiStrategyAccount, StrategyCallArgs, StrategyExecutionArgs,
         StrategyFeeTerms, StrategyOperation, StrategyPosition, MULTI_STRATEGY_ACCOUNT_SEED,
-        STRATEGY_POSITION_SEED, STRATEGY_RECEIPT_SEED,
+        STRATEGY_POSITION_SEED, STRATEGY_RECEIPT_SEED, STRATEGY_STAGE_SEED,
     },
     solana_account::Account,
     solana_keypair::Keypair,
     solana_message::{Message, VersionedMessage},
     solana_signer::Signer,
+    solana_sha256_hasher::hashv,
     solana_transaction::{versioned::VersionedTransaction, InstructionError, TransactionError},
 };
 
@@ -971,4 +972,150 @@ fn risk_increasing_leg_cannot_run_under_a_reducing_label() {
     exit(&mut env, PACKAGE_A, 100, [0x31; 32], true).unwrap();
     assert_eq!(balance(&env.svm, vault_a), 0);
     assert_eq!(balance(&env.svm, env.strategy_token), FUNDED_ATOMS);
+}
+
+#[test]
+fn sealed_stage_executes_one_atomic_package_and_cannot_be_rewritten() {
+    let mut env = setup();
+    let program = naryx_multi_strategy::id();
+    let owner = env.owner.insecure_clone();
+    let solver = env.solver.insecure_clone();
+    let execution = execution(
+        &env,
+        PACKAGE_A,
+        StrategyOperation::Enter,
+        [0u8; 32],
+        [0x31; 32],
+        100,
+        false,
+    );
+    let (call, remaining) = inventory_call(&env, PACKAGE_A, LOCK, 100, 0, true);
+    let mut payload = Vec::new();
+    execution.serialize(&mut payload).unwrap();
+    vec![call].serialize(&mut payload).unwrap();
+    let expected_hash = hashv(&[&payload]).to_bytes();
+    let stage = pda(
+        &[STRATEGY_STAGE_SEED, env.strategy_account.as_ref(), execution.nonce.to_be_bytes().as_ref()],
+        &program,
+    );
+    send(
+        &mut env.svm,
+        &owner,
+        &[],
+        &[ix(
+            program,
+            naryx_multi_strategy::accounts::InitializeExecutionStage {
+                owner: owner.pubkey(),
+                strategy_account: env.strategy_account,
+                stage,
+                system_program: anchor_lang::system_program::ID,
+            },
+            naryx_multi_strategy::instruction::InitializeExecutionStage {
+                nonce: execution.nonce,
+                solver: solver.pubkey(),
+                expected_hash,
+                payload_len: u16::try_from(payload.len()).unwrap(),
+                deadline_slot: execution.deadline_slot,
+            },
+        )],
+    ).unwrap();
+    for (index, chunk) in payload.chunks(400).enumerate() {
+        send(
+            &mut env.svm,
+            &owner,
+            &[],
+            &[ix(
+                program,
+                naryx_multi_strategy::accounts::WriteExecutionStage {
+                    owner: owner.pubkey(),
+                    strategy_account: env.strategy_account,
+                    stage,
+                },
+                naryx_multi_strategy::instruction::WriteExecutionStage {
+                    offset: u16::try_from(index * 400).unwrap(),
+                    bytes: chunk.to_vec(),
+                },
+            )],
+        ).unwrap();
+    }
+    send(
+        &mut env.svm,
+        &owner,
+        &[],
+        &[ix(
+            program,
+            naryx_multi_strategy::accounts::WriteExecutionStage {
+                owner: owner.pubkey(),
+                strategy_account: env.strategy_account,
+                stage,
+            },
+            naryx_multi_strategy::instruction::SealExecutionStage {},
+        )],
+    ).unwrap();
+    assert_custom(
+        send(
+            &mut env.svm,
+            &owner,
+            &[],
+            &[ix(
+                program,
+                naryx_multi_strategy::accounts::WriteExecutionStage {
+                    owner: owner.pubkey(),
+                    strategy_account: env.strategy_account,
+                    stage,
+                },
+                naryx_multi_strategy::instruction::WriteExecutionStage {
+                    offset: u16::try_from(payload.len()).unwrap(),
+                    bytes: vec![1],
+                },
+            )],
+        ),
+        u32::from(ErrorCode::InvalidStage),
+    );
+
+    let core = naryx_core::id();
+    let receipt = pda(
+        &[STRATEGY_RECEIPT_SEED, env.strategy_account.as_ref(), execution.nonce.to_be_bytes().as_ref()],
+        &program,
+    );
+    let mut final_instruction = ix(
+        program,
+        naryx_multi_strategy::accounts::ExecuteStagedMultiStrategy {
+            owner: owner.pubkey(),
+            solver: solver.pubkey(),
+            config: env.config,
+            solver_registry: pda(&[SOLVER_REGISTRY_SEED], &core),
+            fee_policy: pda(
+                &[FEE_POLICY_SEED, domain_ref_identity_hash(&env.domain).as_ref(),
+                    execution.fees.direction.seed().as_ref(), QUOTE.subject_id.as_ref()],
+                &core,
+            ),
+            quote_asset_index: pda(&[RESOURCE_INDEX_SEED, ASSET_RESOURCE_SEED, QUOTE.subject_id.as_ref()], &core),
+            quote_asset_record: pda(
+                &[RESOURCE_RECORD_SEED, ASSET_RESOURCE_SEED, QUOTE.subject_id.as_ref(),
+                    QUOTE.manifest_version.to_be_bytes().as_ref()],
+                &core,
+            ),
+            quote_mint: env.mint,
+            owner_fee_token: env.owner_token,
+            protocol_fee_token: env.protocol_fee_token,
+            solver_fee_token: env.solver_fee_token,
+            strategy_account: env.strategy_account,
+            position: position_address(&env, PACKAGE_A),
+            receipt,
+            stage,
+            token_program: TOKEN_PROGRAM_ID,
+            system_program: anchor_lang::system_program::ID,
+        },
+        naryx_multi_strategy::instruction::ExecuteStagedMultiStrategy {
+            package_id: PACKAGE_A,
+            nonce: execution.nonce,
+        },
+    );
+    final_instruction.accounts.extend(remaining);
+    send(&mut env.svm, &owner, &[&solver], &[final_instruction]).unwrap();
+    assert!(env.svm.get_account(&stage).is_none());
+    assert!(env.svm.get_account(&receipt).is_some());
+    assert_eq!(strategy_account(&env).open_package_count, 1);
+    assert_eq!(balance(&env.svm, inventory_addresses(&env, PACKAGE_A).1), 100);
 }

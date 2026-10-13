@@ -46,4 +46,6 @@ pub enum ErrorCode {
     PackageOpen,
     #[msg("Strategy withdrawal is invalid")]
     InvalidWithdrawal,
+    #[msg("Strategy execution stage is invalid")]
+    InvalidStage,
 }

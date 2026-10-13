@@ -4,9 +4,12 @@ use anchor_lang::prelude::*;
 pub const MULTI_STRATEGY_ACCOUNT_SEED: &[u8] = b"multi-strategy-account";
 pub const STRATEGY_POSITION_SEED: &[u8] = b"strategy-position";
 pub const STRATEGY_RECEIPT_SEED: &[u8] = b"strategy-receipt";
+pub const STRATEGY_STAGE_SEED: &[u8] = b"strategy-stage";
 
 pub const MAX_STRATEGY_CALLS: usize = 8;
 pub const MAX_CPI_ACCOUNTS_PER_CALL: usize = 24;
+pub const MAX_STAGE_BYTES: usize = 4096;
+pub const MAX_STAGE_CHUNK_BYTES: usize = 512;
 /// `execute_bound_strategy_leg(context, payload)`: the context carries this program's package id and
 /// risk label so each adapter can bind the leg and refuse a risk-increasing action labelled otherwise.
 pub const BOUND_ADAPTER_DISCRIMINATOR: [u8; 8] = [0x72, 0x97, 0xcd, 0x4d, 0xbe, 0xc5, 0xb5, 0x84];
