@@ -140,8 +140,15 @@ export class EvmOptionSpreadProvisioningResolver {
     const owner = getAddress(input.owner);
     const matches = this.#lanes.filter((lane) => Number(lane.pricing.chainId) === input.chainId
       && getAddress(lane.accountFactory.address) === factory);
-    requireCondition(matches.length === 1, 'account request must resolve to exactly one lane');
+    requireCondition(matches.length > 0, 'account request has no supported lane');
     const lane = matches[0]!;
+    requireCondition(matches.every((candidate) => candidate.environment === lane.environment
+      && sameDomain(candidate.pricing.domain, lane.pricing.domain)
+      && checkedHash(candidate.accountFactory.expectedCodeHash, 'expected factory code hash')
+        === checkedHash(lane.accountFactory.expectedCodeHash, 'expected factory code hash')
+      && checkedHash(candidate.expectedStrategyAccountCodeHash, 'expected account code hash')
+        === checkedHash(lane.expectedStrategyAccountCodeHash, 'expected account code hash')),
+    'shared account factory identity differs across lanes');
     const chain = lane.pricing.chain;
     requireCondition(await chain.chainId() === lane.pricing.chainId, 'RPC chain identity differs from the lane');
     const [factoryCode, accountValue, factoryAccountCodeHash] = await Promise.all([

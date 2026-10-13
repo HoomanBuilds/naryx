@@ -686,6 +686,16 @@ test('prepares account and package adapter creation before option entry', async 
   const resolved = await resolver.resolveAccount({ chainId: 84_532, factory: ACCOUNT_FACTORY, owner: OWNER });
   assert.equal(resolved.account, ACCOUNT);
   assert.equal(resolved.deployed, false);
+  const sharedResolver = new EvmOptionSpreadProvisioningResolver([lane, lane]);
+  assert.equal((await sharedResolver.resolveAccount({ chainId: 84_532, factory: ACCOUNT_FACTORY, owner: OWNER })).account, ACCOUNT);
+  const conflictingResolver = new EvmOptionSpreadProvisioningResolver([
+    lane,
+    { ...lane, expectedStrategyAccountCodeHash: codeHash('0') },
+  ]);
+  await assert.rejects(
+    () => conflictingResolver.resolveAccount({ chainId: 84_532, factory: ACCOUNT_FACTORY, owner: OWNER }),
+    /shared account factory identity differs across lanes/,
+  );
   const service = new EvmOptionSpreadProvisioningService(
     { getByOrder: async (requested) => protocolHex(requested) === protocolHex(orderHash) ? documents : undefined },
     resolver,
