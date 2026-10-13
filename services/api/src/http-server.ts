@@ -2264,6 +2264,7 @@ export function createPrivateTerminalRequestHandler(
             ...(executionIntentStore === undefined ? {} : { intents: executionIntentStore }),
             ...(lifecycleStore === undefined ? {} : { lifecycle: lifecycleStore }),
             ...(attemptOutcomes === undefined ? {} : { outcomes: attemptOutcomes }),
+            ...(executionPorts.preparedAttempt === undefined ? {} : { solanaPrepared: executionPorts.preparedAttempt }),
           }),
         });
       } catch (error) {

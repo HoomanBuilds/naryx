@@ -324,7 +324,11 @@ export class SolanaDevnetLifecycleStoreRecorder implements SolanaDevnetRecorderP
     ]);
     const eventId = computeEventId(nextState, evidenceCommitment);
     if (head.state === nextState) {
-      if (head.eventId !== eventId) throw new Error("Postcondition proof conflicts with the recorded lifecycle head.");
+      // The verifier rechecks the bound on-chain accounts, but its RPC context slot advances on replay.
+      const receipt = this.store.listReceipts(record.lifecycleBinding.attemptId, head.revision - 1n, 1)[0];
+      if (receipt?.nextState !== nextState || receipt.evidenceGrade !== "CONSENSUS_VERIFIED" || !receipt.onchainEnforced) {
+        throw new Error("Postcondition proof conflicts with the recorded lifecycle head.");
+      }
       return;
     }
     if (head.state !== requiredState) {

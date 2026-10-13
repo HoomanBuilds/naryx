@@ -58,6 +58,7 @@ export function listOwnerPackages(
     intents?: Pick<ExecutionIntentStore, "getAttemptForOrder">;
     lifecycle?: Pick<PackageLifecycleStore, "getAttempt">;
     outcomes?: OwnerPackageOutcomeReader;
+    solanaPrepared?: (idempotencyKey: string) => Readonly<{ attemptId: string; transactionHash: string | null }> | undefined;
   }>,
 ): readonly OwnerPackage[] {
   const records = stores.orders.listByOwner?.(owner, LIMIT) ?? [];
@@ -65,7 +66,9 @@ export function listOwnerPackages(
     const order = stores.orders.getCanonicalOrderByHash(record.orderHashHex);
     if (order === undefined) return [];
     const attempt = stores.intents?.getAttemptForOrder(record.orderHashHex);
-    const lifecycle = attempt === undefined ? undefined : stores.lifecycle?.getAttempt(attempt.attemptId);
+    const prepared = record.domainId === "svm:devnet" ? stores.solanaPrepared?.(record.idempotencyKey) : undefined;
+    const lifecycleAttemptId = prepared?.attemptId ?? attempt?.attemptId;
+    const lifecycle = lifecycleAttemptId === undefined ? undefined : stores.lifecycle?.getAttempt(lifecycleAttemptId);
     const outcome = attempt === undefined || lifecycle !== undefined ? undefined : stores.outcomes?.(attempt.attemptId);
     return [Object.freeze({
       orderHash: record.orderHashHex,
@@ -75,11 +78,11 @@ export function listOwnerPackages(
       quantityAtoms: order.quantity.atoms.toString(),
       quantityDecimals: order.quantity.asset.decimals,
       createdAtMs: record.createdAtMs,
-      attemptId: attempt?.attemptId ?? null,
+      attemptId: lifecycleAttemptId ?? null,
       state: lifecycle !== undefined ? String(lifecycle.state) : outcome?.state ?? null,
-      transactionHash: outcome?.transactionHash ?? null,
+      transactionHash: prepared?.transactionHash ?? outcome?.transactionHash ?? null,
       blockNumber: outcome?.blockNumber ?? null,
-      receiptHash: outcome?.receiptHash ?? null,
+      receiptHash: lifecycle?.receiptHashHex ?? outcome?.receiptHash ?? null,
     })];
   }));
 }

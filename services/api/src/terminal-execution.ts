@@ -170,6 +170,7 @@ export interface PrivateTerminalExecutionObservationPort {
 export type PrivateTerminalExecutionPorts = Readonly<{
   preparation?: PrivateTerminalExecutionPreparationPort;
   observation?: PrivateTerminalExecutionObservationPort;
+  preparedAttempt?: (idempotencyKey: string) => Readonly<{ attemptId: string; transactionHash: string | null }> | undefined;
 }>;
 
 export class ExecutionValidationError extends Error {

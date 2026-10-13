@@ -693,6 +693,7 @@ test("verified postconditions promote finalized entry and exit exactly once", as
       };
       recorder.recordPostcondition(entryRecord, entryProof);
       recorder.recordPostcondition(entryRecord, entryProof);
+      recorder.recordPostcondition(entryRecord, { ...entryProof, accountContextSlot: 305 });
       assert.equal(lifecycleStore.getAttempt(expectedAttempt)!.state, "OPEN");
       const exitKey = "test-lifecycle-exit-open-exit";
       const exitPrepared = await ports.preparation!.prepare(
@@ -737,6 +738,7 @@ test("verified postconditions promote finalized entry and exit exactly once", as
       };
       recorder.recordPostcondition(exitRecord, exitProof);
       recorder.recordPostcondition(exitRecord, exitProof);
+      recorder.recordPostcondition(exitRecord, { ...exitProof, accountContextSlot: 406 });
       const closed = lifecycleStore.getAttempt(expectedAttempt)!;
       assert.equal(closed.state, "CLOSED");
       const closedReceipt = lifecycleStore.listReceipts(expectedAttempt, closed.revision - 1n, 1)[0]!;

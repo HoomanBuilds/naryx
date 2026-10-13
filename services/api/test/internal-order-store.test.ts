@@ -258,3 +258,50 @@ test("owner package listing carries an attempt's observed outcome on its owner's
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+test("owner package listing resolves Solana entry and exit through their prepared lifecycle binding", () => {
+  const owner = "grLXH43H7LYETmoVCuTZTZeG4StpziDqKMs3oXxBno1";
+  const entryHash = "ab".repeat(32);
+  const exitHash = "cd".repeat(32);
+  const attemptId = `solana-cash-carry-${entryHash}`;
+  const records = [entryHash, exitHash].map((orderHashHex, index) => ({
+    orderHashHex,
+    idempotencyKey: `solana-package-${index}`,
+    domainId: "svm:devnet",
+    contextId: "solana-devnet:sol-usdc:test-perp",
+    createdAtMs: index + 1,
+  }));
+  const packages = listOwnerPackages(owner, {
+    orders: {
+      listByOwner: (requestedOwner: string) => requestedOwner === owner ? records : [],
+      getCanonicalOrderByHash: (hash: string | Uint8Array) => ({
+        action: hash === entryHash ? "ENTRY" : "EXIT",
+        quantity: { atoms: 10_000_000n, asset: { decimals: 9 } },
+      }),
+    } as never,
+    intents: {
+      getAttemptForOrder: () => ({ attemptId: `local-atomic-${"ef".repeat(32)}` }),
+    } as never,
+    lifecycle: {
+      getAttempt: (id: string) => id === attemptId ? {
+        attemptId,
+        state: "CLOSED",
+        receiptHashHex: "12".repeat(32),
+      } : undefined,
+    } as never,
+    solanaPrepared: () => ({ attemptId, transactionHash: "solana-test-signature" }),
+  });
+  assert.deepEqual(packages.map((entry) => ({
+    action: entry.action,
+    attemptId: entry.attemptId,
+    state: entry.state,
+    transactionHash: entry.transactionHash,
+    receiptHash: entry.receiptHash,
+  })), ["ENTRY", "EXIT"].map((action) => ({
+    action,
+    attemptId,
+    state: "CLOSED",
+    transactionHash: "solana-test-signature",
+    receiptHash: "12".repeat(32),
+  })));
+});

@@ -1332,6 +1332,13 @@ export function createSolanaDevnetExecutionPorts(
   }
 
   return Object.freeze({
+    preparedAttempt: (idempotencyKey: string) => {
+      const record = store.get(idempotencyKey);
+      return record === undefined ? undefined : Object.freeze({
+        attemptId: record.lifecycleBinding.attemptId,
+        transactionHash: record.boundSignature ?? null,
+      });
+    },
     preparation: Object.freeze({
       prepare: async (request: NormalizedCashCarryExecutionRequest) => {
         requireIdempotencyKey(request.idempotencyKey);
