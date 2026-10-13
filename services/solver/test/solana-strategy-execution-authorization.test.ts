@@ -162,9 +162,10 @@ function lane(expectedSolver = solver.publicKey.toBase58(), sealed = true, stale
 }
 
 test('returns a Devnet transaction signed only by the configured solver', async () => {
+  let recorded: PreparedStrategyExecutionTransport | undefined;
   const service = new SolanaStrategyExecutionAuthorizationService({
     preparations: { prepareByQuote: async () => prepared() },
-    journal: { record: async () => {}, candidates: async () => [] },
+    journal: { record: async (value) => { recorded = value; }, candidates: async () => [] },
     lanes: [lane()],
     signer: {
       publicKey: solver.publicKey.toBase58(),
@@ -184,6 +185,12 @@ test('returns a Devnet transaction signed only by the configured solver', async 
   assert.equal(authorization.owner, owner.toBase58());
   assert.equal(authorization.quoteHash, Buffer.from(quoteHash).toString('hex'));
   assert.equal(authorization.lookupTables[0]?.address, tableAddress.toBase58());
+  assert(recorded !== undefined);
+  const staged = compileSolanaMultiStrategyStagePlan(solanaStrategyExecutionEnvelope(prepared()).envelope);
+  const recordedEnvelope = solanaStrategyExecutionEnvelope(recorded);
+  assert.deepEqual(recordedEnvelope.envelope.instruction.data, staged.finalEnvelope.instruction.data);
+  assert.deepEqual(recordedEnvelope.envelope.instruction.keys.map((value) => value.pubkey.toBase58()),
+    staged.finalEnvelope.instruction.keys.map((value) => value.pubkey.toBase58()));
 });
 
 test('refuses to sign when the lane names another solver', async () => {

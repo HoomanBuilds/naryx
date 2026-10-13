@@ -266,7 +266,28 @@ export class SolanaStrategyExecutionAuthorizationService {
       requireCondition(index === solverIndex ? present : !present,
         index === solverIndex ? 'solver signature is absent' : 'transaction contains an unexpected signature');
     }
-    await this.#journal.record(prepared);
+    const domainExecution = prepared.domains[0];
+    requireCondition(domainExecution?.kind === 'SOLANA_MULTI_STRATEGY_ACCOUNT',
+      'authorized execution has no Solana strategy domain');
+    const stagedInstruction = stagePlan.finalEnvelope.instruction;
+    await this.#journal.record(Object.freeze({
+      ...prepared,
+      domains: Object.freeze([Object.freeze({
+        ...domainExecution,
+        envelope: Object.freeze({
+          ...domainExecution.envelope,
+          instruction: Object.freeze({
+            programId: stagedInstruction.programId.toBase58(),
+            accounts: Object.freeze(stagedInstruction.keys.map((account) => Object.freeze({
+              pubkey: account.pubkey.toBase58(),
+              isSigner: account.isSigner,
+              isWritable: account.isWritable,
+            }))),
+            data: Uint8Array.from(stagedInstruction.data),
+          }),
+        }),
+      })]),
+    }));
     return Object.freeze({
       version: 1,
       domain: materialized.domain,
