@@ -191,6 +191,19 @@ test('a thin Base pool prices its impact into the quoted spot notional and sprea
   }]);
 });
 
+test('declines a Base quote when the live spread exceeds the signed maximum', async () => {
+  const runtime = quoteRuntime(chain({ quoteIn: 1_105n, perpNotionalWad: 1_001n * SCALE }));
+  const order = validatePackageOrderProfile({
+    ...entryOrder(),
+    maxEntrySpread: { baseAsset: base, quoteAsset: quote, quoteAtoms: 1n, baseAtoms: 100n, roundingDirection: 'CEIL' },
+  });
+  const orderHash = packageOrderHash(order);
+  await assert.rejects(
+    async () => runtime.candidates({ order, orderHash }),
+    /QUOTE_DECLINED: Live spot-perp spread exceeds the signed maximum/,
+  );
+});
+
 test('refuses to quote an order whose settlement account is not the owner factory account', async () => {
   const runtime = quoteRuntime(chain());
   const order = {

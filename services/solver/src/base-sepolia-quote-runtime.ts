@@ -42,9 +42,10 @@ import { createPublicClient, http, keccak256, type Abi, type Address, type Hex }
 import type { AtomicRouteCandidate, AtomicRouteDecision } from './atomic-route-decision.js';
 import type { AtomicQuoteNonceSource } from './configured-atomic-market.js';
 import type { QuoteProviders } from './hyperliquid-testnet-quote-runtime.js';
-import type {
-  InternalAtomicQuoteCandidateProvider,
-  InternalAtomicQuoteTermsProvider,
+import {
+  InternalAtomicQuoteError,
+  type InternalAtomicQuoteCandidateProvider,
+  type InternalAtomicQuoteTermsProvider,
 } from './internal-atomic-quote-server.js';
 import type { AtomicEntryQuoteTerms } from './signed-atomic-entry-quote.js';
 import { quoteUniswapV3Buy, type UniswapV3SpotQuoteTarget } from './uniswap-v3-quoter.js';
@@ -343,6 +344,11 @@ async function build(order: PackageOrder, orderHash: Hash32, input: BaseSepoliaQ
   const pricing = await priceBaseSepoliaEntry(
     input.chain, deployment, order.quantity.atoms, BigInt(input.marginBps), input.spotQuoter,
   );
+  const maxSpread = order.maxEntrySpread;
+  if (maxSpread !== undefined && (pricing.spotNotionalAtoms - pricing.perpNotionalAtoms) * maxSpread.baseAtoms
+    > maxSpread.quoteAtoms * order.quantity.atoms) {
+    throw new InternalAtomicQuoteError('QUOTE_DECLINED', 'Live spot-perp spread exceeds the signed maximum; nothing was signed');
+  }
   const now = pricing.observedAt;
   if (now >= order.expiryValue) throw new Error('order is expired');
   const quoteAsset = order.maxSpotQuoteIn!.asset;
