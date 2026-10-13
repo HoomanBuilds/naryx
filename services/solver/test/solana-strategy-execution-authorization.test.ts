@@ -165,7 +165,12 @@ test('returns a Devnet transaction signed only by the configured solver', async 
   let recorded: PreparedStrategyExecutionTransport | undefined;
   const service = new SolanaStrategyExecutionAuthorizationService({
     preparations: { prepareByQuote: async () => prepared() },
-    journal: { record: async (value) => { recorded = value; }, candidates: async () => [] },
+    journal: {
+      staged: async () => undefined,
+      recordStage: async (value) => value,
+      record: async (value) => { recorded = value; },
+      candidates: async () => [],
+    },
     lanes: [lane()],
     signer: {
       publicKey: solver.publicKey.toBase58(),
@@ -193,10 +198,37 @@ test('returns a Devnet transaction signed only by the configured solver', async 
     staged.finalEnvelope.instruction.keys.map((value) => value.pubkey.toBase58()));
 });
 
+test('uses the same staged preparation when live pricing changes', async () => {
+  let staged: PreparedStrategyExecutionTransport | undefined;
+  let preparations = 0;
+  const service = new SolanaStrategyExecutionAuthorizationService({
+    preparations: { prepareByQuote: async () => {
+      preparations += 1;
+      if (preparations > 1) throw new Error('live preparation changed after staging');
+      return prepared();
+    } },
+    journal: {
+      staged: async () => staged,
+      recordStage: async (value) => { staged = value; return value; },
+      record: async () => {},
+      candidates: async () => [],
+    },
+    lanes: [lane()],
+    signer: {
+      publicKey: solver.publicKey.toBase58(),
+      sign: (transaction) => transaction.sign([solver]),
+    },
+  });
+  assert.equal((await service.stage(quoteHash))?.ready, true);
+  assert((await service.authorize(quoteHash)) !== undefined);
+  assert.equal(preparations, 1);
+});
+
 test('refuses to sign when the lane names another solver', async () => {
   const service = new SolanaStrategyExecutionAuthorizationService({
     preparations: { prepareByQuote: async () => prepared() },
-    journal: { record: async () => {}, candidates: async () => [] },
+    journal: { staged: async () => undefined, recordStage: async (value) => value,
+      record: async () => {}, candidates: async () => [] },
     lanes: [lane(key(19).toBase58())],
     signer: {
       publicKey: solver.publicKey.toBase58(),
@@ -209,7 +241,8 @@ test('refuses to sign when the lane names another solver', async () => {
 test('requires a sealed stage before signing and prepares owner-only upload instructions', async () => {
   const service = new SolanaStrategyExecutionAuthorizationService({
     preparations: { prepareByQuote: async () => prepared() },
-    journal: { record: async () => {}, candidates: async () => [] },
+    journal: { staged: async () => undefined, recordStage: async (value) => value,
+      record: async () => {}, candidates: async () => [] },
     lanes: [lane(solver.publicKey.toBase58(), false)],
     signer: {
       publicKey: solver.publicKey.toBase58(),
@@ -227,7 +260,8 @@ test('requires a sealed stage before signing and prepares owner-only upload inst
 test('returns an owner-signed cancel for a stale stage at the same nonce', async () => {
   const service = new SolanaStrategyExecutionAuthorizationService({
     preparations: { prepareByQuote: async () => prepared() },
-    journal: { record: async () => {}, candidates: async () => [] },
+    journal: { staged: async () => undefined, recordStage: async (value) => value,
+      record: async () => {}, candidates: async () => [] },
     lanes: [lane(solver.publicKey.toBase58(), true, true)],
     signer: {
       publicKey: solver.publicKey.toBase58(),

@@ -10,6 +10,8 @@ import {
 import type { PreparedStrategyExecutionTransport } from './strategy-execution-transport.js';
 
 export interface SolanaStrategyAuthorizationJournal {
+  staged(quoteHash: Hash32): Promise<PreparedStrategyExecutionTransport | undefined>;
+  recordStage(prepared: PreparedStrategyExecutionTransport): Promise<PreparedStrategyExecutionTransport>;
   record(prepared: PreparedStrategyExecutionTransport): Promise<void>;
   candidates(quoteHash: Hash32): Promise<readonly PreparedStrategyExecutionTransport[]>;
 }
@@ -24,6 +26,11 @@ export class SqliteSolanaStrategyAuthorizationJournal implements SolanaStrategyA
     this.#db = new Database(resolve(path));
     this.#db.pragma('journal_mode = WAL');
     this.#db.exec(`
+      CREATE TABLE IF NOT EXISTS solana_strategy_stages (
+        quote_hash TEXT PRIMARY KEY,
+        prepared_json TEXT NOT NULL,
+        recorded_at_ms INTEGER NOT NULL
+      ) STRICT;
       CREATE TABLE IF NOT EXISTS solana_strategy_authorizations (
         quote_hash TEXT NOT NULL,
         prepared_hash TEXT NOT NULL,
@@ -32,6 +39,28 @@ export class SqliteSolanaStrategyAuthorizationJournal implements SolanaStrategyA
         PRIMARY KEY (quote_hash, prepared_hash)
       ) STRICT;
     `);
+  }
+
+  async staged(quoteHash: Hash32): Promise<PreparedStrategyExecutionTransport | undefined> {
+    const key = Buffer.from(quoteHash).toString('hex');
+    const row = this.#db.prepare('SELECT prepared_json FROM solana_strategy_stages WHERE quote_hash = ?')
+      .get(key) as { prepared_json: string } | undefined;
+    if (row === undefined) return undefined;
+    const prepared = parseProtocolJson(row.prepared_json) as PreparedStrategyExecutionTransport;
+    if (!bytesEqual(prepared.quoteHash, quoteHash)) throw new Error('stored stage quote hash mismatch');
+    return prepared;
+  }
+
+  async recordStage(prepared: PreparedStrategyExecutionTransport): Promise<PreparedStrategyExecutionTransport> {
+    const quoteHash = Buffer.from(prepared.quoteHash).toString('hex');
+    if (!/^[0-9a-f]{64}$/.test(quoteHash)) throw new Error('prepared quote hash is invalid');
+    this.#db.prepare(`
+      INSERT OR IGNORE INTO solana_strategy_stages (quote_hash, prepared_json, recorded_at_ms)
+      VALUES (?, ?, ?)
+    `).run(quoteHash, stringifyProtocolJson(prepared), Date.now());
+    const stored = await this.staged(prepared.quoteHash as Hash32);
+    if (stored === undefined) throw new Error('prepared stage was not stored');
+    return stored;
   }
 
   async record(prepared: PreparedStrategyExecutionTransport): Promise<void> {

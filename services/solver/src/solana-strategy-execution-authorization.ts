@@ -184,10 +184,18 @@ export class SolanaStrategyExecutionAuthorizationService {
     this.#journal = input.journal;
   }
 
-  async stage(quoteHash: Hash32): Promise<SolanaStrategyStagePreparation | undefined> {
+  async #stagedPreparation(quoteHash: Hash32): Promise<PreparedStrategyExecutionTransport | undefined> {
+    const staged = await this.#journal.staged(quoteHash);
+    if (staged !== undefined) return staged;
     const prepared = await this.#preparations.prepareByQuote(quoteHash);
     if (prepared === undefined) return undefined;
     requireCondition(bytesEqual(prepared.quoteHash, quoteHash), 'preparation returned another quote');
+    return this.#journal.recordStage(prepared);
+  }
+
+  async stage(quoteHash: Hash32): Promise<SolanaStrategyStagePreparation | undefined> {
+    const prepared = await this.#stagedPreparation(quoteHash);
+    if (prepared === undefined) return undefined;
     const compiled = solanaStrategyExecutionEnvelope(prepared);
     const lanes = this.#lanes.filter((lane) => sameDomain(lane.domain, compiled.domain));
     requireCondition(lanes.length === 1, 'prepared domain does not resolve to exactly one execution lane');
@@ -233,9 +241,8 @@ export class SolanaStrategyExecutionAuthorizationService {
   }
 
   async authorize(quoteHash: Hash32): Promise<AuthorizedSolanaStrategyExecution | undefined> {
-    const prepared = await this.#preparations.prepareByQuote(quoteHash);
+    const prepared = await this.#stagedPreparation(quoteHash);
     if (prepared === undefined) return undefined;
-    requireCondition(bytesEqual(prepared.quoteHash, quoteHash), 'preparation returned another quote');
     const compiled = solanaStrategyExecutionEnvelope(prepared);
     const lanes = this.#lanes.filter((lane) => sameDomain(lane.domain, compiled.domain));
     requireCondition(lanes.length === 1, 'prepared domain does not resolve to exactly one execution lane');

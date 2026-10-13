@@ -252,7 +252,7 @@ function lane(
 test('returns finalized evidence only for the exact prepared Solana instruction and receipt', async () => {
   const service = new SolanaStrategyExecutionObservationService({
     packages: { getByQuote: async () => documents() },
-    journal: { candidates: async () => [prepared()], record: async () => {} },
+    journal: { candidates: async () => [prepared()] },
     lanes: [lane()],
   });
   const signature = bs58.encode(new Uint8Array(64).fill(24));
@@ -271,21 +271,21 @@ test('returns finalized evidence only for the exact prepared Solana instruction 
 
   const changed = new SolanaStrategyExecutionObservationService({
     packages: { getByQuote: async () => documents() },
-    journal: { candidates: async () => [prepared()], record: async () => {} },
+    journal: { candidates: async () => [prepared()] },
     lanes: [lane(Uint8Array.from([1, 2, 4]))],
   });
   await assert.rejects(changed.observe({ quoteHash, signature }), /one authorized strategy instruction/);
 
   const wrongFee = new SolanaStrategyExecutionObservationService({
     packages: { getByQuote: async () => documents() },
-    journal: { candidates: async () => [prepared()], record: async () => {} },
+    journal: { candidates: async () => [prepared()] },
     lanes: [lane(Uint8Array.from([1, 2, 3]), undefined, 100_001n)],
   });
   await assert.rejects(wrongFee.observe({ quoteHash, signature }), /stored fee receipt differs/);
 
   const incompleteLogs = new SolanaStrategyExecutionObservationService({
     packages: { getByQuote: async () => documents() },
-    journal: { candidates: async () => [prepared()], record: async () => {} },
+    journal: { candidates: async () => [prepared()] },
     lanes: [lane(Uint8Array.from([1, 2, 3]), [
       `Program ${program.toBase58()} invoke [1]`,
     ])],

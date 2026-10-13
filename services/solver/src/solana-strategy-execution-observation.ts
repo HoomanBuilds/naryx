@@ -215,12 +215,12 @@ function canonicalReceipt(
 
 export class SolanaStrategyExecutionObservationService {
   readonly #packages: StrategyPackageProvider;
-  readonly #journal: SolanaStrategyAuthorizationJournal;
+  readonly #journal: Pick<SolanaStrategyAuthorizationJournal, 'candidates'>;
   readonly #lanes: readonly SolanaTreasuryHedgeExecutionLane[];
 
   constructor(input: Readonly<{
     packages: StrategyPackageProvider;
-    journal: SolanaStrategyAuthorizationJournal;
+    journal: Pick<SolanaStrategyAuthorizationJournal, 'candidates'>;
     lanes: readonly SolanaTreasuryHedgeExecutionLane[];
   }>) {
     requireCondition(input.lanes.length > 0, 'at least one execution lane is required');

@@ -18,8 +18,11 @@ test('retains distinct authorized snapshots across process restarts', async () =
     await writer.record(first);
     await writer.record(first);
     await writer.record(second);
+    assert.deepEqual(await writer.recordStage(first), first);
+    assert.deepEqual(await writer.recordStage(second), first);
     writer.close();
     const reader = new SqliteSolanaStrategyAuthorizationJournal(path);
+    assert.deepEqual(await reader.staged(quoteHash), first);
     const candidates = await reader.candidates(quoteHash);
     assert.equal(candidates.length, 2);
     assert.deepEqual(candidates.map((candidate) => Buffer.from(candidate.routeHash).toString('hex')).sort(),
