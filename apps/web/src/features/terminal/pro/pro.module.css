@@ -1312,6 +1312,19 @@
 }
 
 @media (max-width: 640px) {
+  .instrumentBar {
+    gap: 12px;
+    padding: 0 12px;
+  }
+
+  .instrumentKind {
+    display: none;
+  }
+
+  .marketSwitcherTrigger {
+    width: min(205px, 44vw);
+  }
+
   .marketSwitcherMenu {
     left: -60px;
   }
