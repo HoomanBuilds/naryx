@@ -3578,7 +3578,7 @@ export function GeneralizedStrategyPreparationPanel({
     || lifecycleAction === "MIGRATE" || lifecycleAction === "REBALANCE"
     || lifecycleAction === "EMERGENCY_UNWIND";
 
-  async function createSolanaTreasuryHedgeOrder() {
+  async function createSolanaTreasuryHedgeOrder(resting = false) {
     if (privateApiBaseUrl === null || selectedSolanaProfile === null) return;
     setSolanaCreateBusy(true);
     setError(null);
@@ -3630,6 +3630,7 @@ export function GeneralizedStrategyPreparationPanel({
           limitHedgePrice,
           expiryValue: (currentSlot + ttl).toString(),
           nonce: randomNonce(),
+          ...(resting ? { resting: true } : {}),
           ...(lifecycleAction === "ENTRY" ? {} : {
             expectedStrategyStateHash: selectedSolanaPosition!.stateHash,
           }),
@@ -5736,6 +5737,19 @@ export function GeneralizedStrategyPreparationPanel({
                     : lifecycleAction === "INCREASE" ? "Increase atomic Solana package"
                       : lifecycleAction === "DECREASE" ? "Decrease atomic Solana package" : "Create atomic Solana exit"}
               </button>
+              {lifecycleAction === "ENTRY" ? (
+                <>
+                  <button
+                    type="button"
+                    className={styles.secondaryAction}
+                    disabled={privateApiBaseUrl === null || solanaCreateBusy || !solanaFieldsReady}
+                    onClick={() => void createSolanaTreasuryHedgeOrder(true)}
+                  >
+                    {solanaCreateBusy ? "Creating package order" : "Create resting package order"}
+                  </button>
+                  <p className={styles.fieldContext}>Use this order with the package book. It stays open until matched or expired.</p>
+                </>
+              ) : null}
               {HASH.test(orderHash) ? (
                 <button
                   type="button"
