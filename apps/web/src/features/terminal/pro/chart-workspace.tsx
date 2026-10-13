@@ -128,7 +128,7 @@ function DepthChart({ feed, unit }: { feed: MarketFeed; unit: string }) {
       {empty ? (
         <div className={styles.chartEmpty} role="status">
           <strong>No package depth</strong>
-          <span>{feed.label === "REFERENCE" ? "Package depth is published only by the public market API, which this deployment does not run." : "The package book has no resting orders."}</span>
+          <span>{feed.label === "UNAVAILABLE" ? "No published package market is selected." : feed.label === "REFERENCE" ? "Package depth is published only by the public market API, which this deployment does not run." : "The package book has no resting orders."}</span>
         </div>
       ) : width > 0 && height > 0 ? (
         <svg width={width} height={height} role="img" aria-label="Cumulative package depth" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
@@ -339,7 +339,7 @@ export function ChartWorkspace({
             {entry.label}
           </button>
         ))}
-        <span className={feed.label === "FIXTURE" ? styles.labelFixture : styles.labelObserved} title={feed.sourceNote}>{feed.label}</span>
+        <span className={feed.label === "FIXTURE" ? styles.labelFixture : feed.label === "UNAVAILABLE" ? styles.labelUnavailable : styles.labelObserved} title={feed.sourceNote}>{feed.label}</span>
         <button type="button" className={styles.iconButton} aria-label="Toggle full screen" title="Full screen" onClick={toggleFullscreen}>
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6V2.5H6M13.5 10v3.5H10M10 2.5h3.5V6M6 13.5H2.5V10" /></svg>
         </button>

@@ -90,8 +90,9 @@ export function OrderBook({ feed }: { feed: MarketFeed }) {
   const [sideFilter, setSideFilter] = usePersistedSetting<BookSide>("book.side", "both", ["both", "bids", "asks"]);
   const book = useMemo(() => feed.depth(), [feed]);
   const fixture = feed.label === "FIXTURE";
-  const noBook = feed.label === "REFERENCE";
+  const noBook = feed.label === "REFERENCE" || feed.label === "UNAVAILABLE";
   const trades = useMemo(() => feed.tape(), [feed]);
+  const emptyView = view === "trades" ? trades.length === 0 : book.bids.length + book.asks.length === 0;
   const steps = [book.tick, book.tick * 2, book.tick * 10];
   const [step, setStep] = useState(book.tick);
   const { ref: bodyRef, height: bodyHeight } = useRowCapacity();
@@ -148,12 +149,12 @@ export function OrderBook({ feed }: { feed: MarketFeed }) {
         {/* Depth from the public API is executable package book depth; trades are observed; a fixture is
             neither, and reference history has no package book at all. */}
         <span
-          className={`${fixture || noBook ? styles.labelFixture : styles.labelObserved} ${styles.tabTag}`}
+          className={`${fixture ? styles.labelFixture : noBook || emptyView ? styles.labelUnavailable : styles.labelObserved} ${styles.tabTag}`}
           title={fixture
             ? "Deterministic fixture levels for layout; not resting orders"
-            : noBook ? "Package depth and trades are published only by the public market API, which this deployment does not run." : feed.sourceNote}
+            : feed.label === "REFERENCE" ? "Package depth and trades are published only by the public market API, which this deployment does not run." : feed.sourceNote}
         >
-          {fixture ? "FIXTURE" : noBook ? "UNAVAILABLE" : view === "trades" ? "OBSERVED" : "EXECUTABLE"}
+          {fixture ? "FIXTURE" : noBook ? "UNAVAILABLE" : emptyView ? view === "trades" ? "NO TRADES" : "NO DEPTH" : view === "trades" ? "OBSERVED" : "EXECUTABLE"}
         </span>
       </div>
       {view === "book" ? (

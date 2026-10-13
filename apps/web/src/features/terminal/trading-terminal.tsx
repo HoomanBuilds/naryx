@@ -109,6 +109,10 @@ function onLane(market: { readonly domainIds: readonly string[] }, lane: DomainI
   return market.domainIds.some((domainId) => PACKAGE_DOMAIN_TO_TERMINAL[domainId] === lane);
 }
 
+function tradeReadyMarket(market: { readonly templateId: string | null; readonly domainIds: readonly string[] }): boolean {
+  return market.templateId !== null && market.domainIds.some((domainId) => PACKAGE_DOMAIN_TO_TERMINAL[domainId] !== undefined);
+}
+
 // Storage throws when the browser blocks it; the choice then lasts for the page only.
 function readStoredPackageMarket(): string | null {
   try {
@@ -2042,7 +2046,7 @@ export function TradingTerminal({
     appliedMarketLink.current = linkKey;
     setActivePackageMarketId((current) => {
       const listed = (candidate: string | null | undefined) => candidate !== null && candidate !== undefined
-        && packageMarkets.some((market) => market.packageMarketId === candidate);
+        && packageMarkets.some((market) => market.packageMarketId === candidate && tradeReadyMarket(market));
       const laneFits = (candidate: string | null | undefined) => lane === null
         || packageMarkets.some((market) => market.packageMarketId === candidate && onLane(market, lane));
       const remembered = [current, readStoredPackageMarket(), packageMarketId, packageMarkets[0]?.packageMarketId];
@@ -2062,9 +2066,9 @@ export function TradingTerminal({
     && (packageMarketStatus === null || packageMarketStatus.state === "loading");
   const resolvedPackageMarketId = packageMarketsPending
     ? null
-    : packageMarkets.some((market) => market.packageMarketId === activePackageMarketId)
+    : packageMarkets.some((market) => market.packageMarketId === activePackageMarketId && tradeReadyMarket(market))
       ? activePackageMarketId
-      : packageMarkets[0]?.packageMarketId ?? activePackageMarketId;
+      : packageMarkets.find(tradeReadyMarket)?.packageMarketId ?? null;
   const selectedPackageMarket = packageMarkets.find((market) => market.packageMarketId === resolvedPackageMarketId) ?? null;
   const selectedPackageTemplateId = selectedPackageMarket?.templateId ?? null;
   const selectedPackageDomainIds = selectedPackageMarket?.domainIds.join("\n") ?? "";
@@ -4121,6 +4125,7 @@ export function TradingTerminal({
             packageMarketId={resolvedPackageMarketId}
             packageMarkets={packageMarkets}
             marketStatus={packageMarketStatus?.detail ?? null}
+            marketState={packageMarketStatus?.state ?? null}
             onPackageMarketChange={(nextMarketId) => {
               setActivePackageMarketId(nextMarketId);
               storePackageMarket(nextMarketId);

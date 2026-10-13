@@ -686,7 +686,7 @@ export function usePublicMarketFeed(
   fallback: MarketFeed,
   reference: MarketFeed | null,
 ): { readonly feed: MarketFeed; readonly status: PublicFeedStatus | null } {
-  const configured = baseUrl !== null && packageMarketId !== null;
+  const configured = baseUrl !== null;
   const [observedLive, setLive] = useState<LiveState | null>(null);
   const [observedStatus, setStatus] = useState<{ packageMarketId: string; status: PublicFeedStatus } | null>(null);
   // Another market's book and status are never shown while the selected one loads.
@@ -844,6 +844,17 @@ export function usePublicMarketFeed(
 
   const feed = useMemo<MarketFeed>(() => {
     if (!configured) return fallback;
+    if (packageMarketId === null) {
+      return {
+        label: "UNAVAILABLE",
+        sourceNote: "No published package market is selected. Market data is not shown.",
+        book: BOOK_UNIT,
+        candles: () => [],
+        depth: () => ({ bids: [], asks: [], tick: 1 }),
+        tape: () => [],
+        seriesMeta: (series: ChartSeriesKey) => series === "basis" ? PACKAGE_PRICE : unpublishedLeg(series),
+      };
+    }
     // Leg prices are not public market data; the reference history fills them under its own label,
     // and fills the basis series too until the package book has a trade.
     const traded = live !== null && live.trades.length > 0;
@@ -856,9 +867,10 @@ export function usePublicMarketFeed(
       : ` Spot and perp series${traded ? "" : ", and basis until the first package trade,"} are ${reference.label} data. ${reference.sourceNote}`;
     // A configured market never shows fixture data: until the API answers, the book is empty.
     if (live === null) {
+      const hasReference = reference !== null && reference.candles("basis", "15m").length > 0;
       return {
-        label: "OBSERVED",
-        sourceNote: `Package ${packageMarketId}: waiting for the public market API.${referenceNote}`,
+        label: hasReference ? "REFERENCE" : "UNAVAILABLE",
+        sourceNote: `Package ${packageMarketId}: ${status.detail}${referenceNote}`,
         book: BOOK_UNIT,
         candles: (series: ChartSeriesKey, interval: ChartInterval) => reference?.candles(series, interval) ?? [],
         depth: () => ({ bids: [], asks: [], tick: 1 }),
@@ -892,7 +904,7 @@ export function usePublicMarketFeed(
         return series === "basis" ? PACKAGE_PRICE : unpublishedLeg(series);
       },
     };
-  }, [configured, live, fallback, packageMarketId, reference]);
+  }, [configured, live, fallback, packageMarketId, reference, status]);
 
   return { feed, status: configured ? status : null };
 }

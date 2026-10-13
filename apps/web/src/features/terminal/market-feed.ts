@@ -6,7 +6,7 @@ export type ChartSeriesKey = "basis" | "spot" | "perp";
  * FIXTURE is deterministic local data, OBSERVED is the public package book and tape, and REFERENCE
  * is the private API's recorded samples of each lane's live spot and perp references.
  */
-export type FeedLabel = "FIXTURE" | "OBSERVED" | "REFERENCE";
+export type FeedLabel = "FIXTURE" | "OBSERVED" | "REFERENCE" | "UNAVAILABLE";
 
 export const CHART_INTERVALS: readonly { id: ChartInterval; label: string; seconds: number }[] = [
   { id: "1m", label: "1m", seconds: 60 },
