@@ -116,8 +116,29 @@ test('materializes a packet-safe v0 multi-strategy transaction with exact signer
   assert.equal(result.lookupTables[0]?.address, lookupAddress.toBase58());
   assert.equal(result.evidence.computeUnitLimit, 600_000);
   assert(result.evidence.serializedTransactionBytes <= result.evidence.packetDataLimit);
+  assert.equal(result.evidence.serializedTransactionBytes, result.transactionBytes.length);
   assert(transaction.signatures.every((signature) => signature.every((byte) => byte === 0)));
   assert.equal(result.materializationCommitment.length, 32);
+});
+
+test('reports the exact wire size before serializing an oversized package', async () => {
+  const oversized = envelope();
+  await assert.rejects(
+    materializer(rpc()).materialize({
+      domain,
+      payer,
+      envelope: {
+        ...oversized,
+        instruction: new TransactionInstruction({
+          programId: oversized.instruction.programId,
+          keys: oversized.instruction.keys,
+          data: Buffer.alloc(1_300, 7),
+        }),
+      },
+      computeUnitLimit: 600_000,
+    }),
+    /materialized transaction requires \d+ bytes, exceeding the 1232-byte wire limit/,
+  );
 });
 
 test('fails closed when live lookup-table content differs from reviewed configuration', async () => {

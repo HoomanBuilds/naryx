@@ -174,6 +174,38 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+function shortVecLength(value: number): number {
+  let remaining = value;
+  let bytes = 1;
+  while (remaining >= 128) {
+    remaining >>= 7;
+    bytes += 1;
+  }
+  return bytes;
+}
+
+function wireSize(message: ReturnType<TransactionMessage['compileToV0Message']>): number {
+  const signatures = message.header.numRequiredSignatures;
+  const instructions = message.compiledInstructions.reduce((size, instruction) => size
+    + 1
+    + shortVecLength(instruction.accountKeyIndexes.length)
+    + instruction.accountKeyIndexes.length
+    + shortVecLength(instruction.data.length)
+    + instruction.data.length, 0);
+  const lookups = message.addressTableLookups.reduce((size, lookup) => size
+    + 32
+    + shortVecLength(lookup.writableIndexes.length)
+    + lookup.writableIndexes.length
+    + shortVecLength(lookup.readonlyIndexes.length)
+    + lookup.readonlyIndexes.length, 0);
+  return shortVecLength(signatures) + 64 * signatures
+    + 1 + 3
+    + shortVecLength(message.staticAccountKeys.length) + 32 * message.staticAccountKeys.length
+    + 32
+    + shortVecLength(message.compiledInstructions.length) + instructions
+    + shortVecLength(message.addressTableLookups.length) + lookups;
+}
+
 export class SolanaMultiStrategyTransactionMaterializer {
   readonly #rpc: SolanaReadOnlyRpc;
   readonly #config: SolanaMaterializerConfig;
@@ -298,6 +330,9 @@ export class SolanaMultiStrategyTransactionMaterializer {
     );
     requireCondition(resolvedAddressCount <= MAX_RESOLVED_ADDRESSES,
       'materialized message exceeds 64 resolved addresses');
+    const serializedTransactionBytes = wireSize(message);
+    requireCondition(serializedTransactionBytes <= PACKET_DATA_SIZE,
+      `materialized transaction requires ${serializedTransactionBytes} bytes, exceeding the ${PACKET_DATA_SIZE}-byte wire limit`);
     const messageBytes = message.serialize();
     const transaction = new VersionedTransaction(message);
     requireCondition(transaction.signatures.every((signature) => signature.every((byte) => byte === 0)),
