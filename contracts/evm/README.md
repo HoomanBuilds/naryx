@@ -1,6 +1,27 @@
 # EVM contracts
 
-Foundry workspace for the EVM protocol contracts.
+Foundry workspace for the EVM side of Naryx. The same source tree implements two different execution semantics: atomic package postconditions on Base and bonded, callback-driven GMX execution on Arbitrum. It also contains typed multi-strategy accounts and isolated package clearing that are activated separately from the first cash-and-carry route.
+
+## Contract map
+
+| Group | Main contracts | Responsibility |
+|---|---|---|
+| Domain and policy | `ProtocolConfig`, `ResourceRegistry`, `RiskDomainRegistry`, `PolicyRegistry`, `StrategyFeePolicyRegistry`, `SolverRegistry` | Bind exact domain, resource, risk, solver, and fee versions before execution. |
+| Atomic package exchange | `PackageVerifier`, `PackageQuoteShard`, `PackageQuoteShardRegistry`, `FirmInventoryReservationBook`, `NaryxStrategyAccount`, `UniswapV3SpotPort` | Verify signed package terms, firm quote capacity, isolated account actions, and one-transaction entry or exit. |
+| Asynchronous package execution | `AsyncBondedPackageCoordinator`, `GmxV2IsolatedAccount`, `GmxV2ArbitrumAdapter`, `GmxV2ExitController`, `PerformanceBondVault` | Bind a GMX request to owner, solver, recovery bounds, callbacks, and final settlement evidence across transactions. |
+| Typed strategies | `NaryxMultiStrategyAccount`, `TypedStrategyAdapterRegistry`, and the typed spot, perp, option, lending, vault, and inventory adapters | Build reviewed multi-leg strategies from explicitly supported adapter classes. |
+| Native clearing | `NativePackageClearingHouse` | Isolated collateral, margin, position, fee, recovery-reserve, and default-auction accounting for qualified package series. |
+| Test dependencies | `src/conformance/` | Controlled test assets, price feeds, lending, option, vault, and perpetual markets. |
+
+`src/interfaces/` contains venue and adapter interfaces. `script/` contains reviewed deployment and activation scripts. A deployed interface or adapter factory does not imply that its underlying external venue or liquidity is active.
+
+## Public testnet status
+
+The [Base Sepolia release](../../deployments/evm/base-sepolia/release.json) is `ACTIVE` for the first atomic cash-and-carry route. Its quote asset is freely mintable test USDC, its spot pool is seeded test liquidity, and its perpetual is a Naryx conformance market. The [Base multi-strategy release](../../deployments/evm/base-sepolia/multi-strategy-release.json) has its own activation record.
+
+The [Arbitrum Sepolia release](../../deployments/evm/arbitrum-sepolia/release.json) is `ACTIVE` for the first bonded GMX route. Its spot pool and USDC.SG use test liquidity; GMX requests and callbacks cross transaction boundaries. Neither release is evidence of organic flow or permission for mainnet writes.
+
+The Base multi-strategy release records a deployed and unpaused `NativePackageClearingHouse`. Deployment and unpause do not prove funded reserves, active market depth, or completed user trades.
 
 ## Local validation
 
@@ -12,7 +33,7 @@ forge test
 
 ## Performance bonds
 
-`PerformanceBondVault` holds solver performance bonds that pay harmed takers for objective, evidence-bound faults: failing to honor a funded reservation, submitting off route, or withholding a required recovery action. A solver locks exactly the bond amount it names (a token that skims transfers is refused) and the faults it covers. Only the claims authority files a claim, against a unique fault evidence hash, within the per-claim cap and the unencumbered bond; only the bonded solver can dispute it, inside the dispute window; an undisputed claim pays once the window closes, and a disputed one pays only if the separate dispute resolver rejects the dispute. After expiry, with no open claim, the unpaid remainder returns to the solver exactly once. `BondOpened` carries every term a claim is judged against (bond amount, covered faults, per-claim cap, dispute window, expiry), so the indexer can replay a bond from logs alone. The vault is not deployed anywhere.
+`PerformanceBondVault` holds solver performance bonds that pay harmed takers for objective, evidence-bound faults: failing to honor a funded reservation, submitting off route, or withholding a required recovery action. A solver locks exactly the bond amount it names (a token that skims transfers is refused) and the faults it covers. Only the claims authority files a claim, against a unique fault evidence hash, within the per-claim cap and the unencumbered bond; only the bonded solver can dispute it, inside the dispute window; an undisputed claim pays once the window closes, and a disputed one pays only if the separate dispute resolver rejects the dispute. After expiry, with no open claim, the unpaid remainder returns to the solver exactly once. `BondOpened` carries every term a claim is judged against (bond amount, covered faults, per-claim cap, dispute window, expiry), so the indexer can replay a bond from logs alone. The Base Sepolia release records a deployed vault; its presence alone is not a claim that any bond has been funded.
 
 ## ABI publication
 
@@ -87,7 +108,7 @@ Record a completed qualification under `deployments/evm/fork-evidence/` only aft
 
 ## Deployment preparation
 
-The scripts under `script/` prepare Base Sepolia and Arbitrum Sepolia deployments. None has been run against a public network, and none may be without explicit authorization for that exact action. The operator runbook, with exact commands, waits, and the runtime manifest fields each deployment feeds, is `deployments/evm/README.md`.
+The scripts under `script/` produced the recorded Base Sepolia and Arbitrum Sepolia releases. The operator runbook, with exact commands, waits, and runtime manifest fields, is [the EVM deployment guide](../../deployments/evm/README.md). Running a script again is a new deployment or authority action and is not implied by these records.
 
 Each deployment starts its `ProtocolConfig` on a provisional domain manifest, because the reviewed manifest commits to the deployed execution verifier's code hash. `runProposeDomain` and `runActivateDomain` in each configure script move it to the reviewed manifest through the configuration delay, and every later configure step refuses to run unless that exact manifest is active. `PackageQuoteShardRegistry` therefore pins the domain per record rather than in its code: a rotation retires each record until it is registered again under the active domain, and the verifier that pins the registry stays valid.
 

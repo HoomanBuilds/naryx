@@ -2,7 +2,7 @@
 
 Data only. No executable business logic.
 
-Holds per-network deployment identity and the generated environment manifests that make a run reproducible:
+Holds per-network deployment identity and the published artifacts that make a run reproducible:
 
 - program IDs and contract addresses;
 - ABIs and IDLs published from `contracts/evm` and `contracts/solana`;
@@ -10,6 +10,17 @@ Holds per-network deployment identity and the generated environment manifests th
 - proxy, beacon, implementation, and admin graphs where applicable;
 - pinned external dependency identities and reviewed source revisions;
 - generated parity environment manifests.
+
+## Current testnet release index
+
+| Environment | Recorded artifact | Execution semantics |
+|---|---|---|
+| Solana Devnet | [Cash-and-carry](solana/devnet/release.json), [multi-strategy](solana/devnet/multi-strategy-release.json) | Same-transaction postcondition checks with test inventory and a test perpetual. |
+| Base Sepolia | [Atomic package](evm/base-sepolia/release.json), [multi-strategy](evm/base-sepolia/multi-strategy-release.json) | Atomic package verification with seeded test spot liquidity and a conformance perpetual. |
+| Arbitrum Sepolia | [Bonded GMX route](evm/arbitrum-sepolia/release.json) | Callback-driven entry and exit with bounded asynchronous recovery. |
+| Hyperliquid Testnet | [Operator template](hyperliquid/testnet/README.md) | Adapter and service execution; no Naryx contract is deployed. |
+
+Each JSON record is an evidence artifact, not an assertion of organic trading or independent maker participation. Read its `limitations` and `activationState` before citing it. `conformance/` ABI and IDL files support reproducible tests and are not themselves deployment records.
 
 ## Allowed dependencies
 
@@ -31,3 +42,7 @@ Responsibilities and dependency direction are specified in the repository archit
 ## Dependency provenance
 
 `dependency-provenance.json` records, for every workspace lockfile, each installed dependency's exact version and registry integrity hash, bound in one digest. `node tests/dependency-provenance/provenance.mjs` fails when any lockfile differs from the recorded provenance or a registry dependency lacks an integrity hash; after the change is reviewed, `--write` records it. Reviewed source revisions for dependencies whose published code differs from their repository are still recorded by hand before integration.
+
+## Operator path
+
+The [testnet go-live checklist](GO-LIVE.md) links the chain-specific steps, funding checks, release generator, service startup, and health validation. The [AWS host guide](aws/README.md) covers the testnet service host and the [tooling guide](tools/README.md) covers external runtime-manifest generation. None of these files authorizes a mainnet deployment.
