@@ -19,7 +19,7 @@ import { requireSolanaDevnet } from './solana-devnet-rpc.js';
 import {
   solanaStrategyExecutionEnvelope,
 } from './solana-strategy-execution-authorization.js';
-import type { StrategyPreparationService } from './strategy-preparation-service.js';
+import type { SolanaStrategyAuthorizationJournal } from './solana-strategy-authorization-journal.js';
 
 export type SolanaStrategyExecutionObservation = Readonly<
   | { version: 1; status: 'PENDING' | 'FAILED'; signature: string }
@@ -215,17 +215,17 @@ function canonicalReceipt(
 
 export class SolanaStrategyExecutionObservationService {
   readonly #packages: StrategyPackageProvider;
-  readonly #preparations: Pick<StrategyPreparationService, 'prepareByQuote'>;
+  readonly #journal: SolanaStrategyAuthorizationJournal;
   readonly #lanes: readonly SolanaTreasuryHedgeExecutionLane[];
 
   constructor(input: Readonly<{
     packages: StrategyPackageProvider;
-    preparations: Pick<StrategyPreparationService, 'prepareByQuote'>;
+    journal: SolanaStrategyAuthorizationJournal;
     lanes: readonly SolanaTreasuryHedgeExecutionLane[];
   }>) {
     requireCondition(input.lanes.length > 0, 'at least one execution lane is required');
     this.#packages = input.packages;
-    this.#preparations = input.preparations;
+    this.#journal = input.journal;
     this.#lanes = Object.freeze([...input.lanes]);
   }
 
@@ -234,33 +234,43 @@ export class SolanaStrategyExecutionObservationService {
     signature: string;
   }>): Promise<SolanaStrategyExecutionObservation | undefined> {
     const signature = canonicalSignature(input.signature);
-    const prepared = await this.#preparations.prepareByQuote(input.quoteHash);
-    if (prepared === undefined) return undefined;
     const documents = await this.#packages.getByQuote(input.quoteHash);
-    requireCondition(documents !== undefined, 'strategy package documents are unavailable');
-    requireCondition(documents.quoteHashHex === hex(input.quoteHash)
-      && documents.orderHashHex === hex(prepared.orderHash)
-      && documents.graphHashHex === hex(prepared.graphHash)
-      && documents.routeHashHex === hex(prepared.routeHash),
-    'strategy package documents differ from the prepared execution');
-    requireCondition(bytesEqual(prepared.quoteHash, input.quoteHash), 'preparation returned another quote');
-    const compiled = solanaStrategyExecutionEnvelope(prepared);
-    const expectedNextStateHash = prepared.identity.nextStateHash ?? new Uint8Array(32);
-    const lanes = this.#lanes.filter((lane) => sameDomain(lane.domain, compiled.domain));
-    requireCondition(lanes.length === 1, 'prepared domain does not resolve to exactly one execution lane');
+    if (documents === undefined) return undefined;
+    const candidates = await this.#journal.candidates(input.quoteHash);
+    requireCondition(candidates.length > 0, 'authorized execution snapshot is unavailable');
+    requireCondition(documents.route.domainPlans.length === 1,
+      'strategy route does not resolve to one domain');
+    const lanes = this.#lanes.filter((lane) => sameDomain(lane.domain, documents.route.domainPlans[0]!.domain));
+    requireCondition(lanes.length === 1, 'strategy domain does not resolve to exactly one execution lane');
     const lane = lanes[0]!;
     await requireSolanaDevnet(lane.reader);
     const transaction = await lane.reader.getTransactionObservation(signature);
     if (transaction.status !== 'FINALIZED') {
       return Object.freeze({ version: 1, status: transaction.status, signature });
     }
+    const authorized = candidates.flatMap((candidate) => {
+      try {
+        if (documents.quoteHashHex !== hex(candidate.quoteHash)
+          || documents.orderHashHex !== hex(candidate.orderHash)
+          || documents.graphHashHex !== hex(candidate.graphHash)
+          || documents.routeHashHex !== hex(candidate.routeHash)) return [];
+        const compiledCandidate = solanaStrategyExecutionEnvelope(candidate);
+        if (!sameDomain(compiledCandidate.domain, lane.domain)) return [];
+        const instruction = compiledCandidate.envelope.instruction;
+        const accounts = instruction.keys.map((account) => account.pubkey.toBase58());
+        const matches = transaction.instructions.filter((observed) =>
+          observed.programId === instruction.programId.toBase58()
+          && sameAddresses(observed.accounts, accounts)
+          && bytesEqual(observed.data, instruction.data));
+        return matches.length === 1 ? [{ prepared: candidate, compiled: compiledCandidate }] : [];
+      } catch {
+        return [];
+      }
+    });
+    requireCondition(authorized.length === 1, 'transaction does not match one authorized strategy instruction');
+    const { prepared, compiled } = authorized[0]!;
+    const expectedNextStateHash = prepared.identity.nextStateHash ?? new Uint8Array(32);
     const expectedInstruction = compiled.envelope.instruction;
-    const expectedAccounts = expectedInstruction.keys.map((account) => account.pubkey.toBase58());
-    const matches = transaction.instructions.filter((instruction) =>
-      instruction.programId === expectedInstruction.programId.toBase58()
-      && sameAddresses(instruction.accounts, expectedAccounts)
-      && bytesEqual(instruction.data, expectedInstruction.data));
-    requireCondition(matches.length === 1, 'transaction does not contain the exact prepared strategy instruction');
     const [account] = await lane.reader.getAccounts(
       [compiled.envelope.receipt.toBase58()],
       transaction.slot,

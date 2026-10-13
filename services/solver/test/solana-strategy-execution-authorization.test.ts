@@ -164,6 +164,7 @@ function lane(expectedSolver = solver.publicKey.toBase58(), sealed = true, stale
 test('returns a Devnet transaction signed only by the configured solver', async () => {
   const service = new SolanaStrategyExecutionAuthorizationService({
     preparations: { prepareByQuote: async () => prepared() },
+    journal: { record: async () => {}, candidates: async () => [] },
     lanes: [lane()],
     signer: {
       publicKey: solver.publicKey.toBase58(),
@@ -188,6 +189,7 @@ test('returns a Devnet transaction signed only by the configured solver', async 
 test('refuses to sign when the lane names another solver', async () => {
   const service = new SolanaStrategyExecutionAuthorizationService({
     preparations: { prepareByQuote: async () => prepared() },
+    journal: { record: async () => {}, candidates: async () => [] },
     lanes: [lane(key(19).toBase58())],
     signer: {
       publicKey: solver.publicKey.toBase58(),
@@ -200,6 +202,7 @@ test('refuses to sign when the lane names another solver', async () => {
 test('requires a sealed stage before signing and prepares owner-only upload instructions', async () => {
   const service = new SolanaStrategyExecutionAuthorizationService({
     preparations: { prepareByQuote: async () => prepared() },
+    journal: { record: async () => {}, candidates: async () => [] },
     lanes: [lane(solver.publicKey.toBase58(), false)],
     signer: {
       publicKey: solver.publicKey.toBase58(),
@@ -217,6 +220,7 @@ test('requires a sealed stage before signing and prepares owner-only upload inst
 test('returns an owner-signed cancel for a stale stage at the same nonce', async () => {
   const service = new SolanaStrategyExecutionAuthorizationService({
     preparations: { prepareByQuote: async () => prepared() },
+    journal: { record: async () => {}, candidates: async () => [] },
     lanes: [lane(solver.publicKey.toBase58(), true, true)],
     signer: {
       publicKey: solver.publicKey.toBase58(),

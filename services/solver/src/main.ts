@@ -87,6 +87,7 @@ import {
   loadSolanaTreasuryHedgeRuntime,
   SolanaTreasuryHedgePreparationContextResolver,
   SqliteSolanaStrategyPackageIdStore,
+  SqliteSolanaStrategyAuthorizationJournal,
   SolanaTreasuryHedgeProvisioningResolver,
   SolanaTreasuryHedgeProvisioningService,
   createSolanaTreasuryHedgeProvisioningInternalHandler,
@@ -360,6 +361,9 @@ const evmReverseBasisRuntime = evmReverseBasisRuntimePath === undefined || evmRe
 const solanaStrategyPackageIds = solanaTreasuryRuntimePath === undefined || solanaTreasuryRuntimePath === ''
   ? undefined
   : new SqliteSolanaStrategyPackageIdStore(config.quoteDbPath);
+const solanaStrategyAuthorizationJournal = solanaStrategyExecutionEnabled
+  ? new SqliteSolanaStrategyAuthorizationJournal(config.quoteDbPath)
+  : undefined;
 const solanaTreasuryRuntime = solanaTreasuryRuntimePath === undefined || solanaTreasuryRuntimePath === ''
   ? undefined
   : await loadSolanaTreasuryHedgeRuntime(absolutePath(
@@ -592,6 +596,7 @@ const solanaStrategyAuthorizationHandler = !solanaStrategyExecutionEnabled
         preparations: strategyPreparationService,
         lanes: solanaTreasuryRuntime.executionLanes,
         signer: solanaDevnetSolver.strategySigner,
+        journal: solanaStrategyAuthorizationJournal!,
       }),
     );
 const solanaStrategyObservationHandler = !solanaStrategyExecutionEnabled
@@ -601,7 +606,7 @@ const solanaStrategyObservationHandler = !solanaStrategyExecutionEnabled
   : createSolanaStrategyExecutionObservationInternalHandler(
       new SolanaStrategyExecutionObservationService({
         packages: strategyPackageProvider,
-        preparations: strategyPreparationService,
+        journal: solanaStrategyAuthorizationJournal!,
         lanes: solanaTreasuryRuntime.executionLanes,
       }),
     );
@@ -850,6 +855,7 @@ function shutdown(): void {
     generalizedQuoteStore?.close();
     evmStrategyPackageIds?.close();
     solanaStrategyPackageIds?.close();
+    solanaStrategyAuthorizationJournal?.close();
     sealedAuctionJournal?.close();
     residualRuntime?.close();
     baseResidualRuntime?.close();

@@ -149,6 +149,10 @@ export {
 } from './solana-treasury-hedge-preparation.js';
 export { SqliteSolanaStrategyPackageIdStore } from './solana-strategy-package-id-store.js';
 export {
+  SqliteSolanaStrategyAuthorizationJournal,
+  type SolanaStrategyAuthorizationJournal,
+} from './solana-strategy-authorization-journal.js';
+export {
   loadSolanaTreasuryHedgeRuntime,
   type SolanaTreasuryHedgeExecutionLane,
 } from './solana-treasury-hedge-config.js';

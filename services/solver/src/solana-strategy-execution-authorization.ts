@@ -9,6 +9,7 @@ import type { SolanaTreasuryHedgeExecutionLane } from './solana-treasury-hedge-c
 import { observeSolanaStrategyStage } from './solana-strategy-execution-stage.js';
 import type { PreparedStrategyExecutionTransport } from './strategy-execution-transport.js';
 import type { StrategyPreparationService } from './strategy-preparation-service.js';
+import type { SolanaStrategyAuthorizationJournal } from './solana-strategy-authorization-journal.js';
 
 export interface SolanaStrategyTransactionSigner {
   readonly publicKey: string;
@@ -168,16 +169,19 @@ export class SolanaStrategyExecutionAuthorizationService {
   readonly #preparations: Pick<StrategyPreparationService, 'prepareByQuote'>;
   readonly #lanes: readonly SolanaTreasuryHedgeExecutionLane[];
   readonly #signer: SolanaStrategyTransactionSigner;
+  readonly #journal: SolanaStrategyAuthorizationJournal;
 
   constructor(input: Readonly<{
     preparations: Pick<StrategyPreparationService, 'prepareByQuote'>;
     lanes: readonly SolanaTreasuryHedgeExecutionLane[];
     signer: SolanaStrategyTransactionSigner;
+    journal: SolanaStrategyAuthorizationJournal;
   }>) {
     requireCondition(input.lanes.length > 0, 'at least one execution lane is required');
     this.#preparations = input.preparations;
     this.#lanes = Object.freeze([...input.lanes]);
     this.#signer = input.signer;
+    this.#journal = input.journal;
   }
 
   async stage(quoteHash: Hash32): Promise<SolanaStrategyStagePreparation | undefined> {
@@ -262,6 +266,7 @@ export class SolanaStrategyExecutionAuthorizationService {
       requireCondition(index === solverIndex ? present : !present,
         index === solverIndex ? 'solver signature is absent' : 'transaction contains an unexpected signature');
     }
+    await this.#journal.record(prepared);
     return Object.freeze({
       version: 1,
       domain: materialized.domain,
