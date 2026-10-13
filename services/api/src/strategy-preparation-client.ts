@@ -7,7 +7,7 @@ import {
 } from '@naryx/protocol-types';
 
 const MAX_RESPONSE_BYTES = 2_097_152;
-const TIMEOUT_MS = 10_000;
+const TIMEOUT_MS = 30_000;
 
 export interface GeneralizedStrategyPreparation {
   readonly version: 1;

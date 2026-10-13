@@ -380,7 +380,7 @@ export class HttpSolanaStrategyExecutionAuthorizationClient implements SolanaStr
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ quoteHash: quoteHashValue }),
       redirect: 'error',
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(30_000),
     });
     if (response.status === 404) {
       throw new SolanaStrategyExecutionAuthorizationClientError('NOT_FOUND', 'Strategy package was not found');
@@ -408,7 +408,7 @@ export class HttpSolanaStrategyExecutionAuthorizationClient implements SolanaStr
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ quoteHash: quoteHashValue }),
       redirect: 'error',
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(30_000),
     });
     if (response.status === 404) {
       throw new SolanaStrategyExecutionAuthorizationClientError('NOT_FOUND', 'Strategy package was not found');

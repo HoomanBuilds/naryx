@@ -187,7 +187,7 @@ export class HttpSolanaTreasuryHedgeProvisioningClient implements SolanaTreasury
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ orderHash: orderHashHex, ...(quoteHashHex === undefined ? {} : { quoteHash: quoteHashHex }) }),
       redirect: 'error',
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(30_000),
     });
     if (response.status === 404) throw new SolanaTreasuryHedgeProvisioningClientError('NOT_FOUND', 'Strategy order was not found');
     if (!response.ok) throw new SolanaTreasuryHedgeProvisioningClientError('UPSTREAM_REJECTED', `provisioning failed with HTTP ${response.status}`);
