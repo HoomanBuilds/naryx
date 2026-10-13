@@ -48,7 +48,7 @@ function deployment(): ArbitrumSepoliaAsyncDeploymentConfiguration {
     manifestVersion: 1, environment: "testnet", domainId: "eip155:421614",
     runtimeClassId: EVM_RUNTIME_IDENTITY.runtimeClassId, runtimeClassVersion: EVM_RUNTIME_IDENTITY.runtimeClassVersion,
     chainNamespace: EVM_RUNTIME_IDENTITY.chainNamespace, chainReference: "421614",
-    executionVerifierId: EVM_RUNTIME_IDENTITY.executionVerifierId, executionVerifierCodeHash: hash(70),
+    executionVerifierId: "async-bonded-package-coordinator-v1", executionVerifierCodeHash: hash(70),
     clockModelId: EVM_RUNTIME_IDENTITY.clockModelId, finalityPolicyHash: hash(71),
     addressCodecId: EVM_RUNTIME_IDENTITY.addressCodecId, supportedSettlementClasses: ["ASYNC_BONDED_SOLVER"],
   });

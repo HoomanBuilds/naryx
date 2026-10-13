@@ -48,7 +48,7 @@ function deployment(): ArbitrumSepoliaAsyncDeploymentConfiguration {
     runtimeClassVersion: EVM_RUNTIME_IDENTITY.runtimeClassVersion,
     chainNamespace: EVM_RUNTIME_IDENTITY.chainNamespace,
     chainReference: "421614",
-    executionVerifierId: EVM_RUNTIME_IDENTITY.executionVerifierId,
+    executionVerifierId: "async-bonded-package-coordinator-v1",
     executionVerifierCodeHash: hash(70),
     clockModelId: EVM_RUNTIME_IDENTITY.clockModelId,
     finalityPolicyHash: hash(71),
