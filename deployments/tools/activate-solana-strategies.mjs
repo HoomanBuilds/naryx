@@ -48,6 +48,14 @@ const domain = protocol.domainRef(
   domainManifest.manifestVersion,
   protocol.domainManifestHash(domainManifest),
 );
+const addImmutable = (entries, candidate, identity) => {
+  const existing = entries.find((value) => identity(value) === identity(candidate));
+  if (existing === undefined) return [...entries, candidate];
+  if (protocol.stringifyProtocolJson(existing) !== protocol.stringifyProtocolJson(candidate)) {
+    throw new Error(`Solana strategy activation conflicts with ${identity(candidate)}`);
+  }
+  return entries;
+};
 const inventoryAsset = protocol.assetRef(
   legacySolver.resources.baseAsset.subjectAddress,
   legacySolver.resources.baseAsset.manifestHash,
@@ -68,20 +76,29 @@ const hedgeAdapter = protocol.adapterRef({
   adapterManifestVersion: 1,
   adapterManifestHash: digest('solana-devnet/adapter/perpetual'),
 });
-const template = bootstrap.packageTemplateManifests.find((value) =>
-  value.templateId === 'treasury-inventory-hedge-v1'
-  && value.supportedDomains.some((candidate) => candidate.domainId === domain.domainId));
-if (template === undefined) throw new Error('combined treasury hedge template does not support Solana Devnet');
+const previousTemplate = bootstrap.packageTemplateManifests.find((value) =>
+  value.templateId === 'treasury-inventory-hedge-v1' && value.templateVersion === 1);
+if (previousTemplate === undefined) throw new Error('combined treasury hedge template is missing');
+const template = protocol.packageTemplateManifest({
+  ...previousTemplate,
+  templateVersion: 2,
+  supportedDomains: previousTemplate.supportedDomains.map((value) =>
+    value.domainId === domain.domainId ? domain : value),
+});
+if (!template.supportedDomains.some((value) => value.domainId === domain.domainId
+  && value.domainManifestVersion === domain.domainManifestVersion)) {
+  throw new Error('combined treasury hedge template does not support the current Solana Devnet domain');
+}
 const templateHash = protocol.packageTemplateManifestHash(template);
 const venue = protocol.versionedManifestRef('venue:solana-devnet:treasury', 1, digest('solana-devnet/venue/treasury'));
 const inventoryMarket = protocol.versionedManifestRef('market:solana-devnet:inventory', 1, digest('solana-devnet/market/inventory'));
 const hedgeMarket = protocol.versionedManifestRef('market:solana-devnet:perpetual', 1, digest('solana-devnet/market/perpetual'));
 const definition = protocol.requireStrategyTemplateDefinition('treasury-inventory-hedge-v1');
 const series = {
-  seriesVersion: 2,
+  seriesVersion: 3,
   seriesId: 'solana-devnet-treasury-hedge-series',
   templateId: 'treasury-inventory-hedge-v1',
-  templateVersion: 1,
+  templateVersion: template.templateVersion,
   templateManifestHash: templateHash,
   underlyingRefs: [inventoryAsset.assetId, inventoryAsset.assetId],
   quoteAsset: quoteAsset.assetId,
@@ -102,7 +119,7 @@ const seriesSupport = {
 const matchingPolicy = protocol.packageMatchingPolicy({
   matchingPolicyVersion: 1,
   environment: 'testnet',
-  executionClassId: 'solana-devnet-treasury-hedge-atomic',
+  executionClassId: `solana-devnet-treasury-hedge-domain-${domain.domainManifestVersion}-atomic`,
   allocationRule: 'PRICE_TIME',
   directVersusImpliedPriority: 'DIRECT_FIRST',
   selfMatchPolicy: 'CANCEL_INCOMING',
@@ -123,7 +140,7 @@ const executionClass = {
   executionClassVersion: 1,
   executionClassId: matchingPolicy.executionClassId,
   seriesId: series.seriesId,
-  seriesVersion: 2,
+  seriesVersion: series.seriesVersion,
   seriesManifestHash,
   domains: [domain],
   venueClasses: ['naryx-solana-treasury-v1'],
@@ -202,16 +219,16 @@ const profile = {
   profileId: 'solana-devnet-treasury-hedge',
   displayName: 'Solana Devnet treasury hedge',
   templateId: 'treasury-inventory-hedge-v1',
-  templateVersion: 1,
+  templateVersion: template.templateVersion,
   packageTemplateManifestHash: templateHash,
   seriesId: series.seriesId,
-  seriesVersion: 2,
+  seriesVersion: series.seriesVersion,
   seriesManifestHash,
   executionClassId: executionClass.executionClassId,
   executionClassVersion: 1,
   executionClassManifestHash,
   domain,
-  multiStrategyProgramId: release.programs.multiStrategy.programId,
+  multiStrategyProgramId: programRecord('multi_strategy').programId,
   inventoryAsset,
   quoteAsset,
   inventory: { adapter: inventoryAdapter, venue, market: inventoryMarket },
@@ -240,7 +257,7 @@ const lane = {
   quoteMint: quoteAsset.assetId,
   marketAddress: legacyRuntime.testPerp.market,
   oracleAddress: legacyRuntime.testPerp.oracle,
-  testPerpProgramId: release.programs.testPerp.programId,
+  testPerpProgramId: programRecord('perp_venue').programId,
   inventory: profile.inventory,
   hedge: profile.hedge,
   protocolFeeBps: 0,
@@ -251,23 +268,23 @@ const lane = {
   routeTtlSlots: 600n,
   quoteTtlSlots: 600n,
   maximumStateAdvanceSlots: 150n,
-  coreProgramId: release.programs.core.programId,
-  multiStrategyProgramId: release.programs.multiStrategy.programId,
+  coreProgramId: programRecord('core').programId,
+  multiStrategyProgramId: programRecord('multi_strategy').programId,
   settlementManifestHash: legacySolver.series.settlementClassIdentityHash,
   solver: legacySolver.solverId,
   protocolFeeRecipient: release.upgradeAuthority,
   quoteAssetSubjectId: resourceSubjectId('ASSET', quoteAsset.assetId),
   adapters: [{
     role: 'inventory-position',
-    programId: release.programs.inventoryAdapter.programId,
-    programDataAddress: release.programs.inventoryAdapter.programDataAddress,
+    programId: programRecord('inventory_adapter').programId,
+    programDataAddress: programRecord('inventory_adapter').programDataAddress,
     expectedProgramDataHash: bytes(programRecord('inventory_adapter').programDataHeaderIdentity),
     adapterSubjectId: resourceSubjectId('ADAPTER', inventoryAdapter.adapterId),
     maximumComputeUnitLimit: 400_000,
   }, {
     role: 'treasury-hedge',
-    programId: release.programs.testPerpAdapter.programId,
-    programDataAddress: release.programs.testPerpAdapter.programDataAddress,
+    programId: programRecord('perp_adapter').programId,
+    programDataAddress: programRecord('perp_adapter').programDataAddress,
     expectedProgramDataHash: bytes(programRecord('perp_adapter').programDataHeaderIdentity),
     adapterSubjectId: resourceSubjectId('ADAPTER', hedgeAdapter.adapterId),
     maximumComputeUnitLimit: 600_000,
@@ -287,16 +304,30 @@ writeProtocol('api/solana-treasury-hedge-order-profiles.json', { version: 1, env
 writeProtocol('solver/solana-treasury-hedge-runtime.json', { version: 1, environment: 'testnet', rpcUrl, lanes: [lane] });
 writeProtocol('api/public-market-bootstrap.json', {
   ...bootstrap,
-  matchingPolicies: [...bootstrap.matchingPolicies, matchingPolicy],
-  series: [...bootstrap.series, series],
-  executionClasses: [...bootstrap.executionClasses, executionClass],
-  books: [...bootstrap.books, { executionClassId: executionClass.executionClassId, executionClassVersion: 1 }],
+  domainManifests: addImmutable(bootstrap.domainManifests, domainManifest,
+    (value) => `${value.domainId}:${value.manifestVersion}`),
+  packageTemplateManifests: addImmutable(bootstrap.packageTemplateManifests, template,
+    (value) => `${value.templateId}:${value.templateVersion}`),
+  matchingPolicies: addImmutable(bootstrap.matchingPolicies, matchingPolicy,
+    (value) => value.executionClassId),
+  series: addImmutable(bootstrap.series, series,
+    (value) => `${value.seriesId}:${value.seriesVersion}`),
+  executionClasses: addImmutable(bootstrap.executionClasses, executionClass,
+    (value) => `${value.executionClassId}:${value.executionClassVersion}`),
+  books: addImmutable(bootstrap.books,
+    { executionClassId: executionClass.executionClassId, executionClassVersion: 1 },
+    (value) => value.executionClassId),
 });
 writeProtocol('api/public-market-support.json', { ...marketSupport, seriesSupport, executionClassSupport });
 writeProtocol('api/public-graph-context.json', {
   ...graphContext,
-  activeRegistryRecords: [...graphContext.activeRegistryRecords, ...activeRegistryRecords],
-  resourceLimits: [...graphContext.resourceLimits, { domainId: domain.domainId, maximumActionsPerTransaction: 8 }],
+  activeRegistryRecords: activeRegistryRecords.reduce((entries, record) =>
+    addImmutable(entries, record, (value) =>
+      `${value.domain.domainId}:${value.domain.domainManifestVersion}:${value.recordKind}:${value.subjectId}`),
+  graphContext.activeRegistryRecords),
+  resourceLimits: addImmutable(graphContext.resourceLimits,
+    { domainId: domain.domainId, maximumActionsPerTransaction: 8 },
+    (value) => value.domainId),
 });
 writeFileSync(join(output, 'solana-strategy-activation.json'), `${JSON.stringify({
   version: 1,
