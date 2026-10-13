@@ -75,6 +75,11 @@ export function createGeneralizedStrategyQuoteInternalHandler(
           : error.code === 'IDEMPOTENCY_CONFLICT' || error.code === 'QUOTE_DECLINED' ? 409 : 400;
         return reject(response, status, error.code, error.message);
       }
+      const shortMessage = error instanceof Error && 'shortMessage' in error
+        && typeof error.shortMessage === 'string' ? error.shortMessage : undefined;
+      const detail = error instanceof Error && error.constructor === Error ? error.message : shortMessage;
+      const safeDetail = detail?.replace(/https?:\/\/\S+/g, '[redacted-url]').slice(0, 240);
+      console.error(`Strategy quote failed: ${error instanceof Error ? error.name : typeof error}${safeDetail === undefined ? '' : `: ${safeDetail}`}`);
       return reject(response, 502, 'QUOTE_FAILED', 'Strategy quote failed closed.');
     }
   };
