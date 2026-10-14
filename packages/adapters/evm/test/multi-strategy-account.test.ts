@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import type { CompiledStrategyExecution } from '@naryx/adapter-core';
 import {
@@ -22,6 +23,7 @@ import {
   parseAbiParameters,
   stringToHex,
   type Address,
+  type Abi,
   type Hex,
 } from 'viem';
 import {
@@ -51,6 +53,7 @@ const HASH_D = `0x${'44'.repeat(32)}` as Hex;
 const HASH_E = `0x${'55'.repeat(32)}` as Hex;
 const HASH_F = `0x${'66'.repeat(32)}` as Hex;
 const ZERO_HASH = `0x${'00'.repeat(32)}` as Hex;
+const deployedAccountAbi = JSON.parse(readFileSync(new URL('../../../../../deployments/evm/conformance/abi/NaryxMultiStrategyAccount.abi.json', import.meta.url), 'utf8')) as Abi;
 
 function bytes(value: Hex): Hash32 {
   return hash32(hexToBytes(value));
@@ -112,6 +115,20 @@ function input() {
     templateManifestHash: HASH_A,
     nextStateHash: HASH_B,
     totalGrossNotionalAtoms: 100_000_000n,
+    risk: {
+      riskDomainId: HASH_A,
+      policyVersion: 1,
+      policyManifestHash: HASH_B,
+      series: { seriesId: HASH_C, manifestVersion: 1, manifestHash: HASH_D },
+      accountingToken: TOKEN,
+      grossQuoteAtoms: 100_000_000n,
+      netQuoteAtoms: 100_000_000n,
+      marginQuoteAtoms: 50_000_000n,
+      reservedRecoveryQuoteAtoms: 1_000_000n,
+      observationAgeMs: 1_000n,
+      timeToUnwindMs: 60_000n,
+      dependencyExposures: [{ dependencyId: HASH_C, grossQuoteAtoms: 100_000_000n }],
+    },
     fees: {
       policyVersion: 1,
       policyManifestHash: HASH_C,
@@ -194,42 +211,11 @@ test('binds a compiled atomic strategy plan to the multi-strategy account signat
     solverSignature: '0x0304',
   });
   const decoded = decodeFunctionData({
-    abi: [{
-      type: 'function',
-      name: 'execute',
-      stateMutability: 'nonpayable',
-      inputs: [
-        { name: 'execution', type: 'tuple', components: [
-          { name: 'domainIdHash', type: 'bytes32' }, { name: 'domainManifestVersion', type: 'uint32' },
-          { name: 'domainManifestHash', type: 'bytes32' }, { name: 'packageId', type: 'bytes32' },
-          { name: 'orderHash', type: 'bytes32' }, { name: 'graphHash', type: 'bytes32' },
-          { name: 'quoteHash', type: 'bytes32' }, { name: 'routeHash', type: 'bytes32' },
-          { name: 'template', type: 'tuple', components: [{ name: 'templateId', type: 'bytes32' }, { name: 'templateVersion', type: 'uint32' }, { name: 'templateManifestHash', type: 'bytes32' }] },
-          { name: 'settlementClass', type: 'tuple', components: [{ name: 'classId', type: 'bytes32' }, { name: 'classVersion', type: 'uint32' }] },
-          { name: 'operation', type: 'uint8' }, { name: 'previousStateHash', type: 'bytes32' },
-          { name: 'nextStateHash', type: 'bytes32' }, { name: 'totalGrossNotionalAtoms', type: 'uint256' },
-          { name: 'fees', type: 'tuple', components: [
-            { name: 'policyVersion', type: 'uint32' }, { name: 'policyManifestHash', type: 'bytes32' },
-            { name: 'token', type: 'address' }, { name: 'protocolFeeAtoms', type: 'uint256' },
-            { name: 'solverFeeAtoms', type: 'uint256' },
-          ] },
-          { name: 'solver', type: 'address' }, { name: 'nonce', type: 'uint256' }, { name: 'deadline', type: 'uint256' },
-        ] },
-        { name: 'calls', type: 'tuple[]', components: [
-          { name: 'adapter', type: 'tuple', components: [{ name: 'subjectId', type: 'bytes32' }, { name: 'manifestVersion', type: 'uint32' }, { name: 'manifestHash', type: 'bytes32' }] },
-          { name: 'target', type: 'address' },
-          { name: 'stage', type: 'uint8' }, { name: 'riskIncreasing', type: 'bool' },
-          { name: 'approvalToken', type: 'address' }, { name: 'approvalAtoms', type: 'uint256' },
-          { name: 'grossNotionalAtoms', type: 'uint256' }, { name: 'gasLimit', type: 'uint256' },
-          { name: 'payload', type: 'bytes' },
-        ] },
-        { name: 'ownerSignature', type: 'bytes' }, { name: 'solverSignature', type: 'bytes' },
-      ],
-      outputs: [{ name: 'receiptHash', type: 'bytes32' }],
-    }],
+    abi: deployedAccountAbi,
     data: encoded,
   });
   assert.equal(decoded.functionName, 'execute');
+  assert.equal(encoded.slice(0, 10), '0x131c6948');
 });
 
 test('rejects an adapter identity policy that does not match the compiled call', () => {
@@ -241,6 +227,41 @@ test('rejects an adapter identity policy that does not match the compiled call',
     }),
     /adapter address mismatch/,
   );
+});
+
+test('rejects risk terms that omit or understate the increasing adapter', () => {
+  const candidate = input();
+  assert.throws(() => compileEvmMultiStrategyAccountEnvelope({
+    ...candidate,
+    risk: { ...candidate.risk, dependencyExposures: [{ dependencyId: HASH_D, grossQuoteAtoms: 100_000_000n }] },
+  }), /risk dependency does not cover/);
+  assert.throws(() => compileEvmMultiStrategyAccountEnvelope({
+    ...candidate,
+    risk: { ...candidate.risk, dependencyExposures: [{ dependencyId: HASH_C, grossQuoteAtoms: 99_999_999n }] },
+  }), /risk dependency does not cover/);
+});
+
+test('requires aggregate exposure when two calls share one adapter identity', () => {
+  const candidate = input();
+  const first = candidate.compiled.payload.stages[0]!.calls[0]!;
+  const second = { ...first, legId: 'funding-second' };
+  assert.throws(() => compileEvmMultiStrategyAccountEnvelope({
+    ...candidate,
+    compiled: {
+      ...candidate.compiled,
+      payload: {
+        ...candidate.compiled.payload,
+        stages: [{ stage: 0, calls: [first, second] }],
+      },
+    },
+    totalGrossNotionalAtoms: 200_000_000n,
+    risk: {
+      ...candidate.risk,
+      grossQuoteAtoms: 200_000_000n,
+      dependencyExposures: [{ dependencyId: HASH_C, grossQuoteAtoms: 150_000_000n }],
+    },
+    callPolicies: [...candidate.callPolicies, { ...candidate.callPolicies[0]!, legId: 'funding-second' }],
+  }), /risk dependency does not cover increasing calls/);
 });
 
 test('binds a final allocation authorization to exact EVM execution calldata', () => {
@@ -259,10 +280,7 @@ test('binds a final allocation authorization to exact EVM execution calldata', (
     ownerSignature: '0x0102',
     solverSignature: '0x0304',
   });
-  assert.equal(
-    encoded.slice(0, 10),
-    keccak256(stringToHex('executeNettingAllocation((bytes32,uint32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,(bytes32,uint32,bytes32),(bytes32,uint32),uint8,bytes32,bytes32,uint256,(uint32,bytes32,address,uint256,uint256),address,uint256,uint256),((bytes32,uint32,bytes32),address,uint8,bool,address,uint256,uint256,uint256,bytes)[],bytes32,bytes,bytes)')).slice(0, 10),
-  );
+  assert.equal(decodeFunctionData({ abi: deployedAccountAbi, data: encoded }).functionName, 'executeNettingAllocation');
 });
 
 test('rejects a netting authorization for another call plan', () => {
@@ -382,8 +400,5 @@ test('encodes owner-only recovery for a fully risk-reducing plan', () => {
     callPolicies: [{ ...candidate.callPolicies[0]!, riskIncreasing: false }],
   });
   const encoded = encodeEvmMultiStrategyAccountRecovery({ envelope, ownerSignature: '0x0102' });
-  assert.equal(
-    encoded.slice(0, 10),
-    keccak256(stringToHex('executeRecovery((bytes32,uint32,bytes32,bytes32,bytes32,bytes32,bytes32,bytes32,(bytes32,uint32,bytes32),(bytes32,uint32),uint8,bytes32,bytes32,uint256,(uint32,bytes32,address,uint256,uint256),address,uint256,uint256),((bytes32,uint32,bytes32),address,uint8,bool,address,uint256,uint256,uint256,bytes)[],bytes)')).slice(0, 10),
-  );
+  assert.equal(decodeFunctionData({ abi: deployedAccountAbi, data: encoded }).functionName, 'executeRecovery');
 });

@@ -36,6 +36,7 @@ import {
   type EvmOptionSpreadRole,
 } from './evm-option-spread-quote.js';
 import { createEvmStrategyDomainCompiler } from './strategy-domain-compilers.js';
+import { evmTestnetRiskTerms } from './evm-risk-terms.js';
 import type { StoredStrategyPackageDocuments } from './http-strategy-package-provider.js';
 import type {
   StrategyPreparationContext,
@@ -445,6 +446,17 @@ export class EvmOptionSpreadPreparationContextResolver implements StrategyPrepar
     const deadline = [documents.order.expiryValue, documents.quote.validUntilValue, documents.route.routeExpiryValue]
       .reduce((minimum, value) => value < minimum ? value : minimum);
     requireCondition(currentTime < deadline, 'order, quote, or route has expired');
+    const callPolicies = Object.freeze([
+      policy(longAdapter, opening ? longPremium : 0n, longNotional),
+      policy(shortAdapter, opening ? quantity : shortPremium, shortNotional),
+    ]);
+    const risk = await evmTestnetRiskTerms({
+      chain, chainId: lane.pricing.chainId, templateId: documents.order.templateId,
+      account, accountingToken: getAddress(lane.pricing.quoteToken.address),
+      totalGrossNotionalAtoms: longNotional + shortNotional,
+      marginQuoteAtoms: documents.quote.totalMarginDelta.atoms,
+      riskIncreasing: opening, callPolicies,
+    });
     return Object.freeze({
       compileContext: Object.freeze({
         templateManifest: lane.templateManifest,
@@ -479,6 +491,7 @@ export class EvmOptionSpreadPreparationContextResolver implements StrategyPrepar
         chainId: Number(lane.pricing.chainId),
         solver: getAddress(lane.solver),
         totalGrossNotionalAtoms: longNotional + shortNotional,
+        risk,
         feePolicyVersion: documents.quote.feePolicyVersion,
         feePolicyManifestHash: toHex(documents.quote.feePolicyManifestHash),
         feeToken: getAddress(lane.pricing.quoteToken.address),
@@ -486,10 +499,7 @@ export class EvmOptionSpreadPreparationContextResolver implements StrategyPrepar
         solverFeeAtoms: charge(documents, 'SOLVER'),
         nonce: accountState.nonce,
         deadline,
-        callPolicies: Object.freeze([
-          policy(longAdapter, opening ? longPremium : 0n, longNotional),
-          policy(shortAdapter, opening ? quantity : shortPremium, shortNotional),
-        ]),
+        callPolicies,
       }]),
     });
   }

@@ -129,6 +129,7 @@ class Chain implements EvmOptionSpreadReadPort {
     }
     if (request.address === LENDING_ADAPTER && request.functionName === 'managedCollateralPrincipalAtoms') return 0n;
     if (request.address === QUOTE && request.functionName === 'allowance') return 0n;
+    if (request.address === QUOTE && request.functionName === 'balanceOf') return 1_000_000_000n;
     if (request.address === HEDGE_ADAPTER && request.functionName === 'position') return [0n, 0n, 0n, 0n, 0n];
     if (request.address === SPOT_FACTORY && request.functionName === 'getPool') return SPOT_POOL;
     if (request.address === SPOT_POOL) {
@@ -304,6 +305,7 @@ function documents(): StoredStrategyPackageDocuments {
     order,
     graph,
     quote: {
+      totalMarginDelta: amount(170_300_000n),
       serviceCharges: [{ category: 'PROTOCOL', amount: amount(49_500n) }, { category: 'SOLVER', amount: amount(49_500n) }],
       legEconomics: [
         { legId: 'base-borrow', grossNotional: amount(100_000_000n), marginDelta: amount(150_000_000n) },

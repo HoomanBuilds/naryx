@@ -113,6 +113,14 @@ async function fixture() {
     previousStateHash: hex('0'),
     nextStateHash: hex('7'),
     totalGrossNotionalAtoms: 1_000n,
+    risk: {
+      riskDomainId: hex('1'), policyVersion: 1, policyManifestHash: hex('2'),
+      series: { seriesId: hex('3'), manifestVersion: 1, manifestHash: hex('4') },
+      accountingToken: address('5'), grossQuoteAtoms: 1_000n, netQuoteAtoms: 1_000n,
+      marginQuoteAtoms: 1_000n, reservedRecoveryQuoteAtoms: 1_000n,
+      observationAgeMs: 0n, timeToUnwindMs: 60_000n,
+      dependencyExposures: [{ dependencyId: hex('9'), grossQuoteAtoms: 1_000n }],
+    },
     fees: {
       policyVersion: 1,
       policyManifestHash: hex('8'),

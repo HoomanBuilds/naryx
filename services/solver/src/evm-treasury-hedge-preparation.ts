@@ -34,6 +34,7 @@ import {
 import type { EvmOptionSpreadContractIdentity } from './evm-option-spread-quote.js';
 import type { EvmOptionSpreadPackageIdPort } from './evm-option-spread-preparation.js';
 import { createEvmStrategyDomainCompiler } from './strategy-domain-compilers.js';
+import { evmTestnetRiskTerms } from './evm-risk-terms.js';
 import type { StoredStrategyPackageDocuments } from './http-strategy-package-provider.js';
 import type { StrategyPreparationContext, StrategyPreparationContextResolver } from './strategy-preparation-service.js';
 
@@ -570,6 +571,27 @@ export class EvmTreasuryHedgePreparationContextResolver implements StrategyPrepa
     const deadline = [documents.order.expiryValue, documents.quote.validUntilValue, documents.route.routeExpiryValue]
       .reduce((minimum, candidate) => candidate < minimum ? candidate : minimum);
     requireCondition(currentTime < deadline, 'order, quote, or route expired');
+    const callPolicies = Object.freeze([
+      policy(
+        inventoryAdapter,
+        increasing ? getAddress(lane.pricing.inventoryToken.address) : undefined,
+        increasing ? quantity : 0n,
+        inventoryEconomics.grossNotional.atoms,
+      ),
+      policy(
+        hedgeAdapter,
+        increasing ? getAddress(lane.pricing.quoteToken.address) : undefined,
+        collateralInAtoms,
+        quotedHedge.grossNotional.atoms,
+      ),
+    ]);
+    const risk = await evmTestnetRiskTerms({
+      chain, chainId: lane.pricing.chainId, templateId: documents.order.templateId,
+      account, accountingToken: getAddress(lane.pricing.quoteToken.address),
+      totalGrossNotionalAtoms: inventoryEconomics.grossNotional.atoms + quotedHedge.grossNotional.atoms,
+      marginQuoteAtoms: documents.quote.totalMarginDelta.atoms,
+      riskIncreasing: increasing, callPolicies,
+    });
     return Object.freeze({
       compileContext: Object.freeze({
         templateManifest: lane.templateManifest,
@@ -601,6 +623,7 @@ export class EvmTreasuryHedgePreparationContextResolver implements StrategyPrepa
         chainId: Number(lane.pricing.chainId),
         solver: getAddress(lane.solver),
         totalGrossNotionalAtoms: inventoryEconomics.grossNotional.atoms + quotedHedge.grossNotional.atoms,
+        risk,
         feePolicyVersion: documents.quote.feePolicyVersion,
         feePolicyManifestHash: toHex(documents.quote.feePolicyManifestHash),
         feeToken: getAddress(lane.pricing.quoteToken.address),
@@ -608,20 +631,7 @@ export class EvmTreasuryHedgePreparationContextResolver implements StrategyPrepa
         solverFeeAtoms: charge(documents, 'SOLVER'),
         nonce: natural(nonceValue, 'account nonce'),
         deadline,
-        callPolicies: Object.freeze([
-          policy(
-            inventoryAdapter,
-            increasing ? getAddress(lane.pricing.inventoryToken.address) : undefined,
-            increasing ? quantity : 0n,
-            inventoryEconomics.grossNotional.atoms,
-          ),
-          policy(
-            hedgeAdapter,
-            increasing ? getAddress(lane.pricing.quoteToken.address) : undefined,
-            collateralInAtoms,
-            quotedHedge.grossNotional.atoms,
-          ),
-        ]),
+        callPolicies,
       }]),
     });
   }

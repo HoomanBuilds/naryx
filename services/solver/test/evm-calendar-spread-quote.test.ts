@@ -167,6 +167,7 @@ class Chain implements EvmOptionSpreadReadPort {
     args?: readonly unknown[];
   }>): Promise<unknown> {
     const target = request.address.toLowerCase();
+    if (target === QUOTE_TOKEN.toLowerCase() && request.functionName === 'balanceOf') return 1_000_000_000n;
     if (target === NEAR_MARKET.toLowerCase() || target === FAR_MARKET.toLowerCase()) {
       const near = target === NEAR_MARKET.toLowerCase();
       switch (request.functionName) {

@@ -39,6 +39,7 @@ import type { EvmOptionSpreadContractIdentity } from './evm-option-spread-quote.
 import type { EvmOptionSpreadPackageIdPort } from './evm-option-spread-preparation.js';
 import { readEvmTreasuryHedgeMarketSnapshot } from './evm-treasury-hedge-quote.js';
 import { createEvmStrategyDomainCompiler } from './strategy-domain-compilers.js';
+import { evmTestnetRiskTerms } from './evm-risk-terms.js';
 import type { StrategyPreparationContext, StrategyPreparationContextResolver } from './strategy-preparation-service.js';
 
 const WAD = 10n ** 18n;
@@ -576,6 +577,21 @@ export class EvmCollateralConversionPreparationContextResolver implements Strate
         + (documents.graph.legs.find((leg) => leg.legId === 'collateral-swap')!.limitPrice!.quoteAtoms * quantity
           % documents.graph.legs.find((leg) => leg.legId === 'collateral-swap')!.limitPrice!.baseAtoms === 0n ? 0n : 1n)
       : quantity;
+    const callPolicies = Object.freeze([
+      policy(swapAdapter, getAddress(increasing ? lane.pricing.quoteToken.address : lane.pricing.collateralToken.address),
+        swapApproval, quotedSwap.grossNotional.atoms),
+      policy(lendingAdapter, increasing ? getAddress(lane.pricing.collateralToken.address) : undefined,
+        increasing ? quantity : 0n, quotedTransfer.grossNotional.atoms),
+      policy(hedgeAdapter, increasing ? getAddress(lane.pricing.quoteToken.address) : undefined,
+        marginAtoms, quotedHedge.grossNotional.atoms),
+    ]);
+    const risk = await evmTestnetRiskTerms({
+      chain, chainId: lane.pricing.chainId, templateId: documents.order.templateId,
+      account, accountingToken: getAddress(lane.pricing.quoteToken.address),
+      totalGrossNotionalAtoms: quotedSwap.grossNotional.atoms + quotedTransfer.grossNotional.atoms + quotedHedge.grossNotional.atoms,
+      marginQuoteAtoms: documents.quote.totalMarginDelta.atoms,
+      riskIncreasing: increasing, callPolicies,
+    });
     return Object.freeze({
       compileContext: Object.freeze({ templateManifest: lane.templateManifest,
         activeRegistryRecords: lane.activeRegistryRecords, resourceLimits: lane.resourceLimits,
@@ -591,17 +607,11 @@ export class EvmCollateralConversionPreparationContextResolver implements Strate
         kind: 'EVM_MULTI_STRATEGY_ACCOUNT' as const, domain: lane.pricing.domain, account,
         chainId: Number(lane.pricing.chainId), solver: getAddress(lane.solver),
         totalGrossNotionalAtoms: quotedSwap.grossNotional.atoms + quotedTransfer.grossNotional.atoms + quotedHedge.grossNotional.atoms,
+        risk,
         feePolicyVersion: documents.quote.feePolicyVersion, feePolicyManifestHash: toHex(documents.quote.feePolicyManifestHash),
         feeToken: getAddress(lane.pricing.quoteToken.address), protocolFeeAtoms: charge(documents, 'PROTOCOL'),
         solverFeeAtoms: charge(documents, 'SOLVER'), nonce: natural(nonceValue, 'account nonce'), deadline,
-        callPolicies: Object.freeze([
-          policy(swapAdapter, getAddress(increasing ? lane.pricing.quoteToken.address : lane.pricing.collateralToken.address),
-            swapApproval, quotedSwap.grossNotional.atoms),
-          policy(lendingAdapter, increasing ? getAddress(lane.pricing.collateralToken.address) : undefined,
-            increasing ? quantity : 0n, quotedTransfer.grossNotional.atoms),
-          policy(hedgeAdapter, increasing ? getAddress(lane.pricing.quoteToken.address) : undefined,
-            marginAtoms, quotedHedge.grossNotional.atoms),
-        ]),
+        callPolicies,
       }]),
     });
   }

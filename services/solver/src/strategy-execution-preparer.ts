@@ -4,6 +4,7 @@ import {
   type EvmMultiStrategyAccountEnvelope,
   type EvmStrategyCallPolicy,
   type EvmStrategyExecutionPlan,
+  type EvmStrategyRiskTerms,
 } from '@naryx/adapter-evm';
 import type {
   HyperliquidStrategyExecutionPlan,
@@ -60,6 +61,7 @@ export interface EvmStrategyAccountBinding {
   readonly chainId: number;
   readonly solver: Address;
   readonly totalGrossNotionalAtoms: bigint;
+  readonly risk: EvmStrategyRiskTerms;
   readonly feePolicyVersion: number;
   readonly feePolicyManifestHash: Hex;
   readonly feeToken: Address;
@@ -228,6 +230,7 @@ function prepareEvmAccount(
     ...(identity.previousStateHash === undefined ? {} : { previousStateHash: hexHash(identity.previousStateHash, 'previous state hash') }),
     ...(identity.nextStateHash === undefined ? {} : { nextStateHash: hexHash(identity.nextStateHash, 'next state hash') }),
     totalGrossNotionalAtoms: binding.totalGrossNotionalAtoms,
+    risk: binding.risk,
     fees: {
       policyVersion: binding.feePolicyVersion,
       policyManifestHash: binding.feePolicyManifestHash,

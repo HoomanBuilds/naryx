@@ -13,19 +13,20 @@ import {
   parseAbi,
   parseAbiParameters,
   stringToHex,
+  type Abi,
   type Address,
   type Hex,
 } from 'viem';
 import type { EvmStrategyExecutionPlan, EvmStrategyLegCall } from './strategy-plan.js';
 
-const ACCOUNT_ABI = parseAbi([
-  'function execute((bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline) execution,((bytes32 subjectId,uint32 manifestVersion,bytes32 manifestHash) adapter,address target,uint8 stage,bool riskIncreasing,address approvalToken,uint256 approvalAtoms,uint256 grossNotionalAtoms,uint256 gasLimit,bytes payload)[] calls,bytes ownerSignature,bytes solverSignature) returns (bytes32 receiptHash)',
-  'function executeNettingAllocation((bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline) execution,((bytes32 subjectId,uint32 manifestVersion,bytes32 manifestHash) adapter,address target,uint8 stage,bool riskIncreasing,address approvalToken,uint256 approvalAtoms,uint256 grossNotionalAtoms,uint256 gasLimit,bytes payload)[] calls,bytes32 authorizationHash,bytes ownerSignature,bytes solverSignature) returns (bytes32 receiptHash)',
-  'function executeRecovery((bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline) execution,((bytes32 subjectId,uint32 manifestVersion,bytes32 manifestHash) adapter,address target,uint8 stage,bool riskIncreasing,address approvalToken,uint256 approvalAtoms,uint256 grossNotionalAtoms,uint256 gasLimit,bytes payload)[] calls,bytes ownerSignature) returns (bytes32 receiptHash)',
-]);
+const ACCOUNT_ABI: Abi = parseAbi([
+  'function execute((bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(bytes32 riskDomainId,uint32 policyVersion,bytes32 policyManifestHash,(bytes32 seriesId,uint32 manifestVersion,bytes32 manifestHash) series,address accountingToken,uint256 grossQuoteAtoms,uint256 netQuoteAtoms,uint256 marginQuoteAtoms,uint256 reservedRecoveryQuoteAtoms,uint64 observationAgeMs,uint64 timeToUnwindMs,(bytes32 dependencyId,uint256 grossQuoteAtoms)[] dependencyExposures) risk,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline) execution,((bytes32 subjectId,uint32 manifestVersion,bytes32 manifestHash) adapter,address target,uint8 stage,bool riskIncreasing,address approvalToken,uint256 approvalAtoms,uint256 grossNotionalAtoms,uint256 gasLimit,bytes payload)[] calls,bytes ownerSignature,bytes solverSignature) returns (bytes32 receiptHash)',
+  'function executeNettingAllocation((bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(bytes32 riskDomainId,uint32 policyVersion,bytes32 policyManifestHash,(bytes32 seriesId,uint32 manifestVersion,bytes32 manifestHash) series,address accountingToken,uint256 grossQuoteAtoms,uint256 netQuoteAtoms,uint256 marginQuoteAtoms,uint256 reservedRecoveryQuoteAtoms,uint64 observationAgeMs,uint64 timeToUnwindMs,(bytes32 dependencyId,uint256 grossQuoteAtoms)[] dependencyExposures) risk,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline) execution,((bytes32 subjectId,uint32 manifestVersion,bytes32 manifestHash) adapter,address target,uint8 stage,bool riskIncreasing,address approvalToken,uint256 approvalAtoms,uint256 grossNotionalAtoms,uint256 gasLimit,bytes payload)[] calls,bytes32 authorizationHash,bytes ownerSignature,bytes solverSignature) returns (bytes32 receiptHash)',
+  'function executeRecovery((bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(bytes32 riskDomainId,uint32 policyVersion,bytes32 policyManifestHash,(bytes32 seriesId,uint32 manifestVersion,bytes32 manifestHash) series,address accountingToken,uint256 grossQuoteAtoms,uint256 netQuoteAtoms,uint256 marginQuoteAtoms,uint256 reservedRecoveryQuoteAtoms,uint64 observationAgeMs,uint64 timeToUnwindMs,(bytes32 dependencyId,uint256 grossQuoteAtoms)[] dependencyExposures) risk,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline) execution,((bytes32 subjectId,uint32 manifestVersion,bytes32 manifestHash) adapter,address target,uint8 stage,bool riskIncreasing,address approvalToken,uint256 approvalAtoms,uint256 grossNotionalAtoms,uint256 gasLimit,bytes payload)[] calls,bytes ownerSignature) returns (bytes32 receiptHash)',
+] as readonly string[]);
 
 const EXECUTION_PARAMETERS = parseAbiParameters(
-  '(bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline)',
+  '(bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(bytes32 riskDomainId,uint32 policyVersion,bytes32 policyManifestHash,(bytes32 seriesId,uint32 manifestVersion,bytes32 manifestHash) series,address accountingToken,uint256 grossQuoteAtoms,uint256 netQuoteAtoms,uint256 marginQuoteAtoms,uint256 reservedRecoveryQuoteAtoms,uint64 observationAgeMs,uint64 timeToUnwindMs,(bytes32 dependencyId,uint256 grossQuoteAtoms)[] dependencyExposures) risk,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline)',
 );
 const CALL_PARAMETERS = parseAbiParameters(
   '((bytes32 subjectId,uint32 manifestVersion,bytes32 manifestHash) adapter,address target,uint8 stage,bool riskIncreasing,address approvalToken,uint256 approvalAtoms,uint256 grossNotionalAtoms,uint256 gasLimit,bytes payload)[]',
@@ -87,10 +88,26 @@ export interface EvmMultiStrategyExecution {
   readonly previousStateHash: Hex;
   readonly nextStateHash: Hex;
   readonly totalGrossNotionalAtoms: bigint;
+  readonly risk: EvmStrategyRiskTerms;
   readonly fees: EvmStrategyFeeTerms;
   readonly solver: Address;
   readonly nonce: bigint;
   readonly deadline: bigint;
+}
+
+export interface EvmStrategyRiskTerms {
+  readonly riskDomainId: Hex;
+  readonly policyVersion: number;
+  readonly policyManifestHash: Hex;
+  readonly series: Readonly<{ seriesId: Hex; manifestVersion: number; manifestHash: Hex }>;
+  readonly accountingToken: Address;
+  readonly grossQuoteAtoms: bigint;
+  readonly netQuoteAtoms: bigint;
+  readonly marginQuoteAtoms: bigint;
+  readonly reservedRecoveryQuoteAtoms: bigint;
+  readonly observationAgeMs: bigint;
+  readonly timeToUnwindMs: bigint;
+  readonly dependencyExposures: readonly Readonly<{ dependencyId: Hex; grossQuoteAtoms: bigint }>[];
 }
 
 export interface EvmStrategyFeeTerms {
@@ -123,6 +140,10 @@ export interface EvmMultiStrategyAccountEnvelope {
   readonly solverTypedData: EvmMultiStrategySolverTypedData;
   readonly ownerDigest: Hex;
   readonly solverDigest: Hex;
+}
+
+export function evmMultiStrategyExecutionHash(execution: EvmMultiStrategyExecution): Hex {
+  return keccak256(encodeAbiParameters(EXECUTION_PARAMETERS, [execution]));
 }
 
 export interface EvmNettingAllocationEnvelope {
@@ -241,6 +262,7 @@ export function compileEvmMultiStrategyAccountEnvelope(input: Readonly<{
   previousStateHash?: Hex;
   nextStateHash?: Hex;
   totalGrossNotionalAtoms: bigint;
+  risk: EvmStrategyRiskTerms;
   fees: EvmStrategyFeeTerms;
   solver: Address;
   nonce: bigint;
@@ -284,6 +306,35 @@ export function compileEvmMultiStrategyAccountEnvelope(input: Readonly<{
     calls.reduce((total, call) => total + call.grossNotionalAtoms, 0n) === input.totalGrossNotionalAtoms,
     'execution gross notional must equal the sum of call notionals',
   );
+  const risk = input.risk;
+  hash32(risk.riskDomainId, 'risk domain id');
+  hash32(risk.policyManifestHash, 'risk policy manifest hash');
+  hash32(risk.series.seriesId, 'risk series id');
+  hash32(risk.series.manifestHash, 'risk series manifest hash');
+  requireCondition(risk.policyVersion > 0 && Number.isInteger(risk.policyVersion), 'risk policy version is invalid');
+  requireCondition(risk.series.manifestVersion > 0 && Number.isInteger(risk.series.manifestVersion), 'risk series version is invalid');
+  requireCondition(getAddress(risk.accountingToken) !== ZERO_ADDRESS, 'risk accounting token is invalid');
+  requireCondition(risk.netQuoteAtoms >= 0n && risk.marginQuoteAtoms >= 0n && risk.reservedRecoveryQuoteAtoms >= 0n, 'risk quantities cannot be negative');
+  requireCondition(risk.observationAgeMs >= 0n && risk.observationAgeMs <= 18_446_744_073_709_551_615n, 'risk observation age is invalid');
+  requireCondition(risk.timeToUnwindMs >= 0n && risk.timeToUnwindMs <= 18_446_744_073_709_551_615n, 'risk unwind time is invalid');
+  requireCondition(risk.dependencyExposures.length > 0, 'risk dependencies are missing');
+  let previousDependency = ZERO_HASH;
+  for (const exposure of risk.dependencyExposures) {
+    const dependencyId = hash32(exposure.dependencyId, 'risk dependency id');
+    requireCondition(dependencyId > previousDependency && exposure.grossQuoteAtoms >= 0n, 'risk dependencies must be sorted and nonnegative');
+    previousDependency = dependencyId;
+  }
+  if (calls.some((call) => call.riskIncreasing)) {
+    requireCondition(risk.grossQuoteAtoms === input.totalGrossNotionalAtoms, 'risk gross quote amount must equal execution notional');
+    const requiredExposures = new Map<Hex, bigint>();
+    for (const call of calls.filter((candidate) => candidate.riskIncreasing)) {
+      requiredExposures.set(call.adapter.subjectId, (requiredExposures.get(call.adapter.subjectId) ?? 0n) + call.grossNotionalAtoms);
+    }
+    for (const [dependencyId, required] of requiredExposures) {
+      const exposure = risk.dependencyExposures.find((candidate) => candidate.dependencyId.toLowerCase() === dependencyId.toLowerCase());
+      requireCondition(exposure !== undefined && exposure.grossQuoteAtoms >= required, 'risk dependency does not cover increasing calls');
+    }
+  }
   const previousStateHash = input.previousStateHash === undefined ? ZERO_HASH : input.previousStateHash.toLowerCase() as Hex;
   const nextStateHash = input.nextStateHash === undefined ? ZERO_HASH : input.nextStateHash.toLowerCase() as Hex;
   requireCondition((input.operation === 'ENTRY') === (previousStateHash === ZERO_HASH), 'entry is the only operation without a previous state');
@@ -326,6 +377,21 @@ export function compileEvmMultiStrategyAccountEnvelope(input: Readonly<{
     previousStateHash,
     nextStateHash,
     totalGrossNotionalAtoms: input.totalGrossNotionalAtoms,
+    risk: Object.freeze({
+      ...risk,
+      riskDomainId: risk.riskDomainId.toLowerCase() as Hex,
+      policyManifestHash: risk.policyManifestHash.toLowerCase() as Hex,
+      accountingToken: getAddress(risk.accountingToken),
+      series: Object.freeze({
+        ...risk.series,
+        seriesId: risk.series.seriesId.toLowerCase() as Hex,
+        manifestHash: risk.series.manifestHash.toLowerCase() as Hex,
+      }),
+      dependencyExposures: Object.freeze(risk.dependencyExposures.map((exposure) => Object.freeze({
+        dependencyId: exposure.dependencyId.toLowerCase() as Hex,
+        grossQuoteAtoms: exposure.grossQuoteAtoms,
+      }))),
+    }),
     fees: Object.freeze({
       policyVersion: input.fees.policyVersion,
       policyManifestHash: input.fees.policyManifestHash.toLowerCase() as Hex,
@@ -337,7 +403,7 @@ export function compileEvmMultiStrategyAccountEnvelope(input: Readonly<{
     nonce: input.nonce,
     deadline: input.deadline,
   });
-  const executionHash = keccak256(encodeAbiParameters(EXECUTION_PARAMETERS, [execution]));
+  const executionHash = evmMultiStrategyExecutionHash(execution);
   const callsHash = keccak256(encodeAbiParameters(CALL_PARAMETERS, [calls]));
   const domain = Object.freeze({ name: 'Naryx Multi Strategy Account', version: '1', chainId: input.chainId, verifyingContract: account });
   const message = Object.freeze({ executionHash, callsHash });

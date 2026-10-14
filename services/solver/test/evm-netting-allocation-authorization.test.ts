@@ -75,6 +75,14 @@ function fixture() {
     templateManifestHash: value(8),
     nextStateHash: value(9),
     totalGrossNotionalAtoms: 100n,
+    risk: {
+      riskDomainId: value(21), policyVersion: 1, policyManifestHash: value(22),
+      series: { seriesId: value(23), manifestVersion: 1, manifestHash: value(24) },
+      accountingToken: TOKEN, grossQuoteAtoms: 100n, netQuoteAtoms: 100n,
+      marginQuoteAtoms: 100n, reservedRecoveryQuoteAtoms: 1n,
+      observationAgeMs: 0n, timeToUnwindMs: 60_000n,
+      dependencyExposures: [{ dependencyId: value(11), grossQuoteAtoms: 100n }],
+    },
     fees: {
       policyVersion: 1,
       policyManifestHash: value(10),

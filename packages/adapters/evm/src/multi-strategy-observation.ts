@@ -18,6 +18,7 @@ import type {
   EvmNettingAllocationEnvelope,
   EvmStrategyFeeTerms,
 } from './multi-strategy-account.js';
+import { evmMultiStrategyExecutionHash } from './multi-strategy-account.js';
 import {
   equalAddress,
   equalHash,
@@ -37,9 +38,6 @@ const OBSERVATION_ABI = parseAbi([
   'function receipt(bytes32 receiptHash) view returns ((bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,bytes32 callsHash,bytes32 evidenceRoot,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,uint256 nonce,address solver) value)',
 ]);
 const RECEIPT_HASH_PARAMETERS = parseAbiParameters('bytes32 executionHash,bytes32 callsHash,bytes32 evidenceRoot');
-const EXECUTION_PARAMETERS = parseAbiParameters(
-  '(bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline)',
-);
 
 export type EvmNettingAllocationLifecycle =
   | 'NOT_FOUND'
@@ -205,7 +203,7 @@ export function verifyEvmNettingAllocationObservationBinding(
     || execution.deadline > authorization.validUntilValue) {
     throw new Error('EVM netting observation binding differs from its allocation authorization');
   }
-  const expectedExecutionHash = keccak256(encodeAbiParameters(EXECUTION_PARAMETERS, [execution]));
+  const expectedExecutionHash = evmMultiStrategyExecutionHash(execution);
   if (!equalHash(binding.executionHash, expectedExecutionHash)) {
     throw new Error('EVM netting observation binding execution hash is invalid');
   }

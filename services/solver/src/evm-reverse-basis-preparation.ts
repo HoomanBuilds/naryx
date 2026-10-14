@@ -40,6 +40,7 @@ import type { EvmOptionSpreadPackageIdPort } from './evm-option-spread-preparati
 import type { EvmReverseBasisPricingInput } from './evm-reverse-basis-quote.js';
 import { readEvmTreasuryHedgeMarketSnapshot, type EvmTreasuryHedgePricingInput } from './evm-treasury-hedge-quote.js';
 import { createEvmStrategyDomainCompiler } from './strategy-domain-compilers.js';
+import { evmTestnetRiskTerms } from './evm-risk-terms.js';
 import type { StrategyPreparationContext, StrategyPreparationContextResolver } from './strategy-preparation-service.js';
 
 const WAD = 10n ** 18n;
@@ -597,6 +598,21 @@ export class EvmReverseBasisPreparationContextResolver implements StrategyPrepar
     const spotLeg = graphLeg('spot-sale');
     const spotApproval = increasing ? quantity : (spotLeg.limitPrice!.quoteAtoms * quantity
       + spotLeg.limitPrice!.baseAtoms - 1n) / spotLeg.limitPrice!.baseAtoms;
+    const callPolicies = Object.freeze([
+      policy(lendingAdapter, increasing ? undefined : getAddress(lane.pricing.baseToken.address),
+        increasing ? 0n : quantity, quotedLending.grossNotional.atoms),
+      policy(spotAdapter, getAddress(increasing ? lane.pricing.baseToken.address : lane.pricing.quoteToken.address),
+        spotApproval, quotedSpot.grossNotional.atoms),
+      policy(hedgeAdapter, increasing ? getAddress(lane.pricing.quoteToken.address) : undefined,
+        marginAtoms, quotedHedge.grossNotional.atoms),
+    ]);
+    const risk = await evmTestnetRiskTerms({
+      chain, chainId: lane.pricing.chainId, templateId: documents.order.templateId,
+      account, accountingToken: getAddress(lane.pricing.quoteToken.address),
+      totalGrossNotionalAtoms: quotedLending.grossNotional.atoms + quotedSpot.grossNotional.atoms + quotedHedge.grossNotional.atoms,
+      marginQuoteAtoms: documents.quote.totalMarginDelta.atoms,
+      riskIncreasing: increasing, callPolicies,
+    });
     return Object.freeze({
       compileContext: Object.freeze({ templateManifest: lane.templateManifest,
         activeRegistryRecords: lane.activeRegistryRecords, resourceLimits: lane.resourceLimits,
@@ -613,18 +629,12 @@ export class EvmReverseBasisPreparationContextResolver implements StrategyPrepar
         chainId: Number(lane.pricing.chainId), solver: getAddress(lane.solver),
         totalGrossNotionalAtoms: quotedLending.grossNotional.atoms + quotedSpot.grossNotional.atoms
           + quotedHedge.grossNotional.atoms,
+        risk,
         feePolicyVersion: documents.quote.feePolicyVersion,
         feePolicyManifestHash: toHex(documents.quote.feePolicyManifestHash),
         feeToken: getAddress(lane.pricing.quoteToken.address), protocolFeeAtoms: charge(documents, 'PROTOCOL'),
         solverFeeAtoms: charge(documents, 'SOLVER'), nonce: natural(nonceValue, 'account nonce'), deadline,
-        callPolicies: Object.freeze([
-          policy(lendingAdapter, increasing ? undefined : getAddress(lane.pricing.baseToken.address),
-            increasing ? 0n : quantity, quotedLending.grossNotional.atoms),
-          policy(spotAdapter, getAddress(increasing ? lane.pricing.baseToken.address : lane.pricing.quoteToken.address),
-            spotApproval, quotedSpot.grossNotional.atoms),
-          policy(hedgeAdapter, increasing ? getAddress(lane.pricing.quoteToken.address) : undefined,
-            marginAtoms, quotedHedge.grossNotional.atoms),
-        ]),
+        callPolicies,
       }]),
     });
   }

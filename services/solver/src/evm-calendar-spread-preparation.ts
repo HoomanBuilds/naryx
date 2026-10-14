@@ -34,6 +34,7 @@ import {
 } from './evm-calendar-spread-quote.js';
 import type { EvmOptionSpreadContractIdentity } from './evm-option-spread-quote.js';
 import { createEvmStrategyDomainCompiler } from './strategy-domain-compilers.js';
+import { evmTestnetRiskTerms } from './evm-risk-terms.js';
 import type { StoredStrategyPackageDocuments } from './http-strategy-package-provider.js';
 import type {
   StrategyPreparationContext,
@@ -617,6 +618,17 @@ export class EvmCalendarSpreadPreparationContextResolver implements StrategyPrep
     const nearEconomics = documents.quote.legEconomics.find((leg) => leg.legId === 'near-future');
     const farEconomics = documents.quote.legEconomics.find((leg) => leg.legId === 'far-future');
     requireCondition(nearEconomics !== undefined && farEconomics !== undefined, 'quote lacks calendar leg economics');
+    const callPolicies = Object.freeze([
+      policy(nearAdapter, nearEconomics, nearExecution.collateralIn),
+      policy(farAdapter, farEconomics, farExecution.collateralIn),
+    ]);
+    const risk = await evmTestnetRiskTerms({
+      chain, chainId: lane.pricing.chainId, templateId: documents.order.templateId,
+      account, accountingToken: getAddress(lane.pricing.quoteToken.address),
+      totalGrossNotionalAtoms: nearEconomics.grossNotional.atoms + farEconomics.grossNotional.atoms,
+      marginQuoteAtoms: documents.quote.totalMarginDelta.atoms,
+      riskIncreasing: opening, callPolicies,
+    });
     return Object.freeze({
       compileContext: Object.freeze({
         templateManifest: lane.templateManifest,
@@ -651,6 +663,7 @@ export class EvmCalendarSpreadPreparationContextResolver implements StrategyPrep
         chainId: Number(lane.pricing.chainId),
         solver: getAddress(lane.solver),
         totalGrossNotionalAtoms: nearEconomics.grossNotional.atoms + farEconomics.grossNotional.atoms,
+        risk,
         feePolicyVersion: documents.quote.feePolicyVersion,
         feePolicyManifestHash: toHex(documents.quote.feePolicyManifestHash),
         feeToken: getAddress(lane.pricing.quoteToken.address),
@@ -658,10 +671,7 @@ export class EvmCalendarSpreadPreparationContextResolver implements StrategyPrep
         solverFeeAtoms: charge(documents, 'SOLVER'),
         nonce: natural(nonceValue, 'account nonce'),
         deadline,
-        callPolicies: Object.freeze([
-          policy(nearAdapter, nearEconomics, nearExecution.collateralIn),
-          policy(farAdapter, farEconomics, farExecution.collateralIn),
-        ]),
+        callPolicies,
       }]),
     });
   }
