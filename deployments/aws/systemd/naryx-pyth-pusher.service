@@ -1,0 +1,16 @@
+[Unit]
+Description=Naryx Solana Devnet SOL/USD Pyth price pusher
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/node /srv/naryx/app/deployments/tools/verify-pyth-devnet-pusher.mjs /srv/naryx/release/pyth-pusher.json
+ExecStart=/usr/bin/docker run --rm --name naryx-pyth-pusher --user 995:987 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m --cap-drop=ALL --security-opt=no-new-privileges --mount type=bind,src=/srv/naryx/release/pyth-pusher.json,dst=/run/naryx/pyth-pusher.json,readonly --mount type=bind,src=/srv/naryx/release/pyth-sol-usd.yaml,dst=/run/naryx/pyth-sol-usd.yaml,readonly --mount type=bind,src=/srv/naryx/keys/pyth-pusher.json,dst=/run/naryx/pyth-pusher-key.json,readonly naryx/pyth-price-pusher:10.5.0-arm64 npm start -- solana --config /run/naryx/pyth-pusher.json
+ExecStop=/usr/bin/docker stop -t 10 naryx-pyth-pusher
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

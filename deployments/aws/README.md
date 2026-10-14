@@ -122,6 +122,22 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
   start the services.
 - Fund the solver, keeper, and Hyperliquid accounts before they run dry; their balances bound how
   many users can trade at once.
+- The optional Solana Devnet Pyth pusher keeps the SOL/USD shard-0 account fresh when the sponsored
+  updater is slow. Its own Devnet wallet is separate from the solver. It needs an independent
+  `NARYX_PYTH_DEVNET_RPC_URL`: the shared public Devnet RPC returned 429 errors under the pusher's
+  workload, so the runtime guard refuses that endpoint. Generate its secret-bearing
+  JSON with `node --env-file=deployments/.env deployments/tools/prepare-pyth-devnet-pusher.mjs
+  <ignored-output-path>`, then install it as `/srv/naryx/release/pyth-pusher.json` (mode 600,
+  owner `naryx`). Install `deployments/aws/pyth-sol-usd.yaml` beside it and a funded Devnet-only
+  keypair as `/srv/naryx/keys/pyth-pusher.json`, both mode 600. Build the pinned upstream
+  `pyth-price-pusher-v10.5.0` tag for this ARM64 host with
+  `deployments/aws/Dockerfile.pyth-pusher-arm64`, install
+  `deployments/aws/systemd/naryx-pyth-pusher.service`, and enable that unit. Adjust its container
+  UID:GID if the host's `naryx` account is not `995:987`. Every service start verifies the RPC's
+  actual Devnet genesis hash before attaching the signer. The Pyth API key may be a free trial, not
+  a guaranteed free production entitlement. If this pusher or its key stops working, the existing
+  sponsored shard-0 account remains the fallback; Naryx still refuses prices older than its
+  configured safety limit.
 - A Hyperliquid package whose outcome is not final blocks the shared lane (new Hyperliquid
   executions wait, then time out). The solver re-reads fresh evidence for it every 30 s and releases
   the lane by itself once that evidence shows the outcome is final, and the API then updates the

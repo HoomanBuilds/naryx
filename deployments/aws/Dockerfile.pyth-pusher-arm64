@@ -1,0 +1,15 @@
+FROM node:24.12.0-slim@sha256:732887b2c52d7251840a19d203afc68a61532b1ff8b5bf3b76efd49ded39e908 AS builder
+WORKDIR /usr/src/pyth
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+RUN apt-get update && apt-get install -y git python3 make gcc g++ curl && npm install -g corepack@0.31.0 && corepack enable
+COPY . .
+RUN --mount=type=cache,id=naryx-pyth-pnpm,target=/pnpm/store pnpm install --frozen-lockfile --filter '@pythnetwork/price-pusher...'
+RUN pnpm -r --filter '@pythnetwork/price-pusher...' run build
+RUN pnpm deploy --legacy --filter @pythnetwork/price-pusher --prod /srv/price-pusher
+
+FROM node:24.12.0-alpine3.23@sha256:c921b97d4b74f51744057454b306b418cf693865e73b8100559189605f6955b8
+WORKDIR /srv
+ENV NODE_ENV=production
+COPY --from=builder /srv/price-pusher ./
+CMD ["npm", "start"]
