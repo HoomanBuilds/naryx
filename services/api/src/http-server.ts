@@ -230,8 +230,10 @@ export function bindNativeHyperliquidStrategyRuntime(
   profiles: ReturnType<HyperliquidNativeStrategyOrderPort["profiles"]>,
 ): NativeHyperliquidStrategyRuntime {
   const order = admission.order;
+  const boundedRuntime = { ...runtime, bounds: { ...runtime.bounds,
+    maxEvidenceAgeMs: Math.min(runtime.bounds.maxEvidenceAgeMs, 300_000) } };
   if (Buffer.from(order.seriesManifestHash).toString("hex") === runtime.seriesManifestHash
-    && Buffer.from(order.executionClassManifestHash).toString("hex") === runtime.executionClassManifestHash) return runtime;
+    && Buffer.from(order.executionClassManifestHash).toString("hex") === runtime.executionClassManifestHash) return boundedRuntime;
   const profile = profiles.find((candidate) => candidate.templateId === order.templateId
     && candidate.templateVersion === order.templateVersion && candidate.seriesId === order.seriesId
     && candidate.seriesVersion === order.seriesVersion && bytesEqual(candidate.seriesManifestHash, order.seriesManifestHash)
@@ -240,7 +242,7 @@ export function bindNativeHyperliquidStrategyRuntime(
     && bytesEqual(candidate.packageTemplateManifestHash, order.packageTemplateManifestHash)
     && candidate.settlementAccount === order.settlementAccount);
   if (profile === undefined) throw new Error("No reviewed native runtime profile matches the admitted strategy.");
-  return { ...runtime, domain: profile.domain, baseAsset: profile.baseAsset, quoteAsset: profile.quoteAsset,
+  return { ...boundedRuntime, domain: profile.domain, baseAsset: profile.baseAsset, quoteAsset: profile.quoteAsset,
     seriesManifestHash: Buffer.from(profile.seriesManifestHash).toString("hex"),
     executionClassManifestHash: Buffer.from(profile.executionClassManifestHash).toString("hex") };
 }
