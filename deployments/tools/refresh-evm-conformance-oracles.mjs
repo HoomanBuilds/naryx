@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -53,6 +53,7 @@ async function requireCode(address, expected) {
   }
 }
 const oracles = new Map();
+const externalOracles = new Map();
 for (const name of ['perpetual', 'nearFuture', 'farFuture']) {
   const factory = release.contracts[`${name}Factory`];
   const market = release.conformance[`${name}Market`];
@@ -73,6 +74,41 @@ for (const name of ['perpetual', 'nearFuture', 'farFuture']) {
   const old = oracles.get(key);
   oracles.set(key, { oracle, maxAge: old === undefined ? maxAge : Math.min(old.maxAge, maxAge) });
 }
+const canonicalReleasePath = join(root, 'deployments/evm', values.network, 'release.json');
+if (existsSync(canonicalReleasePath)) {
+  const canonical = JSON.parse(readFileSync(canonicalReleasePath, 'utf8'));
+  if (canonical.chainId !== chain.id || canonical.activationState !== 'ACTIVE') {
+    throw new Error('The canonical release is not active on this testnet.');
+  }
+  const market = canonical.contracts.testPerpMarket;
+  if (market !== undefined) {
+    await requireCode(market.address, market.runtimeCodeHash);
+    const [oracle, oracleCodeHash, maxAge] = await Promise.all([
+      client.readContract({ address: market.address, abi: marketAbi, functionName: 'oracle' }),
+      client.readContract({ address: market.address, abi: marketAbi, functionName: 'oracleCodeHash' }),
+      client.readContract({ address: market.address, abi: marketAbi, functionName: 'maxOracleAgeSeconds' }),
+    ]);
+    await requireCode(oracle, oracleCodeHash);
+    const binding = oracles.get(oracle.toLowerCase());
+    if (!Number.isSafeInteger(maxAge) || maxAge <= 0) throw new Error('The canonical oracle heartbeat is invalid.');
+    if (binding === undefined) {
+      externalOracles.set(oracle.toLowerCase(), { oracle, maxAge });
+    } else {
+      oracles.set(oracle.toLowerCase(), { oracle, maxAge: Math.min(binding.maxAge, maxAge) });
+    }
+  }
+}
+for (const { oracle, maxAge } of externalOracles.values()) {
+  const [round, block] = await Promise.all([
+    client.readContract({ address: oracle, abi: oracleAbi, functionName: 'latestRoundData' }),
+    client.getBlock(),
+  ]);
+  const [roundId, answer, , updatedAt, answeredInRound] = round;
+  const fresh = answer > 0n && updatedAt > 0n && updatedAt <= block.timestamp && answeredInRound >= roundId
+    && block.timestamp - updatedAt <= BigInt(maxAge);
+  console.log(JSON.stringify({ network: values.network, oracle, answer: answer.toString(),
+    updatedAt: updatedAt.toString(), maxAgeSeconds: maxAge, fresh, managed: false, readOnly: true }));
+}
 let signer;
 for (const { oracle, maxAge } of oracles.values()) {
   const [round, owner, decimals, block] = await Promise.all([
@@ -86,7 +122,7 @@ for (const { oracle, maxAge } of oracles.values()) {
     throw new Error('The conformance oracle round is invalid.');
   }
   const refreshDue = values['refresh-now'] || block.timestamp - updatedAt >= BigInt(Math.floor(maxAge / 2));
-  console.log(JSON.stringify({ network: values.network, oracle, answer: answer.toString(), updatedAt: updatedAt.toString(), refreshDue, broadcast: values.broadcast }));
+  console.log(JSON.stringify({ network: values.network, oracle, answer: answer.toString(), updatedAt: updatedAt.toString(), maxAgeSeconds: maxAge, refreshDue, broadcast: values.broadcast }));
   if (!values.broadcast || !refreshDue) continue;
   if (signer === undefined) {
     const password = process.env[values['password-env']];

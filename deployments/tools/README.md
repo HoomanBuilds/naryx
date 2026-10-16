@@ -2,7 +2,9 @@
 
 ## Conformance oracle maintenance
 
-The native EVM test perpetual and dated-future markets use an owner-operated test oracle. Its round expires after a day. Refreshing it preserves the existing test answer and advances the onchain timestamp; it is not a live market-price feed. Run the maintenance command at least every twelve hours while demonstrating these markets. Stale rounds remain rejected by the contracts.
+The native EVM test perpetual and dated-future markets use an owner-operated test oracle. Refreshing it preserves the existing test answer and advances the onchain timestamp; it is not a live market-price feed. The tool uses the shortest heartbeat among the reviewed native markets and any active canonical test perpetual market sharing their oracle. Run it more frequently than half that heartbeat, shown as `maxAgeSeconds`, while demonstrating these markets. Stale rounds remain rejected by the contracts.
+
+If a canonical market uses a different external oracle, the tool verifies its market and oracle code hashes and reports its freshness with `managed: false` and `readOnly: true`. It never signs an update to that feed, even with `--broadcast`. The Base canonical lane uses an external ETH/USD feed with a one-hour freshness limit; refreshing a native test oracle does not repair an external stale round.
 
 Read-only inspection:
 
