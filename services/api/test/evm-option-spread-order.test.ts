@@ -167,4 +167,6 @@ test("normalizes browser total-premium ratios without changing their canonical e
   })) });
   assert.equal(equivalent.intake.orderHashHex, canonical.intake.orderHashHex);
   assert.deepEqual(equivalent.graph.legs.map((leg) => leg.limitPrice), canonical.graph.legs.map((leg) => leg.limitPrice));
+  assert.equal(port.create({ ...source, nonce: ((1n << 64n) - 1n).toString() }).graph.nonce, (1n << 64n) - 1n);
+  assert.throws(() => port.create({ ...source, nonce: (1n << 64n).toString() }), /nonce/);
 });
