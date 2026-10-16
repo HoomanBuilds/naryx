@@ -1200,8 +1200,8 @@ if (publicMarket?.reconcileAdvancedOrders !== undefined) {
   const reconcile = publicMarket.reconcileAdvancedOrders;
   everyMinute(async () => {
     const result = reconcile();
-    if (result.completed > 0 || result.failed > 0) {
-      process.stdout.write(`Advanced order reconciliation: ${result.completed} completed, ${result.pending} pending, ${result.failed} failed\n`);
+    if (result.completed > 0 || result.failed > 0 || result.expired > 0) {
+      process.stdout.write(`Advanced order reconciliation: ${result.completed} completed, ${result.pending} pending, ${result.failed} failed, ${result.expired} expired\n`);
     }
   });
 }

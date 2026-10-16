@@ -126,6 +126,43 @@ test("scheduled activation persists one exact attempt per due window across rest
   }
 });
 
+test("background expiry observes the signed deadline and never expires an unresolved reservation", () => {
+  const dir = mkdtempSync(join(tmpdir(), "naryx-order-expiry-"));
+  const condition: ActivationConditionInput = {
+    conditionVersion: 1,
+    metric: "TIME",
+    comparator: "AT_OR_ABOVE",
+    threshold: 1_000n,
+    observationUnit: "EVM_UNIX_SECONDS",
+    maximumObservationAge: 0n,
+  };
+  const input = order({ packageOrderType: "CONDITIONAL", activationConditionHash: activationConditionHash(condition) });
+  const first = source(input);
+  const second = source({ ...input, nonce: 2n });
+  let now = 1_999_000;
+  const store = new SqliteOrderActivationStore(join(dir, "activation.sqlite"), {
+    orders: { order: (hash) => first.orders.order(hash) ?? second.orders.order(hash) },
+    clock: () => now,
+  });
+  try {
+    store.register({ orderHashHex: first.orderHashHex, condition });
+    store.register({ orderHashHex: second.orderHashHex, condition });
+    const reserved = store.reserve({ orderHashHex: second.orderHashHex, observations: [], atValue: 1_999n, side: "BID", limitPriceTicks: 100n });
+    assert.equal(reserved.active, true);
+    assert.equal(store.expireWaitingOrders(), 0);
+    now = 2_000_000;
+    assert.equal(store.expireWaitingOrders(), 1);
+    assert.equal(store.view(first.orderHashHex)?.status, "EXPIRED");
+    assert.equal(store.view(second.orderHashHex)?.status, "WAITING");
+    assert.equal(store.pendingAttemptIds().length, 1);
+    assert.equal(store.expireWaitingOrders(), 0);
+    assert.throws(() => store.expireWaitingOrders(0), { code: "INVALID_LIMIT" });
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("time-only runtime accepts schedules and time triggers but rejects unconfigured external metrics", () => {
   const dir = mkdtempSync(join(tmpdir(), "naryx-order-time-only-"));
   const condition: ActivationConditionInput = {

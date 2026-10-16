@@ -167,6 +167,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS one_activation_attempt_per_slice
   ON order_activation_attempts(order_hash, slice_index) WHERE slice_index IS NOT NULL;
 CREATE INDEX IF NOT EXISTS activation_attempts_by_order
   ON order_activation_attempts(order_hash, ordinal);
+CREATE INDEX IF NOT EXISTS reserved_activation_attempts
+  ON order_activation_attempts(attempt_id) WHERE status = 'RESERVED';
+CREATE INDEX IF NOT EXISTS waiting_order_activations
+  ON order_activations(order_hash) WHERE status = 'WAITING';
 CREATE TRIGGER IF NOT EXISTS reject_activation_delete BEFORE DELETE ON order_activations BEGIN SELECT RAISE(ABORT, 'order activations cannot be deleted'); END;
 CREATE TRIGGER IF NOT EXISTS reject_activation_attempt_delete BEFORE DELETE ON order_activation_attempts BEGIN SELECT RAISE(ABORT, 'activation attempts cannot be deleted'); END;
 CREATE TRIGGER IF NOT EXISTS reject_activation_source_update BEFORE UPDATE ON order_activation_sources BEGIN SELECT RAISE(ABORT, 'activation sources cannot be updated'); END;
@@ -221,6 +225,7 @@ export class SqliteOrderActivationStore {
   private readonly orders: StrategyOrderSource;
   private readonly clock: () => number;
   private readonly enabledMetrics: ReadonlySet<ConditionMetric> | undefined;
+  private expiryCursor: Buffer | undefined;
 
   constructor(dbPath: string, options: { readonly orders: StrategyOrderSource; readonly clock?: () => number; readonly enabledMetrics?: ReadonlySet<ConditionMetric> }) {
     this.orders = options.orders;
@@ -412,6 +417,38 @@ export class SqliteOrderActivationStore {
       ORDER BY attempt_id LIMIT ?
     `).all(afterAttemptId ?? "", limit) as { attempt_id: string }[];
     return Object.freeze(rows.map((row) => row.attempt_id));
+  }
+
+  expireWaitingOrders(limit = 10): number {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new OrderActivationStoreError("INVALID_LIMIT", "Expiry scan limit must be between 1 and 100.");
+    }
+    return this.transaction(() => {
+      const query = this.db.prepare(`
+        SELECT a.order_hash FROM order_activations a
+        WHERE a.status = 'WAITING' AND a.order_hash > ?
+          AND NOT EXISTS (
+            SELECT 1 FROM order_activation_attempts p WHERE p.order_hash = a.order_hash AND p.status = 'RESERVED'
+          )
+        ORDER BY a.order_hash LIMIT ?
+      `);
+      let rows = query.all(this.expiryCursor ?? Buffer.alloc(0), limit) as { order_hash: Buffer }[];
+      if (rows.length === 0 && this.expiryCursor !== undefined) {
+        this.expiryCursor = undefined;
+        rows = query.all(Buffer.alloc(0), limit) as { order_hash: Buffer }[];
+      }
+      let expired = 0;
+      for (const row of rows) {
+        this.expiryCursor = row.order_hash;
+        const hash = toHex(row.order_hash);
+        const view = this.requireView(hash);
+        if (view.order.expiryUnit !== "EVM_UNIX_SECONDS" && view.order.expiryUnit !== "HYPERLIQUID_UNIX_MILLISECONDS") continue;
+        if (this.activationClockValue(hash) < view.order.expiryValue) continue;
+        this.setStatus(hash, "EXPIRED");
+        expired += 1;
+      }
+      return expired;
+    });
   }
 
   attempt(attemptIdValue: string): OrderActivationAttempt | undefined {

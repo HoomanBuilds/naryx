@@ -130,7 +130,7 @@ export interface PublicMarketRuntime {
   readonly strategyPackageAuthorizations?: Pick<SqliteStrategyPackageStore, "order" | "ownerAuthorization" | "recordOwnerAuthorization">;
   /** Loopback keeper executor and coordinator routes under `/internal/`; mount only on the private server. */
   readonly internalHandler?: (request: IncomingMessage, response: ServerResponse) => boolean;
-  readonly reconcileAdvancedOrders?: () => { completed: number; pending: number; failed: number };
+  readonly reconcileAdvancedOrders?: () => { completed: number; pending: number; failed: number; expired: number };
   close(): void;
 }
 
@@ -923,7 +923,10 @@ export function loadPublicMarketRuntime(
       requestsPerMinute,
       solverApiEnabled: solverHandler !== undefined,
       ...(orderActivations === undefined || advancedOrderReconciliation === undefined ? {} : {
-        reconcileAdvancedOrders: () => reconcilePendingAdvancedOrders(orderActivations, advancedOrderReconciliation, advancedOrderCursor),
+        reconcileAdvancedOrders: () => ({
+          ...reconcilePendingAdvancedOrders(orderActivations, advancedOrderReconciliation, advancedOrderCursor),
+          expired: orderActivations.expireWaitingOrders(),
+        }),
       }),
       ...(strategyOrderIntake === undefined ? {} : { strategyOrderIntake }),
       ...(strategyPackages === undefined ? {} : {
