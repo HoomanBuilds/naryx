@@ -294,6 +294,7 @@ implements HyperliquidTestnetTerminalExecutionPort {
     promise: Promise<HyperliquidTestnetTerminalExecutionResult>;
   }>>();
   readonly #select: Database.Statement;
+  readonly #selectByAttempt: Database.Statement;
   readonly #insertPending: Database.Statement;
   readonly #complete: Database.Statement;
   readonly #markUncertain: Database.Statement;
@@ -350,6 +351,11 @@ implements HyperliquidTestnetTerminalExecutionPort {
       SELECT attempt_id, status, result_json
       FROM hyperliquid_terminal_executions
       WHERE idempotency_key = ?
+    `);
+    this.#selectByAttempt = this.#db.prepare(`
+      SELECT idempotency_key, attempt_id, status, result_json
+      FROM hyperliquid_terminal_executions
+      WHERE attempt_id = ?
     `);
     this.#insertPending = this.#db.prepare(`
       INSERT INTO hyperliquid_terminal_executions
@@ -600,6 +606,27 @@ implements HyperliquidTestnetTerminalExecutionPort {
     if (row === undefined || row.status !== "COMPLETED") return undefined;
     const result = this.#stored(request)!;
     return hyperliquidTerminalResultIsFinal(result) ? result : undefined;
+  }
+
+  /** Only no-effect terminal states are exposed here; successful positions require owner-ledger evidence. */
+  attemptOutcome(attemptId: string): Readonly<{
+    state: string;
+    transactionHash: null;
+    blockNumber: null;
+    receiptHash: null;
+  }> | undefined {
+    const row = this.#selectByAttempt.get(attemptId) as (StoredExecutionRow & { idempotency_key: string }) | undefined;
+    if (row === undefined || row.status !== "COMPLETED") return undefined;
+    const result = this.finalResult({ attemptId, idempotencyKey: row.idempotency_key });
+    if (result === undefined) return undefined;
+    const state = result.status === "NOT_SUBMITTED" || result.status === "CHECKPOINT_FAILED"
+      || result.status === "CHECKPOINT_INCOMPLETE" ? result.status
+      : result.status === "RECONCILED" && result.packageStatus === "NO_EFFECT" ? "NO_EFFECT"
+      : result.status === "STRATEGY_EXECUTION"
+        && (result.packageStatus === "NO_EFFECT" || result.packageStatus === "SUBMISSION_FAILED")
+        ? result.packageStatus : undefined;
+    return state === undefined ? undefined
+      : Object.freeze({ state, transactionHash: null, blockNumber: null, receiptHash: null });
   }
 
   requireOwnerAuthorization(request: HyperliquidTestnetTerminalExecutionRequest): void {

@@ -405,9 +405,49 @@ test("a final result whose owner-ledger settle failed after it was stored is set
     assert.deepEqual(await port.status(REQUEST), { state: "COMPLETED", result: result(REQUEST) });
     assert.deepEqual(settled, [REQUEST.attemptId, second.attemptId]);
     assert.deepEqual(port.finalResult(REQUEST), result(REQUEST));
+    assert.equal(port.attemptOutcome(REQUEST.attemptId), undefined);
     assert.equal(executions, 2);
   } finally {
     port.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("definitively unsent Hyperliquid attempts have a cross-device owner outcome", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-hyperliquid-unsent-"));
+  const path = join(scratch, "execution.db");
+  const unsent: HyperliquidTestnetTerminalExecutionResult = {
+    ...REQUEST,
+    domain: "hypercore:testnet",
+    environment: "TESTNET",
+    status: "NOT_SUBMITTED",
+    evidenceStatus: "PRECONDITION_REJECTED",
+    actionCommitment: null,
+    requestCommitment: null,
+    errorCommitment: `0x${"11".repeat(32)}`,
+  };
+  const port = new DurableHyperliquidTestnetTerminalExecutionPort(path, {
+    executeAttempt: async () => unsent,
+  });
+  try {
+    assert.equal(port.attemptOutcome(REQUEST.attemptId), undefined);
+    assert.deepEqual(await port.execute(REQUEST), unsent);
+    assert.deepEqual(port.attemptOutcome(REQUEST.attemptId), {
+      state: "NOT_SUBMITTED",
+      transactionHash: null,
+      blockNumber: null,
+      receiptHash: null,
+    });
+  } finally {
+    port.close();
+  }
+  const reopened = new DurableHyperliquidTestnetTerminalExecutionPort(path, {
+    executeAttempt: async () => { throw new Error("stored result should be replayed"); },
+  });
+  try {
+    assert.equal(reopened.attemptOutcome(REQUEST.attemptId)?.state, "NOT_SUBMITTED");
+  } finally {
+    reopened.close();
     rmSync(scratch, { recursive: true, force: true });
   }
 });

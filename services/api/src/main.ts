@@ -820,7 +820,8 @@ referenceRecorder?.start();
 // Each lane's store answers only for its own attempt IDs.
 const ownerPackageOutcomes: OwnerPackageOutcomeReader = (attemptId) =>
   basePreparationStore?.attemptOutcome(attemptId) ?? arbitrumOutcomeStore?.attemptOutcome(attemptId)
-  ?? hyperliquidOwnerLedger?.attemptOutcome(attemptId);
+  ?? hyperliquidOwnerLedger?.attemptOutcome(attemptId)
+  ?? hyperliquidExecutionRuntime?.attemptOutcome(attemptId);
 
 function currentStrategyExecutionCapabilities(): readonly StrategyExecutionLaneCapability[] {
   if (executionGate === undefined || executionScopes === undefined) return [];
