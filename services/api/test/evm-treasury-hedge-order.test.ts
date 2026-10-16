@@ -110,6 +110,7 @@ test("creates dependency-ordered atomic treasury hedge lifecycle orders", () => 
       currentTimeSeconds: () => NOW,
     });
     const entry = port.create(request("ENTRY"));
+    assert.equal(entry.order.packageTimeInForce, "FOK");
     assert.equal(entry.graph.dependencyEdges[0]?.fromLegId, "inventory-position");
     assert.equal(entry.graph.dependencyEdges[0]?.toLegId, "treasury-hedge");
     assert.equal(entry.order.maximumMarginIncrease.atoms, 1_000_000n);

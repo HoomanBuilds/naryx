@@ -436,7 +436,7 @@ export function createEvmCollateralConversionOrderPort(input: Readonly<{
         lifecycleAction: request.lifecycleAction,
         settlementClass: "ATOMIC_POSTCONDITION",
         packageOrderType: "MARKETABLE_LIMIT",
-        packageTimeInForce: "IOC",
+        packageTimeInForce: "FOK",
         economicQuantity: assetAmount(profile.collateralAsset, quantity),
         quoteAsset: profile.quoteAsset,
         metricLimits: profile.metricLimits,

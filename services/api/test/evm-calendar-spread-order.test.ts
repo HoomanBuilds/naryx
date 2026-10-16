@@ -20,12 +20,16 @@ import {
   type StrategyPackageOrderInput,
 } from "@naryx/protocol-types";
 import {
+  AdvancedOrderExecutionFactory,
+  AdvancedOrderFactory,
   createEvmCalendarSpreadOrderPort,
   EvmCalendarSpreadOrderError,
   loadEvmCalendarSpreadProfiles,
+  SqliteOrderActivationStore,
   type EvmCalendarSpreadProfile,
 } from "../src/index.js";
 import type { StrategyOrderIntakePort } from "../src/strategy-order-intake.js";
+import type { StoredStrategyPackageOrder } from "../src/strategy-package-store.js";
 
 const NOW_SECONDS = 1_000_000;
 const OWNER = "0x1111111111111111111111111111111111111111";
@@ -129,6 +133,7 @@ test("loads a reviewed calendar profile and creates atomic entry and exit orders
     ]);
     assert.equal(entry.graph.executionGroups[0]?.kind, "ALL_OR_NONE");
     assert.equal(entry.order.settlementClass, "ATOMIC_POSTCONDITION");
+    assert.equal(entry.order.packageTimeInForce, "FOK");
     assert.equal(validateStrategyTemplateGraph(entry.graph).valid, true);
 
     const exit = port.create(request("EXIT"));
@@ -167,4 +172,56 @@ test("rejects a calendar exit without the exact prior state", () => {
   delete invalid.expectedStrategyStateHash;
   assert.throws(() => port.create(invalid), (error: unknown) =>
     error instanceof EvmCalendarSpreadOrderError && error.code === "INVALID_REQUEST");
+});
+
+test("derives and prepares an exact calendar slice from the native order builder", () => {
+  const directory = mkdtempSync(join(tmpdir(), "naryx-calendar-activation-"));
+  const stored = new Map<string, StoredStrategyPackageOrder>();
+  const orders = { order: (hash: string) => stored.get(hash) };
+  const storingIntake: StrategyOrderIntakePort = {
+    store(orderInput, graphInput, atSlot) {
+      const result = intake.store(orderInput, graphInput, atSlot);
+      stored.set(result.orderHashHex, {
+        orderHashHex: result.orderHashHex,
+        graphHashHex: result.graphHashHex,
+        order: strategyPackageOrder(orderInput),
+        graph: packageGraph(graphInput),
+        recordedAtMs: NOW_SECONDS * 1_000,
+      });
+      return result;
+    },
+  };
+  const activations = new SqliteOrderActivationStore(join(directory, "activation.sqlite"), { orders });
+  try {
+    const source = createEvmCalendarSpreadOrderPort({
+      profiles: [profile()], intake: storingIntake, currentTimeSeconds: () => NOW_SECONDS,
+    }).create(request("ENTRY"));
+    const quantity = source.order.economicQuantity.atoms;
+    const derived = new AdvancedOrderFactory({ orders, intake: storingIntake, activations }).derive({
+      sourceOrderHashHex: source.intake.orderHashHex,
+      schedule: {
+        scheduleVersion: 1, kind: "PACKAGE_TWAP", timeUnit: "EVM_UNIX_SECONDS",
+        startValue: BigInt(NOW_SECONDS), sliceInterval: 30n, sliceCount: 2,
+        aggregateQuantityLimit: quantity, maximumSliceQuantity: quantity / 2n,
+        aggregateLimitPriceTicks: 100n, stopRule: "STOP_ON_FIRST_FAILURE",
+      },
+    });
+    const reserved = activations.reserve({
+      orderHashHex: derived.intake.orderHashHex, observations: [],
+      atValue: BigInt(NOW_SECONDS), side: "BID", limitPriceTicks: 99n,
+    });
+    assert.equal(reserved.active, true);
+    if (!reserved.active) assert.fail("calendar schedule did not activate");
+    const prepared = new AdvancedOrderExecutionFactory({ orders, intake: storingIntake, activations })
+      .prepare({ attemptId: reserved.attempt.attemptId });
+    assert.equal(prepared.order.packageTimeInForce, "FOK");
+    assert.equal(prepared.order.economicQuantity.atoms, quantity / 2n);
+    assert.ok(prepared.graph.legs.every((leg) =>
+      leg.quantityAtoms === quantity / 2n && leg.minimumQuantityAtoms === leg.quantityAtoms));
+    assert.equal(prepared.graph.executionGroups[0]?.kind, "ALL_OR_NONE");
+    assert.equal(validateStrategyTemplateGraph(prepared.graph).valid, true);
+  } finally {
+    activations.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

@@ -99,6 +99,7 @@ function request(lifecycleAction: "ENTRY" | "INCREASE" | "DECREASE" | "EXIT") {
 test("creates ordered atomic collateral conversion lifecycle orders", () => {
   const port = createEvmCollateralConversionOrderPort({ profiles: [profile()], intake, currentTimeSeconds: () => NOW });
   const entry = port.create(request("ENTRY"));
+  assert.equal(entry.order.packageTimeInForce, "FOK");
   assert.deepEqual(entry.graph.legs.map((leg) => leg.legId), [
     "collateral-swap", "collateral-transfer", "conversion-hedge",
   ]);

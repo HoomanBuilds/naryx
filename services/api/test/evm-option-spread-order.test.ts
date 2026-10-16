@@ -130,6 +130,7 @@ test("loads a reviewed EVM profile and creates atomic option entry and exit orde
     ]);
     assert.equal(entry.graph.executionGroups[0]?.kind, "ALL_OR_NONE");
     assert.equal(entry.order.settlementClass, "ATOMIC_POSTCONDITION");
+    assert.equal(entry.order.packageTimeInForce, "FOK");
     assert.equal(validateStrategyTemplateGraph(entry.graph).valid, true);
 
     const exit = port.create(request("EXIT"));

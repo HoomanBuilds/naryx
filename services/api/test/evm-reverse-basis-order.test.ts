@@ -117,6 +117,7 @@ test("creates dependency-ordered atomic reverse basis lifecycle orders", () => {
       ["base-borrow", "spot-sale"], ["spot-sale", "perp-purchase"],
     ]);
     assert.equal(entry.order.maximumMarginIncrease.atoms, 1_000_000n);
+    assert.equal(entry.order.packageTimeInForce, "FOK");
     assert.equal(validateStrategyTemplateGraph(entry.graph).valid, true);
 
     const increase = port.create(request("INCREASE"));
