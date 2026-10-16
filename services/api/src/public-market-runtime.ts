@@ -513,6 +513,15 @@ export function loadPublicMarketRuntime(
       : new SqliteStrategyPackageStore(absolute(strategyPackagePath, "NARYX_STRATEGY_PACKAGE_DB"), { clock: clockMs });
     if (strategyPackages !== undefined) opened.push(strategyPackages);
     const publicEnvironment = environment.NARYX_PUBLIC_ENVIRONMENT;
+    const metricObservationPath = optional(environment.NARYX_METRIC_OBSERVATION_DB);
+    const metricSourcePath = optional(environment.NARYX_METRIC_OBSERVATION_SOURCES);
+    if ((metricObservationPath === undefined) !== (metricSourcePath === undefined)
+      || (metricObservationPath !== undefined && (strategyPackages === undefined || publicEnvironment === undefined))) {
+      throw new PublicMarketConfigError("Metric observations require both database and source config, strategy packages, and NARYX_PUBLIC_ENVIRONMENT.");
+    }
+    const metricSources = metricSourcePath === undefined
+      ? undefined
+      : loadMetricObservationSources(absolute(metricSourcePath, "NARYX_METRIC_OBSERVATION_SOURCES"));
     const orderActivationPath = optional(environment.NARYX_ORDER_ACTIVATION_DB);
     if (orderActivationPath !== undefined && strategyPackages === undefined) {
       throw new PublicMarketConfigError("NARYX_ORDER_ACTIVATION_DB requires NARYX_STRATEGY_PACKAGE_DB.");
@@ -522,27 +531,19 @@ export function loadPublicMarketRuntime(
       : new SqliteOrderActivationStore(absolute(orderActivationPath, "NARYX_ORDER_ACTIVATION_DB"), {
         orders: strategyPackages,
         clock: clockMs,
+        enabledMetrics: new Set(["TIME" as const, ...(metricSources?.keys() ?? [])]),
       });
     if (orderActivations !== undefined) opened.push(orderActivations);
-    const metricObservationPath = optional(environment.NARYX_METRIC_OBSERVATION_DB);
-    const metricSourcePath = optional(environment.NARYX_METRIC_OBSERVATION_SOURCES);
-    if ((metricObservationPath === undefined) !== (metricSourcePath === undefined)
-      || (metricObservationPath !== undefined && (strategyPackages === undefined || publicEnvironment === undefined))) {
-      throw new PublicMarketConfigError("Metric observations require both database and source config, strategy packages, and NARYX_PUBLIC_ENVIRONMENT.");
-    }
     const metricObservations = metricObservationPath === undefined || metricSourcePath === undefined
       || strategyPackages === undefined || publicEnvironment === undefined
       ? undefined
       : new SqliteMetricObservationStore(absolute(metricObservationPath, "NARYX_METRIC_OBSERVATION_DB"), {
         environment: publicEnvironment,
         orders: strategyPackages,
-        sourcesByMetric: loadMetricObservationSources(absolute(metricSourcePath, "NARYX_METRIC_OBSERVATION_SOURCES")),
+        sourcesByMetric: metricSources!,
         clock: clockMs,
       });
     if (metricObservations !== undefined) opened.push(metricObservations);
-    if (orderActivations !== undefined && metricObservations === undefined) {
-      throw new PublicMarketConfigError("NARYX_ORDER_ACTIVATION_DB requires verified metric observations: NARYX_METRIC_OBSERVATION_DB and NARYX_METRIC_OBSERVATION_SOURCES.");
-    }
     const strategyPath = optional(environment.NARYX_STRATEGY_DB);
     if (strategyPath !== undefined && evidence === undefined) {
       throw new PublicMarketConfigError("NARYX_STRATEGY_DB requires NARYX_EVIDENCE_DB, whose settled receipts found strategies.");
@@ -824,9 +825,9 @@ export function loadPublicMarketRuntime(
       ...(keeper === undefined ? [] : [createKeeperExecutorHandler({ executor: keeper, nowIn: keeperClock(clockMs) })]),
       ...(coordination === undefined ? [] : [createCoordinationInternalHandler(coordination)]),
       ...(nativeClearing === undefined ? [] : [createNativeClearingAdminHandler({ clearing: nativeClearing, exchange: store })]),
-      ...(orderActivations === undefined || metricObservations === undefined ? [] : [createOrderActivationAdminHandler({
+      ...(orderActivations === undefined ? [] : [createOrderActivationAdminHandler({
         activations: orderActivations,
-        observations: metricObservations,
+        ...(metricObservations === undefined ? {} : { observations: metricObservations }),
         ...(advancedOrderReconciliation === undefined ? {} : { reconciliation: advancedOrderReconciliation }),
       })]),
       // Owner list and signed cancel under /internal/terminal/, which the terminal origin reaches.

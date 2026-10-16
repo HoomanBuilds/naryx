@@ -45,3 +45,36 @@ test("activation reserve takes its time and observations from the server, never 
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+test("time-only activation reserves without a metric observation service", async () => {
+  let received: unknown;
+  const handler = createOrderActivationAdminHandler({
+    activations: {
+      activationClockValue: () => 1_000n,
+      reserve: (input) => { received = input; return { active: false, reason: "NOT_DUE" }; },
+      complete: () => { throw new Error("unused"); },
+      cancel: () => { throw new Error("unused"); },
+    },
+  });
+  const server = createServer((request, response) => {
+    if (!handler(request, response)) response.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/internal/order-activations/reserve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(toProtocolJson({ orderHash: "aa".repeat(32), side: "BID", limitPriceTicks: 100n })),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(received, {
+      orderHashHex: "aa".repeat(32),
+      observations: [],
+      atValue: 1_000n,
+      side: "BID",
+      limitPriceTicks: 100n,
+    });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

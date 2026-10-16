@@ -120,6 +120,34 @@ test("scheduled activation persists one exact attempt per due window across rest
   }
 });
 
+test("time-only runtime accepts schedules and time triggers but rejects unconfigured external metrics", () => {
+  const dir = mkdtempSync(join(tmpdir(), "naryx-order-time-only-"));
+  const condition: ActivationConditionInput = {
+    conditionVersion: 1,
+    metric: "TIME",
+    comparator: "AT_OR_ABOVE",
+    threshold: 1_000n,
+    observationUnit: "EVM_UNIX_SECONDS",
+    maximumObservationAge: 0n,
+  };
+  const external = { ...condition, metric: "BASIS" as const };
+  const timeOrder = source(order({ packageOrderType: "CONDITIONAL", activationConditionHash: activationConditionHash(condition) }));
+  const externalOrder = source(order({ packageOrderType: "CONDITIONAL", activationConditionHash: activationConditionHash(external) }));
+  const orders = {
+    order: (hash: string) => timeOrder.orders.order(hash) ?? externalOrder.orders.order(hash),
+  };
+  const store = new SqliteOrderActivationStore(join(dir, "activation.sqlite"), { orders, enabledMetrics: new Set(["TIME"]) });
+  try {
+    store.register({ orderHashHex: timeOrder.orderHashHex, condition });
+    assert.deepEqual(store.reserve({ orderHashHex: timeOrder.orderHashHex, observations: [], atValue: 999n, side: "BID", limitPriceTicks: 100n }), { active: false, reason: "NOT_SATISFIED" });
+    assert.equal(store.reserve({ orderHashHex: timeOrder.orderHashHex, observations: [], atValue: 1_000n, side: "BID", limitPriceTicks: 100n }).active, true);
+    assert.throws(() => store.register({ orderHashHex: externalOrder.orderHashHex, condition: external }), { code: "METRIC_SOURCE_UNAVAILABLE" });
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("package TWAP reservations and completions preserve the signed aggregate limit", () => {
   const dir = mkdtempSync(join(tmpdir(), "naryx-order-twap-"));
   const executionSchedule = schedule({ kind: "PACKAGE_TWAP", sliceCount: 2, maximumSliceQuantity: 50n, aggregateLimitPriceTicks: 100n });

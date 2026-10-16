@@ -24,7 +24,7 @@ function failure(response: ServerResponse, error: unknown): true {
 
 export function createOrderActivationAdminHandler(options: {
   readonly activations: Pick<SqliteOrderActivationStore, "reserve" | "complete" | "cancel" | "activationClockValue">;
-  readonly observations: Pick<SqliteMetricObservationStore, "observations">;
+  readonly observations?: Pick<SqliteMetricObservationStore, "observations">;
   readonly reconciliation?: Pick<AdvancedOrderReconciliation, "reconcile">;
 }): (request: IncomingMessage, response: ServerResponse) => boolean {
   return (request, response) => {
@@ -52,7 +52,7 @@ export function createOrderActivationAdminHandler(options: {
           const atValue = options.activations.activationClockValue(body.orderHash);
           return sendJson(response, 200, options.activations.reserve({
             orderHashHex: body.orderHash,
-            observations: options.observations.observations(body.orderHash, atValue),
+            observations: options.observations?.observations(body.orderHash, atValue) ?? [],
             atValue,
             side: body.side,
             limitPriceTicks: body.limitPriceTicks,

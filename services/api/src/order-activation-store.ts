@@ -16,6 +16,7 @@ import {
 } from "@naryx/protocol-types";
 import type {
   ActivationConditionInput,
+  ConditionMetric,
   ExecutionScheduleInput,
   MetricObservation,
   ScheduleProgress,
@@ -219,10 +220,12 @@ export class SqliteOrderActivationStore {
   private readonly db: Database.Database;
   private readonly orders: StrategyOrderSource;
   private readonly clock: () => number;
+  private readonly enabledMetrics: ReadonlySet<ConditionMetric> | undefined;
 
-  constructor(dbPath: string, options: { readonly orders: StrategyOrderSource; readonly clock?: () => number }) {
+  constructor(dbPath: string, options: { readonly orders: StrategyOrderSource; readonly clock?: () => number; readonly enabledMetrics?: ReadonlySet<ConditionMetric> }) {
     this.orders = options.orders;
     this.clock = options.clock ?? Date.now;
+    this.enabledMetrics = options.enabledMetrics;
     this.db = openDurableDatabase(dbPath, SCHEMA_SQL, (code, message) => new OrderActivationStoreError(code, message));
     // Activations registered before the owner index existed are indexed once from their stored order.
     const unindexed = this.db.prepare(`
@@ -293,6 +296,9 @@ export class SqliteOrderActivationStore {
       }
     }
     const condition = input.condition === undefined ? undefined : activationCondition(input.condition);
+    if (condition !== undefined && this.enabledMetrics !== undefined && !this.enabledMetrics.has(condition.metric)) {
+      throw new OrderActivationStoreError("METRIC_SOURCE_UNAVAILABLE", "No verified source is configured for this activation metric.");
+    }
     const schedule = input.schedule === undefined ? undefined : executionSchedule(input.schedule);
     if ((order.activationConditionHash === undefined) !== (condition === undefined)) {
       throw new OrderActivationStoreError("CONDITION_MISMATCH", "The activation condition document does not match the order binding.");
