@@ -3,7 +3,7 @@ export const HYPERLIQUID_TESTNET_ENVIRONMENT = "TESTNET" as const;
 
 const REQUEST_KEYS = ["attemptId", "idempotencyKey"] as const;
 const ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
-const ATTEMPT_ID_PATTERN = /^hyperliquid-testnet-[0-9a-f]{48}$/;
+const ATTEMPT_ID_PATTERN = /^(?:hyperliquid-testnet|strategy-hl)-[0-9a-f]{48}$/;
 const LEG_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const COMMITMENT_PATTERN = /^0x[0-9a-f]{64}$/;
 const REASON_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;

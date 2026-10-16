@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
 import { HyperliquidTestnetLiquidityUnavailableError } from "../src/hyperliquid-testnet-terminal-execution.js";
+import { parseHyperliquidTestnetTerminalExecutionRequest } from "../src/hyperliquid-testnet-terminal.js";
 import {
   createPrivateTerminalServer,
   type HyperliquidTestnetTerminalContext,
@@ -19,6 +20,16 @@ const EVIDENCE = `0x${"dd".repeat(32)}`;
 const LEG_EVIDENCE = `0x${"de".repeat(32)}`;
 const ENDPOINT = "/internal/terminal/hyperliquid-testnet/execute";
 const CONTEXT_ENDPOINT = "/internal/terminal/hyperliquid-testnet/context";
+test("execution requests admit both registered testnet attempt families and reject malformed identities", () => {
+  for (const attemptId of [ATTEMPT_ID, `strategy-hl-${"ab".repeat(24)}`]) {
+    assert.deepEqual(parseHyperliquidTestnetTerminalExecutionRequest({ attemptId, idempotencyKey: IDEMPOTENCY_KEY }),
+      { attemptId, idempotencyKey: IDEMPOTENCY_KEY });
+  }
+  for (const attemptId of [`strategy-hl-${"ab".repeat(23)}`, `strategy-hl-${"AB".repeat(24)}`, `hyperliquid-mainnet-${"ab".repeat(24)}`]) {
+    assert.throws(() => parseHyperliquidTestnetTerminalExecutionRequest({ attemptId, idempotencyKey: IDEMPOTENCY_KEY }));
+  }
+  assert.throws(() => parseHyperliquidTestnetTerminalExecutionRequest({ attemptId: ATTEMPT_ID, idempotencyKey: IDEMPOTENCY_KEY, signer: "external" }));
+});
 const TERMINAL_CONTEXT: HyperliquidTestnetTerminalContext = Object.freeze({
   contextId: "hyperliquid:testnet:btc-carry-v1",
   tradingAccount: "0x1111111111111111111111111111111111111111",
