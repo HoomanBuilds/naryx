@@ -422,6 +422,6 @@ test('an on-demand quote never writes a level while a binding holds the shard se
   await assert.rejects(signThroughSolver(order, policy.feePolicy, writer), /write reached the chain/);
   assert.equal(writes, 1);
   holdShardSequences(solverConfig(policy.feePolicy).accounts.packageBookShard, SLOT + 1n);
-  await assert.rejects(signThroughSolver(order, policy.feePolicy, writer), /held by an in-flight binding/);
+  await assert.rejects(signThroughSolver(order, policy.feePolicy, writer), /package book is reserved by an in-flight execution/);
   assert.equal(writes, 1);
 });
