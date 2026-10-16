@@ -1185,7 +1185,12 @@ const evmStrategyExecutionObservation = evmStrategyAuthorizationEnabled
 if (evmStrategyExecutionObservation !== undefined && publicMarket?.strategyPackageExecutions !== undefined) {
   const observations = evmStrategyExecutionObservation;
   const strategies = publicMarket.strategyPackageExecutions;
-  everyMinute(async () => { await reconcilePendingEvmStrategies(strategies, observations); });
+  everyMinute(async () => {
+    const result = await reconcilePendingEvmStrategies(strategies, observations);
+    if (result.finalized > 0 || result.failed > 0) {
+      process.stdout.write(`Native EVM reconciliation: ${result.finalized} finalized, ${result.pending} pending, ${result.failed} failed\n`);
+    }
+  });
 }
 const nettingAllocationAuthorization = explicitlyEnabled('NARYX_NETTING_ALLOCATION_AUTHORIZATION_ENABLED')
   ? new HttpNettingAllocationAuthorizationClient(solverOrigin)

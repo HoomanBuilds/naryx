@@ -2129,10 +2129,10 @@ export function createPrivateTerminalRequestHandler(
         }
         const values = requestBody as { quoteHash: string; transactionHash: string };
         const observation = await evmStrategyExecutionObservation.observe(values.quoteHash, values.transactionHash);
+        if (observation.status !== 'PENDING') {
+          generalizedStrategyExecutions.queueEvmStrategyObservation?.(values.quoteHash, observation.transactionHash);
+        }
         if (observation.status !== 'FINALIZED') {
-          if (observation.status === 'PENDING_FINALITY') {
-            generalizedStrategyExecutions.queueEvmStrategyObservation?.(values.quoteHash, observation.transactionHash);
-          }
           sendJson(response, 202, { status: observation.status, transactionHash: observation.transactionHash });
           return;
         }
