@@ -547,9 +547,10 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
   const evidence = [evmHash('1'), evmHash('2')] as const;
   const evidenceRoot = keccak256(encodeAbiParameters([{ type: 'bytes32[]' }], [evidence]));
   let storedQuoteHash = envelope.execution.quoteHash;
+  let finalizedBlock = 76n;
   const observationChain: EvmStrategyObservationReadPort = {
     chainId: async () => 84_532,
-    finalizedBlockNumber: async () => 77n,
+    finalizedBlockNumber: async () => finalizedBlock,
     blockTimestamp: async () => 1_050n,
     transactionReceipt: async () => ({
       status: 'success',
@@ -614,6 +615,14 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
     journal,
     lanes: [{ chainId: 84_532, chain: observationChain }],
   });
+  assert.equal((await observer.observe({ quoteHash, transactionHash: TRANSACTION_HASH }))?.status, 'PENDING_FINALITY');
+  storedQuoteHash = evmHash('0');
+  await assert.rejects(
+    () => observer.observe({ quoteHash, transactionHash: TRANSACTION_HASH }),
+    /stored account receipt differs from the prepared execution/,
+  );
+  storedQuoteHash = envelope.execution.quoteHash;
+  finalizedBlock = 77n;
   const observed = await observer.observe({ quoteHash, transactionHash: TRANSACTION_HASH });
   assert.equal(observed?.status, 'FINALIZED');
   if (observed?.status !== 'FINALIZED') throw new Error('missing finalized receipt');

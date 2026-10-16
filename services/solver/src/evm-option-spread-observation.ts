@@ -212,11 +212,6 @@ export class EvmStrategyExecutionObservationService {
     const transaction = await chain.transactionReceipt(input.transactionHash);
     if (transaction === undefined) return Object.freeze({ version: 1, status: 'PENDING', transactionHash: input.transactionHash });
     requireCondition(transaction.status === 'success', 'transaction reverted');
-    const finalized = await chain.finalizedBlockNumber();
-    if (transaction.blockNumber > finalized) {
-      return Object.freeze({ version: 1, status: 'PENDING_FINALITY', transactionHash: input.transactionHash });
-    }
-
     const account = getAddress(envelope.account);
     const decoded = transaction.logs
       .filter((log) => getAddress(log.address) === account)
@@ -299,6 +294,11 @@ export class EvmStrategyExecutionObservationService {
       && storedFees.protocolFeeAtoms === envelope.execution.fees.protocolFeeAtoms
       && storedFees.solverFeeAtoms === envelope.execution.fees.solverFeeAtoms,
     'stored account receipt differs from the prepared execution');
+
+    const finalized = await chain.finalizedBlockNumber();
+    if (transaction.blockNumber > finalized) {
+      return Object.freeze({ version: 1, status: 'PENDING_FINALITY', transactionHash: input.transactionHash });
+    }
 
     const legOutcomes = documents.graph.legs.map((leg) => {
       const evidenceHash = evidenceByLegId.get(leg.legId);
