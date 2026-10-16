@@ -2903,15 +2903,22 @@ export function GeneralizedStrategyPreparationPanel({
   const [authorizationBusy, setAuthorizationBusy] = useState(false);
   const [executionBusy, setExecutionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [auctionClockMs, setAuctionClockMs] = useState(0);
+  useEffect(() => {
+    const update = () => setAuctionClockMs(Date.now());
+    const initial = window.setTimeout(update, 0);
+    const timer = window.setInterval(update, 5_000);
+    return () => { window.clearTimeout(initial); window.clearInterval(timer); };
+  }, []);
   const [recordedPackageOrders, recordPackageOrder] = usePackageOrderIndex();
   const recentPackageOrders = packageOrdersOf(
     recordedPackageOrders,
     [strategyOwner, solanaOwner].filter((owner): owner is string => owner !== null),
   );
   const auctionValidityFloor = sealedAuctionTimeUnit === "HYPERLIQUID_UNIX_MILLISECONDS"
-    ? BigInt(Date.now() + 20_000)
-    : BigInt(Math.floor(Date.now() / 1_000) + 20);
-  const eligibleAuctionSolvers = sealedAuctionTimeUnit === null ? [] : auctionSolvers.filter((solver) =>
+    ? BigInt(auctionClockMs + 50_000)
+    : BigInt(Math.floor(auctionClockMs / 1_000) + 50);
+  const eligibleAuctionSolvers = sealedAuctionTimeUnit === null || auctionClockMs === 0 ? [] : auctionSolvers.filter((solver) =>
     solver.environment === "testnet"
     && solver.validityUnit === sealedAuctionTimeUnit
     && BigInt(solver.validUntilValue) >= auctionValidityFloor
@@ -4739,12 +4746,15 @@ export function GeneralizedStrategyPreparationPanel({
       const currentEligible = eligibleAuctionSolvers.filter((solver) => selectedAuctionSolverIds.includes(solver.solverId));
       if (currentEligible.length === 0) throw new Error("Select at least one eligible solver.");
       const now = sealedAuctionTimeUnit === "HYPERLIQUID_UNIX_MILLISECONDS"
-        ? BigInt(Date.now())
-        : BigInt(Math.floor(Date.now() / 1_000));
+        ? BigInt(auctionClockMs)
+        : BigInt(Math.floor(auctionClockMs / 1_000));
       const second = sealedAuctionTimeUnit === "HYPERLIQUID_UNIX_MILLISECONDS" ? BigInt(1_000) : BigInt(1);
-      const commitDeadlineValue = now + BigInt(5) * second;
-      const revealDeadlineValue = now + BigInt(10) * second;
-      const settlementDeadlineValue = now + BigInt(20) * second;
+      const commitDeadlineValue = now + BigInt(20) * second;
+      const revealDeadlineValue = now + BigInt(35) * second;
+      const settlementDeadlineValue = now + BigInt(50) * second;
+      if (privateRfqOrderContext === null || BigInt(privateRfqOrderContext.expiryValue) <= settlementDeadlineValue) {
+        throw new Error("This order expires before the auction can settle. Create a fresh order first.");
+      }
       if (currentEligible.some((solver) => BigInt(solver.validUntilValue) < settlementDeadlineValue)) {
         throw new Error("A selected solver capability expires before settlement. Refresh the solver registry.");
       }
