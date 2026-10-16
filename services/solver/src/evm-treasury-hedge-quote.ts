@@ -11,7 +11,8 @@ import {
   type StrategyLegEconomicsInput,
   type VersionedManifestRef,
 } from '@naryx/protocol-types';
-import { getAddress, type Abi, type Address, type Hex } from 'viem';
+import { getAddress, keccak256, stringToHex, type Abi, type Address, type Hex } from 'viem';
+import { readEvmTestnetMinimumMargin } from './evm-risk-terms.js';
 import type { StoredStrategyPackageOrderDocuments } from './http-strategy-package-provider.js';
 import type { GeneralizedStrategyPricingPort, GeneralizedStrategyQuoteTerms } from './strategy-quote-service.js';
 import type {
@@ -243,7 +244,7 @@ function serviceCharge(category: 'PROTOCOL' | 'SOLVER', asset: AssetRef, atoms: 
 }
 
 export function createEvmTreasuryHedgeGeneralizedPricing(
-  input: EvmTreasuryHedgePricingInput,
+  input: EvmTreasuryHedgePricingInput & Readonly<{ accountFactory: EvmOptionSpreadContractIdentity }>,
 ): GeneralizedStrategyPricingPort {
   validateConfiguration(input);
   return Object.freeze({
@@ -307,7 +308,17 @@ export function createEvmTreasuryHedgeGeneralizedPricing(
       const requiredMarginWad = increasing
         ? ceilDiv(snapshot.notionalWad * snapshot.initialMarginBps, BPS) + snapshot.feeWad
         : 0n;
-      const requiredMarginAtoms = increasing ? ceilDiv(requiredMarginWad, snapshot.collateralScale) : 0n;
+      const venueMarginAtoms = increasing ? ceilDiv(requiredMarginWad, snapshot.collateralScale) : 0n;
+      const inventoryNotionalAtoms = ceilDiv(oracleNotionalWad, snapshot.collateralScale);
+      const policyMarginAtoms = increasing ? await readEvmTestnetMinimumMargin({
+        chain: input.chain, chainId: input.chainId, domain: input.domain, templateId: order.templateId,
+        factory: input.accountFactory, accountingToken: getAddress(input.quoteToken.address),
+        dependencyIds: [input.inventory.adapter.adapterId, input.hedge.adapter.adapterId]
+          .map((id) => keccak256(stringToHex(id))),
+        grossQuoteAtoms: inventoryNotionalAtoms + notionalAtoms,
+      }) : 0n;
+      const requiredMarginAtoms = venueMarginAtoms > policyMarginAtoms ? venueMarginAtoms : policyMarginAtoms;
+      requireCondition(requiredMarginAtoms <= order.maximumMarginIncrease.atoms, 'required margin exceeds the signed cap');
       const protocolFee = ceilDiv(notionalAtoms * BigInt(input.protocolFeeBps), BPS);
       const solverFee = ceilDiv(notionalAtoms * BigInt(input.solverFeeBps), BPS);
       const totalCost = adverseExecutionAtoms + venueFeeAtoms + protocolFee + solverFee + input.networkFeeQuoteAtoms;
@@ -323,7 +334,7 @@ export function createEvmTreasuryHedgeGeneralizedPricing(
         Object.freeze({
           legId: inventoryLeg.legId,
           quantity: assetAmount(input.inventoryAsset, quantity),
-          grossNotional: assetAmount(input.quoteAsset, ceilDiv(oracleNotionalWad, snapshot.collateralScale)),
+          grossNotional: assetAmount(input.quoteAsset, inventoryNotionalAtoms),
           marginDelta: assetAmount(input.quoteAsset, 0n),
           venueFee: assetAmount(input.quoteAsset, 0n),
           builderFee: assetAmount(input.quoteAsset, 0n),

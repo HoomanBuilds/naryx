@@ -166,6 +166,7 @@ function lane(
     quoteToken: contract(input.quoteToken, 'lane.quoteToken'),
     oracle: contract(input.oracle, 'lane.oracle'),
     market: contract(input.market, 'lane.market'),
+    accountFactory: contract(input.accountFactory, 'lane.accountFactory'),
     inventory,
     hedge,
     protocolFeeBps: nonnegativeInteger(input.protocolFeeBps, 'lane.protocolFeeBps'),

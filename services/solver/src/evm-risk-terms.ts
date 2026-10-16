@@ -1,6 +1,6 @@
 import type { EvmStrategyCallPolicy, EvmStrategyRiskTerms } from '@naryx/adapter-evm';
-import type { AssetRef } from '@naryx/protocol-types';
-import { encodeAbiParameters, getAddress, keccak256, parseAbiParameters, stringToHex, type Address, type Hex } from 'viem';
+import { toHex, type AssetRef, type DomainRef } from '@naryx/protocol-types';
+import { encodeAbiParameters, getAddress, keccak256, parseAbi, parseAbiParameters, stringToHex, type Address, type Hex } from 'viem';
 import type { EvmOptionSpreadReadPort } from './evm-option-spread-quote.js';
 
 const BALANCE_ABI = [{
@@ -11,6 +11,14 @@ const DOMAIN_PARAMETERS = parseAbiParameters('string,uint256,bytes32');
 const POLICY_PARAMETERS = parseAbiParameters('string,bytes32,bytes32[]');
 const MINIMUM_RECOVERY_RESERVE = 1_000_000n;
 const MAXIMUM_UNWIND_MS = 3_600_000n;
+const RISK_FACTORY_ABI = parseAbi([
+  'function riskDomainRegistry() view returns (address)',
+  'function riskDomainRegistryCodeHash() view returns (bytes32)',
+]);
+const RISK_POLICY_ABI = parseAbi([
+  'function activeVersion(bytes32 riskDomainId) view returns (uint32)',
+  'function policy(bytes32 riskDomainId, uint32 manifestVersion) view returns (((uint32 manifestVersion, bytes32 manifestHash, uint32 domainManifestVersion, bytes32 domainManifestHash, address accountingToken, bytes32 expectedTokenCodeHash, uint128 grossCapQuoteAtoms, uint128 netCapQuoteAtoms, uint128 minimumMarginFloorQuoteAtoms, uint64 maximumLeverageBps, uint64 maximumStalenessMs, uint64 maximumTimeToUnwindMs, uint128 requiredRecoveryReserveQuoteAtoms, uint16 aggregateHaircutBps) config, uint8 lifecycle, bool activated, uint16 seriesCount, uint16 dependencyCount))',
+]);
 
 export class EvmStrategyFundingRequiredError extends Error {
   readonly funding: Readonly<{
@@ -61,6 +69,48 @@ export function evmTestnetRiskIdentity(input: Readonly<{
       manifestHash: keccak256(encodeAbiParameters(DOMAIN_PARAMETERS, ['naryx-testnet-series-v1', input.chainId, templateHash])),
     }),
   });
+}
+
+export async function readEvmTestnetMinimumMargin(input: Readonly<{
+  chain: EvmOptionSpreadReadPort;
+  chainId: bigint;
+  domain: DomainRef;
+  templateId: string;
+  factory: Readonly<{ address: Address; expectedCodeHash: Hex }>;
+  accountingToken: Address;
+  dependencyIds: readonly Hex[];
+  grossQuoteAtoms: bigint;
+}>): Promise<bigint> {
+  const identity = evmTestnetRiskIdentity(input);
+  requireCondition(await input.chain.chainId() === input.chainId, 'risk RPC chain differs');
+  requireCondition(await input.chain.codeHash(input.factory.address) === input.factory.expectedCodeHash,
+    'risk account factory code changed');
+  const [registryValue, pinnedCode] = await Promise.all([
+    input.chain.readContract({ address: input.factory.address, abi: RISK_FACTORY_ABI, functionName: 'riskDomainRegistry' }),
+    input.chain.readContract({ address: input.factory.address, abi: RISK_FACTORY_ABI, functionName: 'riskDomainRegistryCodeHash' }),
+  ]);
+  const registry = getAddress(String(registryValue));
+  const actualCode = await input.chain.codeHash(registry);
+  requireCondition(actualCode !== undefined && actualCode === pinnedCode, 'risk registry code changed');
+  const [activeVersion, value] = await Promise.all([
+    input.chain.readContract({ address: registry, abi: RISK_POLICY_ABI, functionName: 'activeVersion', args: [identity.riskDomainId] }),
+    input.chain.readContract({ address: registry, abi: RISK_POLICY_ABI, functionName: 'policy', args: [identity.riskDomainId, identity.policyVersion] }),
+  ]);
+  requireCondition(typeof value === 'object' && value !== null && !Array.isArray(value), 'risk policy is invalid');
+  const policy = value as Record<string, unknown>;
+  requireCondition(typeof policy.config === 'object' && policy.config !== null, 'risk config is invalid');
+  const config = policy.config as Record<string, unknown>;
+  requireCondition(activeVersion === identity.policyVersion && policy.activated === true && policy.lifecycle === 1
+    && config.manifestVersion === identity.policyVersion && config.manifestHash === identity.policyManifestHash
+    && config.domainManifestVersion === input.domain.domainManifestVersion
+    && config.domainManifestHash === `0x${toHex(input.domain.domainManifestHash)}`
+    && getAddress(String(config.accountingToken)) === getAddress(input.accountingToken), 'risk policy identity or activation differs');
+  const leverage = config.maximumLeverageBps;
+  const floor = config.minimumMarginFloorQuoteAtoms;
+  requireCondition(typeof leverage === 'bigint' && leverage > 0n && leverage <= 1_000_000n
+    && typeof floor === 'bigint' && floor >= 0n && input.grossQuoteAtoms > 0n, 'risk margin parameters are invalid');
+  const minimum = (input.grossQuoteAtoms * 10_000n + leverage - 1n) / leverage;
+  return minimum > floor ? minimum : floor;
 }
 
 export async function evmTestnetRiskTerms(input: Readonly<{

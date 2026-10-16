@@ -13,7 +13,8 @@ import {
   strategyPackageOrderHash,
   versionedManifestRef,
 } from '@naryx/protocol-types';
-import type { Abi, Address, Hex } from 'viem';
+import { keccak256, stringToHex, type Abi, type Address, type Hex } from 'viem';
+import { evmTestnetRiskIdentity } from '../src/evm-risk-terms.js';
 import {
   createEvmTreasuryHedgeGeneralizedPricing,
   type EvmOptionSpreadReadPort,
@@ -31,6 +32,8 @@ const INVENTORY_TOKEN = address('1');
 const QUOTE_TOKEN = address('2');
 const ORACLE = address('3');
 const MARKET = address('4');
+const FACTORY = address('7');
+const REGISTRY = address('8');
 
 const domain = domainRef('eip155:84532', 1, hash('1'));
 const inventoryAsset = assetRef('base-sepolia:ntbase', hash('2'), 18);
@@ -50,11 +53,15 @@ const inventoryMarket = versionedManifestRef('ntbase-inventory', 1, hash('7'));
 const hedgeMarket = versionedManifestRef('ntbase-perpetual', 1, hash('8'));
 
 class Chain implements EvmOptionSpreadReadPort {
+  leverage = 100_000n;
+  policyActive = true;
   readonly codes = new Map<string, Hex>([
     [INVENTORY_TOKEN, codeHash('1')],
     [QUOTE_TOKEN, codeHash('2')],
     [ORACLE, codeHash('3')],
     [MARKET, codeHash('4')],
+    [FACTORY, codeHash('7')],
+    [REGISTRY, codeHash('8')],
   ]);
 
   async chainId() { return 84_532n; }
@@ -67,6 +74,23 @@ class Chain implements EvmOptionSpreadReadPort {
     functionName: string;
     args?: readonly unknown[];
   }>): Promise<unknown> {
+    if (request.address === FACTORY) {
+      if (request.functionName === 'riskDomainRegistry') return REGISTRY;
+      if (request.functionName === 'riskDomainRegistryCodeHash') return codeHash('8');
+    }
+    if (request.address === REGISTRY) {
+      if (request.functionName === 'activeVersion') return 1;
+      if (request.functionName === 'policy') return {
+        activated: this.policyActive, lifecycle: 1,
+        config: {
+          manifestVersion: 1,
+          manifestHash: evmTestnetRiskIdentity({ chainId: 84_532n, templateId: 'treasury-inventory-hedge-v1',
+            dependencyIds: [inventoryAdapter.adapterId, hedgeAdapter.adapterId].map((id) => keccak256(stringToHex(id))) }).policyManifestHash,
+          domainManifestVersion: 1, domainManifestHash: `0x${hash('1')}`,
+          accountingToken: QUOTE_TOKEN, maximumLeverageBps: this.leverage, minimumMarginFloorQuoteAtoms: 1_000_000n,
+        },
+      };
+    }
     assert.equal(request.address, MARKET);
     switch (request.functionName) {
       case 'collateral': return QUOTE_TOKEN;
@@ -210,7 +234,7 @@ function documents(
   };
 }
 
-function pricing(chain: Chain): EvmTreasuryHedgePricingInput {
+function pricing(chain: Chain): EvmTreasuryHedgePricingInput & { accountFactory: { address: Address; expectedCodeHash: Hex } } {
   return {
     chainId: 84_532n,
     domain,
@@ -220,6 +244,7 @@ function pricing(chain: Chain): EvmTreasuryHedgePricingInput {
     quoteToken: { address: QUOTE_TOKEN, expectedCodeHash: codeHash('2') },
     oracle: { address: ORACLE, expectedCodeHash: codeHash('3') },
     market: { address: MARKET, expectedCodeHash: codeHash('4') },
+    accountFactory: { address: FACTORY, expectedCodeHash: codeHash('7') },
     inventory: { adapter: inventoryAdapter, venue, market: inventoryMarket },
     hedge: { adapter: hedgeAdapter, venue, market: hedgeMarket },
     protocolFeeBps: 5,
@@ -268,6 +293,21 @@ test('prices treasury hedge increases and decreases with directional margin', as
     currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW },
   });
   assert.equal(decrease.legEconomics[1]?.marginDelta.atoms, 0n);
+});
+
+test('treasury quotes fund active package risk margin and refuse signed-cap or inactive-policy violations', async () => {
+  const chain = new Chain();
+  chain.leverage = 50_000n;
+  const port = createEvmTreasuryHedgeGeneralizedPricing(pricing(chain));
+  const initial = documents(99n);
+  const source = { ...initial, order: { ...initial.order, maximumMarginIncrease: assetAmount(quoteAsset, 40_000_000n) } };
+  const terms = await port.quote({ documents: source, currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW } });
+  assert.equal(terms.legEconomics[1]?.marginDelta.atoms, 40_000_000n);
+  await assert.rejects(port.quote({ documents: { ...source, order: { ...source.order,
+    maximumMarginIncrease: assetAmount(quoteAsset, 39_999_999n) } },
+  currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW } }), /signed cap/);
+  chain.policyActive = false;
+  await assert.rejects(port.quote({ documents: source, currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW } }), /activation differs/);
 });
 
 test('rejects an unsafe numeric market field', async () => {
