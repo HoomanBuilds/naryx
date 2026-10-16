@@ -141,7 +141,7 @@ const activeRegistryRecords = [
 const manifest: SolanaDevnetSharedManifest = {
   domain,
   programs: Object.values(programs) as never,
-  coreIdl: {} as never,
+  coreIdl: JSON.parse(readFileSync(new URL('../../../../deployments/solana/devnet/test-perp/idl/naryx_core.devnet-test-perp.json', import.meta.url), 'utf8')),
   expectedCoreIdlHash: bytes(16),
   perpVenueKind: 'NARYX_TEST_PERP',
   testPerp: { market: key().toBase58(), oracle: SOLANA_DEVNET_SOL_USD_PRICE_ACCOUNT, feedIdHex: SOLANA_DEVNET_SOL_USD_FEED_ID_HEX, strategyIdHex: '17'.repeat(32) },
@@ -275,12 +275,21 @@ function chainAccounts(trader: PublicKey, order: PackageOrder): Map<string, { ow
   const strategy = PublicKey.findProgramAddressSync(
     [Buffer.from('test-perp-strategy'), trader.toBuffer(), Buffer.from(manifest.testPerp.strategyIdHex, 'hex')], programId('perp_adapter'),
   )[0];
+  const marketResource = (name: 'spotMarket' | 'perpMarket', role: number) => new BorshWriter()
+    .bytes(accountDiscriminator('ResourceRecord')).u8(2).domain(domain)
+    .bytes(bytes(20)).u32(1).bytes(resources[name].manifestHash)
+    .key(resources[name].subjectAddress).key(resources[name].programId).key(key()).bytes(bytes(20))
+    .u8(9).u8(6).u8(role).bytes(new Uint8Array(7)).u8(1)
+    .u8(9).u8(6).u64(1_000_000n).u64(1n).u64(1_000_000n).u64(1n).u64(1n)
+    .u8(0).u8(0).u8(0).bool(true).u8(255).done();
   const result = new Map([
     [manifest.testPerp.market, { owner: programs.perp_venue!.programId, data: marketData }],
     [SOLANA_DEVNET_SOL_USD_PRICE_ACCOUNT, { owner: PYTH_RECEIVER_PROGRAM_ID, data: Uint8Array.from(oracle) }],
     [accounts.reservationClass, { owner: programs.reservation!.programId, data: classData }],
     [accounts.packageBookShard, { owner: programs.package_book!.programId, data: shardData }],
     [accounts.packageBookLevelPage, { owner: programs.package_book!.programId, data: page.key(accounts.packageBookShard).done() }],
+    [accounts.records.spotMarket, { owner: programs.core!.programId, data: marketResource('spotMarket', 1) }],
+    [accounts.records.perpMarket, { owner: programs.core!.programId, data: marketResource('perpMarket', 2) }],
   ]);
   if (order.action === 'EXIT') {
     const open = pda('core', Buffer.from('cash-carry-open'), trader.toBuffer(), strategy.toBuffer());

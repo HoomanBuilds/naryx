@@ -9,6 +9,7 @@ import {
   holdShardSequences,
   priceSolanaDevnetEntry,
   priceSolanaDevnetExit,
+  requireSolanaDevnetMarketMinimums,
   selectFirmLevel,
   shardSequencesHeld,
   standingLevelExpiry,
@@ -79,6 +80,14 @@ test('prices a floored firm inventory bid and a rounded-up test perp buy-back in
   assert.throws(() => priceSolanaDevnetExit(config, market, 150_000n, 1_500_000n), /exact/);
 });
 
+test('declines below-minimum leg notionals before a quote can reserve inventory', () => {
+  const minimums = { spot: 1_000_000n, perpetual: 1_000_000n };
+  const leg = { spotLots: 10n, spotLimitPerLot: 100_000n, perpLots: 10n, perpLimitPerLot: 100_000n };
+  assert.doesNotThrow(() => requireSolanaDevnetMarketMinimums(minimums, leg));
+  assert.throws(() => requireSolanaDevnetMarketMinimums(minimums, { ...leg, spotLimitPerLot: 99_999n }), { code: 'QUOTE_DECLINED' });
+  assert.throws(() => requireSolanaDevnetMarketMinimums(minimums, { ...leg, perpLimitPerLot: 99_999n }), { code: 'QUOTE_DECLINED' });
+});
+
 test('previews short increases and partial reductions with venue-exact accounting', () => {
   const position = {
     market: 'm', owner: 'o', delegate: 'd', collateralAtoms: 100_000_000n,
@@ -112,6 +121,7 @@ test('selects only a live firm ask level with the reviewed policy, capacity, and
   };
   const state = {
     slot: 400n, market, oraclePricePerLot: 150_000n, oracleObservationAgeMs: 0n,
+    marketMinimumNotionals: { spot: 1n, perpetual: 1n },
     reservationClass: { policyHash: policy } as never,
     shard: { epoch: 2n, heartbeatExpirySlot: 600n } as never,
     levels: [level],
@@ -135,6 +145,7 @@ test('binds a quote to the usable level with the latest expiry, ties to the lowe
   };
   const state = (levels: QuoteLevelState[]) => ({
     slot: 400n, market, oraclePricePerLot: 150_000n, oracleObservationAgeMs: 0n,
+    marketMinimumNotionals: { spot: 1n, perpetual: 1n },
     reservationClass: { policyHash: policy } as never,
     shard: { epoch: 2n, heartbeatExpirySlot: 600n } as never,
     levels,
@@ -163,6 +174,7 @@ test('keeps a standing level per side that a quote made a lead time from now can
   };
   const at = (slot: bigint, levels: QuoteLevelState[]) => ({
     slot, market, oraclePricePerLot: 150_000n, oracleObservationAgeMs: 0n,
+    marketMinimumNotionals: { spot: 1n, perpetual: 1n },
     reservationClass: { policyHash: policy } as never,
     shard: { epoch: 2n, heartbeatExpirySlot: 5_000n } as never,
     levels,

@@ -30,6 +30,7 @@ import {
   type SolverQuoteInput,
 } from '@naryx/protocol-types';
 import { PublicKey, SYSVAR_INSTRUCTIONS_PUBKEY, SystemProgram } from '@solana/web3.js';
+import { decodeSolanaMarketResource } from '@naryx/adapter-solana';
 import type { AtomicQuoteNonceSource } from './configured-atomic-market.js';
 import {
   InternalAtomicQuoteError,
@@ -409,6 +410,7 @@ export type SolanaDevnetLiveQuoteState = Readonly<{
   reservationClass: ReservationClassState;
   shard: PackageQuoteShardState;
   levels: readonly QuoteLevelState[];
+  marketMinimumNotionals: Readonly<{ spot: bigint; perpetual: bigint }>;
 }>;
 
 export async function readSolanaDevnetQuoteState(
@@ -422,10 +424,11 @@ export async function readSolanaDevnetQuoteState(
     rpc.getAccounts([
       manifest.testPerp.market, manifest.testPerp.oracle, config.accounts.reservationClass,
       config.accounts.packageBookShard, config.accounts.packageBookLevelPage,
+      config.accounts.records.spotMarket, config.accounts.records.perpMarket,
     ], slot),
     rpc.getBlockTime(slot),
   ]);
-  const [marketAccount, oracleAccount, classAccount, shardAccount, pageAccount] = accounts;
+  const [marketAccount, oracleAccount, classAccount, shardAccount, pageAccount, spotResourceAccount, perpResourceAccount] = accounts;
   const owned = (account: typeof marketAccount, program: string, name: string) => {
     if (account === null || account === undefined || account.owner !== programAddress(manifest, program).programId) {
       fail(`${name} is absent or not owned by the reviewed ${program} program`);
@@ -443,6 +446,21 @@ export async function readSolanaDevnetQuoteState(
   const reservationClass = decodeReservationClass(owned(classAccount, 'reservation', 'reservation class').data);
   const shard = decodePackageQuoteShard(owned(shardAccount, 'package_book', 'package book shard').data);
   const page = decodeQuoteLevelPage(owned(pageAccount, 'package_book', 'package book level page').data);
+  const marketResource = (account: typeof marketAccount, name: 'spotMarket' | 'perpMarket', lot: bigint) => {
+    const resource = decodeSolanaMarketResource(manifest.coreIdl, owned(account, 'core', name).data);
+    if (!sameDomain(resource.domain, manifest.domain)
+      || !bytesEqual(resource.manifestHash, config.resources[name].manifestHash)
+      || resource.subjectAddress !== new PublicKey(config.resources[name].subjectAddress).toBase58()
+      || resource.units.baseDecimals !== market.baseDecimals || resource.units.quoteDecimals !== market.collateralDecimals
+      || resource.units.baseLotAtoms !== lot) {
+      fail(`${name} units do not match the reviewed market`);
+    }
+    return resource.units.minimumQuoteNotionalAtoms;
+  };
+  const marketMinimumNotionals = Object.freeze({
+    spot: marketResource(spotResourceAccount, 'spotMarket', config.spotBaseLotAtoms),
+    perpetual: marketResource(perpResourceAccount, 'perpMarket', market.baseLotAtoms),
+  });
   if (!sameDomain(reservationClass.domain, manifest.domain) || !sameDomain(shard.domain, manifest.domain)
     || page.shard !== new PublicKey(config.accounts.packageBookShard).toBase58()
     || shard.solver !== new PublicKey(config.solverId).toBase58() || shard.killed
@@ -452,7 +470,7 @@ export async function readSolanaDevnetQuoteState(
     || reservationClass.quoteMint !== new PublicKey(config.resources.quoteAsset.subjectAddress).toBase58()) {
     fail('reservation class or package book shard does not match the reviewed series and solver');
   }
-  return Object.freeze({ slot, market, oraclePricePerLot, oracleObservationAgeMs, reservationClass, shard, levels: page.levels });
+  return Object.freeze({ slot, market, oraclePricePerLot, oracleObservationAgeMs, reservationClass, shard, levels: page.levels, marketMinimumNotionals });
 }
 
 /**
@@ -661,6 +679,16 @@ export type SolanaDevnetExitPricing = Readonly<{
   perpFeeAtoms: bigint;
 }>;
 
+export function requireSolanaDevnetMarketMinimums(
+  minimums: SolanaDevnetLiveQuoteState['marketMinimumNotionals'],
+  leg: Readonly<{ spotLots: bigint; spotLimitPerLot: bigint; perpLots: bigint; perpLimitPerLot: bigint }>,
+): void {
+  if (leg.spotLots * leg.spotLimitPerLot < minimums.spot
+    || leg.perpLots * leg.perpLimitPerLot < minimums.perpetual) {
+    throw new InternalAtomicQuoteError('QUOTE_DECLINED', `Package size is below the market minimum notional (${minimums.spot} spot quote atoms, ${minimums.perpetual} perpetual quote atoms). Increase the size.`);
+  }
+}
+
 /**
  * Firm inventory bid at the oracle less the inventory spread (rounded down), with the route spot
  * minimum at that exact bid per lot, and the test perp buy-back at the market's own spread, impact,
@@ -803,6 +831,7 @@ export function createSolanaDevnetFirmQuotePort(
     let quotedOutcome: SolverQuoteInput['quotedOutcome'];
     if (exit) {
       const pricing = priceSolanaDevnetExit(config, state.market, state.oraclePricePerLot, order.quantity.atoms);
+      requireSolanaDevnetMarketMinimums(state.marketMinimumNotionals, { ...pricing, spotLimitPerLot: pricing.spotMinimumPerLot });
       if (pricing.firmQuoteAtoms < order.minSpotQuoteOut!.atoms
         || pricing.spotLots * pricing.spotMinimumPerLot < order.minSpotQuoteOut!.atoms) {
         fail('firm bid is below the order minimum');
@@ -816,6 +845,7 @@ export function createSolanaDevnetFirmQuotePort(
       quotedOutcome = { kind: 'EXIT_QUOTE_OUTCOME', exitQuoteOutcome: { asset: quoteAsset, atoms: outcome } };
     } else {
       const pricing = priceSolanaDevnetEntry(config, state.market, state.oraclePricePerLot, order.quantity.atoms);
+      requireSolanaDevnetMarketMinimums(state.marketMinimumNotionals, pricing);
       if (pricing.spotLots * pricing.spotLimitPerLot > order.maxSpotQuoteIn!.atoms) fail('firm spot price exceeds the order bound');
       if (venueCap === undefined || pricing.perpFeeAtoms > venueCap.maxAtoms) fail('perp taker fee exceeds the order cap');
       const spreadQuoteAtoms = pricing.firmQuoteAtoms - pricing.perpNotionalAtoms + pricing.perpFeeAtoms;
