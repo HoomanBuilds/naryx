@@ -36,6 +36,7 @@ import {
   type EvmManifestResourceIdentity,
 } from "@naryx/adapter-evm";
 import { keccak256, stringToHex, type Address, type Hex } from "viem";
+import { createBaseSepoliaOrderRuntime, type BaseSepoliaOrderContextConfig } from "../src/base-sepolia-order-context.js";
 import {
   BASE_SEPOLIA_ATOMIC_EVIDENCE_CLASS,
   BASE_SEPOLIA_CONFORMANCE_PERPETUAL_EVIDENCE_LABEL,
@@ -886,6 +887,57 @@ function liveClient(
 }
 
 const solverAuthorizer = async () => { throw new Error("unexpected solver authorization"); };
+
+test("a stale Base startup stays closed to orders and recovers with fresh prices without bypassing identity checks", async () => {
+  const fixture = setupPackage();
+  const config: BaseSepoliaOrderContextConfig = {
+    ...fixture.context,
+    schemaVersion: 1,
+    spotAdapter,
+    perpetualAdapter: perpAdapter,
+    packageTemplateManifestHash: packageTemplateManifestHash(fixture.configuration.admission.templateManifest),
+    spotQuoter: contractIdentity(address(15), 88),
+    maxStalenessSeconds: 60n,
+    pollIntervalMs: 1_000,
+    expiryTtlSeconds: 600n,
+    maxAccountFundingAtoms: 10_000_000_000n,
+  };
+  let updatedAt = 1n;
+  const client = liveClient(fixture.configuration);
+  const port = {
+    ...client,
+    codeHash: async (target: Address) => target.toLowerCase() === address(15) ? hashHex(88) : client.codeHash(target),
+    readContract: async (read: { functionName: string; args?: readonly unknown[] }) => {
+      switch (read.functionName) {
+        case "factory": return spotFactory;
+        case "oracle": return address(16);
+        case "maxOracleAgeSeconds": return 60;
+        case "slot0": return [1n << 96n];
+        case "token0": return baseToken;
+        case "fee": return 3_000;
+        case "halfSpreadBps": return 5;
+        case "decimals": return 8;
+        case "latestRoundData": return [1n, 300_000_000_000n, updatedAt, updatedAt, 1n];
+        default: return client.readContract(read as Parameters<typeof client.readContract>[0]);
+      }
+    },
+  };
+  const input = { config, deployment: fixture.configuration, port,
+    orders: { getCanonicalOrderByHash: () => undefined } };
+  const runtime = await createBaseSepoliaOrderRuntime(input);
+  assert.equal(runtime.feed.latest(), undefined);
+  assert.equal(runtime.contexts(config.contextId), undefined);
+  updatedAt = 1_500n;
+  await runtime.feed.refresh();
+  assert.ok(runtime.contexts(config.contextId));
+  updatedAt = 1n;
+  await assert.rejects(() => runtime.feed.refresh(), /older than the market allows/);
+  assert.equal(runtime.contexts(config.contextId), undefined);
+  await assert.rejects(() => createBaseSepoliaOrderRuntime({ ...input,
+    port: { ...port, chainId: async () => 1n } }), /eth_chainId/);
+  await assert.rejects(() => createBaseSepoliaOrderRuntime({ ...input,
+    port: { ...port, codeHash: async () => hashHex(99) } }), /code does not match/);
+});
 
 test("composes the active Base Sepolia runtime after live chain and code verification", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "naryx-base-runtime-"));

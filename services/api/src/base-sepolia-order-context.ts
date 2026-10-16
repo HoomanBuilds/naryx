@@ -361,12 +361,13 @@ export async function createBaseSepoliaOrderRuntime(input: Readonly<{
   const identity = deployment.deployment;
   const feed = new BaseSepoliaMarketFeed(config, deployment, port);
   const venueFeeCaps = baseSepoliaVenueFeeCaps(config);
-  const initial = await feed.refresh();
   await verifyUniswapV3Quoter(
     port,
-    baseSepoliaSpotQuoteTarget(config, deployment, initial.poolFee),
+    { chainId: BigInt(BASE_SEPOLIA_CHAIN_REFERENCE), quoter: config.spotQuoter },
     requiredEvmAddress(identity.spot.market.address, "spot.market"),
   );
+  // A stale round gates orders, not construction; polling can recover without restarting the API.
+  await feed.refresh().catch(() => undefined);
   const domain = domainRefFromManifest(identity.domainManifest);
   let cached: Readonly<{ snapshot: BaseSepoliaMarketSnapshot; context: ActiveOrderContext }> | undefined;
   const contexts: ActiveOrderContextProvider = (contextId) => {
