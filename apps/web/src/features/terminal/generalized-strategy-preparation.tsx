@@ -4882,6 +4882,7 @@ export function GeneralizedStrategyPreparationPanel({
         ? parseSettlementBoundQuote(payload, packageSubmission!.packageOrderId, orderHash)
         : parseQuoteReview(payload, orderHash);
       acceptQuote(parsed, settlementBound ? "POST_MATCH" : "DIRECT");
+      setQuoteRequestKey("");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Strategy quote request failed closed.");
     } finally {
@@ -5199,6 +5200,7 @@ export function GeneralizedStrategyPreparationPanel({
       }
       setEvmFundingPending(null);
       setEvmFunding(null);
+      setQuoteRequestKey("");
       setQuoteHash("");
       setQuoteReview(null);
       setReview(null);
@@ -5220,6 +5222,7 @@ export function GeneralizedStrategyPreparationPanel({
       if (!confirmed) throw new Error("The funding transfer reverted. No funding was confirmed.");
       if (evmFundingPending.quoteHash === quoteHash) {
         setEvmFunding(null);
+        setQuoteRequestKey("");
         setQuoteHash("");
         setQuoteReview(null);
         setReview(null);
