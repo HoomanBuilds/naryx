@@ -156,6 +156,14 @@ test('sealed auction participation requires explicit durable identity and journa
     journalDbPath: '/external/sealed-auctions.sqlite',
     pollIntervalMs: 1_000,
   });
+  const additional = { solverId: 'solver-b', keyId: 'quote-2', journalDbPath: '/external/second-auctions.sqlite' };
+  const result = loadSolverProcessConfig({ ...enabled, NARYX_SEALED_AUCTION_ADDITIONAL_PARTICIPANTS: JSON.stringify([additional]) });
+  assert.equal(result.sealedAuctions.kind, 'ENABLED');
+  if (result.sealedAuctions.kind !== 'ENABLED') assert.fail('auctions disabled');
+  assert.deepEqual(result.sealedAuctions.additionalParticipants, [additional]);
+  for (const p of [{ ...additional, solverId: 'solver-a' }, { ...additional, journalDbPath: '/external/sealed-auctions.sqlite' }, { ...additional, journalDbPath: 'relative.sqlite' }]) {
+    assert.throws(() => loadSolverProcessConfig({ ...enabled, NARYX_SEALED_AUCTION_ADDITIONAL_PARTICIPANTS: JSON.stringify([p]) }));
+  }
 });
 
 test('requires an explicit authorization database for the manifest-validated local runtime', () => {

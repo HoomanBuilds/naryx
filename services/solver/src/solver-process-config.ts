@@ -30,6 +30,7 @@ export interface SolverProcessConfig {
       keyId: string;
       journalDbPath: string;
       pollIntervalMs: number;
+      additionalParticipants?: readonly Readonly<{ solverId: string; keyId: string; journalDbPath: string }>[];
     }>;
   readonly privateRfqs:
     | Readonly<{ kind: 'DISABLED' }>
@@ -157,7 +158,7 @@ export function loadSolverProcessConfig(env: NodeJS.ProcessEnv): SolverProcessCo
   if (sealedAuctionsEnabled && sealedAuctionPollIntervalMs < 100) {
     throw new Error('NARYX_SEALED_AUCTION_POLL_INTERVAL_MS must be at least 100');
   }
-  const sealedAuctions = sealedAuctionsEnabled
+  let sealedAuctions: SolverProcessConfig['sealedAuctions'] = sealedAuctionsEnabled
     ? Object.freeze({
       kind: 'ENABLED' as const,
       solverId: identifier(env.NARYX_SEALED_AUCTION_SOLVER_ID, 'NARYX_SEALED_AUCTION_SOLVER_ID'),
@@ -169,6 +170,27 @@ export function loadSolverProcessConfig(env: NodeJS.ProcessEnv): SolverProcessCo
       pollIntervalMs: sealedAuctionPollIntervalMs,
     })
     : Object.freeze({ kind: 'DISABLED' as const });
+  if (present(env.NARYX_SEALED_AUCTION_ADDITIONAL_PARTICIPANTS)) {
+    if (sealedAuctions.kind !== 'ENABLED') throw new Error('Additional auction participants require sealed auction participation');
+    let parsed: unknown;
+    try { parsed = JSON.parse(env.NARYX_SEALED_AUCTION_ADDITIONAL_PARTICIPANTS!); }
+    catch { throw new Error('Additional auction participants must be JSON'); }
+    if (!Array.isArray(parsed) || parsed.length > 15) throw new Error('Additional auction participants must be a bounded array');
+    const ids = new Set([sealedAuctions.solverId]);
+    const paths = new Set([sealedAuctions.journalDbPath]);
+    const participants = parsed.map((value: unknown) => {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)
+        || Object.keys(value).sort().join(',') !== 'journalDbPath,keyId,solverId') throw new Error('Invalid auction participant fields');
+      const p = value as Record<string, string>;
+      const solverId = identifier(p.solverId, 'auction participant solverId');
+      const keyId = identifier(p.keyId, 'auction participant keyId');
+      const journalDbPath = absolutePath(p.journalDbPath ?? '', 'auction participant journalDbPath');
+      if (ids.has(solverId) || paths.has(journalDbPath)) throw new Error('Auction participants must have unique identities and journals');
+      ids.add(solverId); paths.add(journalDbPath);
+      return Object.freeze({ solverId, keyId, journalDbPath });
+    });
+    sealedAuctions = Object.freeze({ ...sealedAuctions, additionalParticipants: Object.freeze(participants) });
+  }
   const privateRfqsEnabled = explicitBoolean(
     env.NARYX_PRIVATE_RFQ_PARTICIPANT_ENABLED,
     'NARYX_PRIVATE_RFQ_PARTICIPANT_ENABLED',

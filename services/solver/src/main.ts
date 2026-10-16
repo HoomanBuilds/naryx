@@ -491,39 +491,42 @@ const generalizedStrategyQuoteService = allGeneralizedStrategyLanes.length === 0
 const generalizedStrategyQuoteHandler = generalizedStrategyQuoteService === undefined
   ? undefined
   : createGeneralizedStrategyQuoteInternalHandler(generalizedStrategyQuoteService);
-let sealedAuctionJournal: SqliteSealedAuctionJournal | undefined;
-let sealedAuctionParticipant: SealedAuctionParticipant | undefined;
+const sealedAuctionJournals: SqliteSealedAuctionJournal[] = [];
+const sealedAuctionParticipants: SealedAuctionParticipant[] = [];
 let stopSealedAuctions: (() => void) | undefined;
 if (config.sealedAuctions.kind === 'ENABLED') {
   if (generalizedStrategyQuoteService === undefined) {
     throw new Error('sealed auction participation requires at least one generalized strategy quote lane');
   }
-  sealedAuctionJournal = new SqliteSealedAuctionJournal(config.sealedAuctions.journalDbPath);
-  const sealedAuctionRelay = new HttpSealedAuctionRelay({
-    origin: apiOrigin,
-    solverId: config.sealedAuctions.solverId,
-    keyId: config.sealedAuctions.keyId,
-    signer: executionSigner,
-  });
-  sealedAuctionParticipant = new SealedAuctionParticipant({
-    solverId: config.sealedAuctions.solverId,
-    relay: sealedAuctionRelay,
-    journal: sealedAuctionJournal,
-    quotes: {
-      quote: async (request) => {
-        const response = await generalizedStrategyQuoteService.quote(request);
-        return Object.freeze({
-          quoteHash: response.quoteHash,
-          orderHash: response.orderHash,
-          environment: response.quote.environment,
-          solverId: response.quote.solverId,
-          validUntilUnit: response.quote.validUntilUnit,
-          validUntilValue: response.quote.validUntilValue,
-          netOutcomeAtoms: response.quote.netPackageOutcome.atoms,
-        });
+  for (const participant of [config.sealedAuctions, ...(config.sealedAuctions.additionalParticipants ?? [])]) {
+    const sealedAuctionJournal = new SqliteSealedAuctionJournal(participant.journalDbPath);
+    sealedAuctionJournals.push(sealedAuctionJournal);
+    const sealedAuctionRelay = new HttpSealedAuctionRelay({
+      origin: apiOrigin,
+      solverId: participant.solverId,
+      keyId: participant.keyId,
+      signer: executionSigner,
+    });
+    sealedAuctionParticipants.push(new SealedAuctionParticipant({
+      solverId: participant.solverId,
+      relay: sealedAuctionRelay,
+      journal: sealedAuctionJournal,
+      quotes: {
+        quote: async (request) => {
+          const response = await generalizedStrategyQuoteService.quote(request);
+          return Object.freeze({
+            quoteHash: response.quoteHash,
+            orderHash: response.orderHash,
+            environment: response.quote.environment,
+            solverId: response.quote.solverId,
+            validUntilUnit: response.quote.validUntilUnit,
+            validUntilValue: response.quote.validUntilValue,
+            netOutcomeAtoms: response.quote.netPackageOutcome.atoms,
+          });
+        },
       },
-    },
-  });
+    }));
+  }
 }
 let privateRfqParticipant: PrivateRfqParticipant | undefined;
 let stopPrivateRfqs: (() => void) | undefined;
@@ -863,7 +866,7 @@ function shutdown(): void {
     evmStrategyAuthorizationJournal?.close();
     solanaStrategyPackageIds?.close();
     solanaStrategyAuthorizationJournal?.close();
-    sealedAuctionJournal?.close();
+    for (const journal of sealedAuctionJournals) journal.close();
     residualRuntime?.close();
     baseResidualRuntime?.close();
     solanaResidualRuntime?.close();
@@ -889,11 +892,13 @@ try {
   if (arbitrumExecutorServer !== undefined && arbitrumExecutorPort !== undefined) {
     await listen(arbitrumExecutorServer, arbitrumExecutorPort, host);
   }
-  if (sealedAuctionParticipant !== undefined && config.sealedAuctions.kind === 'ENABLED') {
-    stopSealedAuctions = sealedAuctionParticipant.start(
-      config.sealedAuctions.pollIntervalMs,
+  if (config.sealedAuctions.kind === 'ENABLED') {
+    const pollIntervalMs = config.sealedAuctions.pollIntervalMs;
+    const stops = sealedAuctionParticipants.map((participant) => participant.start(
+      pollIntervalMs,
       (error) => process.stderr.write(`Sealed auction participant error: ${error instanceof Error ? error.message : 'unknown error'}\n`),
-    );
+    ));
+    stopSealedAuctions = () => { for (const stop of stops) stop(); };
   }
   if (privateRfqParticipant !== undefined && config.privateRfqs.kind === 'ENABLED') {
     stopPrivateRfqs = privateRfqParticipant.start(
@@ -926,7 +931,7 @@ try {
   evmStrategyPackageIds?.close();
   evmStrategyAuthorizationJournal?.close();
   solanaStrategyPackageIds?.close();
-  sealedAuctionJournal?.close();
+  for (const journal of sealedAuctionJournals) journal.close();
   residualRuntime?.close();
   baseResidualRuntime?.close();
   solanaResidualRuntime?.close();
