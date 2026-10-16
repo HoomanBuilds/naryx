@@ -5331,9 +5331,12 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     return Object.freeze(packages.flatMap((entry): OwnerPackageEntry[] => {
       if (typeof entry !== "object" || entry === null) return [];
       const value = entry as Record<string, unknown>;
-      const transactionHash = optional(value.transactionHash, /^0x[0-9a-f]{64}$/);
+      const solana = value.domainId === "svm:devnet";
+      const transactionHash = optional(value.transactionHash, solana
+        ? /^[1-9A-HJ-NP-Za-km-z]{64,88}$/
+        : /^0x[0-9a-f]{64}$/);
       const blockNumber = optional(value.blockNumber, /^(0|[1-9][0-9]{0,19})$/);
-      const receiptHash = optional(value.receiptHash, /^0x[0-9a-f]{64}$/);
+      const receiptHash = optional(value.receiptHash, solana ? /^[0-9a-f]{64}$/ : /^0x[0-9a-f]{64}$/);
       if (typeof value.orderHash !== "string" || !/^[0-9a-f]{64}$/.test(value.orderHash)
           || typeof value.domainId !== "string" || typeof value.action !== "string"
           || typeof value.quantityAtoms !== "string" || !/^\d{1,40}$/.test(value.quantityAtoms)
