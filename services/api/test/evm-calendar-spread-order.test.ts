@@ -127,6 +127,15 @@ test("loads a reviewed calendar profile and creates atomic entry and exit orders
       currentTimeSeconds: () => NOW_SECONDS,
     });
     const entry = port.create(request("ENTRY"));
+    const scaled = request("ENTRY");
+    scaled.limitPrices = scaled.limitPrices.map((limit) => ({
+      ...limit,
+      quoteAtoms: String(BigInt(limit.quoteAtoms) * 10n),
+      baseAtoms: String(BigInt(limit.baseAtoms) * 10n),
+    }));
+    const equivalent = port.create(scaled);
+    assert.equal(equivalent.intake.orderHashHex, entry.intake.orderHashHex);
+    assert.equal(equivalent.intake.graphHashHex, entry.intake.graphHashHex);
     assert.deepEqual(entry.graph.legs.map((leg) => [leg.legId, leg.legFamily, leg.side]), [
       ["far-future", "FUTURE_OPEN", "SELL"],
       ["near-future", "FUTURE_OPEN", "BUY"],

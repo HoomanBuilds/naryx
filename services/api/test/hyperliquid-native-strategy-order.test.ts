@@ -181,6 +181,18 @@ test("loads reviewed profiles and creates treasury entry plus funding exit order
     assert.equal(treasuryLeg.side, "SELL");
     assert.equal(treasuryLeg.limitPrice.roundingDirection, "CEIL");
     assert.equal(validateStrategyTemplateGraph(treasury.graph).valid, true);
+    const equivalent = port.create({
+      profileId: "btc-treasury-hedge",
+      owner: OWNER,
+      lifecycleAction: "ENTRY",
+      quantityAtoms: "100000",
+      economicQuantityAtoms: "200000",
+      limitPrices: [{ legId: "treasury-hedge", quoteAtoms: "600010", baseAtoms: "10" }],
+      expiryValue: "1020000",
+      nonce: "1",
+    });
+    assert.equal(equivalent.intake.orderHashHex, treasury.intake.orderHashHex);
+    assert.equal(equivalent.intake.graphHashHex, treasury.intake.graphHashHex);
 
     const funding = port.create({
       profileId: "btc-eth-funding",

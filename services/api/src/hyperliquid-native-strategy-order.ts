@@ -601,6 +601,9 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
               : "PERP_CLOSE" as const;
         const quoteAtoms = requestAtoms(limit.quoteAtoms, `${market.role}.quoteAtoms`);
         const baseAtoms = requestAtoms(limit.baseAtoms, `${market.role}.baseAtoms`);
+        let divisor = quoteAtoms;
+        let remainder = baseAtoms;
+        while (remainder !== 0n) [divisor, remainder] = [remainder, divisor % remainder];
         return Object.freeze({
           legId: market.role,
           legFamily: family,
@@ -617,8 +620,8 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
           limitPrice: exactPrice({
             baseAsset: profile.baseAsset,
             quoteAsset: profile.quoteAsset,
-            quoteAtoms,
-            baseAtoms,
+            quoteAtoms: quoteAtoms / divisor,
+            baseAtoms: baseAtoms / divisor,
             roundingDirection: side === "BUY" ? "FLOOR" : "CEIL",
           }),
           maximumFeeQuoteAtoms: profile.bounds.maximumVenueFeeQuoteAtoms,

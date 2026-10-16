@@ -422,6 +422,11 @@ export function createEvmCalendarSpreadOrderPort(input: Readonly<{
           ? market.role === "near-future" ? "BUY" as const : "SELL" as const
           : market.role === "near-future" ? "SELL" as const : "BUY" as const;
         const limit = limits.get(market.role)!;
+        const quoteAtoms = requestAtoms(limit.quoteAtoms, `${market.role}.quoteAtoms`);
+        const baseAtoms = requestAtoms(limit.baseAtoms, `${market.role}.baseAtoms`);
+        let divisor = quoteAtoms;
+        let remainder = baseAtoms;
+        while (remainder !== 0n) [divisor, remainder] = [remainder, divisor % remainder];
         return Object.freeze({
           legId: market.role,
           legFamily: opening ? "FUTURE_OPEN" as const : "FUTURE_CLOSE" as const,
@@ -438,8 +443,8 @@ export function createEvmCalendarSpreadOrderPort(input: Readonly<{
           limitPrice: exactPrice({
             baseAsset: profile.baseAsset,
             quoteAsset: profile.quoteAsset,
-            quoteAtoms: requestAtoms(limit.quoteAtoms, `${market.role}.quoteAtoms`),
-            baseAtoms: requestAtoms(limit.baseAtoms, `${market.role}.baseAtoms`),
+            quoteAtoms: quoteAtoms / divisor,
+            baseAtoms: baseAtoms / divisor,
             roundingDirection: side === "BUY" ? "FLOOR" : "CEIL",
           }),
           maximumFeeQuoteAtoms: profile.bounds.maximumVenueFeeQuoteAtoms,
