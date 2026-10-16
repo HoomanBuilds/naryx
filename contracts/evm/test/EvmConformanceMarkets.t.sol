@@ -74,6 +74,24 @@ contract EvmConformanceMarketsTest is Test {
         assertEq(deployment.perpetualMarket.oraclePriceWad(), 2_000 ether);
     }
 
+    function testLendingPoolWithdrawAllMatchesAaveAndPreservesDebtProtection() public {
+        NaryxTestLendingPool pool = deployment.lendingPool;
+        deployment.baseAsset.mint(address(this), 100 ether);
+        deployment.baseAsset.approve(address(pool), 100 ether);
+        pool.supply(address(deployment.baseAsset), 100 ether, address(this), 0);
+        pool.borrow(address(deployment.quoteAsset), 40e6, 2, 0, address(this));
+        vm.expectRevert(NaryxTestLendingPool.InsufficientCollateral.selector);
+        pool.withdraw(address(deployment.baseAsset), type(uint256).max, address(this));
+        assertEq(pool.collateralOf(address(this)), 100 ether);
+        deployment.quoteAsset.approve(address(pool), 40e6);
+        pool.repay(address(deployment.quoteAsset), 40e6, 2, address(this));
+        assertEq(pool.withdraw(address(deployment.baseAsset), type(uint256).max, address(this)), 100 ether);
+        assertEq(pool.collateralOf(address(this)), 0);
+        assertEq(deployment.baseAsset.balanceOf(address(this)), 100 ether);
+        vm.expectRevert(NaryxTestLendingPool.InvalidAction.selector);
+        pool.withdraw(address(deployment.baseAsset), type(uint256).max, address(this));
+    }
+
     function testDatedFuturesUseDistinctOrderedExpiriesAndSharedDependencies() public view {
         assertEq(address(deployment.nearFutureMarket.collateral()), address(deployment.quoteAsset));
         assertEq(address(deployment.farFutureMarket.collateral()), address(deployment.quoteAsset));

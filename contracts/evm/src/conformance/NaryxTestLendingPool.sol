@@ -69,6 +69,7 @@ contract NaryxTestLendingPool is IAaveV3Pool, ReentrancyGuard {
 
     function withdraw(address asset, uint256 amount, address to) external nonReentrant returns (uint256) {
         uint256 collateral = collateralOf[msg.sender];
+        if (amount == type(uint256).max) amount = collateral;
         if (asset != address(collateralToken) || amount == 0 || amount > collateral || to == address(0)) {
             revert InvalidAction();
         }
