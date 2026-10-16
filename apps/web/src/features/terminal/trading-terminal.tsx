@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { encodeFunctionData, erc20Abi, formatEther, parseAbi } from "viem";
 import { useBalance, useReadContract } from "wagmi";
 import { fixtureMarketFeed } from "./market-feed";
-import { usePublicMarketFeed, usePublicPackageMarkets } from "./public-market-feed";
+import { usePublicMarketFeed, usePublicPackageMarkets, type PublicPackageMarket } from "./public-market-feed";
 import { useReferenceMarketFeed } from "./reference-market-feed";
 import { handleTablistKeys, usePersistedFlag, usePersistedSetting } from "./persisted-setting";
 import { ChartWorkspace } from "./pro/chart-workspace";
@@ -111,6 +111,16 @@ function onLane(market: { readonly domainIds: readonly string[] }, lane: DomainI
 
 function tradeReadyMarket(market: { readonly templateId: string | null; readonly domainIds: readonly string[] }): boolean {
   return market.templateId !== null && market.domainIds.some((domainId) => PACKAGE_DOMAIN_TO_TERMINAL[domainId] !== undefined);
+}
+
+function preferredPackageMarket(
+  markets: readonly PublicPackageMarket[],
+  qualifies: (market: PublicPackageMarket) => boolean,
+): PublicPackageMarket | undefined {
+  const active = markets.filter((market) => !market.halted && tradeReadyMarket(market) && qualifies(market));
+  const first = active[0];
+  if (first === undefined) return markets.find((market) => tradeReadyMarket(market) && qualifies(market));
+  return first.seriesId === null ? first : active.findLast((market) => market.seriesId === first.seriesId) ?? first;
 }
 
 // Storage throws when the browser blocks it; the choice then lasts for the page only.
@@ -2049,13 +2059,13 @@ export function TradingTerminal({
         && packageMarkets.some((market) => market.packageMarketId === candidate && tradeReadyMarket(market));
       const laneFits = (candidate: string | null | undefined) => lane === null
         || packageMarkets.some((market) => market.packageMarketId === candidate && onLane(market, lane));
-      const remembered = [current, readStoredPackageMarket(), packageMarketId, packageMarkets[0]?.packageMarketId];
+      const remembered = [current, readStoredPackageMarket(), packageMarketId];
       const linked = !freshLink ? [] : requested !== null
         ? [requested]
         : lane !== null
-          ? [...remembered.filter(laneFits), packageMarkets.find((market) => onLane(market, lane))?.packageMarketId]
+          ? [preferredPackageMarket(packageMarkets, (market) => onLane(market, lane))?.packageMarketId, ...remembered.filter(laneFits)]
           : [];
-      const selected = [...linked, ...remembered].find(listed) ?? null;
+      const selected = [...linked, ...remembered, preferredPackageMarket(packageMarkets, () => true)?.packageMarketId].find(listed) ?? null;
       if (selected !== null) storePackageMarket(selected);
       return selected;
     });
@@ -2068,7 +2078,7 @@ export function TradingTerminal({
     ? null
     : packageMarkets.some((market) => market.packageMarketId === activePackageMarketId && tradeReadyMarket(market))
       ? activePackageMarketId
-      : packageMarkets.find(tradeReadyMarket)?.packageMarketId ?? null;
+      : preferredPackageMarket(packageMarkets, () => true)?.packageMarketId ?? null;
   const selectedPackageMarket = packageMarkets.find((market) => market.packageMarketId === resolvedPackageMarketId) ?? null;
   const selectedPackageTemplateId = selectedPackageMarket?.templateId ?? null;
   const selectedPackageDomainIds = selectedPackageMarket?.domainIds.join("\n") ?? "";
@@ -2085,7 +2095,8 @@ export function TradingTerminal({
       if (domains.length === 0 || domains.includes(selectedDomain)) return;
       const laneMarkets = packageMarkets.filter((market) => market.domainIds
         .some((domainId) => PACKAGE_DOMAIN_TO_TERMINAL[domainId] === selectedDomain));
-      const laneMarket = laneMarkets.find((market) => market.templateId === selectedStrategyTemplateId) ?? laneMarkets[0];
+      const laneMarket = preferredPackageMarket(laneMarkets, (market) => market.templateId === selectedStrategyTemplateId)
+        ?? preferredPackageMarket(laneMarkets, () => true);
       if (laneMarket !== undefined) {
         setActivePackageMarketId(laneMarket.packageMarketId);
         storePackageMarket(laneMarket.packageMarketId);
@@ -2168,7 +2179,7 @@ export function TradingTerminal({
         setSelectedStrategyTemplateId(template.templateId);
         setSelectedLifecycleAction(action);
         if (template.templateId === "cash-and-carry-v1") setMode(action === "EXIT" ? "exit" : "entry");
-        const laneMarket = packageMarkets.find((market) => market.templateId === template.templateId
+        const laneMarket = preferredPackageMarket(packageMarkets, (market) => market.templateId === template.templateId
           && market.domainIds.some((domainId) => PACKAGE_DOMAIN_TO_TERMINAL[domainId] === domain));
         if (laneMarket !== undefined) {
           setActivePackageMarketId(laneMarket.packageMarketId);
