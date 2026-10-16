@@ -25,6 +25,7 @@ import {
   type PrivateRfqEnvelope,
 } from "@naryx/sdk/private-rfq";
 import { formatAtomicAmount, formatMetricValue } from "./format";
+import { marketAssetLabel } from "./market-label";
 import {
   buildSolanaWalletTransaction,
   getSolanaDevnetBlockhash,
@@ -5939,7 +5940,7 @@ export function GeneralizedStrategyPreparationPanel({
                 {selectedEvmOptionProfile.markets.map((market) => (
                   <Fragment key={market.role}>
                     <span>{market.role === "option-long" ? "Long strike" : "Short strike"}</span>
-                    <strong>{market.strike}</strong>
+                    <strong title={market.strike}>{formatAtomicAmount(market.strike, 18, selectedEvmOptionProfile.quoteAsset.assetId)}</strong>
                   </Fragment>
                 ))}
               </div>
@@ -6769,7 +6770,7 @@ export function GeneralizedStrategyPreparationPanel({
               const quote = candidate.review;
               const selected = quote.quoteHash === quoteHash;
               const totalCost = BigInt(quote.passThroughCostAtoms) + BigInt(quote.serviceFeeAtoms);
-              const quoteAssetLabel = quote.quoteAsset.length > 18 ? compact(quote.quoteAsset, 5, 4) : quote.quoteAsset;
+              const quoteAssetLabel = marketAssetLabel(quote.quoteAsset);
               return (
                 <button
                   key={quote.quoteHash}

@@ -7,6 +7,7 @@ import { ChainIcon } from "@/features/brand/chain-icons";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
 import { generalizedTemplateOnLane } from "../generalized-strategy-preparation";
+import { marketAssetLabel } from "../market-label";
 import { DOMAIN_META, DOMAIN_ORDER, useTerminal } from "../shell/terminal-context";
 import type { DomainId } from "../terminal-view-model";
 import styles from "./pages.module.css";
@@ -114,7 +115,7 @@ function packagePosition(raw: unknown, index: number, owner: string, context: st
   if (!HASH.test(packageId)) throw new Error(`${context} ${index} package is malformed.`);
   const quantity = atoms(position.economicQuantityAtoms, `${context} ${index} quantity`);
   const places = decimals(position.baseAssetDecimals, `${context} ${index} decimals`);
-  const asset = text(position.baseAssetId, `${context} ${index} base asset`).toUpperCase();
+  const asset = marketAssetLabel(text(position.baseAssetId, `${context} ${index} base asset`));
   return Object.freeze({
     key: `${context}:${packageId}`,
     domain,

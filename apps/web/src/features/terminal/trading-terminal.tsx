@@ -13,6 +13,7 @@ import { InstrumentBar } from "./pro/instrument-bar";
 import { OrderBook } from "./pro/order-book";
 import { StatusBar } from "./pro/status-bar";
 import { localConformanceTerminalProvider } from "./local-conformance-provider";
+import { useStrategyPositions } from "./pages/strategy-positions";
 import { useArbitrumSepoliaExit } from "./arbitrum-sepolia-exit";
 import { ArbitrumObservationError, TerminalMarketUnavailableError, TerminalPreviewRejectedError, unavailableTerminalSnapshot } from "./private-http-terminal-provider";
 import type {
@@ -1815,6 +1816,23 @@ function BottomWorkspace({
   const activeWorkspace =
     snapshot.workspaces.find((workspace) => workspace.tab === activeTab) ??
     snapshot.workspaces[0];
+  const { selectedDomain } = useTerminal();
+  const walletPackages = usePositions();
+  const walletStrategies = useStrategyPositions();
+  const positionRows = [
+    ...walletPackages.positions.filter((position) => position.domain === selectedDomain).map((position) => ({
+      key: position.key, label: "Cash and carry", id: position.packageId,
+      size: position.size, state: position.state,
+    })),
+    ...walletStrategies.positions.filter((position) => position.domain === selectedDomain).map((position) => ({
+      key: position.key, label: position.templateId.replace(/-v\d+$/, "").replaceAll("-", " "),
+      id: position.positionId, size: position.size, state: position.state,
+    })),
+  ];
+  const positionsUnreadable = walletPackages.unreadable.includes(selectedDomain)
+    || walletStrategies.unreadable.includes(selectedDomain === "solana" ? "solana"
+      : selectedDomain === "hyperliquid" ? "native" : "evm");
+  const showPositions = activeWorkspace.tab === "positions";
   const showReceipts = activeWorkspace.tab === "receipts";
   const showNetworkEvidence = showReceipts && submission !== null;
   const needsRetry = showNetworkEvidence && submission !== null &&
@@ -1824,7 +1842,8 @@ function BottomWorkspace({
     <section id="terminal-workspace" className={styles.bottomWorkspace} aria-label="Orders and positions">
       <div className={styles.workspaceTabs} role="tablist" aria-label="Orders and positions" onKeyDown={handleTablistKeys}>
         {snapshot.workspaces.map((workspace) => {
-          const count = workspace.tab === "receipts" && lifecycle ? lifecycle.receipts.length : workspace.count;
+          const count = workspace.tab === "positions" ? positionRows.length
+            : workspace.tab === "receipts" && lifecycle ? lifecycle.receipts.length : workspace.count;
           return (
             <button
               id={`tab-${workspace.tab}`}
@@ -1854,6 +1873,9 @@ function BottomWorkspace({
         aria-labelledby={`tab-${activeWorkspace.tab}`}
         className={`${styles.tableScroller} ${styles.viewFade}`}
       >
+        {showPositions && positionsUnreadable ? (
+          <p className={styles.inlineNotice} role="status">Some position reads are unavailable. Retrying; missing rows are not confirmed empty.</p>
+        ) : null}
         {showReceipts && lifecycle ? (
           <div className={styles.lifecycleSummary} role="status">
             <div>
@@ -1916,7 +1938,17 @@ function BottomWorkspace({
             </tr>
           </thead>
           <tbody>
-            {showReceipts && lifecycle ? (
+            {showPositions && positionRows.length > 0 ? positionRows.map((position) => (
+              <tr key={position.key}>
+                <td title={position.id}>{position.label}</td>
+                <td>Strategy</td>
+                <td className={styles.numericColumn}>{position.size}</td>
+                <td className={styles.numericColumn}>-</td>
+                <td className={styles.numericColumn}>-</td>
+                <td className={styles.numericColumn}>-</td>
+                <td>{position.state}</td>
+              </tr>
+            )) : showReceipts && lifecycle ? (
               lifecycle.receipts.map((receipt) => (
                 <tr key={receipt.receiptHashHex}>
                   <td className={styles.monoCell} title={receipt.receiptHashHex}>
@@ -1944,8 +1976,8 @@ function BottomWorkspace({
               <tr className={styles.emptyRow}>
                 <td colSpan={activeWorkspace.columns.length}>
                   <div className={styles.emptyState}>
-                    <strong>{activeWorkspace.emptyTitle}</strong>
-                    <p>{activeWorkspace.emptyDetail}</p>
+                    <strong>{showPositions ? (walletPackages.loading || walletStrategies.loading ? "Reading wallet positions" : "No finalized open positions") : activeWorkspace.emptyTitle}</strong>
+                    <p>{showPositions ? "Positions for the connected wallet appear after settlement. Pending transactions are tracked in the execution ticket." : activeWorkspace.emptyDetail}</p>
                   </div>
                 </td>
               </tr>

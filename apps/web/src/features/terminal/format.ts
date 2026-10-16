@@ -1,3 +1,5 @@
+import { marketAssetLabel } from "./market-label";
+
 function integerText(value: bigint): string {
   return value.toLocaleString("en-US");
 }
@@ -17,6 +19,7 @@ function roundedDecimal(atoms: bigint, decimals: number, displayedDecimals: numb
 }
 
 export function formatAtomicAmount(atoms: string | bigint, decimals: number, symbol: string): string {
+  symbol = marketAssetLabel(symbol);
   const value = typeof atoms === "bigint" ? atoms : BigInt(atoms);
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) throw new Error("Asset decimals are invalid.");
   if (value === BigInt(0)) return `0 ${symbol}`;
