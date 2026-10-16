@@ -17,6 +17,7 @@ import {
   type PackageTemplateManifestInput,
 } from '@naryx/protocol-types';
 import { getAddress, hexToBytes, zeroHash, type Abi, type Address, type Hex } from 'viem';
+import { matchesEvmReverseBasisLane } from '../src/evm-reverse-basis-preparation.js';
 import {
   EvmReverseBasisCollateralService,
   EvmReverseBasisPreparationContextResolver,
@@ -379,6 +380,25 @@ test('binds reverse basis entry to reviewed package adapters and exact approvals
   const provisioning = await new EvmOptionSpreadProvisioningResolver([activeLane]).resolve(packageDocuments);
   assert.equal(provisioning.ready, true);
   assert.equal(provisioning.strategyAccount, ACCOUNT);
+});
+
+test('reverse basis preparation and collateral management select the exact adapter version', async () => {
+  const chain = new Chain();
+  const activeLane = lane(chain);
+  const incompatible = { ...activeLane, pricing: { ...activeLane.pricing,
+    lending: { ...activeLane.pricing.lending, adapter: adapterRef({ ...lendingRef,
+      adapterManifestVersion: 2, adapterManifestHash: hash('7') }) } } };
+  const packageDocuments = documents();
+  assert.equal(matchesEvmReverseBasisLane(packageDocuments, incompatible), false);
+  const resolver = new EvmReverseBasisPreparationContextResolver([incompatible, activeLane]);
+  assert.equal((await resolver.resolve(packageDocuments)).identity.operation, 'ENTRY');
+  await assert.rejects(() => new EvmReverseBasisPreparationContextResolver([incompatible]).resolve(packageDocuments),
+    /exactly one preparation lane/);
+  chain.collateralBase = 0n;
+  const service = new EvmReverseBasisCollateralService({ getByQuote: async () => packageDocuments },
+    [incompatible, activeLane]);
+  const plan = await service.planByQuote(hash32(hexToBytes(`0x${packageDocuments.quoteHashHex}`)), 'SUPPLY');
+  assert.equal(plan?.inputAtoms, 300_000_000n);
 });
 
 test('plans owner collateral funding from the admitted reverse basis entry quote', async () => {

@@ -204,6 +204,31 @@ const activeRegistryRecords = [
   record('MARKET', perpMarket.subjectId, perpMarket.manifestHash),
 ];
 
+test('quote lane selection distinguishes immutable adapter versions within the same strategy market', async () => {
+  const adapterSupport = graph.legs.map((leg) => ({ domain: leg.domain, adapter: leg.adapter,
+    legFamily: leg.legFamily, supportedSides: [leg.side], materializationClassId: 'test-adapter',
+    executionPlanKind: 'EVM_ATOMIC_BATCH' as const, supportedSettlementClasses: ['ATOMIC_POSTCONDITION' as const] }));
+  const lane = {
+    laneId: 'adapter-v1', environment: 'testnet', templateManifest: template,
+    executionClassId: graph.executionClassId, executionClassVersion: graph.executionClassVersion,
+    executionClassManifestHash: graph.executionClassManifestHash, activeRegistryRecords,
+    resourceLimits: [{ domainId: domain.domainId, maximumActionsPerTransaction: 4 }],
+    solverId: 'solver', solverCapabilityManifestHash: 'c1'.repeat(32), adapterSupport,
+    currentTime: async () => ({ unit: 'EVM_UNIX_SECONDS' as const, value: 1_000n }),
+    pricing: { quote: async () => { throw new Error('selection must not price'); } },
+  };
+  const otherLane = { ...lane, laneId: 'adapter-v2', adapterSupport: adapterSupport.map((support) => ({
+    ...support, adapter: adapterRef({ ...support.adapter, adapterManifestVersion: 2,
+      adapterManifestHash: 'd1'.repeat(32) }),
+  })) };
+  const documents = { orderHashHex: Buffer.from(orderHash).toString('hex'),
+    graphHashHex: Buffer.from(packageGraphHash(graph)).toString('hex'), order, graph, recordedAtMs: 1 };
+  const resolved = await new GeneralizedStrategyQuoteContextRegistry([otherLane, lane]).resolve(documents);
+  assert.deepEqual(resolved.adapterSupport, adapterSupport);
+  await assert.rejects(() => new GeneralizedStrategyQuoteContextRegistry([otherLane]).resolve(documents),
+    /no generalized strategy quote lane/);
+});
+
 test('generalized RFQ prices, compiles, signs, validates, and replays one committed order', async () => {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   const spki = publicKey.export({ format: 'der', type: 'spki' });

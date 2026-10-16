@@ -5,14 +5,12 @@ import {
   type EvmPackageCollateralManagementPlan,
 } from '@naryx/adapter-evm';
 import {
-  bytesEqual,
-  packageTemplateManifestHash,
   strategyPackageOrderHash,
   type Hash32,
 } from '@naryx/protocol-types';
 import { bytesToHex, encodeAbiParameters, getAddress, keccak256, stringToHex, zeroHash, type Abi, type Hex } from 'viem';
 import type { StrategyPackageProvider, StoredStrategyPackageDocuments } from './http-strategy-package-provider.js';
-import type { EvmReverseBasisPreparationLane } from './evm-reverse-basis-preparation.js';
+import { matchesEvmReverseBasisLane, type EvmReverseBasisPreparationLane } from './evm-reverse-basis-preparation.js';
 
 const BPS = 10_000n;
 const ACCOUNT_FACTORY_ABI = [{
@@ -107,10 +105,7 @@ function accountDataHash(value: unknown): Hex {
 }
 
 function matchingLane(documents: StoredStrategyPackageDocuments, lane: EvmReverseBasisPreparationLane): boolean {
-  return documents.order.environment === lane.environment
-    && documents.order.templateId === lane.templateManifest.templateId
-    && documents.order.templateVersion === lane.templateManifest.templateVersion
-    && bytesEqual(documents.order.packageTemplateManifestHash, packageTemplateManifestHash(lane.templateManifest))
+  return matchesEvmReverseBasisLane(documents, lane)
     && (documents.order.lifecycleAction === 'ENTRY' || documents.order.lifecycleAction === 'EXIT'
       || documents.order.lifecycleAction === 'EMERGENCY_UNWIND')
     && documents.graph.legs.every((leg) => leg.domain.domainId === lane.pricing.domain.domainId);

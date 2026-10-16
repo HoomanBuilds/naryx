@@ -1,4 +1,5 @@
 import {
+  adapterRef,
   bytesEqual,
   manifestHash,
   packageTemplateManifest,
@@ -74,7 +75,19 @@ function matches(lane: CheckedLane, documents: StoredStrategyPackageOrderDocumen
     && bytesEqual(packageTemplateManifestHash(lane.templateManifest), documents.order.packageTemplateManifestHash)
     && lane.executionClassId === documents.order.executionClassId
     && lane.executionClassVersion === documents.order.executionClassVersion
-    && bytesEqual(lane.executionClassManifestHash, documents.order.executionClassManifestHash);
+    && bytesEqual(lane.executionClassManifestHash, documents.order.executionClassManifestHash)
+    && documents.graph.legs.every((leg) => lane.adapterSupport.some((support) => {
+      const adapter = adapterRef(support.adapter);
+      return support.domain.domainId === leg.domain.domainId
+        && support.domain.domainManifestVersion === leg.domain.domainManifestVersion
+        && bytesEqual(support.domain.domainManifestHash, leg.domain.domainManifestHash)
+        && adapter.adapterId === leg.adapter.adapterId
+        && adapter.adapterManifestVersion === leg.adapter.adapterManifestVersion
+        && bytesEqual(adapter.adapterManifestHash, leg.adapter.adapterManifestHash)
+        && support.legFamily === leg.legFamily
+        && support.supportedSides.includes(leg.side)
+        && support.supportedSettlementClasses.includes(documents.order.settlementClass);
+    }));
 }
 
 export class GeneralizedStrategyQuoteContextRegistry implements GeneralizedStrategyQuoteContextResolver {

@@ -349,6 +349,32 @@ function hedgePricing(input: EvmReverseBasisPricingInput): EvmTreasuryHedgePrici
   });
 }
 
+export function matchesEvmReverseBasisLane(
+  documents: StoredStrategyPackageDocuments,
+  lane: EvmReverseBasisPreparationLane,
+): boolean {
+  const bindings = [
+    ['base-borrow', lane.pricing.lending.adapter],
+    ['spot-sale', lane.pricing.spot.adapter],
+    ['perp-purchase', lane.pricing.hedge.adapter],
+  ] as const;
+  return documents.order.environment === lane.environment
+    && documents.order.templateId === lane.templateManifest.templateId
+    && documents.order.templateVersion === lane.templateManifest.templateVersion
+    && bytesEqual(documents.order.packageTemplateManifestHash, packageTemplateManifestHash(lane.templateManifest))
+    && documents.graph.legs.length === bindings.length
+    && bindings.every(([role, adapter]) => {
+      const leg = documents.graph.legs.find((candidate) => candidate.legId === role);
+      return leg !== undefined
+        && leg.domain.domainId === lane.pricing.domain.domainId
+        && leg.domain.domainManifestVersion === lane.pricing.domain.domainManifestVersion
+        && bytesEqual(leg.domain.domainManifestHash, lane.pricing.domain.domainManifestHash)
+        && leg.adapter.adapterId === adapter.adapterId
+        && leg.adapter.adapterManifestVersion === adapter.adapterManifestVersion
+        && bytesEqual(leg.adapter.adapterManifestHash, adapter.adapterManifestHash);
+    });
+}
+
 export class EvmReverseBasisPreparationContextResolver implements StrategyPreparationContextResolver {
   readonly #lanes: readonly EvmReverseBasisPreparationLane[];
 
@@ -358,10 +384,7 @@ export class EvmReverseBasisPreparationContextResolver implements StrategyPrepar
   }
 
   async resolve(documents: StoredStrategyPackageDocuments): Promise<StrategyPreparationContext> {
-    const matches = this.#lanes.filter((lane) => lane.environment === documents.order.environment
-      && lane.templateManifest.templateId === documents.order.templateId
-      && lane.templateManifest.templateVersion === documents.order.templateVersion
-      && bytesEqual(packageTemplateManifestHash(lane.templateManifest), documents.order.packageTemplateManifestHash)
+    const matches = this.#lanes.filter((lane) => matchesEvmReverseBasisLane(documents, lane)
       && documents.route.domainPlans.length === 1 && documents.route.domainPlans[0]!.executionPlanKind === 'EVM_ATOMIC_BATCH'
       && documents.route.domainPlans[0]!.domain.domainId === lane.pricing.domain.domainId
       && bytesEqual(documents.route.domainPlans[0]!.domain.domainManifestHash, lane.pricing.domain.domainManifestHash));
