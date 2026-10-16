@@ -14,6 +14,7 @@ const { baseSepolia, arbitrumSepolia } = require('viem/chains');
 const { values } = parseArgs({ options: {
   network: { type: 'string' },
   broadcast: { type: 'boolean', default: false },
+  'refresh-now': { type: 'boolean', default: false },
   account: { type: 'string' },
   'password-env': { type: 'string', default: 'NARYX_ORACLE_KEYSTORE_PASSWORD' },
 } });
@@ -84,7 +85,7 @@ for (const { oracle, maxAge } of oracles.values()) {
   if (decimals !== 8 || answer <= 0n || updatedAt === 0n || updatedAt > block.timestamp || answeredInRound < roundId) {
     throw new Error('The conformance oracle round is invalid.');
   }
-  const refreshDue = block.timestamp - updatedAt >= BigInt(Math.floor(maxAge / 2));
+  const refreshDue = values['refresh-now'] || block.timestamp - updatedAt >= BigInt(Math.floor(maxAge / 2));
   console.log(JSON.stringify({ network: values.network, oracle, answer: answer.toString(), updatedAt: updatedAt.toString(), refreshDue, broadcast: values.broadcast }));
   if (!values.broadcast || !refreshDue) continue;
   if (signer === undefined) {

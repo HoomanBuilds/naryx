@@ -12,6 +12,8 @@ node --env-file=deployments/.env deployments/tools/refresh-evm-conformance-oracl
 
 For a refresh, add `--broadcast --account <oracle-owner-keystore>`. Set `NARYX_ORACLE_KEYSTORE_PASSWORD` in an ignored local env file, or select its existing variable with `--password-env <variable-name>` and load that file using Node's `--env-file`. Repeat for `--network base-sepolia`. The tool verifies chain identity, release factory and instrument code hashes, oracle bindings, owner authority, and a bounded testnet gas cost before signing. Without `--broadcast`, it never loads a signer. This tool does not update Chainlink, GMX, or any mainnet oracle.
 
+Add `--refresh-now` when another reviewed consumer has a shorter heartbeat than the native market. This preserves the test answer while advancing its round, never relaxes a consumer's freshness checks, and still requires `--broadcast` to write. A read-only invocation with this flag only reports that a refresh is requested.
+
 ## Release generation
 
 Operator tooling, not consumed by any workspace. After a reviewed deployment, one command turns the deployment output and the reviewed release values into every runtime file the services and the web app load, and proves each one loads with the services' own loader code.
