@@ -342,7 +342,8 @@ export class DurableAttemptScopeResolver implements ExecutionReadinessScopeResol
       orderHash = record.orderHashHex;
     } else {
       if (request.attemptId === undefined) rejectScope("The handoff does not name an attempt.");
-      const attempt = this.#intents.getAttempt(request.attemptId);
+      const attempt = /^strategy-hl-[0-9a-f]{48}$/.test(request.attemptId)
+        ? undefined : this.#intents.getAttempt(request.attemptId);
       if (attempt !== undefined) {
         attemptId = attempt.attemptId;
         orderHash = attempt.orderHash;

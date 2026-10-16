@@ -257,7 +257,7 @@ test("the resolver applies admitted package caps to a generalized strategy attem
       getByIdempotencyKey: () => undefined,
       getCanonicalOrderByHash: () => undefined,
     },
-    { getAttempt: () => undefined, getAttemptForOrder: () => undefined },
+    { getAttempt: () => { throw new Error("Native strategy attempts must not use the legacy attempt store"); }, getAttemptForOrder: () => undefined },
     {
       anyStrategyExecutionAttempt: (attemptId: string) => attemptId === strategyAttemptId
         ? ({ attemptId: strategyAttemptId, orderHashHex: strategyOrderHash, quoteHashHex: quoteHash }) as never
