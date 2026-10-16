@@ -12,8 +12,10 @@ import {
   SqliteSolanaDevnetFirmQuoteJournal,
   createSolanaDevnetFirmQuotePort,
   holdShardSequences,
+  readSolanaDevnetQuoteState,
   refreshSolanaDevnetStandingLevels,
 } from './solana-devnet-firm-quote.js';
+import { solanaDevnetStandingBook } from './solana-devnet-standing-book.js';
 import { createSolanaDevnetReservationReleaser } from './solana-devnet-reservation-release.js';
 import { HttpSolanaDevnetSolverRpc, requireSolanaDevnet, type SolanaDevnetSolverWritePort } from './solana-devnet-rpc.js';
 import {
@@ -90,7 +92,8 @@ export async function loadSolanaDevnetSolverRuntime(
     releaser,
     admissions: new HttpSelectedSolanaAdmissionProvider(options.apiOrigin).get,
   });
-  const server: Server = createSolanaDevnetBindingServer(service, releaser);
+  const server: Server = createSolanaDevnetBindingServer(service, releaser, async () =>
+    solanaDevnetStandingBook(await readSolanaDevnetQuoteState(rpc, manifest, config), config));
   const orders = new HttpInternalOrderProvider(options.apiOrigin).get;
   // With writes on, keep standing firm levels fresh so user quotes never wait on a Devnet write.
   let refreshTimer: NodeJS.Timeout | undefined;

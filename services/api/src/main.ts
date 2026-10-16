@@ -54,6 +54,7 @@ import {
   HttpSolanaDevnetBindingSource,
   loadSolanaDevnetRuntimeManifest,
 } from "./solana-devnet-runtime.js";
+import { createSolanaDevnetStandingBookRoutes } from "./solana-devnet-standing-book.js";
 import { loadSolanaLocalEnvironmentRuntime } from "./solana-local-environment-runtime.js";
 import {
   HttpSolanaDevnetMarketReadPort,
@@ -1211,6 +1212,7 @@ const server = createPrivateTerminalServer(
     publicMarket?.listener === undefined ? publicMarket?.handler : undefined,
     arbitrumOwnerRoutes,
     solanaDevnetOrderRuntime?.handler,
+    solanaDevnetRuntime === undefined ? undefined : createSolanaDevnetStandingBookRoutes(process.env.NARYX_SOLANA_DEVNET_BINDING_ORIGIN ?? ""),
     baseExitRoutes,
     hyperliquidOwnerRoutes,
     referenceHistory === undefined

@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { SolanaDevnetStandingBook } from './solana-devnet-standing-book.js';
 import {
   compileFirmCashCarryExitPlan,
   compileFirmCashCarryPlan,
@@ -614,6 +615,7 @@ async function readBody(request: IncomingMessage): Promise<unknown> {
 export function createSolanaDevnetBindingServer(
   service: ReturnType<typeof createSolanaDevnetBindingService>,
   releaser?: SolanaDevnetReservationReleaser,
+  standingBook?: () => Promise<SolanaDevnetStandingBook>,
 ): Server {
   return createServer((request, response) => {
     if (!isLoopback(request.socket.remoteAddress)) {
@@ -621,6 +623,16 @@ export function createSolanaDevnetBindingServer(
       return;
     }
     const url = new URL(request.url ?? '/', 'http://solver.internal');
+    if (url.pathname === '/internal/solana-devnet/standing-book' && url.search === '' && standingBook !== undefined) {
+      if (request.method !== 'GET') {
+        response.setHeader('Allow', 'GET');
+        sendJson(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: 'only GET is allowed' } });
+        return;
+      }
+      void standingBook().then((book) => sendJson(response, 200, book)).catch(() =>
+        sendJson(response, 503, { error: { code: 'STANDING_BOOK_UNAVAILABLE', message: 'Finalized Solana Devnet book is unavailable' } }));
+      return;
+    }
     if (url.pathname === '/internal/solana-devnet/release-reservation' && url.search === '' && releaser !== undefined) {
       if (request.method !== 'POST') {
         response.setHeader('Allow', 'POST');
