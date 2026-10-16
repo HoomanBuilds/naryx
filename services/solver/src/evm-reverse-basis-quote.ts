@@ -307,7 +307,7 @@ export function createEvmReverseBasisGeneralizedPricing(
       const borrowCollateralAtoms = increasing
         ? ceilDiv(oracleNotionalAtoms * input.borrowCollateralRatioBps, BPS)
         : 0n;
-      const capitalRequiredAtoms = borrowCollateralAtoms + requiredMarginAtoms;
+      const capitalRequiredAtoms = increasing ? borrowCollateralAtoms + requiredMarginAtoms : spotSnapshot.quoteAtoms;
       const spotPrice = exactPrice({
         baseAsset: input.baseAsset,
         quoteAsset: input.quoteAsset,

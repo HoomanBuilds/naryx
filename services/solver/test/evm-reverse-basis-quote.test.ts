@@ -11,6 +11,7 @@ import {
   packageGraphHash,
   strategyPackageOrder,
   strategyPackageOrderHash,
+  strategyEconomicsMetrics,
   versionedManifestRef,
 } from '@naryx/protocol-types';
 import type { Abi, Address, Hex } from 'viem';
@@ -46,6 +47,7 @@ const spotMarket = versionedManifestRef('ntbase-spot', 1, hash('9'));
 const hedgeMarket = versionedManifestRef('ntbase-perpetual', 1, hash('a'));
 
 class Chain implements EvmOptionSpreadReadPort {
+  closing = false;
   readonly codes = new Map<string, Hex>([
     [BASE, codeHash('1')], [QUOTE, codeHash('2')], [SPOT_FACTORY, codeHash('3')],
     [SPOT_POOL, codeHash('4')], [SPOT_QUOTER, codeHash('5')], [LENDING_POOL, codeHash('6')],
@@ -67,6 +69,7 @@ class Chain implements EvmOptionSpreadReadPort {
     if (request.address === SPOT_QUOTER) {
       if (request.functionName === 'factory') return SPOT_FACTORY;
       if (request.functionName === 'quoteExactInputSingle') return [99_000_000n, 0n, 0n, 0n];
+      if (request.functionName === 'quoteExactOutputSingle') return [100_500_000n, 0n, 0n, 0n];
     }
     if (request.address === PERP_MARKET) {
       switch (request.functionName) {
@@ -81,7 +84,7 @@ class Chain implements EvmOptionSpreadReadPort {
         case 'currentFundingIndex': return 0n;
         case 'fundingRatePerSecond': return 10n ** 10n;
         case 'previewOpen':
-          assert.deepEqual(request.args, [QUANTITY, 0n]);
+          assert.deepEqual(request.args, [this.closing ? -QUANTITY : QUANTITY, 0n]);
           return [101n * 10n ** 18n, 101n * 10n ** 18n, 10n ** 17n, 0n];
       }
     }
@@ -89,7 +92,7 @@ class Chain implements EvmOptionSpreadReadPort {
   }
 }
 
-function documents(minimumSpotQuoteAtoms: bigint): StoredStrategyPackageOrderDocuments {
+function documents(minimumSpotQuoteAtoms: bigint, action: 'ENTRY' | 'EXIT' = 'ENTRY'): StoredStrategyPackageOrderDocuments {
   const expiry = 1_200n;
   const reducedPrice = (quoteAtoms: bigint) => {
     let divisor = quoteAtoms;
@@ -99,7 +102,7 @@ function documents(minimumSpotQuoteAtoms: bigint): StoredStrategyPackageOrderDoc
   };
   const leg = (input: Readonly<{
     id: 'base-borrow' | 'spot-sale' | 'perp-purchase';
-    family: 'BORROW' | 'SPOT_SWAP' | 'PERP_OPEN';
+    family: 'BORROW' | 'REPAY' | 'SPOT_SWAP' | 'PERP_OPEN' | 'PERP_CLOSE';
     side: 'NONE' | 'SELL' | 'BUY';
     adapter: typeof lendingAdapter;
     market: typeof lendingMarket;
@@ -143,15 +146,15 @@ function documents(minimumSpotQuoteAtoms: bigint): StoredStrategyPackageOrderDoc
     executionClassId: 'evm-atomic-reverse-basis',
     executionClassVersion: 1,
     executionClassManifestHash: hash('d'),
-    lifecycleAction: 'ENTRY',
+    lifecycleAction: action,
     owner: address('9').toLowerCase(),
     strategyAccountRefs: [address('a').toLowerCase()],
     legs: [
-      leg({ id: 'base-borrow', family: 'BORROW', side: 'NONE', adapter: lendingAdapter, market: lendingMarket }),
-      leg({ id: 'spot-sale', family: 'SPOT_SWAP', side: 'SELL', adapter: spotAdapter, market: spotMarket,
+      leg({ id: 'base-borrow', family: action === 'ENTRY' ? 'BORROW' : 'REPAY', side: 'NONE', adapter: lendingAdapter, market: lendingMarket }),
+      leg({ id: 'spot-sale', family: 'SPOT_SWAP', side: action === 'ENTRY' ? 'SELL' : 'BUY', adapter: spotAdapter, market: spotMarket,
         limitQuoteAtoms: minimumSpotQuoteAtoms }),
-      leg({ id: 'perp-purchase', family: 'PERP_OPEN', side: 'BUY', adapter: hedgeAdapter, market: hedgeMarket,
-        limitQuoteAtoms: 102_000_000n }),
+      leg({ id: 'perp-purchase', family: action === 'ENTRY' ? 'PERP_OPEN' : 'PERP_CLOSE', side: action === 'ENTRY' ? 'BUY' : 'SELL', adapter: hedgeAdapter, market: hedgeMarket,
+        limitQuoteAtoms: action === 'ENTRY' ? 102_000_000n : 98_000_000n }),
     ],
     dependencyEdges: [{ fromLegId: 'base-borrow', toLegId: 'spot-sale' },
       { fromLegId: 'spot-sale', toLegId: 'perp-purchase' }],
@@ -183,7 +186,8 @@ function documents(minimumSpotQuoteAtoms: bigint): StoredStrategyPackageOrderDoc
     riskClassId: STRATEGY_RISK_CLASS_ID.BORROWED_BASIS,
     owner: graph.owner,
     settlementAccount: address('a').toLowerCase(),
-    lifecycleAction: 'ENTRY',
+    lifecycleAction: action,
+    ...(action === 'EXIT' ? { expectedStrategyStateHash: hash('f') } : {}),
     settlementClass: 'ATOMIC_POSTCONDITION',
     packageOrderType: 'MARKETABLE_LIMIT',
     packageTimeInForce: 'IOC',
@@ -256,4 +260,16 @@ test('prices atomic reverse basis carry and rejects a spot sale below the signed
     port.quote({ documents: documents(100_000_000n), currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW } }),
     /executable spot price violates the signed limit/,
   );
+});
+
+test('closing reverse basis quotes use repurchase cash without adding new collateral', async () => {
+  const chain = new Chain();
+  chain.closing = true;
+  const port = createEvmReverseBasisGeneralizedPricing(pricing(chain));
+  const terms = await port.quote({ documents: documents(102_000_000n, 'EXIT'),
+    currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW } });
+  assert.ok('capitalRequiredAtoms' in terms.economics);
+  assert.equal(terms.economics.capitalRequiredAtoms, 100_500_000n);
+  assert.ok(terms.legEconomics.every((leg) => leg.marginDelta.atoms === 0n));
+  assert.ok(strategyEconomicsMetrics(terms.economics).length > 0);
 });
