@@ -310,10 +310,10 @@ function documents(): StoredStrategyPackageDocuments {
     order,
     graph,
     quote: {
-      totalMarginDelta: amount(170_300_000n),
+      totalMarginDelta: amount(320_300_000n),
       serviceCharges: [{ category: 'PROTOCOL', amount: amount(49_500n) }, { category: 'SOLVER', amount: amount(49_500n) }],
       legEconomics: [
-        { legId: 'base-borrow', grossNotional: amount(100_000_000n), marginDelta: amount(150_000_000n) },
+        { legId: 'base-borrow', grossNotional: amount(100_000_000n), marginDelta: amount(300_000_000n) },
         { legId: 'spot-sale', grossNotional: amount(99_000_000n), marginDelta: amount(0n),
           executionPrice: { baseAsset, quoteAsset, quoteAtoms: 99n, baseAtoms: 10n ** 12n, roundingDirection: 'FLOOR' } },
         { legId: 'perp-purchase', grossNotional: amount(101_000_000n), marginDelta: amount(20_300_000n),
@@ -350,7 +350,7 @@ function lane(chain: Chain) {
     ] as const,
     debtBaseAtomsPerWholeBaseToken: 100_000_000n,
     debtBaseToleranceBps: 100n,
-    collateralBaseAtomsPerWholeQuoteToken: 100_000_000n,
+    collateralBaseAtomsPerWholeQuoteToken: 1_000_000n,
     collateralBaseToleranceBps: 100n,
     solver: SOLVER,
     packageIds: { resolvePackageId: async () => undefined },
@@ -391,12 +391,18 @@ test('plans owner collateral funding from the admitted reverse basis entry quote
   );
   const plan = await service.planByQuote(hash32(hexToBytes(`0x${packageDocuments.quoteHashHex}`)), 'SUPPLY');
   assert.equal(plan?.action, 'SUPPLY');
-  assert.equal(plan?.inputAtoms, 150_000_000n);
+  assert.equal(plan?.inputAtoms, 300_000_000n);
   assert.equal(plan?.quoteHash, `0x${packageDocuments.quoteHashHex}`);
   assert.deepEqual(plan?.transactions.map((transaction) => transaction.kind), [
     'APPROVE_COLLATERAL',
     'MANAGE_PACKAGE_COLLATERAL',
   ]);
+  const insufficient = { ...packageDocuments, quote: { ...packageDocuments.quote,
+    legEconomics: packageDocuments.quote.legEconomics.map((leg) => leg.legId === 'base-borrow'
+      ? { ...leg, marginDelta: assetAmount(quoteAsset, 150_000_000n) } : leg) } };
+  const refused = new EvmReverseBasisCollateralService({ getByQuote: async () => insufficient }, [lane(chain)]);
+  await assert.rejects(refused.planByQuote(hash32(hexToBytes(`0x${packageDocuments.quoteHashHex}`)), 'SUPPLY'),
+    /cannot meet the required post-borrow health factor/);
 });
 
 test('recovers unused entry collateral only while the package is inactive and debt-free', async () => {

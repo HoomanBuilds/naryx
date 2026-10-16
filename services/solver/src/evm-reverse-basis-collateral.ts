@@ -204,6 +204,15 @@ export class EvmReverseBasisCollateralService {
         'entry quote does not bind lending collateral');
       requireCondition(observed.totalCollateralBase === 0n && principalAtoms === 0n,
         'lending collateral is already funded');
+      const threshold = natural(tupleField(accountDataValue, 3, 'currentLiquidationThreshold'), 'liquidation threshold');
+      const projectedDebt = documents.order.economicQuantity.atoms * lane.debtBaseAtomsPerWholeBaseToken
+        / (10n ** BigInt(lane.pricing.baseAsset.decimals));
+      const maximumDebt = projectedDebt + projectedDebt * lane.debtBaseToleranceBps / BPS;
+      requireCondition(threshold > 0n && threshold <= BPS && maximumDebt > 0n,
+        'lending health parameters are unavailable');
+      requireCondition(minimumProjectedBase * threshold * 10n ** 18n
+        >= maximumDebt * BPS * lane.pricing.minimumPostHealthFactor,
+      'quoted collateral cannot meet the required post-borrow health factor');
     } else {
       requireCondition(observed.totalCollateralBase > 0n, 'lending collateral is already withdrawn');
     }
