@@ -6854,6 +6854,18 @@ export function GeneralizedStrategyPreparationPanel({
                   ? `Collateral funding confirmed for strategy account ${compact(evmCollateral.strategyAccount, 10, 8)}.`
                   : "The wallet funds only this package adapter. Entry remains unavailable until collateral confirms."}
               </p>
+              <button
+                type="button"
+                className={styles.secondaryAction}
+                disabled={privateApiBaseUrl === null || evmCollateralBusy || evmExecutionBusy
+                  || (evmExecutionHash !== null && !evmExecutionReverted)
+                  || evmCollateralCompletionKey === `${quoteHash}:WITHDRAW`}
+                onClick={() => void manageEvmReverseBasisCollateral("WITHDRAW")}
+              >
+                {evmCollateralCompletionKey === `${quoteHash}:WITHDRAW`
+                  ? "Unused collateral withdrawn" : "Withdraw unused lending collateral"}
+              </button>
+              <p className={styles.fieldContext}>Available only before entry, with no active package or lending debt. Your wallet confirms the withdrawal.</p>
             </>
           ) : null}
         </div>

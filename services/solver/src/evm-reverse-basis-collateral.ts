@@ -131,7 +131,8 @@ export class EvmReverseBasisCollateralService {
     if (documents === undefined) return undefined;
     requireCondition(action === 'SUPPLY' || action === 'WITHDRAW', 'collateral action is invalid');
     requireCondition(action === 'SUPPLY' ? documents.order.lifecycleAction === 'ENTRY'
-      : documents.order.lifecycleAction === 'EXIT' || documents.order.lifecycleAction === 'EMERGENCY_UNWIND',
+      : documents.order.lifecycleAction === 'ENTRY' || documents.order.lifecycleAction === 'EXIT'
+        || documents.order.lifecycleAction === 'EMERGENCY_UNWIND',
     'collateral action does not match the quote lifecycle');
     const matches = this.#lanes.filter((lane) => matchingLane(documents, lane));
     requireCondition(matches.length === 1, 'entry quote must resolve to exactly one lane');

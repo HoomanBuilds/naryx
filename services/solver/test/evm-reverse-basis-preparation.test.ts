@@ -84,6 +84,9 @@ const template = packageTemplateManifest(templateInput);
 const templateHash = packageTemplateManifestHash(template);
 
 class Chain implements EvmOptionSpreadReadPort {
+  principalAtoms = 0n;
+  debtBase = 0n;
+  packageActive = false;
   collateralBase = 300_000_000n;
   readonly codes = new Map<string, Hex>([
     [ACCOUNT_FACTORY, codeHash('1')], [ACCOUNT, codeHash('2')], [BASE, codeHash('3')], [QUOTE, codeHash('4')],
@@ -113,7 +116,7 @@ class Chain implements EvmOptionSpreadReadPort {
       if (request.functionName === 'nextNonce') return 7n;
       if (request.functionName === 'nextCollateralNonce') return 0n;
       if (request.functionName === 'packageState') {
-        return [[zeroHash, 0n, zeroHash], zeroHash, 0, zeroHash, [zeroHash, 0, zeroHash], zeroHash, zeroHash, false];
+        return [[zeroHash, 0n, zeroHash], zeroHash, 0, zeroHash, [zeroHash, 0, zeroHash], zeroHash, zeroHash, this.packageActive];
       }
     }
     const factories = new Map<Address, Address>([
@@ -125,10 +128,10 @@ class Chain implements EvmOptionSpreadReadPort {
     }
     if (request.address === LENDING_ADAPTER && request.functionName === 'accountData') {
       const available = this.collateralBase * 2n / 3n;
-      return { totalCollateralBase: this.collateralBase, totalDebtBase: 0n, availableBorrowsBase: available,
+      return { totalCollateralBase: this.collateralBase, totalDebtBase: this.debtBase, availableBorrowsBase: available,
         currentLiquidationThreshold: 8_000n, ltv: 7_500n, healthFactor: (2n ** 256n) - 1n };
     }
-    if (request.address === LENDING_ADAPTER && request.functionName === 'managedCollateralPrincipalAtoms') return 0n;
+    if (request.address === LENDING_ADAPTER && request.functionName === 'managedCollateralPrincipalAtoms') return this.principalAtoms;
     if (request.address === QUOTE && request.functionName === 'allowance') return 0n;
     if (request.address === QUOTE && request.functionName === 'balanceOf') return 1_000_000_000n;
     if (request.address === HEDGE_ADAPTER && request.functionName === 'position') return { balance: 0n, size: 0n,
@@ -394,4 +397,21 @@ test('plans owner collateral funding from the admitted reverse basis entry quote
     'APPROVE_COLLATERAL',
     'MANAGE_PACKAGE_COLLATERAL',
   ]);
+});
+
+test('recovers unused entry collateral only while the package is inactive and debt-free', async () => {
+  const chain = new Chain();
+  chain.principalAtoms = 150_000_000n;
+  const packageDocuments = documents();
+  const service = new EvmReverseBasisCollateralService({ getByQuote: async () => packageDocuments }, [lane(chain)]);
+  const quoteHash = hash32(hexToBytes(`0x${packageDocuments.quoteHashHex}`));
+  const plan = await service.planByQuote(quoteHash, 'WITHDRAW');
+  assert.equal(plan?.action, 'WITHDRAW');
+  assert.equal(plan?.minimumOutputAtoms, chain.principalAtoms);
+  assert.deepEqual(plan?.transactions.map((transaction) => transaction.kind), ['MANAGE_PACKAGE_COLLATERAL']);
+  chain.packageActive = true;
+  await assert.rejects(service.planByQuote(quoteHash, 'WITHDRAW'), /package must be inactive/);
+  chain.packageActive = false;
+  chain.debtBase = 1n;
+  await assert.rejects(service.planByQuote(quoteHash, 'WITHDRAW'), /still has debt/);
 });
