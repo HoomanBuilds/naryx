@@ -2065,11 +2065,12 @@ export function TradingTerminal({
         : lane !== null
           ? [preferredPackageMarket(packageMarkets, (market) => onLane(market, lane))?.packageMarketId, ...remembered.filter(laneFits)]
           : [];
-      const selected = [...linked, ...remembered, preferredPackageMarket(packageMarkets, () => true)?.packageMarketId].find(listed) ?? null;
+      const lanePreferred = preferredPackageMarket(packageMarkets, (market) => onLane(market, selectedDomain))?.packageMarketId;
+      const selected = [...linked, ...remembered, lanePreferred, preferredPackageMarket(packageMarkets, () => true)?.packageMarketId].find(listed) ?? null;
       if (selected !== null) storePackageMarket(selected);
       return selected;
     });
-  }, [linkSearch, packageMarketId, packageMarkets, publicApiBaseUrl]);
+  }, [linkSearch, packageMarketId, packageMarkets, publicApiBaseUrl, selectedDomain]);
   // With a public market API nothing resolves until its list loads, so a deep link never shows a default
   // market's book first.
   const packageMarketsPending = publicApiBaseUrl !== null && packageMarkets.length === 0
@@ -2078,7 +2079,8 @@ export function TradingTerminal({
     ? null
     : packageMarkets.some((market) => market.packageMarketId === activePackageMarketId && tradeReadyMarket(market))
       ? activePackageMarketId
-      : preferredPackageMarket(packageMarkets, () => true)?.packageMarketId ?? null;
+      : preferredPackageMarket(packageMarkets, (market) => onLane(market, selectedDomain))?.packageMarketId
+        ?? preferredPackageMarket(packageMarkets, () => true)?.packageMarketId ?? null;
   const selectedPackageMarket = packageMarkets.find((market) => market.packageMarketId === resolvedPackageMarketId) ?? null;
   const selectedPackageTemplateId = selectedPackageMarket?.templateId ?? null;
   const selectedPackageDomainIds = selectedPackageMarket?.domainIds.join("\n") ?? "";
