@@ -421,7 +421,7 @@ test("owner authorization and prepared netting evidence are immutable and replay
 });
 
 test("cross-batch clearing durably settles source batches without direct double execution", () => {
-  withStore((store) => {
+  withStore((store, path) => {
     registerAll(store);
     const signature = bs58.encode(new Uint8Array(64).fill(9));
     const instrument = {
@@ -512,7 +512,17 @@ test("cross-batch clearing durably settles source batches without direct double 
     assert.equal(created.replayed, false);
     assert.equal(created.clearing.status, "PENDING");
     assert.ok(created.clearing.intent);
-    assert.equal(prepareNextAuthoritativeCrossBatchClearing(store, clearingPolicy).status, "IDLE");
+    const reopened = new SqlitePackageExchangeStore(path, { seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT });
+    try {
+      const resumed = prepareNextAuthoritativeCrossBatchClearing(reopened, clearingPolicy);
+      assert.equal(resumed.status, "PREPARED");
+      if (resumed.status !== "PREPARED") assert.fail("Pending clearing was lost across a new store instance.");
+      assert.equal(resumed.replayed, true);
+      assert.equal(toHex(resumed.clearing.plan.planHash), toHex(created.clearing.plan.planHash));
+      assert.equal(reopened.pendingCrossBatchClearing({ ...clearingPolicy, policyId: "another-policy" }), undefined);
+    } finally {
+      reopened.close();
+    }
     for (const { batch } of prepared) {
       const pooled = store.nettingBatch(batch.result.proofHash)!;
       assert.equal(pooled.externalExecutionStatus, "PENDING");
@@ -555,6 +565,8 @@ test("cross-batch clearing durably settles source batches without direct double 
     assert.equal(store.recordVerifiedCrossBatchExternalExecutionEvidence(evidence).replayed, true);
     const clearing = store.crossBatchClearing(created.clearing.plan.planHash)!;
     assert.equal(clearing.status, "EXACT_FILLED");
+    assert.equal(store.pendingCrossBatchClearing(clearingPolicy), undefined);
+    assert.equal(prepareNextAuthoritativeCrossBatchClearing(store, clearingPolicy).status, "IDLE");
     const recentClearings = store.recentCrossBatchClearings(1);
     assert.equal(recentClearings.length, 1);
     assert.equal(toHex(recentClearings[0]!.plan.planHash), toHex(clearing.plan.planHash));

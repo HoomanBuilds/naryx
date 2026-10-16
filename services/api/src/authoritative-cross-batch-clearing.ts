@@ -12,6 +12,7 @@ import type { PreparedCrossBatchClearing } from './package-exchange-store.js';
 const MAX_DISCOVERY_CANDIDATES = 512;
 
 export interface AuthoritativeCrossBatchClearingPort {
+  pendingCrossBatchClearing(policy: CrossBatchClearingPolicyInput): PreparedCrossBatchClearing | undefined;
   pendingCrossBatchSourceIntents(
     policy: CrossBatchClearingPolicyInput,
     maximumCandidates?: number,
@@ -129,6 +130,8 @@ export function prepareNextAuthoritativeCrossBatchClearing(
   policyInput: CrossBatchClearingPolicyInput,
 ): PrepareNextAuthoritativeCrossBatchClearingResult {
   const policy = crossBatchClearingPolicy(policyInput);
+  const pending = exchange.pendingCrossBatchClearing(policy);
+  if (pending !== undefined) return Object.freeze({ status: 'PREPARED', clearing: pending, replayed: true });
   const candidates = exchange.pendingCrossBatchSourceIntents(policy, MAX_DISCOVERY_CANDIDATES);
   const selected = selectSources(candidates, policy);
   if (selected === undefined) return Object.freeze({ status: 'IDLE' });

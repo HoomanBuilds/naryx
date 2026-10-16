@@ -525,6 +525,8 @@ CREATE TABLE IF NOT EXISTS cross_batch_clearing_plans (
   recorded_at_ms INTEGER NOT NULL,
   CHECK ((external_intent_hash IS NULL) = (external_intent_json IS NULL))
 ) STRICT;
+CREATE INDEX IF NOT EXISTS cross_batch_plans_by_policy
+  ON cross_batch_clearing_plans(policy_hash, recorded_at_ms, plan_hash);
 CREATE TABLE IF NOT EXISTS netting_external_execution_claims (
   intent_hash BLOB PRIMARY KEY REFERENCES netting_external_execution_intents(intent_hash),
   claimed_at_ms INTEGER NOT NULL
@@ -2471,6 +2473,27 @@ export class SqlitePackageExchangeStore {
       }
       return Object.freeze({ clearing, replayed: false });
     });
+  }
+
+  pendingCrossBatchClearing(
+    policyInput: CrossBatchClearingPolicyInput | CrossBatchClearingPolicy,
+  ): PreparedCrossBatchClearing | undefined {
+    const policy = guarded("INVALID_INPUT", "Cross-batch clearing policy is invalid.", () =>
+      crossBatchClearingPolicy(policyInput));
+    const row = this.db.prepare(`
+      SELECT p.plan_hash FROM cross_batch_clearing_plans p
+      LEFT JOIN cross_batch_execution_evidence e ON e.plan_hash = p.plan_hash
+      LEFT JOIN cross_batch_clearing_receipts r ON r.plan_hash = p.plan_hash
+      WHERE p.policy_hash = ? AND p.external_intent_hash IS NOT NULL
+        AND e.plan_hash IS NULL AND r.plan_hash IS NULL
+      ORDER BY p.recorded_at_ms, p.plan_hash LIMIT 1
+    `).get(policy.policyHash) as { plan_hash: unknown } | undefined;
+    if (row === undefined) return undefined;
+    const clearing = this.crossBatchClearing(hashBytes(row.plan_hash, "plan_hash"));
+    if (clearing === undefined || clearing.status !== "PENDING" || clearing.intent === undefined) {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Pending cross-batch clearing has inconsistent execution state.");
+    }
+    return clearing;
   }
 
   pendingCrossBatchSourceIntents(
