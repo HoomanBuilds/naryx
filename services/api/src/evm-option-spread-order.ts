@@ -431,6 +431,11 @@ export function createEvmOptionSpreadOrderPort(input: Readonly<{
       const isIncreasing = increasing(request.lifecycleAction);
       const legs = profile.markets.map((market) => {
         const limit = limits.get(market.role)!;
+        const quoteAtoms = requestAtoms(limit.quoteAtoms, `${market.role}.quoteAtoms`);
+        const baseAtoms = requestAtoms(limit.baseAtoms, `${market.role}.baseAtoms`);
+        let divisor = quoteAtoms;
+        let remainder = baseAtoms;
+        while (remainder !== 0n) [divisor, remainder] = [remainder, divisor % remainder];
         const side = isIncreasing
           ? market.role === "option-long" ? "BUY" as const : "SELL" as const
           : market.role === "option-long" ? "SELL" as const : "BUY" as const;
@@ -453,8 +458,8 @@ export function createEvmOptionSpreadOrderPort(input: Readonly<{
           limitPrice: exactPrice({
             baseAsset: profile.baseAsset,
             quoteAsset: profile.quoteAsset,
-            quoteAtoms: requestAtoms(limit.quoteAtoms, `${market.role}.quoteAtoms`),
-            baseAtoms: requestAtoms(limit.baseAtoms, `${market.role}.baseAtoms`),
+            quoteAtoms: quoteAtoms / divisor,
+            baseAtoms: baseAtoms / divisor,
             roundingDirection: side === "BUY" ? "FLOOR" : "CEIL",
           }),
           maximumFeeQuoteAtoms: profile.bounds.maximumVenueFeeQuoteAtoms,

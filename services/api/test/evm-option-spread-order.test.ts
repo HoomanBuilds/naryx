@@ -156,3 +156,15 @@ test("rejects an option order without the exact prior state", () => {
   assert.throws(() => port.create(invalid), (error: unknown) =>
     error instanceof EvmOptionSpreadOrderError && error.code === "INVALID_REQUEST");
 });
+
+test("normalizes browser total-premium ratios without changing their canonical economic identity", () => {
+  const port = createEvmOptionSpreadOrderPort({ profiles: [profile()], intake, currentTimeSeconds: () => NOW_SECONDS });
+  const source = request("ENTRY");
+  const canonical = port.create(source);
+  const equivalent = port.create({ ...source, limitPremiums: source.limitPremiums.map((limit) => ({
+    ...limit, quoteAtoms: (BigInt(limit.quoteAtoms) * 1000n).toString(),
+    baseAtoms: (BigInt(limit.baseAtoms) * 1000n).toString(),
+  })) });
+  assert.equal(equivalent.intake.orderHashHex, canonical.intake.orderHashHex);
+  assert.deepEqual(equivalent.graph.legs.map((leg) => leg.limitPrice), canonical.graph.legs.map((leg) => leg.limitPrice));
+});
