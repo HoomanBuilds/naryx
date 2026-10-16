@@ -854,6 +854,28 @@ function nativeExecutions(strategies: SqliteStrategyPackageStore) {
   };
 }
 
+test("native execution analytics count stored receipts once, filter solvers, and exclude legacy wrappers", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-native-analytics-"));
+  const strategies = new SqliteStrategyPackageStore(join(scratch, "strategies.db"), { clock: () => NOW_MS });
+  try {
+    assert.deepEqual(strategies.strategyExecutionQuality(), { total: 0, byTerminalState: {}, legEvidence: {} });
+    const entry = nativeExecutions(strategies)("ENTRY", 100_000n, 200_000n, -100_000n, 6_000n);
+    entry.record();
+    entry.record();
+    const expected = { total: 1, byTerminalState: { FINALIZED_COMPLETE: 1 }, legEvidence: { VENUE_API_CORROBORATED: 1 } };
+    assert.deepEqual(strategies.strategyExecutionQuality(), expected);
+    assert.deepEqual(strategies.strategyExecutionQuality("solver-a"), expected);
+    assert.equal(strategies.strategyExecutionQuality("solver-b").total, 0);
+    assert.throws(() => strategies.strategyExecutionQuality("invalid solver"));
+    const attempt = strategies.nativeStrategyExecutionAttempt(entry.attemptId)!;
+    strategies.bindSourceOrder(attempt.orderHashHex, "99".repeat(32));
+    assert.deepEqual(strategies.strategyExecutionQuality(), { total: 0, byTerminalState: {}, legEvidence: {} });
+  } finally {
+    strategies.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("the exposure ledger counts a native strategy opened before it and follows reductions recorded on any path", () => {
   const scratch = mkdtempSync(join(tmpdir(), "naryx-native-exposure-"));
   const strategies = new SqliteStrategyPackageStore(join(scratch, "strategies.db"), { clock: () => NOW_MS });

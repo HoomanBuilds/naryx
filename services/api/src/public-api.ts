@@ -106,6 +106,7 @@ import type { SqliteSolverApiStore } from "./solver-api-store.js";
 import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 import { requestClientKey, createRateLimiter } from "./rate-limit.js";
 import { EvidenceStoreError, type SqliteEvidenceStore } from "./evidence-store.js";
+import { combinedExecutionQuality, combinedSolverPerformance } from "./execution-analytics.js";
 import type { SqliteQualificationStore } from "./qualification-store.js";
 import { PositionSnapshotStoreError, type SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
 import { CollateralSnapshotStoreError, type SqliteCollateralSnapshotStore } from "./collateral-snapshot-store.js";
@@ -321,7 +322,7 @@ export interface PublicApiOptions {
   readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies" | "environmentName">;
   /** Durable admitted package intake; without it submission answers 503 while validation remains available. */
   readonly strategyPackages?: Pick<SqliteStrategyPackageStore, "registerOrder" | "registerQuote" | "recentAdmissions" | "receipt" | "receiptByQuote">
-    & Partial<Pick<SqliteStrategyPackageStore, "order" | "admissionByQuote" | "registerBoundQuote" | "lockPackageExecution" | "ownerReceipts" | "executionIntelligence">>;
+    & Partial<Pick<SqliteStrategyPackageStore, "order" | "admissionByQuote" | "registerBoundQuote" | "lockPackageExecution" | "ownerReceipts" | "executionIntelligence" | "strategyExecutionQuality">>;
   /** Shared canonical strategy-order admission used by both the public API and the private terminal. */
   readonly strategyOrderIntake?: StrategyOrderIntakePort;
   /** Optional: requests a signed quote from the loopback reference solver for a stored order. */
@@ -1193,8 +1194,12 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     }
     if (path === "/v1/analytics/execution-quality") {
       onlyParams(url, ["solverId"]);
-      const solverId = url.searchParams.get("solverId");
-      return requireEvidence().executionQuality(solverId === null ? {} : { solverId: id(solverId, "Solver id") });
+      const solverIdInput = url.searchParams.get("solverId");
+      const solverId = solverIdInput === null ? undefined : id(solverIdInput, "Solver id");
+      return combinedExecutionQuality(
+        requireEvidence().executionQuality(solverId === undefined ? {} : { solverId }),
+        options.strategyPackages?.strategyExecutionQuality?.(solverId),
+      );
     }
     if ((match = /^\/v1\/qualification\/([A-Z_]{1,32})\/([^/]+)(\/history)?$/.exec(path)) !== null) {
       onlyParams(url, []);
@@ -1372,7 +1377,10 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const solverId = id(match[1], "Solver id");
       const manifest = requireRegistry().latest<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", solverId);
       if (manifest === undefined) throw new RequestError(404, "NOT_FOUND", "No such solver.");
-      return requireEvidence().solverPerformance(solverId, manifest.document.supportedDomains.map((domain) => domain.domainId));
+      return combinedSolverPerformance(
+        requireEvidence().solverPerformance(solverId, manifest.document.supportedDomains.map((domain) => domain.domainId)),
+        options.strategyPackages?.strategyExecutionQuality?.(solverId),
+      );
     }
     if ((match = /^\/v1\/solvers\/([^/]+)$/.exec(path)) !== null) {
       onlyParams(url, []);

@@ -50,6 +50,10 @@ function row(solverId: string, performance: Record<string, unknown>, quality: Re
   if (coverage === undefined || outcomes === undefined || typeof coverage.eligibleOrders !== "number" || typeof outcomes.total !== "number") return null;
   const latency = performance.firstQuoteLatencyMs as { median?: unknown; p95?: unknown } | undefined;
   const improvement = performance.priceImprovementBps as { measured?: unknown; median?: unknown } | undefined;
+  const evidence = quality === null ? [] : [
+    ["Fields", evidenceSummary(quality.receiptFieldEvidence)],
+    ["Legs", evidenceSummary(quality.strategyLegEvidence)],
+  ].filter(([, value]) => value !== "-" && value !== "No receipts");
   return {
     solverId,
     eligibleOrders: coverage.eligibleOrders,
@@ -62,7 +66,7 @@ function row(solverId: string, performance: Record<string, unknown>, quality: Re
     recoveredBps: Number(outcomes.recoveredBps),
     ...(typeof improvement?.median === "number" ? { improvementMedianBps: improvement.median } : {}),
     improvementMeasured: typeof improvement?.measured === "number" ? improvement.measured : 0,
-    evidence: quality === null ? "-" : evidenceSummary(quality.receiptFieldEvidence),
+    evidence: evidence.length === 0 ? "No receipt evidence" : evidence.map(([label, value]) => `${label}: ${value}`).join("; "),
   };
 }
 
@@ -130,7 +134,7 @@ export function SolverMetrics({ publicApiBaseUrl }: { publicApiBaseUrl: string |
         <div key={entry.solverId} className={styles.metricsRow} role="row">
           <span role="cell" className={styles.metricsSolver}>
             <span>{entry.solverId}</span>
-            <span className={styles.metricsEvidence} title="Receipt fields by their strongest evidence grade">{entry.evidence}</span>
+            <span className={styles.metricsEvidence} title="Legacy receipt fields and native strategy legs, counted separately by evidence grade">{entry.evidence}</span>
           </span>
           <span role="cell" title={`${entry.quotedOrders} of ${entry.eligibleOrders} eligible orders`}>
             {entry.eligibleOrders === 0 ? "-" : percent(entry.coverageBps)}

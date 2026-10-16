@@ -44,6 +44,7 @@ import {
   type ExecutionIntelligence,
   type ExecutionIntelligenceInput,
   type FieldEvidenceGrade,
+  type TerminalState,
 } from "@naryx/protocol-types";
 import { PublicKey } from "@solana/web3.js";
 import { openDurableDatabase } from "./durable-sqlite.js";
@@ -2397,6 +2398,33 @@ export class SqliteStrategyPackageStore {
     requireCondition(bytesEqual(intelligence.receiptHash, hashBuffer(receiptHashHex)) && bytesEqual(intelligence.recordHash, row.record_hash),
       "CORRUPT_ROW", "Stored execution intelligence does not match its receipt or record hash.");
     return Object.freeze({ recordHashHex: toHex(row.record_hash), intelligence, recordedAtMs: row.recorded_at_ms });
+  }
+
+  strategyExecutionQuality(solverId?: string): {
+    readonly total: number;
+    readonly byTerminalState: Readonly<Partial<Record<TerminalState, number>>>;
+    readonly legEvidence: Readonly<Record<string, number>>;
+  } {
+    requireCondition(solverId === undefined || /^[A-Za-z0-9._:-]{1,128}$/.test(solverId),
+      "INVALID_SOLVER", "The strategy receipt solver is malformed.");
+    const filter = `FROM strategy_package_receipts r
+      JOIN strategy_package_quotes q ON q.quote_hash = r.quote_hash
+      WHERE NOT EXISTS (SELECT 1 FROM strategy_package_sources s WHERE s.order_hash = r.order_hash)
+      ${solverId === undefined ? "" : "AND q.solver_id = ?"}`;
+    const params = solverId === undefined ? [] : [solverId];
+    return this.db.transaction(() => {
+      const states = this.db.prepare(`SELECT json_extract(r.receipt_json, '$.terminalState') AS state,
+        COUNT(*) AS count ${filter} GROUP BY state`).all(...params) as { state: TerminalState; count: number }[];
+      const grades = this.db.prepare(`SELECT json_extract(leg.value, '$.evidenceGrade') AS grade,
+        COUNT(*) AS count FROM (SELECT r.receipt_json ${filter}) AS receipts,
+        json_each(receipts.receipt_json, '$.legOutcomes') AS leg GROUP BY grade`)
+        .all(...params) as { grade: string; count: number }[];
+      return Object.freeze({
+        total: states.reduce((sum, row) => sum + row.count, 0),
+        byTerminalState: Object.freeze(Object.fromEntries(states.map((row) => [row.state, row.count]))),
+        legEvidence: Object.freeze(Object.fromEntries(grades.map((row) => [row.grade, row.count]))),
+      });
+    })();
   }
 
   ownerReceipts(ownerId: string, limit = 50): readonly OwnerStrategyPackageReceipt[] {
