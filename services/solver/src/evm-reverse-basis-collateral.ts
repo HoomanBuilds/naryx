@@ -27,16 +27,7 @@ const ACCOUNT_ABI = [{
   type: 'function', name: 'owner', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'address' }],
 }, {
   type: 'function', name: 'nextCollateralNonce', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint256' }],
-}, {
-  type: 'function', name: 'packageState', stateMutability: 'view', inputs: [{ name: 'packageId', type: 'bytes32' }],
-  outputs: [{ name: '', type: 'tuple', components: [
-    { name: 'template', type: 'tuple', components: [
-      { name: 'templateId', type: 'bytes32' }, { name: 'templateVersion', type: 'uint32' },
-      { name: 'templateManifestHash', type: 'bytes32' },
-    ] },
-    { name: 'stateHash', type: 'bytes32' }, { name: 'lastReceiptHash', type: 'bytes32' }, { name: 'active', type: 'bool' },
-  ] }],
-}] as const satisfies Abi;
+}, ...NARYX_MULTI_STRATEGY_ACCOUNT_STATE_ABI] as const satisfies Abi;
 const ADAPTER_FACTORY_ABI = [{
   type: 'function', name: 'adapterOf', stateMutability: 'view',
   inputs: [{ name: 'strategyAccount', type: 'address' }, { name: 'packageId', type: 'bytes32' }],
@@ -193,7 +184,7 @@ export class EvmReverseBasisCollateralService {
     ]);
     requireCondition(adapterCode !== undefined && valid === true,
       'lending adapter is not the factory-validated package instance');
-    requireCondition(tupleField(packageStateValue, 3, 'package state') === false, 'package must be inactive');
+    requireCondition(tupleField(packageStateValue, 7, 'package state') === false, 'package must be inactive');
     const observed = accountData(accountDataValue);
     requireCondition(observed.totalDebtBase === 0n, 'lending adapter still has debt');
     const principalAtoms = natural(principalValue, 'managed collateral principal');
@@ -248,3 +239,4 @@ export class EvmReverseBasisCollateralService {
     });
   }
 }
+import { NARYX_MULTI_STRATEGY_ACCOUNT_STATE_ABI } from '@naryx/adapter-evm';

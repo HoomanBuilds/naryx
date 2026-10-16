@@ -12,6 +12,7 @@ import {
   type LocalAccount,
 } from 'viem';
 import { arbitrumSepolia, baseSepolia } from 'viem/chains';
+import { NARYX_MULTI_STRATEGY_ACCOUNT_STATE_ABI } from '@naryx/adapter-evm';
 import type {
   EvmAtomicPackageReceipt,
   EvmAtomicPackageState,
@@ -24,11 +25,9 @@ const RESERVATION_BOOK_ABI = parseAbi([
   'function reservation(bytes32 reservationId) view returns (((bytes32 domainIdHash,uint32 manifestVersion,bytes32 manifestHash) domain,string solverId,address solver,address reclaimOwner,address strategyAccount,uint256 packageNonce,bytes32 orderHash,uint256 reservationNonce,bytes32 quoteHash,bytes32 routeHash,uint256 baseAtoms,uint256 quoteAtoms,uint64 expiry,address consumer,bytes32 consumerCodeHash,uint8 state))',
   'function liveReservation(bytes32 solverStrategyKey) view returns (bytes32)',
 ]);
-const STRATEGY_ACCOUNT_ABI = parseAbi([
+const STRATEGY_ACCOUNT_ABI = [...NARYX_MULTI_STRATEGY_ACCOUNT_STATE_ABI, ...parseAbi([
   'function nextNonce() view returns (uint256)',
-  'function packageState(bytes32 packageId) view returns (((bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,bytes32 stateHash,bytes32 lastReceiptHash,bool active))',
-  'function receipt(bytes32 receiptHash) view returns ((bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,bytes32 callsHash,bytes32 evidenceRoot,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,uint256 nonce,address solver))',
-]);
+])];
 const OCCUPANCY_KEY_PARAMETERS = parseAbiParameters('address solver,address strategyAccount');
 const RESERVATION_STATES: readonly EvmFirmReservationState[] = Object.freeze([
   'NONE', 'FUNDED', 'LIVE', 'CONSUMED', 'RELEASED',

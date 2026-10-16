@@ -21,6 +21,7 @@ import {
 import { privateKeyToAccount } from 'viem/accounts';
 import type { StrategyPackageProvider } from './http-strategy-package-provider.js';
 import type { StrategyPreparationService } from './strategy-preparation-service.js';
+import type { EvmStrategyAuthorizationJournal } from './evm-strategy-authorization-journal.js';
 
 const TEST_CHAIN_IDS = new Set([84_532, 421_614, 31_337, 31_338]);
 const PRIVATE_KEY = /^0x[0-9a-fA-F]{64}$/;
@@ -113,14 +114,17 @@ export class EvmStrategyExecutionAuthorizationService {
   readonly #packages: Pick<StrategyPackageProvider, 'getByQuote'>;
   readonly #preparations: Pick<StrategyPreparationService, 'prepareDocuments'>;
   readonly #solvers: ReadonlyMap<string, LocalAccount>;
+  readonly #journal: EvmStrategyAuthorizationJournal | undefined;
 
   constructor(input: Readonly<{
     packages: Pick<StrategyPackageProvider, 'getByQuote'>;
     preparations: Pick<StrategyPreparationService, 'prepareDocuments'>;
     solver: LocalAccount | readonly LocalAccount[];
+    journal?: EvmStrategyAuthorizationJournal;
   }>) {
     this.#packages = input.packages;
     this.#preparations = input.preparations;
+    this.#journal = input.journal;
     const solvers = 'address' in input.solver ? [input.solver] : input.solver;
     requireCondition(solvers.length > 0, 'at least one solver signing account is required');
     this.#solvers = new Map(solvers.map((solver) => [solver.address.toLowerCase(), solver]));
@@ -189,6 +193,7 @@ export class EvmStrategyExecutionAuthorizationService {
       ownerSignature: input.ownerSignature,
       solverSignature,
     });
+    await this.#journal?.record(prepared);
     return Object.freeze({
       version: 1,
       domain: domainExecution.domain,

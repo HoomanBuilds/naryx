@@ -113,7 +113,7 @@ class Chain implements EvmOptionSpreadReadPort {
       if (request.functionName === 'nextNonce') return 7n;
       if (request.functionName === 'nextCollateralNonce') return 0n;
       if (request.functionName === 'packageState') {
-        return [[zeroHash, 0n, zeroHash], zeroHash, zeroHash, false];
+        return [[zeroHash, 0n, zeroHash], zeroHash, 0, zeroHash, [zeroHash, 0, zeroHash], zeroHash, zeroHash, false];
       }
     }
     const factories = new Map<Address, Address>([

@@ -215,8 +215,8 @@ class Chain implements EvmOptionSpreadReadPort {
       if (request.functionName === 'nextNonce') return 0n;
       if (request.functionName === 'packageState') {
         return this.active
-          ? [[`0x${'00'.repeat(32)}`, 0, `0x${'00'.repeat(32)}`], `0x${OPEN_STATE_HASH}`, `0x${'00'.repeat(32)}`, true]
-          : [[`0x${'00'.repeat(32)}`, 0, `0x${'00'.repeat(32)}`], `0x${'00'.repeat(32)}`, `0x${'00'.repeat(32)}`, false];
+          ? { stateHash: `0x${OPEN_STATE_HASH}`, active: true }
+          : { stateHash: `0x${'00'.repeat(32)}`, active: false };
       }
     }
     if (target === NEAR_FACTORY.toLowerCase() || target === FAR_FACTORY.toLowerCase()) {

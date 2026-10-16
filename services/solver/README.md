@@ -34,6 +34,8 @@ The sealed auction participant uses the authenticated API feed rather than guess
 
 ### Maker emergency controls
 
+EVM native strategy runtimes also require `NARYX_EVM_STRATEGY_AUTHORIZATION_DB`, an absolute durable SQLite path outside the checkout. After owner authorization succeeds, the solver journals the exact execution snapshot before returning signed calldata. Receipt observation reads this snapshot instead of recreating an entry against already-mutated positions. Missing authorization evidence fails closed. Preserve this database across deployments and restarts.
+
 `NARYX_MAKER_CONTROLS_ENABLED=true` adds two loopback-only routes to the quote listener: `POST /internal/maker/shards/{shardId}/cancel-all` and `POST /internal/maker/shards/{shardId}/kill-switch`. Each request contains only the exact lowercase shard hash and decimal shard sequence the operator observed. The solver re-reads that shard through the authenticated solver API, rejects stale state, derives the restricted next state, signs it with the external quote key, and verifies the API admitted the same hash and sequence.
 
 The routes reject browser-originated requests. They cannot place or replace levels, change capacity, heartbeat, clear a kill switch, or accept arbitrary shard bytes. Re-arming remains a separate deliberate operational procedure. Set `NARYX_MAKER_SOLVER_API_ORIGIN` to the loopback listener that serves `/v1/solver`, then bind `NARYX_MAKER_SOLVER_ID` and `NARYX_MAKER_QUOTE_KEY_ID` to the registered capability manifest.

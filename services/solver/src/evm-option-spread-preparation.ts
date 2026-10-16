@@ -61,22 +61,7 @@ const STRATEGY_ACCOUNT_ABI = [{
 }, {
   type: 'function', name: 'nextNonce', stateMutability: 'view',
   inputs: [], outputs: [{ name: '', type: 'uint256' }],
-}, {
-  type: 'function', name: 'packageState', stateMutability: 'view',
-  inputs: [{ name: 'packageId', type: 'bytes32' }],
-  outputs: [{
-    name: '', type: 'tuple', components: [
-      { name: 'template', type: 'tuple', components: [
-        { name: 'templateId', type: 'bytes32' },
-        { name: 'templateVersion', type: 'uint32' },
-        { name: 'templateManifestHash', type: 'bytes32' },
-      ] },
-      { name: 'stateHash', type: 'bytes32' },
-      { name: 'lastReceiptHash', type: 'bytes32' },
-      { name: 'active', type: 'bool' },
-    ],
-  }],
-}] as const satisfies Abi;
+}, ...NARYX_MULTI_STRATEGY_ACCOUNT_STATE_ABI] as const satisfies Abi;
 const ADAPTER_FACTORY_ABI = [{
   type: 'function', name: 'adapterOf', stateMutability: 'view',
   inputs: [{ name: 'strategyAccount', type: 'address' }, { name: 'packageId', type: 'bytes32' }],
@@ -213,8 +198,8 @@ async function readAccountState(
     chain.readContract({ address: account, abi: STRATEGY_ACCOUNT_ABI, functionName: 'nextNonce' }),
     chain.readContract({ address: account, abi: STRATEGY_ACCOUNT_ABI, functionName: 'packageState', args: [packageId] }),
   ]);
-  const stateHash = hash(structField(packageValue, 1, 'stateHash'), 'package state hash', true);
-  const active = structField(packageValue, 3, 'active');
+  const stateHash = hash(structField(packageValue, 5, 'stateHash'), 'package state hash', true);
+  const active = structField(packageValue, 7, 'active');
   requireCondition(typeof active === 'boolean', 'package active state is invalid');
   return Object.freeze({
     nonce: checkedBigInt(nonceValue, 'account nonce'),
@@ -504,3 +489,4 @@ export class EvmOptionSpreadPreparationContextResolver implements StrategyPrepar
     });
   }
 }
+import { NARYX_MULTI_STRATEGY_ACCOUNT_STATE_ABI } from '@naryx/adapter-evm';

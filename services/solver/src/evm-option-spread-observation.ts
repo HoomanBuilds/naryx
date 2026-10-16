@@ -21,14 +21,16 @@ import {
 } from 'viem';
 import type { StrategyPackageProvider } from './http-strategy-package-provider.js';
 import type { StrategyPreparationService } from './strategy-preparation-service.js';
+import type { EvmStrategyAuthorizationJournal } from './evm-strategy-authorization-journal.js';
+import { NARYX_MULTI_STRATEGY_ACCOUNT_STATE_ABI } from '@naryx/adapter-evm';
 
 const TEST_CHAIN_IDS = new Set([84_532, 421_614, 31_337, 31_338]);
 const ACCOUNT_ABI = parseAbi([
   'event StrategyExecuted(bytes32 indexed receiptHash,bytes32 indexed packageId,uint8 indexed operation,address solver,bytes32 evidenceRoot,bytes32 nextStateHash)',
   'event AdapterLegExecuted(bytes32 indexed receiptHash,bytes32 indexed packageId,uint256 indexed callIndex,bytes32 adapterSubjectId,uint8 stage,bytes32 evidenceHash)',
   'event StrategyFeesCollected(bytes32 indexed receiptHash,address indexed token,address indexed protocolRecipient,address solverRecipient,uint256 protocolFeeAtoms,uint256 solverFeeAtoms)',
-  'function receipt(bytes32 receiptHash) view returns ((bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,bytes32 callsHash,bytes32 evidenceRoot,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,uint256 nonce,address solver))',
 ]);
+const RECEIPT_ABI = [...ACCOUNT_ABI, ...NARYX_MULTI_STRATEGY_ACCOUNT_STATE_ABI];
 
 interface ObservedLog {
   readonly address: Address;
@@ -154,7 +156,7 @@ export function createViemEvmStrategyObservationReadPort(rpcUrl: string): EvmStr
     blockTimestamp: async (blockNumber: bigint) => (await client.getBlock({ blockNumber })).timestamp,
     accountReceipt: (account: Address, receiptHash: Hex, blockNumber: bigint) => client.readContract({
       address: account,
-      abi: ACCOUNT_ABI,
+      abi: RECEIPT_ABI,
       functionName: 'receipt',
       args: [receiptHash],
       blockNumber,
@@ -166,15 +168,18 @@ export class EvmStrategyExecutionObservationService {
   readonly #packages: StrategyPackageProvider;
   readonly #preparations: StrategyPreparationService;
   readonly #lanes: readonly EvmStrategyObservationLane[];
+  readonly #journal: Pick<EvmStrategyAuthorizationJournal, 'get'> | undefined;
 
   constructor(input: Readonly<{
     packages: StrategyPackageProvider;
     preparations: StrategyPreparationService;
     lanes: readonly EvmStrategyObservationLane[];
+    journal?: Pick<EvmStrategyAuthorizationJournal, 'get'>;
   }>) {
     this.#packages = input.packages;
     this.#preparations = input.preparations;
     this.#lanes = input.lanes;
+    this.#journal = input.journal;
   }
 
   async observe(input: Readonly<{ quoteHash: Hash32; transactionHash: Hex }>): Promise<EvmStrategyExecutionObservation | undefined> {
@@ -182,7 +187,14 @@ export class EvmStrategyExecutionObservationService {
     const documents = await this.#packages.getByQuote(input.quoteHash);
     if (documents === undefined) return undefined;
     requireCondition(bytesEqual(strategyPackageQuoteHash(documents.quote), input.quoteHash), 'quote provider returned another package');
-    const prepared = await this.#preparations.prepareDocuments(documents);
+    const prepared = this.#journal === undefined
+      ? await this.#preparations.prepareDocuments(documents)
+      : await this.#journal.get(input.quoteHash);
+    requireCondition(prepared !== undefined, 'no durable owner-authorized execution exists for this quote');
+    requireCondition(bytesEqual(prepared.orderHash, documents.quote.orderHash)
+      && bytesEqual(prepared.quoteHash, input.quoteHash)
+      && bytesEqual(prepared.graphHash, documents.quote.graphHash)
+      && bytesEqual(prepared.routeHash, documents.quote.routeHash), 'stored authorization differs from the admitted package');
     requireCondition(prepared.settlementClass === 'ATOMIC_POSTCONDITION'
       && prepared.coordination === 'SINGLE_DOMAIN_ATOMIC'
       && prepared.domains.length === 1, 'package is not one atomic EVM execution');
@@ -276,6 +288,9 @@ export class EvmStrategyExecutionObservationService {
       && sameHex(stored.nextStateHash, envelope.execution.nextStateHash)
       && sameHex(stored.callsHash, envelope.callsHash)
       && sameHex(stored.evidenceRoot, evidenceRoot)
+      && sameHex(stored.riskDomainId, envelope.execution.risk.riskDomainId)
+      && stored.riskPolicyVersion === envelope.execution.risk.policyVersion
+      && sameHex(stored.riskPolicyManifestHash, envelope.execution.risk.policyManifestHash)
       && stored.nonce === envelope.execution.nonce
       && getAddress(String(stored.solver)) === getAddress(envelope.execution.solver)
       && storedFees.policyVersion === envelope.execution.fees.policyVersion

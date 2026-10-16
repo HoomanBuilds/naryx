@@ -59,16 +59,7 @@ const STRATEGY_ACCOUNT_ABI = [{
   type: 'function', name: 'owner', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'address' }],
 }, {
   type: 'function', name: 'nextNonce', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint256' }],
-}, {
-  type: 'function', name: 'packageState', stateMutability: 'view', inputs: [{ name: 'packageId', type: 'bytes32' }],
-  outputs: [{ name: '', type: 'tuple', components: [
-    { name: 'template', type: 'tuple', components: [
-      { name: 'templateId', type: 'bytes32' }, { name: 'templateVersion', type: 'uint32' },
-      { name: 'templateManifestHash', type: 'bytes32' },
-    ] },
-    { name: 'stateHash', type: 'bytes32' }, { name: 'lastReceiptHash', type: 'bytes32' }, { name: 'active', type: 'bool' },
-  ] }],
-}] as const satisfies Abi;
+}, ...NARYX_MULTI_STRATEGY_ACCOUNT_STATE_ABI] as const satisfies Abi;
 const ADAPTER_FACTORY_ABI = [{
   type: 'function', name: 'adapterOf', stateMutability: 'view',
   inputs: [{ name: 'strategyAccount', type: 'address' }, { name: 'packageId', type: 'bytes32' }],
@@ -385,8 +376,8 @@ export class EvmCollateralConversionPreparationContextResolver implements Strate
     requireCondition(recognized === true && getAddress(String(accountOwner)) === owner, 'strategy account ownership is invalid');
     requireCondition(accountCode !== undefined && hash(accountCode, 'strategy account code')
       === hash(lane.expectedStrategyAccountCodeHash, 'expected account code'), 'strategy account code changed');
-    const accountStateHash = hash(structField(packageValue, 1, 'stateHash'), 'package state hash', true);
-    const accountActive = structField(packageValue, 3, 'active');
+    const accountStateHash = hash(structField(packageValue, 5, 'stateHash'), 'package state hash', true);
+    const accountActive = structField(packageValue, 7, 'active');
     requireCondition(typeof accountActive === 'boolean', 'package active state is invalid');
     if (documents.order.lifecycleAction === 'ENTRY') {
       requireCondition(!accountActive && accountStateHash === zeroHash, 'entry package is already active');
@@ -616,3 +607,4 @@ export class EvmCollateralConversionPreparationContextResolver implements Strate
     });
   }
 }
+import { NARYX_MULTI_STRATEGY_ACCOUNT_STATE_ABI } from '@naryx/adapter-evm';

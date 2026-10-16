@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
+import { SqliteEvmStrategyAuthorizationJournal } from './evm-strategy-authorization-journal.js';
 import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { LOCAL_ATOMIC_MARKET_CATALOG_V1, localConformanceSlot } from '@naryx/adapter-core';
@@ -625,12 +626,15 @@ const evmStrategySolvers = !evmRuntimeConfigured
       )]
     : loadEvmStrategySolverKeys(process.env.NARYX_EVM_STRATEGY_SOLVER_SIGNERS);
 const evmStrategySolver = evmStrategySolvers?.[0];
+const evmStrategyAuthorizationJournal = !evmRuntimeConfigured ? undefined
+  : new SqliteEvmStrategyAuthorizationJournal(process.env.NARYX_EVM_STRATEGY_AUTHORIZATION_DB ?? '');
 const evmStrategyAuthorizationHandler = !evmRuntimeConfigured || strategyPreparationService === undefined
   ? undefined
   : createEvmStrategyExecutionAuthorizationInternalHandler(new EvmStrategyExecutionAuthorizationService({
       packages: strategyPackageProvider,
       preparations: strategyPreparationService,
       solver: evmStrategySolvers!,
+      ...(evmStrategyAuthorizationJournal === undefined ? {} : { journal: evmStrategyAuthorizationJournal }),
     }));
 const nettingAllocationAuthorizationEnabled = explicitBoolean(
   process.env.NARYX_NETTING_ALLOCATION_AUTHORIZATION_ENABLED,
@@ -684,6 +688,7 @@ const evmOptionObservationHandler = evmObservationLanes.length === 0 || strategy
       packages: strategyPackageProvider,
       preparations: strategyPreparationService,
       lanes: evmObservationLanes,
+      ...(evmStrategyAuthorizationJournal === undefined ? {} : { journal: evmStrategyAuthorizationJournal }),
     }));
 const residualExecutionEnabled = explicitBoolean(
   process.env[HYPERLIQUID_NETTING_RESIDUAL_ENABLED_ENV],
@@ -855,6 +860,7 @@ function shutdown(): void {
     store.close();
     generalizedQuoteStore?.close();
     evmStrategyPackageIds?.close();
+    evmStrategyAuthorizationJournal?.close();
     solanaStrategyPackageIds?.close();
     solanaStrategyAuthorizationJournal?.close();
     sealedAuctionJournal?.close();
@@ -918,6 +924,7 @@ try {
   store.close();
   generalizedQuoteStore?.close();
   evmStrategyPackageIds?.close();
+  evmStrategyAuthorizationJournal?.close();
   solanaStrategyPackageIds?.close();
   sealedAuctionJournal?.close();
   residualRuntime?.close();

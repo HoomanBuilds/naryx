@@ -871,3 +871,4 @@ export {
   testPerpCloseSettlement,
   testPerpFeeWad,
 } from './testPerpMarket.js';
+export { NARYX_MULTI_STRATEGY_ACCOUNT_STATE_ABI } from './multi-strategy-state.js';

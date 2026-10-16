@@ -29,7 +29,8 @@
         "NARYX_API_INTERNAL_ORIGIN": "http://127.0.0.1:8787",
         "NARYX_SOLVER_ED25519_KEY_PATH": { "$operator": "absolute path, outside the repository, of the solver Ed25519 PKCS8 PEM key file (the path only; the key is never read here)" },
         "NARYX_SOLVER_ED25519_PUBLIC_KEY_HEX": { "$operator": "64 lowercase hex characters of that key's public key" },
-        "NARYX_SOLVER_QUOTE_DB": { "$data": "solver/quotes.db" }
+        "NARYX_SOLVER_QUOTE_DB": { "$data": "solver/quotes.db" },
+        "NARYX_EVM_STRATEGY_AUTHORIZATION_DB": { "$data": "solver/evm-strategy-authorizations.db" }
       }
     },
     "env/keeper.env": {

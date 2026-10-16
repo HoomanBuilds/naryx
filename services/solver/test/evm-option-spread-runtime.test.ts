@@ -281,7 +281,7 @@ class Chain implements EvmOptionSpreadReadPort {
     if (target === ACCOUNT.toLowerCase()) {
       if (request.functionName === 'owner') return OWNER;
       if (request.functionName === 'nextNonce') return 0n;
-      if (request.functionName === 'packageState') return [[zeroBytes(), 0, zeroBytes()], zeroBytes(), zeroBytes(), false];
+      if (request.functionName === 'packageState') return { stateHash: zeroBytes(), active: false };
     }
     if (target === LONG_FACTORY.toLowerCase() || target === SHORT_FACTORY.toLowerCase()) {
       if (request.functionName === 'adapterOf') return target === LONG_FACTORY.toLowerCase() ? LONG_ADAPTER : SHORT_ADAPTER;
@@ -296,7 +296,7 @@ class ReplayedEntryChain extends Chain {
     request: Readonly<{ address: Address; abi: Abi; functionName: string; args?: readonly unknown[] }>,
   ): Promise<unknown> {
     if (request.address.toLowerCase() === ACCOUNT.toLowerCase() && request.functionName === 'packageState') {
-      return [[evmHash('1'), 1, evmHash('2')], evmHash('3'), evmHash('4'), true];
+      return { stateHash: evmHash('3'), active: true };
     }
     return super.readContract(request);
   }
@@ -469,10 +469,16 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
     primaryType: envelope.ownerTypedData.primaryType,
     message: envelope.ownerTypedData.message,
   });
+  let authorizedPreparation: PreparedStrategyExecutionTransport | undefined;
+  const journal = {
+    get: async () => authorizedPreparation,
+    record: async (snapshot: PreparedStrategyExecutionTransport) => { authorizedPreparation = snapshot; },
+  };
   const authorization = new EvmStrategyExecutionAuthorizationService({
     packages: { getByQuote: async (requested) => protocolHex(requested) === quoted.quoteHash ? documents : undefined },
     preparations: preparation,
     solver: [privateKeyToAccount(`0x${'55'.repeat(32)}`), SOLVER_ACCOUNT],
+    journal,
   });
   const authorized = await authorization.authorize({ quoteHash, ownerSignature });
   assert.equal(authorized?.to, ACCOUNT);
@@ -593,6 +599,9 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
       nextStateHash: envelope.execution.nextStateHash,
       callsHash: envelope.callsHash,
       evidenceRoot,
+      riskDomainId: envelope.execution.risk.riskDomainId,
+      riskPolicyVersion: envelope.execution.risk.policyVersion,
+      riskPolicyManifestHash: envelope.execution.risk.policyManifestHash,
       fees: envelope.execution.fees,
       nonce: envelope.execution.nonce,
       solver: envelope.execution.solver,
@@ -600,7 +609,8 @@ test('quotes and prepares an exact atomic EVM bull call spread', async () => {
   };
   const observer = new EvmOptionSpreadExecutionObservationService({
     packages: { getByQuote: async (requested) => protocolHex(requested) === quoted.quoteHash ? documents : undefined },
-    preparations: preparation,
+    preparations: { prepareDocuments: async () => { throw new Error('live entry preparation must not run after settlement'); } } as never,
+    journal,
     lanes: [{ chainId: 84_532, chain: observationChain }],
   });
   const observed = await observer.observe({ quoteHash, transactionHash: TRANSACTION_HASH });
