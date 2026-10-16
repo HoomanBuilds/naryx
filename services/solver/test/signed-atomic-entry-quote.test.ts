@@ -562,6 +562,33 @@ test('serves idempotent signed quotes over the loopback-only internal boundary',
   assert.equal(method.status, 405);
 });
 
+test('returns a retryable decline when the package book is temporarily reserved', async (context) => {
+  const server = createInternalAtomicQuoteServer({
+    quote: async () => {
+      throw new InternalAtomicQuoteError('QUOTE_DECLINED', 'package book is reserved by an in-flight execution; retry shortly');
+    },
+  });
+  server.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  context.after(() => server.close());
+  const address = server.address() as AddressInfo;
+  const response = await fetch(`http://127.0.0.1:${address.port}/internal/quotes/atomic-entry`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ orderHash: '11'.repeat(32), idempotencyKey: 'quote-held-key-0001' }),
+  });
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: 'QUOTE_DECLINED',
+      message: 'QUOTE_DECLINED: package book is reserved by an in-flight execution; retry shortly',
+    },
+  });
+});
+
 test('retrieves and rehashes canonical orders over the internal API boundary', async (context) => {
   const order = validatePackageOrderProfile(orderInput());
   const orderHash = packageOrderHash(order);

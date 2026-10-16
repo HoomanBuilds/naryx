@@ -852,7 +852,7 @@ export function createSolanaDevnetFirmQuotePort(
         if (existing !== undefined) return { state: current, level: existing };
         // A level write bumps the shard sequence that an in-flight binding's quote lock pins.
         if (shardSequencesHeld(config.accounts.packageBookShard, current.slot)) {
-          fail('no usable firm level and the package book shard is held by an in-flight binding; retry after it expires');
+          throw new InternalAtomicQuoteError('QUOTE_DECLINED', 'package book is reserved by an in-flight execution; retry shortly');
         }
         const plan = packageBookLevelInstructions({ manifest, config, state: current, expirySlot: latestExpiry, side });
         await writer.sendAndFinalize(plan.instructions, key.keypair);
