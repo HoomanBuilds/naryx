@@ -2676,8 +2676,13 @@ export function TradingTerminal({
     if (arbitrumWindowClosed && isArbitrumUnreserved(flow.observation)) return "reclaim";
     return flow.spotInKindHash || isArbitrumSpotInKindAvailable(flow, nowMs) ? "takeSpot" : null;
   })();
-  const nextHyperliquidStep: "create" | "quote" | "select" | "execute" | "restart" | null = !currentHyperliquidFlow?.context || currentHyperliquidFlow.execution
+  const hyperliquidNoSubmission = currentHyperliquidFlow?.execution?.status === "NOT_SUBMITTED"
+    || currentHyperliquidFlow?.execution?.status === "CHECKPOINT_INCOMPLETE"
+    || currentHyperliquidFlow?.execution?.status === "CHECKPOINT_FAILED";
+  const nextHyperliquidStep: "create" | "quote" | "select" | "execute" | "restart" | null = !currentHyperliquidFlow?.context
     ? null
+    : hyperliquidNoSubmission ? "restart"
+    : currentHyperliquidFlow.execution ? null
     : !currentHyperliquidFlow.order ? "create"
     : !currentHyperliquidFlow.quote ? "quote"
     : !currentHyperliquidFlow.attempt ? (quoteExpired ? "restart" : "select")
@@ -2868,7 +2873,7 @@ export function TradingTerminal({
           ? HYPERLIQUID_LANE_BLOCKED_COPY
           : "Executed in Naryx's Hyperliquid testnet account on your behalf; the account runs one package at a time.");
       }
-      if (currentHyperliquidFlow?.execution) {
+      if (currentHyperliquidFlow?.execution && !hyperliquidNoSubmission) {
         const execution = currentHyperliquidFlow.execution;
         const filled = execution.packageStatus === "COMPLETED_EXACT" || execution.packageStatus === "COMPLETED_BOUNDED";
         return none(
@@ -2901,7 +2906,14 @@ export function TradingTerminal({
       }
       if (nextHyperliquidStep === "quote") return { kind: "hyperliquid", label: "Request quote", reason: reason ?? "Asks the solver for a signed quote on the whole package.", disabled: false };
       if (nextHyperliquidStep === "select") return { kind: "hyperliquid", label: "Accept quote", reason: reason ?? `Review the signed terms and fees in the testnet order review before accepting.${quoteValidity}`, disabled: false };
-      if (nextHyperliquidStep === "restart") return { kind: "hyperliquid", label: "Start a fresh order", reason: "The signed quote expired before you accepted it. Nothing was signed. Start a fresh order to re-quote.", disabled: false };
+      if (nextHyperliquidStep === "restart") return {
+        kind: "hyperliquid",
+        label: "Start a fresh order",
+        reason: hyperliquidNoSubmission
+          ? "The previous attempt did not reach the venue. Start a fresh order with a new quote."
+          : "The signed quote expired before you accepted it. Nothing was signed. Start a fresh order to re-quote.",
+        disabled: false,
+      };
       return { kind: "hyperliquid", label: currentHyperliquidFlow.signed ? "Execute on testnet" : "Sign and execute", reason: reason ?? "Your wallet signs the package authorization; Naryx's Hyperliquid testnet account executes it on your behalf.", disabled: false };
     }
     const exitUnavailable = EXIT_UNAVAILABLE[selectedDomain];
@@ -3009,6 +3021,7 @@ export function TradingTerminal({
     executionGateUp,
     hyperliquidActivePackages,
     hyperliquidEntryPending,
+    hyperliquidNoSubmission,
     hyperliquidFlowEnabled,
     hyperliquidLimit,
     hyperliquidExitTarget,
@@ -3389,7 +3402,7 @@ export function TradingTerminal({
     const context = currentHyperliquidFlow.context;
     const owner = currentHyperliquidFlow.owner;
     if (step === "restart") {
-      setHyperliquidFlow({ ...base, order: null, quote: null, attempt: null, signed: false, exitTarget: null, executeKey: randomId(), busy: null, error: null });
+      setHyperliquidFlow({ ...base, order: null, quote: null, attempt: null, signed: false, progress: null, execution: null, exitTarget: null, executeKey: randomId(), busy: null, error: null });
       return;
     }
     setHyperliquidFlow({ ...base, busy: step, error: null });
