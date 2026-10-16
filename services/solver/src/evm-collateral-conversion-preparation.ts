@@ -231,8 +231,8 @@ function position(value: unknown): Position {
   return Object.freeze({
     balance: bigintValue(structField(value, 0, 'balance'), 'position balance'),
     size: bigintValue(structField(value, 1, 'size'), 'position size'),
-    entryNotional: field(value, 2, 'entry notional'), entrySocialLossIndex: field(value, 3, 'social loss index'),
-    entryFundingIndex: bigintValue(structField(value, 4, 'funding index'), 'funding index'),
+    entryNotional: field(value, 2, 'entryNotional'), entrySocialLossIndex: field(value, 3, 'entrySocialLossIndex'),
+    entryFundingIndex: bigintValue(structField(value, 4, 'entryFundingIndex'), 'funding index'),
   });
 }
 

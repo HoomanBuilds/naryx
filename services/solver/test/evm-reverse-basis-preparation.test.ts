@@ -131,7 +131,8 @@ class Chain implements EvmOptionSpreadReadPort {
     if (request.address === LENDING_ADAPTER && request.functionName === 'managedCollateralPrincipalAtoms') return 0n;
     if (request.address === QUOTE && request.functionName === 'allowance') return 0n;
     if (request.address === QUOTE && request.functionName === 'balanceOf') return 1_000_000_000n;
-    if (request.address === HEDGE_ADAPTER && request.functionName === 'position') return [0n, 0n, 0n, 0n, 0n];
+    if (request.address === HEDGE_ADAPTER && request.functionName === 'position') return { balance: 0n, size: 0n,
+      entryNotional: 0n, entrySocialLossIndex: 0n, entryFundingIndex: 0n };
     if (request.address === SPOT_FACTORY && request.functionName === 'getPool') return SPOT_POOL;
     if (request.address === SPOT_POOL) {
       if (request.functionName === 'factory') return SPOT_FACTORY;
