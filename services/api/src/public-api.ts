@@ -340,6 +340,7 @@ export interface PublicApiOptions {
     SqliteNativeClearingStore,
     'domains' | 'domain' | 'accounts' | 'account' | 'latestMark' | 'defaultAuction' | 'events'
   >;
+  readonly nativeClearingBacking?: (clearingDomainId: string) => Promise<unknown>;
   /** Durable advanced-order registration and progress; execution remains on the loopback controller. */
   readonly orderActivations?: Pick<SqliteOrderActivationStore, "register" | "view">;
   /** Derives a bound advanced order from a previously admitted immediate strategy order. */
@@ -901,6 +902,12 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     if (path === '/v1/native-clearing/domains') {
       onlyParams(url, []);
       return { version: 1, domains: requireNativeClearing().domains() };
+    }
+    if ((match = /^\/v1\/native-clearing\/domains\/([^/]+)\/backing$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      if (options.nativeClearingBacking === undefined) throw new RequestError(503, 'BACKING_UNAVAILABLE', 'Native clearing onchain backing is not configured.');
+      const clearingDomainId = id(match[1], 'Native clearing domain id');
+      return options.nativeClearingBacking(clearingDomainId).then((backing) => ({ version: 1, clearingDomainId, backing }));
     }
     if ((match = /^\/v1\/native-clearing\/domains\/([^/]+)(\/accounts|\/events|\/mark)?$/.exec(path)) !== null) {
       const clearingDomainId = id(match[1], 'Native clearing domain id');
@@ -2793,7 +2800,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
           return fail(response, status, error.code, error.message);
         }
         if (error instanceof NativeClearingStoreError) {
-          const status = error.code.endsWith('NOT_FOUND') || error.code === 'MARK_UNAVAILABLE' ? 404
+          const status = error.code.startsWith('BACKING_') ? 503 : error.code.endsWith('NOT_FOUND') || error.code === 'MARK_UNAVAILABLE' ? 404
             : error.code === 'CORRUPT_ROW' ? 500
               : error.code === 'INVALID_INPUT' ? 400 : 409;
           return fail(response, status, error.code, error.message);

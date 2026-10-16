@@ -24,6 +24,7 @@ import type { NativeClearingControlSignature } from './native-clearing-authoriza
 import type { SqlitePackageExchangeStore } from './package-exchange-store.js';
 
 export interface NativeClearingAdminOptions {
+  readonly verifyBacking?: (path: string, body: Record<string, unknown>) => Promise<void>;
   readonly clearing: Pick<
     SqliteNativeClearingStore,
     'registerDomain' | 'openAccount' | 'adjustReserve' | 'recordMark' | 'adjustAuthorizedCollateral'
@@ -64,7 +65,7 @@ function exactKeys(body: Record<string, unknown>, expected: readonly string[]): 
 
 function rejected(response: ServerResponse, error: unknown): true {
   if (error instanceof NativeClearingStoreError) {
-    const status = error.code.endsWith('NOT_FOUND') ? 404
+    const status = error.code.startsWith('BACKING_') ? 503 : error.code.endsWith('NOT_FOUND') ? 404
       : error.code === 'CORRUPT_ROW' ? 500
         : error.code === 'INVALID_SIGNATURE' || error.code === 'SETTLEMENT_UNAUTHORIZED' ? 403
           : error.code.startsWith('STALE_') || error.code.endsWith('CONFLICT') || error.code === 'AUCTION_CLOSED'
@@ -116,6 +117,7 @@ export function createNativeClearingAdminHandler(
         return;
       }
       const run = async (): Promise<unknown> => {
+        await options.verifyBacking?.(url.pathname, body);
         switch (url.pathname) {
           case '/internal/native-clearing/domains':
             if (object(body.policy) === undefined || object(body.state) === undefined) throw new TypeError('Policy and state must be objects.');

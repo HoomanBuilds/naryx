@@ -64,6 +64,7 @@ import {
 import { createCrossBatchClearingAdminHandler } from "./cross-batch-clearing-admin.js";
 import { createNativeClearingAdminHandler } from './native-clearing-admin.js';
 import { SqliteNativeClearingStore } from './native-clearing-store.js';
+import { loadNativeClearingBacking } from './native-clearing-backing.js';
 import { SqliteNettingAllocationAttemptStore } from "./netting-allocation-attempt-store.js";
 import {
   EvmNettingAllocationObservationRoute,
@@ -604,6 +605,12 @@ export function loadPublicMarketRuntime(
       ? undefined
       : new SqliteNativeClearingStore(absolute(nativeClearingPath, 'NARYX_NATIVE_CLEARING_DB'), clockMs);
     if (nativeClearing !== undefined) opened.push(nativeClearing);
+    const nativeClearingBackingPath = optional(environment.NARYX_NATIVE_CLEARING_BACKING_CONFIG);
+    if (nativeClearingBackingPath !== undefined && nativeClearing === undefined) {
+      throw new PublicMarketConfigError('Native clearing backing requires NARYX_NATIVE_CLEARING_DB.');
+    }
+    const nativeClearingBacking = nativeClearing === undefined ? undefined
+      : loadNativeClearingBacking(nativeClearingBackingPath === undefined ? undefined : absolute(nativeClearingBackingPath, 'NARYX_NATIVE_CLEARING_BACKING_CONFIG'), nativeClearing, environment, clockMs);
     const strategyOrderIntake = strategyPackages === undefined || graphContext === undefined || registry === undefined
       ? undefined
       : createStrategyOrderIntake({
@@ -828,7 +835,11 @@ export function loadPublicMarketRuntime(
       }),
       ...(keeper === undefined ? [] : [createKeeperExecutorHandler({ executor: keeper, nowIn: keeperClock(clockMs) })]),
       ...(coordination === undefined ? [] : [createCoordinationInternalHandler(coordination)]),
-      ...(nativeClearing === undefined ? [] : [createNativeClearingAdminHandler({ clearing: nativeClearing, exchange: store })]),
+      ...(nativeClearing === undefined ? [] : [createNativeClearingAdminHandler({
+        clearing: nativeClearing,
+        exchange: store,
+        verifyBacking: (path, body) => nativeClearingBacking!.verifyMutation(path, body),
+      })]),
       ...(orderActivations === undefined ? [] : [createOrderActivationAdminHandler({
         activations: orderActivations,
         ...(metricObservations === undefined ? {} : { observations: metricObservations }),
@@ -872,6 +883,7 @@ export function loadPublicMarketRuntime(
       ...(keeper === undefined ? {} : { health: keeper }),
       ...(coordination === undefined ? {} : { coordination }),
       ...(nativeClearing === undefined ? {} : { nativeClearing }),
+      ...(nativeClearingBacking === undefined ? {} : { nativeClearingBacking: (id: string) => nativeClearingBacking.current(id) }),
       ...(orderActivations === undefined ? {} : { orderActivations }),
       ...(advancedOrders === undefined ? {} : { advancedOrders }),
       ...(advancedOrderExecutions === undefined ? {} : { advancedOrderExecutions }),

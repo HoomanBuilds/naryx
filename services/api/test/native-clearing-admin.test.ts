@@ -10,6 +10,7 @@ import {
 } from '@naryx/protocol-types';
 import { createNativeClearingAdminHandler, type NativeClearingAdminOptions } from '../src/native-clearing-admin.js';
 import type { SqliteNativeClearingStore } from '../src/native-clearing-store.js';
+import { NativeClearingStoreError } from '../src/native-clearing-store.js';
 import { authorization } from './native-clearing-fixtures.js';
 
 async function serve(options: NativeClearingAdminOptions) {
@@ -41,6 +42,22 @@ const noExchange = {
   settlementHandoff: () => undefined,
   settlementAuthorization: () => undefined,
 } as NativeClearingAdminOptions['exchange'];
+
+test('native clearing cannot mutate balances when onchain backing is unavailable', async () => {
+  let mutated = false;
+  const server = await serve({
+    clearing: { adjustReserve: () => { mutated = true; } } as unknown as SqliteNativeClearingStore,
+    exchange: noExchange,
+    verifyBacking: async () => { throw new NativeClearingStoreError('BACKING_UNAVAILABLE', 'No reviewed backing.'); },
+  });
+  try {
+    const response = await server.request('reserve', { clearingDomainId: 'test-clearing', expectedStateHash: '11'.repeat(32), reserveDeltaQuoteAtoms: 10n });
+    assert.equal(response.status, 503);
+    assert.equal(mutated, false);
+  } finally {
+    await server.close();
+  }
+});
 
 test('native clearing controls are loopback-only exact protocol operations', async () => {
   const calls: unknown[][] = [];

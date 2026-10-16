@@ -278,7 +278,14 @@ test('native clearing reads remain optional and event pages are bounded', async 
     assert.equal(page.status, 200);
     assert.deepEqual((page.body as { events: unknown[] }).events, events);
     assert.equal((await get('/v1/native-clearing/domains/sol-carry-clearing/events?limit=501')).status, 400);
+    assert.equal((await get('/v1/native-clearing/domains/sol-carry-clearing/backing')).status, 503);
   }, { nativeClearing });
+
+  await withMarket(async (get) => {
+    const result = await get('/v1/native-clearing/domains/sol-carry-clearing/backing');
+    assert.equal(result.status, 200);
+    assert.equal((result.body as { backing: { evidenceGrade: string } }).backing.evidenceGrade, 'FINALIZED_CONTRACT_STATE');
+  }, { nativeClearing, nativeClearingBacking: async () => ({ evidenceGrade: 'FINALIZED_CONTRACT_STATE' }) });
 
   await withMarket(async (get) => {
     assert.equal((await get('/v1/native-clearing/domains')).status, 503);
