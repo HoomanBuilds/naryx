@@ -21,3 +21,9 @@ Both observers return frozen objects with evidence grades (`transaction-receipt`
 ## Deployment authority qualification
 
 `qualifyEvmDeploymentAuthority` is a signerless read-only activation gate. An injected port supplies chain identity and observed deployment evidence. The caller supplies the expected direct or proxy shape, code hashes, exact authorities, forbidden role collisions, verifier mutability policy, and activation caps. Qualification fails closed on unknown or duplicate roles, zero or unexpected authority, proxy drift, code drift, a mutable verifier when immutability is required, or lifecycle caps that do not preserve exits. The evidence port cannot construct or submit transactions, and its output is not runtime configuration.
+
+## Native clearing backing
+
+`EvmNativeClearingBackingVerifier` verifies a ledger projection against one pinned finalized block. It checks the Sepolia domain, clearing-house and collateral-token code hashes, exact accounting asset, policy configuration, account ownership, collateral, cash, positions, sequence numbers, open interest, reserve, and token coverage. A changed block hash, insufficient backing, or unsupported fee accounting fails closed.
+
+The evidence covers only the supplied registered accounts, not undisclosed liabilities or global solvency. Account identifiers use `evmNativeClearingAccountId(policyHash, accountId)`. This read-only verifier neither signs nor activates native trading. Its current network gate permits Base Sepolia and Arbitrum Sepolia only.
