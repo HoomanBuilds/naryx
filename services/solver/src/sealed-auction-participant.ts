@@ -135,34 +135,31 @@ export class HttpSealedAuctionRelay implements SealedAuctionRelayPort {
 
   async #call(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Record<string, unknown>> {
     const text = body === undefined ? '' : JSON.stringify(toProtocolJson(body));
-    const timestampMs = BigInt(Math.floor(this.#clockMs()));
-    const nonce = randomBytes(32).toString('hex');
-    const digest = solverRequestDigest({
-      method,
-      pathAndQuery: path,
-      bodySha256: new Uint8Array(createHash('sha256').update(text).digest()),
-      solverId: this.#solverId,
-      keyId: this.#keyId,
-      timestampMs,
-      nonce,
-    });
-    const signature = this.#signer.signDigest(digest);
-    if (!(signature instanceof Uint8Array) || signature.length !== 64) {
-      throw new Error('sealed auction signer must return a 64-byte signature');
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (text !== '') headers['Content-Type'] = 'application/json';
+    if (path.startsWith('/v1/solver/')) {
+      const timestampMs = BigInt(Math.floor(this.#clockMs()));
+      const nonce = randomBytes(32).toString('hex');
+      const digest = solverRequestDigest({
+        method, pathAndQuery: path,
+        bodySha256: new Uint8Array(createHash('sha256').update(text).digest()),
+        solverId: this.#solverId, keyId: this.#keyId, timestampMs, nonce,
+      });
+      const signature = this.#signer.signDigest(digest);
+      if (!(signature instanceof Uint8Array) || signature.length !== 64) {
+        throw new Error('sealed auction signer must return a 64-byte signature');
+      }
+      Object.assign(headers, {
+        'X-Naryx-Solver': this.#solverId, 'X-Naryx-Key': this.#keyId,
+        'X-Naryx-Timestamp': timestampMs.toString(), 'X-Naryx-Nonce': nonce,
+        'X-Naryx-Signature': toHex(signature),
+      });
     }
     const response = await this.#fetch(`${this.#origin}${path}`, {
       method,
       redirect: 'error',
       signal: AbortSignal.timeout(5_000),
-      headers: {
-        Accept: 'application/json',
-        ...(text === '' ? {} : { 'Content-Type': 'application/json' }),
-        'X-Naryx-Solver': this.#solverId,
-        'X-Naryx-Key': this.#keyId,
-        'X-Naryx-Timestamp': timestampMs.toString(),
-        'X-Naryx-Nonce': nonce,
-        'X-Naryx-Signature': toHex(signature),
-      },
+      headers,
       ...(text === '' ? {} : { body: text }),
     });
     const parsed = await boundedProtocolJson(response);

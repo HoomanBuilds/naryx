@@ -3,9 +3,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { sealedAuctionDefinition, sealedAuctionHash, toHex } from '@naryx/protocol-types';
+import { sealedAuctionDefinition, sealedAuctionHash, stringifyProtocolJson, toHex } from '@naryx/protocol-types';
 import {
   SealedAuctionParticipant,
+  HttpSealedAuctionRelay,
   SqliteSealedAuctionJournal,
   type EligibleSealedAuctionPage,
   type SealedAuctionQuotePort,
@@ -14,6 +15,37 @@ import {
 
 const START_MS = 1_900_000_000_000;
 const START_S = BigInt(START_MS / 1_000);
+
+test('auction relay authenticates private solver actions but not public view and award routes', async () => {
+  const definition = sealedAuctionDefinition({
+    version: 1, auctionId: 'transport-auction', environment: 'testnet', orderHash: '55'.repeat(32),
+    eligibleSolverIds: ['solver-a'], timeUnit: 'EVM_UNIX_SECONDS',
+    commitDeadlineValue: START_S + 20n, revealDeadlineValue: START_S + 35n,
+    settlementDeadlineValue: START_S + 50n, minimumValidReveals: 1,
+  });
+  const auctionHash = toHex(sealedAuctionHash(definition));
+  const quoteHash = '77'.repeat(32);
+  let signatures = 0;
+  const relay = new HttpSealedAuctionRelay({
+    origin: 'http://127.0.0.1:8787', solverId: 'solver-a', keyId: 'quote-key', clockMs: () => START_MS,
+    signer: { signDigest: () => { signatures += 1; return new Uint8Array(64).fill(1); } },
+    fetch: async (url, options) => {
+      const path = new URL(String(url)).pathname;
+      const headers = new Headers(options?.headers);
+      const privateRoute = path.startsWith('/v1/solver/');
+      assert.equal(headers.has('X-Naryx-Signature'), privateRoute);
+      assert.equal(headers.has('X-Naryx-Key'), privateRoute);
+      const body = privateRoute ? {} : path.endsWith('/award')
+        ? { auctionHash, quoteHash, awardSolverId: 'solver-a' }
+        : { definition, phase: 'COMMIT' };
+      return new Response(stringifyProtocolJson(body), { headers: { 'Content-Type': 'application/json' } });
+    },
+  });
+  await relay.commit(auctionHash, '66'.repeat(32));
+  await relay.view(auctionHash);
+  await relay.finalizeAward(auctionHash, quoteHash);
+  assert.equal(signatures, 1);
+});
 
 test('persists an opening and resumes through award finalization across restarts', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'naryx-sealed-auction-'));
