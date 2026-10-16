@@ -76,14 +76,24 @@ const SERIES: readonly { id: ChartSeriesKey; label: string }[] = [
   { id: "perp", label: "Perp" },
 ];
 
-function movingAverage(candles: readonly Candle[], length: number): LineData<Time>[] {
-  const points: LineData<Time>[] = [];
+function movingAverage(slots: readonly (Candle | WhitespaceData<Time>)[], length: number): (LineData<Time> | WhitespaceData<Time>)[] {
+  const points: (LineData<Time> | WhitespaceData<Time>)[] = [];
+  const closes: number[] = [];
   let sum = 0;
-  candles.forEach((candle, index) => {
-    sum += candle.close;
-    if (index >= length) sum -= candles[index - length]?.close ?? 0;
-    if (index >= length - 1) points.push({ time: candle.time as UTCTimestamp, value: sum / length });
-  });
+  for (const slot of slots) {
+    if (!("close" in slot)) {
+      closes.length = 0;
+      sum = 0;
+      points.push({ time: slot.time });
+      continue;
+    }
+    closes.push(slot.close);
+    sum += slot.close;
+    if (closes.length > length) sum -= closes.shift() ?? 0;
+    points.push(closes.length === length
+      ? { time: slot.time as UTCTimestamp, value: sum / length }
+      : { time: slot.time as UTCTimestamp });
+  }
   return points;
 }
 
@@ -147,7 +157,7 @@ function applyCandles(target: ChartSeries, candles: readonly Candle[], seconds: 
       ? { time: time(slot), value: slot.volume, color: slot.close >= slot.open ? CHART_COLORS.upVolume : CHART_COLORS.downVolume }
       : { time: time(slot) }),
   );
-  for (const average of target.averages) average.series.setData(movingAverage(candles, average.length));
+  for (const average of target.averages) average.series.setData(movingAverage(slots, average.length));
   target.byTime = new Map(candles.map((candle) => [candle.time, candle]));
 }
 

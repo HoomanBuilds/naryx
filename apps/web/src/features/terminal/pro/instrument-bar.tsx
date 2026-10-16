@@ -58,7 +58,9 @@ export function InstrumentBar({
     };
   }, [feed, missingPublicMarket]);
   const tone = stats === null || stats.change === null ? undefined : stats.change >= 0 ? styles.up : styles.down;
-  const { unit, precision, volume: hasVolume } = feed.seriesMeta("basis");
+  const basisMeta = feed.seriesMeta("basis");
+  const { unit, precision, volume: hasVolume } = basisMeta;
+  const referencePrice = (basisMeta.label ?? feed.label) === "REFERENCE";
   // The last basis is shown as the headline price, so the snapshot's own basis metric is not repeated.
   const selectedMarket = packageMarkets.find((market) => market.packageMarketId === packageMarketId) ?? null;
   const marketIdentity = packageMarketId ?? snapshot.market.packageId;
@@ -72,16 +74,18 @@ export function InstrumentBar({
     && selectedMarket.templateId !== "cash-and-carry-v1"
     ? []
     : snapshot.market.metrics.filter((entry) => !/^basis$/i.test(entry.label));
-  // Reference metrics carry the snapshot's evidence grade on screen, and a modeled return is never
-  // emphasized as if it were a promised yield.
-  const grade = snapshot.environment.evidenceGrade;
-  const reference = missingPublicMarket
-    ? { tag: "UNAVAILABLE", className: styles.labelUnavailable, title: marketStatus ?? "Package markets are unavailable." }
-    : grade === "FIXTURE_UNATTESTED"
-    ? { tag: "FIXTURE", className: styles.labelFixture, title: "These reference values are unattested fixtures, not market data." }
-    : grade === "OBSERVED_UNATTESTED"
-      ? { tag: "LIVE", className: styles.labelObserved, title: `Observed book prices captured ${snapshot.environment.capturedAt}. Unsigned and unattested.` }
-      : { tag: "UNAVAILABLE", className: styles.labelFixture, title: snapshot.environment.detail };
+  let priceSource = { tag: "UNAVAILABLE", className: styles.labelUnavailable, title: marketStatus ?? snapshot.environment.detail };
+  if (!missingPublicMarket) {
+    if (referencePrice) {
+      priceSource = { tag: "SPOT/PERP REF", className: styles.labelObserved, title: `Observed spot-perp reference, not a traded package price. ${basisMeta.note ?? ""}` };
+    } else if (feed.label === "FIXTURE") {
+      priceSource = { tag: "FIXTURE", className: styles.labelFixture, title: "These values are unattested fixtures, not market data." };
+    } else if (stats !== null && feed.label === "OBSERVED") {
+      priceSource = { tag: "TRADED", className: styles.labelObserved, title: "Observed package trades from the public market tape." };
+    } else if (stats === null) {
+      priceSource = { tag: "NO TRADES", className: styles.labelUnavailable, title: "No package trade or reference price is available for this market." };
+    }
+  }
 
   return (
     <section className={styles.instrumentBar} aria-label="Instrument">
@@ -107,7 +111,7 @@ export function InstrumentBar({
       </div>
       <div className={styles.instrumentPrice}>
         <strong className={tone}>{stats === null ? "-" : stats.last.toFixed(precision)}</strong>
-        <span>{unit === "bps" ? "Basis bps" : `Package ${unit}`}</span>
+        <span>{referencePrice ? "Spot/perp ref bps" : unit === "bps" ? "Basis bps" : `Package ${unit}`}</span>
       </div>
       <dl className={styles.instrumentStats}>
         <div>
@@ -126,9 +130,9 @@ export function InstrumentBar({
           <dt>24h volume</dt>
           <dd>{stats === null || hasVolume === false ? "-" : Math.round(stats.volume).toLocaleString("en-US")}</dd>
         </div>
-        <div className={styles.metricSource} title={reference.title}>
-          <dt>Reference</dt>
-          <dd><span className={reference.className}>{reference.tag}</span></dd>
+        <div className={styles.metricSource} title={priceSource.title}>
+          <dt>Price source</dt>
+          <dd><span className={priceSource.className}>{priceSource.tag}</span></dd>
         </div>
         {metrics.map((entry) => (
           <div key={entry.label} title={entry.detail === undefined ? entry.label : `${entry.label}. ${entry.detail}`}>
