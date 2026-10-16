@@ -121,6 +121,38 @@ export function solanaDevnetAccountReadFailure(error: unknown): { readonly statu
   return { status: 502, code: "ACCOUNT_READ_FAILED", message: "Solana Devnet account read failed closed." };
 }
 
+export function solanaDevnetCollateralTopUp(minimum: bigint, collateral: bigint, maximumDeposit: bigint): { readonly target: bigint; readonly deposit: bigint } {
+  if (minimum < 0n || collateral < 0n || maximumDeposit <= 0n) fail("collateral funding bounds are invalid");
+  // A small funding buffer avoids another setup transaction after a minor oracle move.
+  const target = minimum + (minimum + 99n) / 100n;
+  if (collateral >= minimum) return { target, deposit: 0n };
+  if (minimum - collateral > maximumDeposit) fail("required collateral exceeds the reviewed deposit bound");
+  const shortfall = target - collateral;
+  return { target, deposit: shortfall > maximumDeposit ? maximumDeposit : shortfall };
+}
+
+export function createSolanaDevnetAccountStatusCache(
+  read: SolanaDevnetOrderRuntime["accountStatus"],
+  clock: () => number = Date.now,
+): SolanaDevnetOrderRuntime["accountStatus"] {
+  const cache = new Map<string, Readonly<{ atMs: number; value: Promise<SolanaDevnetAccountStatus> }>>();
+  return (owner, sizeAtoms, claim = false) => {
+    const key = `${owner}|${sizeAtoms}|${claim}`;
+    const now = clock();
+    const hit = cache.get(key);
+    if (hit !== undefined && now - hit.atMs < 2_000) return hit.value;
+    if (cache.size >= 5_000) {
+      for (const [entryKey, entry] of cache) if (now - entry.atMs >= 2_000) cache.delete(entryKey);
+      if (cache.size >= 5_000) cache.clear();
+    }
+    const value = read(owner, sizeAtoms, claim);
+    cache.set(key, { atMs: now, value });
+    const discard = () => { if (cache.get(key)?.value === value) cache.delete(key); };
+    void value.then((status) => { if (!status.ready) discard(); }, discard);
+    return value;
+  };
+}
+
 const RPC_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
 
 function retryDelay(response: Response, attempt: number): number | undefined {
@@ -623,8 +655,9 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
     const entry = sizeAtoms === 0n ? undefined : priceTestPerpShortEntry(market, collateralPricePerLot, sizeAtoms);
     // Fund against the order context's maximum admitted price move so a normal oracle update between
     // onboarding and preparation does not leave the position a few atoms short.
-    const requiredCollateral = entry === undefined ? 0n : entry.initialMarginAtoms + entry.feeAtoms;
     const collateral = positionState?.collateralAtoms ?? 0n;
+    const funding = solanaDevnetCollateralTopUp(entry === undefined ? 0n : entry.initialMarginAtoms + entry.feeAtoms, collateral, config.maxDepositAtoms);
+    const requiredCollateral = funding.target;
     const steps: SolanaDevnetOnboardingStep[] = [];
     const ataCreates = ([
       [traderBase, derived.traderBase, owner, baseMint],
@@ -641,8 +674,7 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
     }
     // Free test USDC when the wallet cannot cover the deposit (or asked for it): at least one full claim,
     // never past the faucet's per-account balance limit.
-    const walletShortfall = requiredCollateral > collateral && requiredCollateral - collateral > traderQuoteAtoms
-      ? requiredCollateral - collateral - traderQuoteAtoms : 0n;
+    const walletShortfall = funding.deposit > traderQuoteAtoms ? funding.deposit - traderQuoteAtoms : 0n;
     if (faucet !== null && (claimTestCollateral || walletShortfall > 0n) && traderQuoteAtoms < TEST_COLLATERAL_MAX_BALANCE_ATOMS) {
       const headroom = TEST_COLLATERAL_MAX_BALANCE_ATOMS - traderQuoteAtoms;
       let remaining = walletShortfall > TEST_COLLATERAL_MAX_CLAIM_ATOMS ? walletShortfall : TEST_COLLATERAL_MAX_CLAIM_ATOMS;
@@ -672,9 +704,8 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
         ], anchorInstructionDiscriminator("initialize_position"))],
       });
     }
-    if (collateral < requiredCollateral) {
-      const shortfall = requiredCollateral - collateral;
-      if (shortfall > config.maxDepositAtoms) fail("required collateral exceeds the reviewed deposit bound");
+    if (funding.deposit > 0n) {
+      const shortfall = funding.deposit;
       steps.push({
         kind: "DEPOSIT_COLLATERAL",
         label: `Deposit ${shortfall} collateral atoms`,
@@ -891,21 +922,7 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
 
   // Account status reads several accounts per request and the route is public, so identical requests
   // within two seconds share one chain read (and requests in flight are joined), per wallet and size.
-  const statusCache = new Map<string, Readonly<{ atMs: number; value: Promise<SolanaDevnetAccountStatus> }>>();
-  const cachedAccountStatus = (owner: string, sizeAtoms: bigint, claim: boolean): Promise<SolanaDevnetAccountStatus> => {
-    const key = `${owner}|${sizeAtoms}|${claim}`;
-    const now = Date.now();
-    const hit = statusCache.get(key);
-    if (hit !== undefined && now - hit.atMs < 2_000) return hit.value;
-    if (statusCache.size >= 5_000) {
-      for (const [entryKey, entry] of statusCache) if (now - entry.atMs >= 2_000) statusCache.delete(entryKey);
-      if (statusCache.size >= 5_000) statusCache.clear();
-    }
-    const value = accountStatus(owner, sizeAtoms, claim);
-    statusCache.set(key, { atMs: now, value });
-    value.catch(() => { if (statusCache.get(key)?.value === value) statusCache.delete(key); });
-    return value;
-  };
+  const cachedAccountStatus = createSolanaDevnetAccountStatusCache(accountStatus);
 
   const handler = (request: IncomingMessage, response: ServerResponse): boolean => {
     const url = new URL(request.url ?? "/", "http://api.internal");
