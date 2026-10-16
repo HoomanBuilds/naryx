@@ -19,6 +19,8 @@ export interface EvmStrategyFundingRequirement {
   readonly balanceAtoms: string;
   readonly requiredAtoms: string;
   readonly deficitAtoms: string;
+  readonly assetId?: string;
+  readonly decimals?: number;
 }
 
 function fundingRequirement(value: unknown, quoteHash: string): EvmStrategyFundingRequirement {
@@ -33,8 +35,12 @@ function fundingRequirement(value: unknown, quoteHash: string): EvmStrategyFundi
     return BigInt(value);
   };
   try {
-    if (Object.keys(f).sort().join(',') !== 'balanceAtoms,chainId,deficitAtoms,quoteHash,requiredAtoms,strategyAccount,token,version'
+    const keys = Object.keys(f).sort().join(',');
+    if ((keys !== 'balanceAtoms,chainId,deficitAtoms,quoteHash,requiredAtoms,strategyAccount,token,version'
+      && keys !== 'assetId,balanceAtoms,chainId,decimals,deficitAtoms,quoteHash,requiredAtoms,strategyAccount,token,version')
       || f.version !== 1 || f.quoteHash !== quoteHash || (f.chainId !== 84_532 && f.chainId !== 421_614)
+      || (f.assetId !== undefined && (typeof f.assetId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(f.assetId)
+        || !Number.isInteger(f.decimals) || Number(f.decimals) < 0 || Number(f.decimals) > 38))
       || typeof f.strategyAccount !== 'string' || typeof f.token !== 'string'
       || !/^0x(?!0{40}$)[0-9a-f]{40}$/i.test(f.strategyAccount) || !/^0x(?!0{40}$)[0-9a-f]{40}$/i.test(f.token)
       || atoms(f.requiredAtoms) <= atoms(f.balanceAtoms) || atoms(f.deficitAtoms) !== atoms(f.requiredAtoms) - atoms(f.balanceAtoms)) {

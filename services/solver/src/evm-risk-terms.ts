@@ -1,4 +1,5 @@
 import type { EvmStrategyCallPolicy, EvmStrategyRiskTerms } from '@naryx/adapter-evm';
+import type { AssetRef } from '@naryx/protocol-types';
 import { encodeAbiParameters, getAddress, keccak256, parseAbiParameters, stringToHex, type Address, type Hex } from 'viem';
 import type { EvmOptionSpreadReadPort } from './evm-option-spread-quote.js';
 
@@ -19,15 +20,18 @@ export class EvmStrategyFundingRequiredError extends Error {
     balanceAtoms: string;
     requiredAtoms: string;
     deficitAtoms: string;
+    assetId?: string;
+    decimals?: number;
   }>;
 
-  constructor(chainId: bigint, account: Address, token: Address, balance: bigint, required: bigint) {
+  constructor(chainId: bigint, account: Address, token: Address, balance: bigint, required: bigint, asset?: AssetRef) {
     super('strategy account lacks quote balance after maximum spend for recovery');
     this.name = 'EvmStrategyFundingRequiredError';
     this.funding = Object.freeze({
       chainId: Number(chainId), strategyAccount: account, token,
       balanceAtoms: balance.toString(), requiredAtoms: required.toString(),
       deficitAtoms: (required - balance).toString(),
+      ...(asset === undefined ? {} : { assetId: asset.assetId, decimals: asset.decimals }),
     });
   }
 }
@@ -69,6 +73,7 @@ export async function evmTestnetRiskTerms(input: Readonly<{
   marginQuoteAtoms: bigint;
   riskIncreasing: boolean;
   callPolicies: readonly EvmStrategyCallPolicy[];
+  inputAssetFunding?: Readonly<{ token: Address; asset: AssetRef; requiredAtoms: bigint }>;
 }>): Promise<EvmStrategyRiskTerms> {
   const accountingToken = getAddress(input.accountingToken);
   const exposures = new Map<Hex, bigint>();
@@ -91,6 +96,17 @@ export async function evmTestnetRiskTerms(input: Readonly<{
   let reservedRecoveryQuoteAtoms = 0n;
   if (input.riskIncreasing) {
     requireCondition(input.marginQuoteAtoms >= MINIMUM_RECOVERY_RESERVE, 'quoted margin is below the risk-policy floor');
+    if (input.inputAssetFunding !== undefined) {
+      const funding = input.inputAssetFunding;
+      requireCondition(funding.requiredAtoms > 0n && funding.requiredAtoms < (1n << 256n), 'input asset funding amount is invalid');
+      const token = getAddress(funding.token);
+      requireCondition(token !== accountingToken, 'input asset funding must be distinct from quote funding');
+      const balance = await input.chain.readContract({ address: token, abi: BALANCE_ABI, functionName: 'balanceOf', args: [input.account] });
+      requireCondition(typeof balance === 'bigint' && balance >= 0n, 'strategy account input balance is invalid');
+      if (balance < funding.requiredAtoms) {
+        throw new EvmStrategyFundingRequiredError(input.chainId, input.account, token, balance, funding.requiredAtoms, funding.asset);
+      }
+    }
     const balance = await input.chain.readContract({
       address: accountingToken,
       abi: BALANCE_ABI,

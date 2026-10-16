@@ -3847,7 +3847,7 @@ export function GeneralizedStrategyPreparationPanel({
             { legId: "option-long", quoteAtoms: longPremiumAtoms.toString(), baseAtoms: quantityAtoms.toString() },
             { legId: "option-short", quoteAtoms: shortPremiumAtoms.toString(), baseAtoms: quantityAtoms.toString() },
           ],
-          expiryValue: (BigInt(Math.floor(Date.now() / 1_000)) + ttl).toString(),
+          expiryValue: (unixTimeMs() / BigInt(1_000) + ttl).toString(),
           nonce: randomNonce(),
           ...(lifecycleAction === "ENTRY" ? {} : { expectedStrategyStateHash: selectedEvmPosition!.stateHash }),
         }),
@@ -3909,7 +3909,7 @@ export function GeneralizedStrategyPreparationPanel({
       );
       const nearFuture = selectedEvmCalendarProfile.markets.find((market) => market.role === "near-future");
       if (nearFuture === undefined) throw new Error("The reviewed calendar spread has no near future.");
-      const now = BigInt(Math.floor(Date.now() / 1_000));
+      const now = unixTimeMs() / BigInt(1_000);
       const maximumTtl = BigInt(selectedEvmCalendarProfile.bounds.maximumExpiryTtlSeconds);
       const maturityHeadroom = BigInt(nearFuture.maturity) - now - BigInt(1);
       const ttl = [BigInt(600), maximumTtl, maturityHeadroom].reduce(
@@ -4012,7 +4012,7 @@ export function GeneralizedStrategyPreparationPanel({
               selectedEvmDirectionalProfile.quoteAsset.decimals, 12, "Spot limit price"),
             limitHedgePrice: hedgeLimit,
           } : { limitHedgePrice: hedgeLimit }),
-          expiryValue: (BigInt(Math.floor(Date.now() / 1_000)) + ttl).toString(),
+          expiryValue: (unixTimeMs() / BigInt(1_000) + ttl).toString(),
           nonce: randomNonce(),
           ...(lifecycleAction === "ENTRY" ? {} : { expectedStrategyStateHash: selectedEvmPosition!.stateHash }),
         }),
@@ -4139,7 +4139,7 @@ export function GeneralizedStrategyPreparationPanel({
       if (!response.ok) throw new Error(await failureMessage(response));
       const transaction = parseAuthorizedEvmExecution(await response.json(), review);
       const transactionHash = await sendEvmTransaction(transaction.chainId, transaction);
-      evmExecutionSentAt.current = Date.now();
+      evmExecutionSentAt.current = Number(unixTimeMs());
       setEvmDroppedHash(null);
       setEvmExecutionHash(transactionHash);
       const confirmed = await waitForEvmReceipt(transaction.chainId, transactionHash);
@@ -4170,7 +4170,7 @@ export function GeneralizedStrategyPreparationPanel({
       // PENDING means no receipt yet; past the drop window the transaction is treated as dropped.
       const body = await response.json().catch(() => null) as { status?: unknown } | null;
       const sentAt = evmExecutionSentAt.current;
-      const dropped = body?.status === "PENDING" && sentAt !== null && Date.now() - sentAt > EVM_DROP_WINDOW_MS;
+      const dropped = body?.status === "PENDING" && sentAt !== null && Number(unixTimeMs()) - sentAt > EVM_DROP_WINDOW_MS;
       setEvmDroppedHash(dropped ? transactionHash : null);
       return;
     }
@@ -5138,9 +5138,21 @@ export function GeneralizedStrategyPreparationPanel({
       throw new Error("Provision your isolated account and review the quote before funding it.");
     }
     const margin = BigInt(quoteReview.marginDeltaAtoms);
+    const metadata = record(value, "Funding requirement");
+    const inputAsset = selectedEvmProfile?.baseAsset;
+    const inputFunding = metadata.assetId !== undefined;
+    if (inputFunding && (inputAsset === undefined || metadata.assetId !== inputAsset.assetId
+      || metadata.decimals !== inputAsset.decimals)) throw new Error("Funding asset differs from the selected strategy.");
+    const inputQuantity = selectedEvmOptionProfile !== null
+      ? amountToAtoms(evmOptionQuantity, selectedEvmOptionProfile.baseAsset.decimals, "Option quantity")
+      : selectedEvmDirectionalProfile !== null
+        ? amountToAtoms(evmDirectionalQuantity, selectedEvmDirectionalProfile.baseAsset.decimals, "Package quantity")
+        : BigInt(0);
     return reviewEvmStrategyFunding(value, {
       quoteHash, chainId: evmChainId, strategyAccount: evmProvisioning.strategyAccount,
-      maximumRequiredAtoms: BigInt(quoteReview.grossNotionalAtoms) + (margin > BigInt(0) ? margin : BigInt(0))
+      ...(inputFunding ? { assetId: inputAsset!.assetId, decimals: inputAsset!.decimals } : {}),
+      maximumRequiredAtoms: inputFunding ? inputQuantity * BigInt(2)
+        : BigInt(quoteReview.grossNotionalAtoms) + (margin > BigInt(0) ? margin : BigInt(0))
         + BigInt(quoteReview.serviceFeeAtoms) + BigInt(quoteReview.passThroughCostAtoms)
         + BigInt(10) ** BigInt(quoteReview.quoteDecimals),
     });
@@ -6923,13 +6935,16 @@ export function GeneralizedStrategyPreparationPanel({
           <h3>Fund isolated strategy account</h3>
           <div className={styles.reviewGrid}>
             <span>Token shortfall</span>
-            <strong>{formatAtomicAmount(evmFunding.deficitAtoms, quoteReview.quoteDecimals, "test quote tokens")}</strong>
+            <strong>{formatAtomicAmount(evmFunding.deficitAtoms, evmFunding.decimals ?? quoteReview.quoteDecimals,
+              evmFunding.assetId === undefined ? "test quote tokens" : "test base tokens")}</strong>
             <span>Strategy account</span>
             <strong title={evmFunding.strategyAccount}>{compact(evmFunding.strategyAccount, 10, 8)}</strong>
             <span>Token contract</span>
             <strong title={evmFunding.token}>{compact(evmFunding.token, 10, 8)}</strong>
           </div>
-          <p className={styles.fieldContext}>Includes the required recovery reserve. This transfers test tokens to your own account, without approvals or trade execution.</p>
+          <p className={styles.fieldContext}>{evmFunding.assetId === undefined
+            ? "Includes the required quote-token recovery reserve."
+            : "Funds the base tokens required for inventory, option premiums, or collateral."} This transfers test tokens to your own account, without approvals or trade execution.</p>
           <button type="button" className={styles.secondaryAction}
             disabled={evmFundingBusy || walletAwaiting || evmFundingPending !== null || sendEvmTransaction === undefined || waitForEvmReceipt === undefined}
             onClick={() => void fundEvmStrategyAccount()}>

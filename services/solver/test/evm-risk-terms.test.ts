@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { assetRef } from '@naryx/protocol-types';
 import type { EvmStrategyCallPolicy } from '@naryx/adapter-evm';
 import type { Address, Hex } from 'viem';
 import { EvmStrategyFundingRequiredError, evmTestnetRiskIdentity, evmTestnetRiskTerms } from '../src/evm-risk-terms.js';
@@ -72,6 +73,24 @@ test('risk terms refuse insufficient post-spend balance and margin', async () =>
 test('risk identity rejects unsupported chains and duplicate dependencies', () => {
   assert.throws(() => evmTestnetRiskIdentity({ chainId: 1n, templateId: 'treasury-inventory-hedge-v1', dependencyIds: [SUBJECT_A] }), /unsupported/);
   assert.throws(() => evmTestnetRiskIdentity({ chainId: 84_532n, templateId: 'treasury-inventory-hedge-v1', dependencyIds: [SUBJECT_A, SUBJECT_A] }), /repeat/);
+});
+
+test('risk terms check separately denominated input funding before quote reserves', async () => {
+  const input = {
+    chain: chain(1n), chainId: 84_532n, templateId: 'option-spread-v1',
+    account: ACCOUNT, accountingToken: TOKEN, totalGrossNotionalAtoms: 20_000_000n,
+    marginQuoteAtoms: 10_000_000n, riskIncreasing: true, callPolicies: [call(SUBJECT_A, 20_000_000n, 0n)],
+    inputAssetFunding: { token: ADAPTER, asset: assetRef('base-test-token', '44'.repeat(32), 18), requiredAtoms: 10n ** 16n },
+  } as const;
+  await assert.rejects(evmTestnetRiskTerms(input), (error: unknown) => {
+    assert.ok(error instanceof EvmStrategyFundingRequiredError);
+    assert.equal(error.funding.assetId, 'base-test-token');
+    assert.equal(error.funding.decimals, 18);
+    assert.equal(error.funding.token, ADAPTER);
+    assert.equal(error.funding.deficitAtoms, '9999999999999999');
+    return true;
+  });
+  await assert.rejects(evmTestnetRiskTerms({ ...input, inputAssetFunding: { ...input.inputAssetFunding, token: TOKEN } }), /distinct/);
 });
 
 test('risk identity matches the reviewed Base Sepolia treasury policy', () => {

@@ -441,6 +441,9 @@ export class EvmOptionSpreadPreparationContextResolver implements StrategyPrepar
       totalGrossNotionalAtoms: longNotional + shortNotional,
       marginQuoteAtoms: documents.quote.totalMarginDelta.atoms,
       riskIncreasing: opening, callPolicies,
+      ...(opening ? { inputAssetFunding: {
+        token: getAddress(lane.pricing.baseToken.address), asset: lane.pricing.baseAsset, requiredAtoms: longPremium + quantity,
+      } } : {}),
     });
     return Object.freeze({
       compileContext: Object.freeze({

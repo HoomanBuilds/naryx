@@ -31,3 +31,11 @@ test('funding review refuses mismatched identities, over-budget amounts, zero de
     { requiredAtoms: (1n << 256n).toString() }, { deficitAtoms: '01' }, { data: '0x1234' },
   ]) assert.throws(() => reviewEvmStrategyFunding({ ...funding, ...changed }, expected));
 });
+
+test('input-token funding requires exact asset and decimal bindings', () => {
+  const f = { ...funding, assetId: 'base-test-token', decimals: 18, balanceAtoms: '0', requiredAtoms: '10000000000000000', deficitAtoms: '10000000000000000' };
+  const e = { ...expected, assetId: 'base-test-token', decimals: 18, maximumRequiredAtoms: 10000000000000000n };
+  assert.equal(reviewEvmStrategyFunding(f, e).decimals, 18);
+  assert.throws(() => reviewEvmStrategyFunding(f, { ...e, decimals: 6 }));
+  assert.throws(() => reviewEvmStrategyFunding(f, { ...e, assetId: 'other-token' }));
+});

@@ -8,6 +8,8 @@ export interface EvmStrategyFundingReview {
   readonly balanceAtoms: bigint;
   readonly requiredAtoms: bigint;
   readonly deficitAtoms: bigint;
+  readonly assetId?: string;
+  readonly decimals?: number;
   readonly transaction: Readonly<{ to: Address; data: Hex; value: '0' }>;
 }
 
@@ -16,12 +18,18 @@ export function reviewEvmStrategyFunding(value: unknown, expected: Readonly<{
   chainId: number;
   strategyAccount: string;
   maximumRequiredAtoms: bigint;
+  assetId?: string;
+  decimals?: number;
 }>): EvmStrategyFundingReview {
   const fail = (): never => { throw new Error('Funding requirement does not match the selected testnet package.'); };
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return fail();
   const f = value as Record<string, unknown>;
-  if (Object.keys(f).sort().join(',') !== 'balanceAtoms,chainId,deficitAtoms,quoteHash,requiredAtoms,strategyAccount,token,version'
+  const keys = Object.keys(f).sort().join(',');
+  if ((keys !== 'balanceAtoms,chainId,deficitAtoms,quoteHash,requiredAtoms,strategyAccount,token,version'
+    && keys !== 'assetId,balanceAtoms,chainId,decimals,deficitAtoms,quoteHash,requiredAtoms,strategyAccount,token,version')
     || f.version !== 1 || f.quoteHash !== expected.quoteHash || !/^[0-9a-f]{64}$/.test(expected.quoteHash)
+    || (f.assetId !== undefined && (typeof f.assetId !== 'string' || f.assetId !== expected.assetId
+      || !Number.isInteger(f.decimals) || f.decimals !== expected.decimals || Number(f.decimals) < 0 || Number(f.decimals) > 38))
     || (f.chainId !== 84_532 && f.chainId !== 421_614) || f.chainId !== expected.chainId
     || typeof f.strategyAccount !== 'string' || typeof f.token !== 'string'
     || !/^0x(?!0{40}$)[0-9a-f]{40}$/i.test(f.strategyAccount) || !/^0x(?!0{40}$)[0-9a-f]{40}$/i.test(f.token)) return fail();
@@ -41,6 +49,7 @@ export function reviewEvmStrategyFunding(value: unknown, expected: Readonly<{
   return Object.freeze({
     quoteHash: expected.quoteHash, chainId: f.chainId, strategyAccount, token,
     balanceAtoms, requiredAtoms, deficitAtoms,
+    ...(f.assetId === undefined ? {} : { assetId: f.assetId as string, decimals: f.decimals as number }),
     transaction: Object.freeze({
       to: token, data: encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [strategyAccount, deficitAtoms] }), value: '0',
     }),

@@ -579,6 +579,9 @@ export class EvmTreasuryHedgePreparationContextResolver implements StrategyPrepa
       totalGrossNotionalAtoms: inventoryEconomics.grossNotional.atoms + quotedHedge.grossNotional.atoms,
       marginQuoteAtoms: documents.quote.totalMarginDelta.atoms,
       riskIncreasing: increasing, callPolicies,
+      ...(increasing ? { inputAssetFunding: {
+        token: getAddress(lane.pricing.inventoryToken.address), asset: lane.pricing.inventoryAsset, requiredAtoms: quantity,
+      } } : {}),
     });
     return Object.freeze({
       compileContext: Object.freeze({

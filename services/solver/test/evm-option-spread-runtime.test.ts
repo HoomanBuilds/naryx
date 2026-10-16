@@ -259,6 +259,7 @@ class Chain implements EvmOptionSpreadReadPort {
 
   async readContract(request: Readonly<{ address: Address; abi: Abi; functionName: string; args?: readonly unknown[] }>): Promise<unknown> {
     const target = request.address.toLowerCase();
+    if (target === BASE_TOKEN.toLowerCase() && request.functionName === 'balanceOf') return 5n * 10n ** 18n;
     if (target === QUOTE_TOKEN.toLowerCase() && request.functionName === 'balanceOf') return 5_000_000_000n;
     if (target === LONG_POOL.toLowerCase() || target === SHORT_POOL.toLowerCase()) {
       const lower = target === LONG_POOL.toLowerCase();

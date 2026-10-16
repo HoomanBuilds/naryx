@@ -14,6 +14,8 @@ test("preparation preserves only quote-bound exact testnet funding requirements"
   };
   for (const [requirement, expected] of [
     [funding, "ACCOUNT_FUNDING_REQUIRED"],
+    [{ ...funding, assetId: "base-test-token", decimals: 18 }, "ACCOUNT_FUNDING_REQUIRED"],
+    [{ ...funding, assetId: "base-test-token", decimals: 39 }, "INVALID_RESPONSE"],
     [{ ...funding, quoteHash: "cd".repeat(32) }, "INVALID_RESPONSE"],
     [{ ...funding, chainId: 1 }, "INVALID_RESPONSE"],
     [{ ...funding, deficitAtoms: "2" }, "INVALID_RESPONSE"],
@@ -26,7 +28,7 @@ test("preparation preserves only quote-bound exact testnet funding requirements"
     await assert.rejects(client.prepare(QUOTE_HASH), (error: unknown) => {
       assert.ok(error instanceof StrategyPreparationClientError);
       assert.equal(error.code, expected);
-      if (expected === "ACCOUNT_FUNDING_REQUIRED") assert.deepEqual(error.funding, funding);
+      if (expected === "ACCOUNT_FUNDING_REQUIRED") assert.deepEqual(error.funding, requirement);
       return true;
     });
   }
