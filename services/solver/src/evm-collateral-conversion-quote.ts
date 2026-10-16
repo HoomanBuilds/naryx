@@ -11,7 +11,8 @@ import {
   type StrategyLegEconomicsInput,
   type VersionedManifestRef,
 } from '@naryx/protocol-types';
-import { getAddress, type Abi, type Address } from 'viem';
+import { getAddress, keccak256, stringToHex, type Abi, type Address } from 'viem';
+import { readEvmTestnetMinimumMargin } from './evm-risk-terms.js';
 import type { StoredStrategyPackageOrderDocuments } from './http-strategy-package-provider.js';
 import type { GeneralizedStrategyPricingPort, GeneralizedStrategyQuoteTerms } from './strategy-quote-service.js';
 import {
@@ -253,7 +254,7 @@ function validateConfiguration(input: EvmCollateralConversionPricingInput): void
 }
 
 export function createEvmCollateralConversionGeneralizedPricing(
-  input: EvmCollateralConversionPricingInput,
+  input: EvmCollateralConversionPricingInput & Readonly<{ accountFactory: EvmOptionSpreadContractIdentity }>,
 ): GeneralizedStrategyPricingPort {
   validateConfiguration(input);
   const perpPricing: EvmTreasuryHedgePricingInput = Object.freeze({
@@ -344,7 +345,16 @@ export function createEvmCollateralConversionGeneralizedPricing(
       const perpFee = ceilDiv(perp.feeWad, perp.collateralScale);
       const requiredMarginWad = increasing
         ? ceilDiv(perp.notionalWad * perp.initialMarginBps, BPS) + perp.feeWad : 0n;
-      const requiredMarginAtoms = increasing ? ceilDiv(requiredMarginWad, perp.collateralScale) : 0n;
+      const venueMarginAtoms = increasing ? ceilDiv(requiredMarginWad, perp.collateralScale) : 0n;
+      const policyMarginAtoms = increasing ? await readEvmTestnetMinimumMargin({
+        chain: input.chain, chainId: input.chainId, domain: input.domain, templateId: order.templateId,
+        factory: input.accountFactory, accountingToken: getAddress(input.quoteToken.address),
+        dependencyIds: [input.swap.adapter.adapterId, input.collateralTransfer.adapter.adapterId, input.hedge.adapter.adapterId]
+          .map((id) => keccak256(stringToHex(id))),
+        grossQuoteAtoms: spot.quoteAtoms + oracleNotionalAtoms + hedgeNotionalAtoms,
+      }) : 0n;
+      const requiredMarginAtoms = venueMarginAtoms > policyMarginAtoms ? venueMarginAtoms : policyMarginAtoms;
+      requireCondition(requiredMarginAtoms <= order.maximumMarginIncrease.atoms, 'required margin exceeds the signed cap');
       const protocolFee = ceilDiv(hedgeNotionalAtoms * BigInt(input.protocolFeeBps), BPS);
       const solverFee = ceilDiv(hedgeNotionalAtoms * BigInt(input.solverFeeBps), BPS);
       const totalCost = conversionImpact + spotFee + hedgeDeviation + perpFee

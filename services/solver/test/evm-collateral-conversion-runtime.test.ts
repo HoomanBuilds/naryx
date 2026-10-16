@@ -13,7 +13,8 @@ import {
   strategyPackageOrderHash,
   versionedManifestRef,
 } from '@naryx/protocol-types';
-import type { Abi, Address, Hex } from 'viem';
+import { keccak256, stringToHex, type Abi, type Address, type Hex } from 'viem';
+import { evmTestnetRiskIdentity } from '../src/evm-risk-terms.js';
 import {
   createEvmCollateralConversionGeneralizedPricing,
   type EvmCollateralConversionPricingInput,
@@ -34,6 +35,8 @@ const SPOT_QUOTER = address('5');
 const LENDING_POOL = address('6');
 const ORACLE = address('7');
 const PERP_MARKET = address('8');
+const ACCOUNT_FACTORY = address('b');
+const REGISTRY = address('9');
 const domain = domainRef('eip155:84532', 1, hash('1'));
 const collateralAsset = assetRef('base-sepolia:ntbase', hash('2'), 18);
 const quoteAsset = assetRef('base-sepolia:ntquote', hash('3'), 6);
@@ -46,11 +49,13 @@ const lendingMarket = versionedManifestRef('ntbase-lending', 1, hash('9'));
 const hedgeMarket = versionedManifestRef('ntbase-perpetual', 1, hash('a'));
 
 class Chain implements EvmOptionSpreadReadPort {
+  leverage = 200_000n;
   poolFee: number | bigint = 3_000;
   readonly codes = new Map<string, Hex>([
     [COLLATERAL, codeHash('1')], [QUOTE, codeHash('2')], [SPOT_FACTORY, codeHash('3')],
     [SPOT_POOL, codeHash('4')], [SPOT_QUOTER, codeHash('5')], [LENDING_POOL, codeHash('6')],
     [ORACLE, codeHash('7')], [PERP_MARKET, codeHash('8')],
+    [ACCOUNT_FACTORY, codeHash('b')], [REGISTRY, codeHash('c')],
   ]);
 
   async chainId() { return 84_532n; }
@@ -58,6 +63,19 @@ class Chain implements EvmOptionSpreadReadPort {
   async codeHash(value: Address) { return this.codes.get(value.toLowerCase()); }
 
   async readContract(request: Readonly<{ address: Address; abi: Abi; functionName: string; args?: readonly unknown[] }>): Promise<unknown> {
+    if (request.address === ACCOUNT_FACTORY && request.functionName === 'riskDomainRegistry') return REGISTRY;
+    if (request.address === ACCOUNT_FACTORY && request.functionName === 'riskDomainRegistryCodeHash') return codeHash('c');
+    if (request.address === REGISTRY && request.functionName === 'activeVersion') return 1;
+    if (request.address === REGISTRY && request.functionName === 'policy') return {
+      activated: true, lifecycle: 1, config: {
+        manifestVersion: 1,
+        manifestHash: evmTestnetRiskIdentity({ chainId: 84_532n, templateId: 'collateral-conversion-hedge-v1',
+          dependencyIds: [swapAdapter.adapterId, lendingAdapter.adapterId, hedgeAdapter.adapterId]
+            .map((id) => keccak256(stringToHex(id))) }).policyManifestHash,
+        domainManifestVersion: 1, domainManifestHash: `0x${hash('1')}`, accountingToken: QUOTE,
+        maximumLeverageBps: this.leverage, minimumMarginFloorQuoteAtoms: 1_000_000n,
+      },
+    };
     if (request.address === SPOT_FACTORY && request.functionName === 'getPool') return SPOT_POOL;
     if (request.address === SPOT_POOL) {
       if (request.functionName === 'factory') return SPOT_FACTORY;
@@ -145,13 +163,14 @@ function documents(maximumSwapQuoteAtoms: bigint): StoredStrategyPackageOrderDoc
     graphHashHex: Buffer.from(packageGraphHash(graph)).toString('hex'), order, graph, recordedAtMs: 1 };
 }
 
-function pricing(chain: Chain): EvmCollateralConversionPricingInput {
+function pricing(chain: Chain): EvmCollateralConversionPricingInput & { accountFactory: { address: Address; expectedCodeHash: Hex } } {
   const contract = (addressValue: Address, byte: string) => ({ address: addressValue, expectedCodeHash: codeHash(byte) });
   return {
     chainId: 84_532n, domain, collateralAsset, quoteAsset,
     collateralToken: contract(COLLATERAL, '1'), quoteToken: contract(QUOTE, '2'), spotFactory: contract(SPOT_FACTORY, '3'),
     spotPool: contract(SPOT_POOL, '4'), spotQuoter: contract(SPOT_QUOTER, '5'), spotPoolFee: 3_000,
     lendingPool: contract(LENDING_POOL, '6'), oracle: contract(ORACLE, '7'), perpetualMarket: contract(PERP_MARKET, '8'),
+    accountFactory: contract(ACCOUNT_FACTORY, 'b'),
     swap: { adapter: swapAdapter, venue, market: spotMarket },
     collateralTransfer: { adapter: lendingAdapter, venue, market: lendingMarket },
     hedge: { adapter: hedgeAdapter, venue, market: hedgeMarket }, minimumPostHealthFactor: 2n * 10n ** 18n,
@@ -178,4 +197,15 @@ test('prices an atomic collateral conversion and rejects a swap above the signed
   await assert.rejects(port.quote({ documents: documents(102n), currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW } }), /spot venue identity changed/);
   chain.poolFee = Number.NaN;
   await assert.rejects(port.quote({ documents: documents(102n), currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW } }), /pool fee is invalid/);
+});
+
+test('collateral conversion includes all three gross legs in policy margin and respects the signed cap', async () => {
+  const chain = new Chain();
+  chain.leverage = 100_000n;
+  const port = createEvmCollateralConversionGeneralizedPricing(pricing(chain));
+  const initial = documents(102n);
+  await assert.rejects(port.quote({ documents: initial, currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW } }), /signed cap/);
+  const source = { ...initial, order: { ...initial.order, maximumMarginIncrease: assetAmount(quoteAsset, 30_100_000n) } };
+  const result = await port.quote({ documents: source, currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW } });
+  assert.equal(result.legEconomics[2]?.marginDelta.atoms, 30_100_000n);
 });

@@ -154,6 +154,7 @@ function lane(
     spotQuoter: contract(input.spotQuoter, 'lane.spotQuoter'), spotPoolFee: integer(input.spotPoolFee, 'lane.spotPoolFee'),
     lendingPool: contract(input.lendingPool, 'lane.lendingPool'), oracle: contract(input.oracle, 'lane.oracle'),
     perpetualMarket: contract(input.perpetualMarket, 'lane.perpetualMarket'), swap, collateralTransfer, hedge,
+    accountFactory: contract(input.accountFactory, 'lane.accountFactory'),
     minimumPostHealthFactor: positive(input.minimumPostHealthFactor, 'lane.minimumPostHealthFactor'),
     protocolFeeBps: nonnegativeInteger(input.protocolFeeBps, 'lane.protocolFeeBps'),
     solverFeeBps: nonnegativeInteger(input.solverFeeBps, 'lane.solverFeeBps'),
