@@ -1375,6 +1375,7 @@ function Ticket({
   const plan = snapshot.plans.find((item) => item.mode === mode) ?? snapshot.plans[0];
   const selectedTemplate = strategyTemplates.find((template) => template.templateId === selectedStrategyTemplateId);
   const selectedAction = selectedTemplate?.actions.find((item) => item.action === selectedLifecycleAction) ?? selectedTemplate?.actions[0];
+  const marketsPending = publicApiBaseUrl !== null && packageMarketId === null;
   const nativeCashFlow = selectedStrategyTemplateId === "cash-and-carry-v1" &&
     (selectedLifecycleAction === "ENTRY" || selectedLifecycleAction === "EXIT");
   const ticketPreview = nativeCashFlow ? preview : null;
@@ -1435,6 +1436,7 @@ function Ticket({
         <select
           id="strategy-template"
           value={selectedStrategyTemplateId}
+          disabled={marketsPending}
           onChange={(event) => onStrategyTemplateChange(event.target.value)}
         >
           {strategyTemplates.map((template) => (
@@ -1464,6 +1466,7 @@ function Ticket({
                 key={template.templateId}
                 type="button"
                 aria-pressed={selectedStrategyTemplateId === template.templateId}
+                disabled={marketsPending}
                 onClick={() => onStrategyTemplateChange(template.templateId)}
               >
                 <span>
@@ -4197,6 +4200,12 @@ export function TradingTerminal({
     const nextAction = template.actions[0]?.action ?? "ENTRY";
     setSelectedStrategyTemplateId(templateId);
     setSelectedLifecycleAction(nextAction);
+    const market = preferredPackageMarket(packageMarkets, (candidate) => candidate.templateId === templateId
+      && onLane(candidate, selectedDomain));
+    if (market !== undefined) {
+      setActivePackageMarketId(market.packageMarketId);
+      storePackageMarket(market.packageMarketId);
+    }
     if (templateId === "cash-and-carry-v1") setMode(nextAction === "EXIT" ? "exit" : "entry");
   }
 
