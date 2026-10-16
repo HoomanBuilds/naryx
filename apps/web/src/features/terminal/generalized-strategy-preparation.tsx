@@ -5,6 +5,8 @@ import { Fragment, useEffect, useEffectEvent, useRef, useState } from "react";
 import bs58 from "bs58";
 import {
   NaryxClient,
+  reviewEvmStrategyFunding,
+  type EvmStrategyFundingReview,
   type DerivedAdvancedOrderView,
   type PreparedAdvancedOrderAttemptView,
   type VerifiedPreparedNettingBatch,
@@ -2877,6 +2879,10 @@ export function GeneralizedStrategyPreparationPanel({
   const [evmHedgePrice, setEvmHedgePrice] = useState("");
   const [evmSwapPrice, setEvmSwapPrice] = useState("");
   const [evmProvisioning, setEvmProvisioning] = useState<EvmProvisioningPlan | null>(null);
+  const [evmFunding, setEvmFunding] = useState<EvmStrategyFundingReview | null>(null);
+  const [evmFundingBusy, setEvmFundingBusy] = useState(false);
+  const [evmFundingPending, setEvmFundingPending] = useState<Readonly<{ hash: string; chainId: number; quoteHash: string }> | null>(null);
+  const [evmFundingNotice, setEvmFundingNotice] = useState<string | null>(null);
   const [evmCollateral, setEvmCollateral] = useState<EvmCollateralPlan | null>(null);
   const [evmCollateralCompletionKey, setEvmCollateralCompletionKey] = useState("");
   const [evmCreateBusy, setEvmCreateBusy] = useState(false);
@@ -5097,8 +5103,17 @@ export function GeneralizedStrategyPreparationPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ quoteHash }),
       });
-      if (!response.ok) throw new Error(await failureMessage(response));
-      const parsed = parseReview(await response.json(), quoteHash);
+      const payload = await response.json();
+      if (!response.ok) {
+        const refusal = record(record(payload, "Preparation refusal").error, "Preparation error");
+        if (refusal.code === "ACCOUNT_FUNDING_REQUIRED") {
+          setEvmFunding(parseFundingRequirement(refusal.funding));
+          setEvmFundingNotice(null);
+        }
+        throw new Error(typeof refusal.message === "string" ? refusal.message : "Strategy preparation failed closed.");
+      }
+      setEvmFunding(null);
+      const parsed = parseReview(payload, quoteHash);
       if (parsed.domains.length !== 1 || parsed.domains[0]?.domainId !== expectedDomainId) {
         throw new Error(`Prepared strategy does not belong to the selected ${executionDomain} lane.`);
       }
@@ -5114,6 +5129,95 @@ export function GeneralizedStrategyPreparationPanel({
       setError(cause instanceof Error ? cause.message : "Strategy preparation failed closed.");
     } finally {
       setPrepareBusy(false);
+    }
+  }
+
+  function parseFundingRequirement(value: unknown): EvmStrategyFundingReview {
+    if (evmChainId === undefined || evmProvisioning?.ready !== true || quoteReview === null
+      || quoteReview.quoteHash !== quoteHash || evmProvisioning.owner.toLowerCase() !== strategyOwner?.toLowerCase()) {
+      throw new Error("Provision your isolated account and review the quote before funding it.");
+    }
+    const margin = BigInt(quoteReview.marginDeltaAtoms);
+    return reviewEvmStrategyFunding(value, {
+      quoteHash, chainId: evmChainId, strategyAccount: evmProvisioning.strategyAccount,
+      maximumRequiredAtoms: BigInt(quoteReview.grossNotionalAtoms) + (margin > BigInt(0) ? margin : BigInt(0))
+        + BigInt(quoteReview.serviceFeeAtoms) + BigInt(quoteReview.passThroughCostAtoms)
+        + BigInt(10) ** BigInt(quoteReview.quoteDecimals),
+    });
+  }
+
+  async function fundEvmStrategyAccount() {
+    if (evmFunding === null || evmFunding.quoteHash !== quoteHash || privateApiBaseUrl === null) return;
+    setEvmFundingBusy(true);
+    setError(null);
+    try {
+      if (sendEvmTransaction === undefined || waitForEvmReceipt === undefined) {
+        throw new Error("Connect the owner wallet on the selected testnet before funding.");
+      }
+      if (evmFundingPending !== null) {
+        throw new Error("Check the pending funding transfer before sending another one.");
+      }
+      let transactionHash: string | null = null;
+      if (transactionHash === null) {
+        const response = await fetch(`${privateApiBaseUrl}/internal/terminal/strategy-executions/prepare`, {
+          method: "POST", cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer",
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ quoteHash }),
+        });
+        const payload = await response.json();
+        if (response.ok) {
+          setEvmFunding(null);
+          setEvmFundingNotice("Your account is already funded. No transfer was sent. Prepare the package again.");
+          return;
+        }
+        const refusal = record(record(payload, "Preparation refusal").error, "Preparation error");
+        if (refusal.code !== "ACCOUNT_FUNDING_REQUIRED") {
+          setEvmFunding(null);
+          throw new Error(typeof refusal.message === "string" ? refusal.message : "Refresh the quote before funding.");
+        }
+        const fresh = parseFundingRequirement(refusal.funding);
+        setEvmFunding(fresh);
+        if (fresh.token !== evmFunding.token || fresh.deficitAtoms > evmFunding.deficitAtoms) {
+          throw new Error("The funding requirement changed. Review the updated amount before confirming.");
+        }
+        transactionHash = await sendEvmTransaction(fresh.chainId, fresh.transaction);
+        setEvmFundingPending({ hash: transactionHash, chainId: fresh.chainId, quoteHash });
+      }
+      if (!await waitForEvmReceipt(evmFunding.chainId, transactionHash)) {
+        setEvmFundingPending(null);
+        throw new Error("The funding transfer reverted. No funding was confirmed.");
+      }
+      setEvmFundingPending(null);
+      setEvmFunding(null);
+      setQuoteHash("");
+      setQuoteReview(null);
+      setReview(null);
+      setEvmFundingNotice("Funding confirmed. Request a fresh quote before preparing your package.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Account funding could not be confirmed. Check the transaction before retrying.");
+    } finally {
+      setEvmFundingBusy(false);
+    }
+  }
+
+  async function checkEvmFundingConfirmation() {
+    if (evmFundingPending === null || waitForEvmReceipt === undefined) return;
+    setEvmFundingBusy(true);
+    setError(null);
+    try {
+      const confirmed = await waitForEvmReceipt(evmFundingPending.chainId, evmFundingPending.hash);
+      setEvmFundingPending(null);
+      if (!confirmed) throw new Error("The funding transfer reverted. No funding was confirmed.");
+      if (evmFundingPending.quoteHash === quoteHash) {
+        setEvmFunding(null);
+        setQuoteHash("");
+        setQuoteReview(null);
+        setReview(null);
+      }
+      setEvmFundingNotice("Funding confirmed. Request a fresh quote before preparing your package.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Funding confirmation is unavailable. No new transfer was sent.");
+    } finally {
+      setEvmFundingBusy(false);
     }
   }
 
@@ -6814,6 +6918,36 @@ export function GeneralizedStrategyPreparationPanel({
           {prepareBusy ? "Preparing unsigned plan" : "Prepare unsigned plan"}
         </button>
       </div>
+      {evmFunding?.quoteHash === quoteHash && quoteReview !== null ? (
+        <div className={styles.quoteReview}>
+          <h3>Fund isolated strategy account</h3>
+          <div className={styles.reviewGrid}>
+            <span>Token shortfall</span>
+            <strong>{formatAtomicAmount(evmFunding.deficitAtoms, quoteReview.quoteDecimals, "test quote tokens")}</strong>
+            <span>Strategy account</span>
+            <strong title={evmFunding.strategyAccount}>{compact(evmFunding.strategyAccount, 10, 8)}</strong>
+            <span>Token contract</span>
+            <strong title={evmFunding.token}>{compact(evmFunding.token, 10, 8)}</strong>
+          </div>
+          <p className={styles.fieldContext}>Includes the required recovery reserve. This transfers test tokens to your own account, without approvals or trade execution.</p>
+          <button type="button" className={styles.secondaryAction}
+            disabled={evmFundingBusy || walletAwaiting || evmFundingPending !== null || sendEvmTransaction === undefined || waitForEvmReceipt === undefined}
+            onClick={() => void fundEvmStrategyAccount()}>
+            {evmFundingBusy ? "Waiting for funding confirmation" : "Transfer exact test-token shortfall"}
+          </button>
+        </div>
+      ) : null}
+      {evmFundingPending !== null ? (
+        <div className={styles.strategyPrepareForm}>
+          <TransactionLink domain={evmFundingPending.chainId} hash={evmFundingPending.hash}>Funding transaction</TransactionLink>
+          <button type="button" className={styles.secondaryAction}
+            disabled={evmFundingBusy || waitForEvmReceipt === undefined}
+            onClick={() => void checkEvmFundingConfirmation()}>
+            {evmFundingBusy ? "Waiting for funding confirmation" : "Check funding confirmation"}
+          </button>
+        </div>
+      ) : null}
+      {evmFundingNotice !== null ? <p className={styles.fieldContext} role="status">{evmFundingNotice}</p> : null}
       {quoteOrigin === "POST_MATCH" ? (
         <div className={styles.strategyDomainReview}>
           <div className={styles.evidenceHeading}>

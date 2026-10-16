@@ -5,6 +5,7 @@ import {
   stringifyProtocolJson,
 } from '@naryx/protocol-types';
 import type { StrategyPreparationService } from './strategy-preparation-service.js';
+import { EvmStrategyFundingRequiredError } from './evm-risk-terms.js';
 
 const MAX_BODY_BYTES = 4_096;
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
@@ -52,14 +53,22 @@ export function createStrategyPreparationInternalHandler(
     if (url.pathname !== '/internal/strategy-executions/prepare' || url.search !== '') return false;
     if (!isInternal(request)) return reject(response, 403, 'FORBIDDEN', 'Strategy preparation answers direct loopback callers only.');
     if (request.method !== 'POST') return reject(response, 405, 'METHOD_NOT_ALLOWED', 'Only POST is allowed.');
+    let quoteHashHex: string | undefined;
     try {
       const body = await readBody(request);
       if (Object.keys(body).length !== 1 || typeof body.quoteHash !== 'string') throw new Error('request must contain only quoteHash');
       const quoteHash = commitmentHash(body.quoteHash, 'quoteHash');
+      quoteHashHex = body.quoteHash;
       const prepared = await service.prepareByQuote(quoteHash);
       if (prepared === undefined) return reject(response, 404, 'NOT_FOUND', 'No admitted strategy package exists for this quote.');
       return send(response, 200, { version: 1, prepared });
     } catch (error) {
+      if (error instanceof EvmStrategyFundingRequiredError && quoteHashHex !== undefined) {
+        return send(response, 400, { error: {
+          code: 'ACCOUNT_FUNDING_REQUIRED', message: error.message,
+          funding: { version: 1, quoteHash: quoteHashHex, ...error.funding },
+        } });
+      }
       return reject(response, 400, 'PREPARATION_REJECTED', error instanceof Error ? error.message : 'Strategy preparation failed closed.');
     }
   };

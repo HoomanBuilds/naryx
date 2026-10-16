@@ -94,6 +94,7 @@ export {
   type VerifiedTerminalEvidence,
 } from './client.js';
 export { authorizeStrategyCommand } from './client.js';
+export { reviewEvmStrategyFunding, type EvmStrategyFundingReview } from './evm-strategy-funding.js';
 export {
   NaryxSolverClient,
   type EligibleAuctionPage,

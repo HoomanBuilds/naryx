@@ -5,9 +5,48 @@ import {
   toHex,
   type Hash32,
 } from '@naryx/protocol-types';
+import { getAddress } from 'viem';
 
 const MAX_RESPONSE_BYTES = 2_097_152;
 const TIMEOUT_MS = 30_000;
+
+export interface EvmStrategyFundingRequirement {
+  readonly version: 1;
+  readonly quoteHash: string;
+  readonly chainId: number;
+  readonly strategyAccount: string;
+  readonly token: string;
+  readonly balanceAtoms: string;
+  readonly requiredAtoms: string;
+  readonly deficitAtoms: string;
+}
+
+function fundingRequirement(value: unknown, quoteHash: string): EvmStrategyFundingRequirement {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new StrategyPreparationClientError('INVALID_RESPONSE', 'funding requirement is invalid');
+  }
+  const f = value as Record<string, unknown>;
+  const atoms = (value: unknown): bigint => {
+    if (typeof value !== 'string' || !/^(?:0|[1-9][0-9]{0,77})$/.test(value) || BigInt(value) >= (1n << 256n)) {
+      throw new StrategyPreparationClientError('INVALID_RESPONSE', 'funding amount is invalid');
+    }
+    return BigInt(value);
+  };
+  try {
+    if (Object.keys(f).sort().join(',') !== 'balanceAtoms,chainId,deficitAtoms,quoteHash,requiredAtoms,strategyAccount,token,version'
+      || f.version !== 1 || f.quoteHash !== quoteHash || (f.chainId !== 84_532 && f.chainId !== 421_614)
+      || typeof f.strategyAccount !== 'string' || typeof f.token !== 'string'
+      || !/^0x(?!0{40}$)[0-9a-f]{40}$/i.test(f.strategyAccount) || !/^0x(?!0{40}$)[0-9a-f]{40}$/i.test(f.token)
+      || atoms(f.requiredAtoms) <= atoms(f.balanceAtoms) || atoms(f.deficitAtoms) !== atoms(f.requiredAtoms) - atoms(f.balanceAtoms)) {
+      throw new Error('invalid binding');
+    }
+    getAddress(f.strategyAccount);
+    getAddress(f.token);
+  } catch {
+    throw new StrategyPreparationClientError('INVALID_RESPONSE', 'funding requirement does not bind the testnet quote');
+  }
+  return Object.freeze({ ...f }) as unknown as EvmStrategyFundingRequirement;
+}
 
 export interface GeneralizedStrategyPreparation {
   readonly version: 1;
@@ -25,11 +64,13 @@ export interface GeneralizedStrategyPreparationPort {
 export class StrategyPreparationClientError extends Error {
   readonly code: 'INVALID_ENDPOINT' | 'INVALID_REQUEST' | 'NOT_FOUND' | 'UPSTREAM_REJECTED' | 'INVALID_RESPONSE'
     | 'ACCOUNT_FUNDING_REQUIRED' | 'MINIMUM_MARGIN_REQUIRED' | 'QUOTE_EXPIRED';
+  readonly funding: EvmStrategyFundingRequirement | undefined;
 
-  constructor(code: StrategyPreparationClientError['code'], message: string) {
+  constructor(code: StrategyPreparationClientError['code'], message: string, funding?: EvmStrategyFundingRequirement) {
     super(message);
     this.name = 'StrategyPreparationClientError';
     this.code = code;
+    this.funding = funding;
   }
 }
 
@@ -124,7 +165,12 @@ export class HttpStrategyPreparationClient implements GeneralizedStrategyPrepara
     });
     if (response.status === 404) throw new StrategyPreparationClientError('NOT_FOUND', 'No admitted strategy package exists for this quote');
     if (response.status === 400) {
-      const body = await boundedJson(response) as { error?: { code?: unknown; message?: unknown } };
+      const body = await boundedJson(response) as { error?: { code?: unknown; message?: unknown; funding?: unknown } };
+      if (body?.error?.code === 'ACCOUNT_FUNDING_REQUIRED') {
+        throw new StrategyPreparationClientError('ACCOUNT_FUNDING_REQUIRED',
+          'Fund the isolated strategy account with the exact test-token shortfall, then request a fresh quote.',
+          fundingRequirement(body.error.funding, quoteHashHex));
+      }
       if (body?.error?.code === 'PREPARATION_REJECTED') {
         if (body.error.message === 'strategy account lacks quote balance after maximum spend for recovery') {
           throw new StrategyPreparationClientError('ACCOUNT_FUNDING_REQUIRED',

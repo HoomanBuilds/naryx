@@ -11,6 +11,27 @@ const POLICY_PARAMETERS = parseAbiParameters('string,bytes32,bytes32[]');
 const MINIMUM_RECOVERY_RESERVE = 1_000_000n;
 const MAXIMUM_UNWIND_MS = 3_600_000n;
 
+export class EvmStrategyFundingRequiredError extends Error {
+  readonly funding: Readonly<{
+    chainId: number;
+    strategyAccount: Address;
+    token: Address;
+    balanceAtoms: string;
+    requiredAtoms: string;
+    deficitAtoms: string;
+  }>;
+
+  constructor(chainId: bigint, account: Address, token: Address, balance: bigint, required: bigint) {
+    super('strategy account lacks quote balance after maximum spend for recovery');
+    this.name = 'EvmStrategyFundingRequiredError';
+    this.funding = Object.freeze({
+      chainId: Number(chainId), strategyAccount: account, token,
+      balanceAtoms: balance.toString(), requiredAtoms: required.toString(),
+      deficitAtoms: (required - balance).toString(),
+    });
+  }
+}
+
 function requireCondition(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
@@ -76,8 +97,11 @@ export async function evmTestnetRiskTerms(input: Readonly<{
       functionName: 'balanceOf',
       args: [input.account],
     });
-    requireCondition(typeof balance === 'bigint' && balance >= maximumQuoteSpend + MINIMUM_RECOVERY_RESERVE,
-      'strategy account lacks quote balance after maximum spend for recovery');
+    requireCondition(typeof balance === 'bigint' && balance >= 0n, 'strategy account quote balance is invalid');
+    const required = maximumQuoteSpend + MINIMUM_RECOVERY_RESERVE;
+    if (balance < required) {
+      throw new EvmStrategyFundingRequiredError(input.chainId, input.account, accountingToken, balance, required);
+    }
     reservedRecoveryQuoteAtoms = balance - maximumQuoteSpend;
   }
   return Object.freeze({

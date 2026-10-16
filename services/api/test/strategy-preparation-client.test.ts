@@ -5,6 +5,33 @@ import { HttpStrategyPreparationClient, StrategyPreparationClientError } from ".
 
 const QUOTE_HASH = "ab".repeat(32);
 
+test("preparation preserves only quote-bound exact testnet funding requirements", async () => {
+  const funding = {
+    version: 1, quoteHash: QUOTE_HASH, chainId: 84532,
+    strategyAccount: "0x1111111111111111111111111111111111111111",
+    token: "0x2222222222222222222222222222222222222222",
+    balanceAtoms: "1999999", requiredAtoms: "2000000", deficitAtoms: "1",
+  };
+  for (const [requirement, expected] of [
+    [funding, "ACCOUNT_FUNDING_REQUIRED"],
+    [{ ...funding, quoteHash: "cd".repeat(32) }, "INVALID_RESPONSE"],
+    [{ ...funding, chainId: 1 }, "INVALID_RESPONSE"],
+    [{ ...funding, deficitAtoms: "2" }, "INVALID_RESPONSE"],
+    [{ ...funding, requiredAtoms: (1n << 256n).toString() }, "INVALID_RESPONSE"],
+  ] as const) {
+    const client = new HttpStrategyPreparationClient("http://127.0.0.1:8788", async () =>
+      new Response(JSON.stringify({ error: { code: "ACCOUNT_FUNDING_REQUIRED", funding: requirement } }), {
+        status: 400, headers: { "Content-Type": "application/json" },
+      }));
+    await assert.rejects(client.prepare(QUOTE_HASH), (error: unknown) => {
+      assert.ok(error instanceof StrategyPreparationClientError);
+      assert.equal(error.code, expected);
+      if (expected === "ACCOUNT_FUNDING_REQUIRED") assert.deepEqual(error.funding, funding);
+      return true;
+    });
+  }
+});
+
 test("strategy preparation exposes only recognized actionable refusals", async () => {
   for (const [message, code] of [
     ["strategy account lacks quote balance after maximum spend for recovery", "ACCOUNT_FUNDING_REQUIRED"],

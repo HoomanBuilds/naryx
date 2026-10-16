@@ -11,8 +11,36 @@ import {
   HttpStrategyPackageProvider,
   StrategyPreparationService,
 } from '../src/index.js';
+import { EvmStrategyFundingRequiredError } from '../src/evm-risk-terms.js';
 
 const QUOTE_HASH = '11'.repeat(32);
+
+test('preparation refusal binds its exact funding shortfall to the requested quote', async () => {
+  const handler = createStrategyPreparationInternalHandler({
+    prepareByQuote: async () => { throw new EvmStrategyFundingRequiredError(
+      84532n, '0x1111111111111111111111111111111111111111',
+      '0x2222222222222222222222222222222222222222', 1_999_999n, 2_000_000n,
+    ); },
+  });
+  const server = createServer(async (request, response) => {
+    if (!(await handler(request, response))) response.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    if (address === null || typeof address === 'string') assert.fail('test server has no port');
+    const response = await fetch(`http://127.0.0.1:${address.port}/internal/strategy-executions/prepare`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ quoteHash: QUOTE_HASH }),
+    });
+    assert.equal(response.status, 400);
+    const body = await response.json() as { error: { code: string; funding: Record<string, unknown> } };
+    assert.equal(body.error.code, 'ACCOUNT_FUNDING_REQUIRED');
+    assert.equal(body.error.funding.quoteHash, QUOTE_HASH);
+    assert.equal(body.error.funding.deficitAtoms, '1');
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error === undefined ? resolve() : reject(error)));
+  }
+});
 
 test('strategy package provider accepts only loopback and rejects mismatched quote and order documents', async () => {
   assert.throws(() => new HttpStrategyPackageProvider('https://api.example'), /loopback/);

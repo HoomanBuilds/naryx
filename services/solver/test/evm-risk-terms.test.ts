@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { EvmStrategyCallPolicy } from '@naryx/adapter-evm';
 import type { Address, Hex } from 'viem';
-import { evmTestnetRiskIdentity, evmTestnetRiskTerms } from '../src/evm-risk-terms.js';
+import { EvmStrategyFundingRequiredError, evmTestnetRiskIdentity, evmTestnetRiskTerms } from '../src/evm-risk-terms.js';
 import type { EvmOptionSpreadReadPort } from '../src/evm-option-spread-quote.js';
 
 const ACCOUNT = '0x1111111111111111111111111111111111111111' as Address;
@@ -57,7 +57,14 @@ test('risk terms refuse insufficient post-spend balance and margin', async () =>
     totalGrossNotionalAtoms: 2_000_000n, marginQuoteAtoms: 1_000_000n,
     riskIncreasing: true, callPolicies: [call(SUBJECT_A, 2_000_000n, 1_000_000n)],
   } as const;
-  await assert.rejects(evmTestnetRiskTerms(input), /lacks quote balance/);
+  await assert.rejects(evmTestnetRiskTerms(input), (error: unknown) => {
+    assert.ok(error instanceof EvmStrategyFundingRequiredError);
+    assert.deepEqual(error.funding, {
+      chainId: 84_532, strategyAccount: ACCOUNT, token: TOKEN,
+      balanceAtoms: '1999999', requiredAtoms: '2000000', deficitAtoms: '1',
+    });
+    return true;
+  });
   await assert.rejects(evmTestnetRiskTerms({ ...input, chain: chain(10_000_000n), marginQuoteAtoms: 999_999n }), /margin is below/);
   await assert.rejects(evmTestnetRiskTerms({ ...input, chain: chain(0n), marginQuoteAtoms: 999_999n }), /margin is below/);
 });

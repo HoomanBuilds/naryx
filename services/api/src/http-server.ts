@@ -1654,7 +1654,9 @@ export function createPrivateTerminalRequestHandler(
         if (error instanceof StrategyPreparationClientError) {
           const status = error.code === "NOT_FOUND" ? 404 : error.code === "INVALID_REQUEST" ? 400
             : error.code === "ACCOUNT_FUNDING_REQUIRED" || error.code === "MINIMUM_MARGIN_REQUIRED" || error.code === "QUOTE_EXPIRED" ? 409 : 502;
-          reject(response, status, error.code, error.message);
+          if (error.funding !== undefined) {
+            sendJson(response, status, { error: { code: error.code, message: error.message, funding: error.funding } });
+          } else reject(response, status, error.code, error.message);
           return;
         }
         reject(response, 502, "STRATEGY_PREPARATION_FAILED", "Generalized strategy preparation failed closed.");
