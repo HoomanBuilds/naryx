@@ -158,6 +158,7 @@ import { HttpSolanaStrategyExecutionObservationClient } from './solana-strategy-
 import { HttpEvmReverseBasisCollateralClient } from './evm-reverse-basis-collateral-client.js';
 import { HttpEvmStrategyExecutionAuthorizationClient } from './evm-strategy-execution-authorization-client.js';
 import { HttpEvmStrategyExecutionObservationClient } from './evm-strategy-execution-observation-client.js';
+import { reconcilePendingEvmStrategies } from './evm-strategy-reconciliation.js';
 import { HttpNettingAllocationAuthorizationClient } from './netting-allocation-authorization-client.js';
 
 function absolutePath(value: string, name: string): string {
@@ -1181,6 +1182,11 @@ const evmStrategyExecutionAuthorization = evmStrategyAuthorizationEnabled
 const evmStrategyExecutionObservation = evmStrategyAuthorizationEnabled
   ? new HttpEvmStrategyExecutionObservationClient(solverOrigin)
   : undefined;
+if (evmStrategyExecutionObservation !== undefined && publicMarket?.strategyPackageExecutions !== undefined) {
+  const observations = evmStrategyExecutionObservation;
+  const strategies = publicMarket.strategyPackageExecutions;
+  everyMinute(async () => { await reconcilePendingEvmStrategies(strategies, observations); });
+}
 const nettingAllocationAuthorization = explicitlyEnabled('NARYX_NETTING_ALLOCATION_AUTHORIZATION_ENABLED')
   ? new HttpNettingAllocationAuthorizationClient(solverOrigin)
   : undefined;

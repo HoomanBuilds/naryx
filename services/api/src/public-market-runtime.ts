@@ -123,6 +123,8 @@ export interface PublicMarketRuntime {
       | "ownerAuthorization" | "recordReceipt" | "nativeStrategyPositionByStateHash" | "nativeStrategyPositionsByOwner" | "quotes"
       | "nativeStrategyExposures" | "onNativeStrategyReduction" | "receiptByQuote" | "nativeStrategyReduction"
       | "sourceBackedStrategyAttempts"
+      | "recordEvmStrategyPosition" | "queueEvmStrategyObservation" | "pendingEvmStrategyObservations"
+      | "touchEvmStrategyObservation" | "completeEvmStrategyObservation"
   >;
   /** Immutable owner approval for an exact generalized strategy order. */
   readonly strategyPackageAuthorizations?: Pick<SqliteStrategyPackageStore, "order" | "ownerAuthorization" | "recordOwnerAuthorization">;

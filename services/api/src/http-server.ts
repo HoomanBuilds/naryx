@@ -5,6 +5,7 @@ import {
   type OwnerPackageOutcomeReader,
 } from "./terminal-packages.js";
 import { forwardedByProxy } from "./internal-http.js";
+import { recordFinalizedEvmStrategy } from './evm-strategy-reconciliation.js';
 import { isAllowedTerminalOrigin, parseTerminalOrigins, type TerminalOrigins } from "./terminal-origin.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import {
@@ -212,6 +213,8 @@ interface GeneralizedStrategyExecutionPort {
   quotes?(orderHashHex: string): readonly StoredStrategyPackageQuote[];
   admissionByQuote?(quoteHashHex: string): StoredStrategyPackageAdmission | undefined;
   recordEvmStrategyPosition?(evidence: import('./strategy-package-store.js').EvmStrategyPositionEvidence): StoredEvmStrategyPosition;
+  queueEvmStrategyObservation?(quoteHashHex: string, transactionHash: string): void;
+  completeEvmStrategyObservation?(quoteHashHex: string, transactionHash: string): void;
   recordSolanaStrategyPosition?(evidence: import('./strategy-package-store.js').SolanaStrategyPositionEvidence): StoredSolanaStrategyPosition;
   recordReceipt?(receipt: import('@naryx/protocol-types').StrategyPackageReceiptInput): { readonly created: boolean; readonly receiptHashHex: string };
 }
@@ -2127,25 +2130,26 @@ export function createPrivateTerminalRequestHandler(
         const values = requestBody as { quoteHash: string; transactionHash: string };
         const observation = await evmStrategyExecutionObservation.observe(values.quoteHash, values.transactionHash);
         if (observation.status !== 'FINALIZED') {
+          if (observation.status === 'PENDING_FINALITY') {
+            generalizedStrategyExecutions.queueEvmStrategyObservation?.(values.quoteHash, observation.transactionHash);
+          }
           sendJson(response, 202, { status: observation.status, transactionHash: observation.transactionHash });
           return;
         }
-        const stored = generalizedStrategyExecutions.recordReceipt(observation.receipt);
-        const position = generalizedStrategyExecutions.recordEvmStrategyPosition({
-          receiptHashHex: stored.receiptHashHex,
-          packageIdHex: observation.packageId,
-          chainId: observation.chainId,
-          account: observation.account,
-          previousStateHashHex: observation.previousStateHash,
-          nextStateHashHex: observation.nextStateHash,
-        });
+        const stored = recordFinalizedEvmStrategy({
+          recordReceipt: generalizedStrategyExecutions.recordReceipt.bind(generalizedStrategyExecutions),
+          recordEvmStrategyPosition: generalizedStrategyExecutions.recordEvmStrategyPosition.bind(generalizedStrategyExecutions),
+          ...(generalizedStrategyExecutions.completeEvmStrategyObservation === undefined ? {} : {
+            completeEvmStrategyObservation: generalizedStrategyExecutions.completeEvmStrategyObservation.bind(generalizedStrategyExecutions),
+          }),
+        }, values.quoteHash, observation);
         sendJson(response, 200, {
           status: 'FINALIZED',
           transactionHash: observation.transactionHash,
           onchainReceiptHash: observation.onchainReceiptHash,
           receiptHash: stored.receiptHashHex,
           created: stored.created,
-          position: toProtocolJson(position, 'evmStrategyPosition'),
+          position: toProtocolJson(stored.position, 'evmStrategyPosition'),
         });
       } catch (error) {
         if (error instanceof EvmStrategyExecutionObservationClientError) {

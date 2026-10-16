@@ -86,6 +86,14 @@ CREATE TABLE IF NOT EXISTS strategy_package_execution_locks (
   package_order_id BLOB NOT NULL UNIQUE,
   recorded_at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS strategy_evm_pending_observations (
+  quote_hash BLOB PRIMARY KEY REFERENCES strategy_package_quotes(quote_hash),
+  transaction_hash BLOB NOT NULL,
+  recorded_at_ms INTEGER NOT NULL,
+  last_checked_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS strategy_evm_pending_observations_by_check
+ON strategy_evm_pending_observations(last_checked_at_ms, recorded_at_ms, quote_hash);
 CREATE TABLE IF NOT EXISTS strategy_package_execution_requirements (
   order_hash BLOB PRIMARY KEY REFERENCES strategy_package_orders(order_hash),
   package_order_id BLOB NOT NULL UNIQUE,
@@ -440,6 +448,11 @@ export interface EvmStrategyPositionEvidence {
   readonly account: string;
   readonly previousStateHashHex: string;
   readonly nextStateHashHex: string;
+}
+
+export interface PendingEvmStrategyObservation {
+  readonly quoteHashHex: string;
+  readonly transactionHash: `0x${string}`;
 }
 
 export interface StoredSolanaStrategyPosition {
@@ -875,6 +888,49 @@ export class SqliteStrategyPackageStore {
   constructor(dbPath: string, options: { readonly clock?: () => number } = {}) {
     this.db = openDurableDatabase(dbPath, SCHEMA_SQL, (code, message) => new StrategyPackageStoreError(code, message));
     this.clock = options.clock ?? Date.now;
+  }
+
+  queueEvmStrategyObservation(quoteHashHex: string, transactionHash: string): void {
+    const quoteHash = hashBuffer(quoteHashHex);
+    const transaction = evmHashBuffer(transactionHash);
+    requireCondition(transaction.some((value) => value !== 0), "INVALID_HASH", "The transaction hash cannot be zero.");
+    this.db.transaction(() => {
+      requireCondition(this.db.prepare("SELECT 1 FROM strategy_package_quotes WHERE quote_hash = ?").get(quoteHash) !== undefined,
+        "QUOTE_NOT_FOUND", "The strategy quote is not stored.");
+      const existing = this.db.prepare("SELECT transaction_hash FROM strategy_evm_pending_observations WHERE quote_hash = ?")
+        .get(quoteHash) as { transaction_hash: Buffer } | undefined;
+      if (existing !== undefined) {
+        requireCondition(bytesEqual(existing.transaction_hash, transaction), "RECEIPT_CONFLICT",
+          "The strategy quote is already awaiting another transaction.");
+        return;
+      }
+      const now = this.clock();
+      this.db.prepare(`INSERT INTO strategy_evm_pending_observations
+        (quote_hash, transaction_hash, recorded_at_ms, last_checked_at_ms) VALUES (?, ?, ?, ?)`)
+        .run(quoteHash, transaction, now, now);
+    }).immediate();
+  }
+
+  pendingEvmStrategyObservations(limit: number): readonly PendingEvmStrategyObservation[] {
+    requireCondition(Number.isSafeInteger(limit) && limit > 0 && limit <= 100,
+      "INVALID_LIMIT", "The observation batch size must be between 1 and 100.");
+    const rows = this.db.prepare(`SELECT quote_hash, transaction_hash FROM strategy_evm_pending_observations
+      ORDER BY last_checked_at_ms, recorded_at_ms, quote_hash LIMIT ?`).all(limit) as {
+        quote_hash: Buffer; transaction_hash: Buffer;
+      }[];
+    return rows.map((row) => ({ quoteHashHex: row.quote_hash.toString("hex"),
+      transactionHash: `0x${row.transaction_hash.toString("hex")}` as const }));
+  }
+
+  touchEvmStrategyObservation(quoteHashHex: string, transactionHash: string): void {
+    this.db.prepare(`UPDATE strategy_evm_pending_observations SET last_checked_at_ms = ?
+      WHERE quote_hash = ? AND transaction_hash = ?`)
+      .run(this.clock(), hashBuffer(quoteHashHex), evmHashBuffer(transactionHash));
+  }
+
+  completeEvmStrategyObservation(quoteHashHex: string, transactionHash: string): void {
+    this.db.prepare("DELETE FROM strategy_evm_pending_observations WHERE quote_hash = ? AND transaction_hash = ?")
+      .run(hashBuffer(quoteHashHex), evmHashBuffer(transactionHash));
   }
 
   /**
