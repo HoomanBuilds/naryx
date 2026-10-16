@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { HyperliquidTestnetLiquidityUnavailableError } from '../src/hyperliquid-testnet-market-preflight.js';
 import type { HyperliquidExecutionPlan } from '@naryx/adapter-hyperliquid';
 import {
   HYPERLIQUID_TESTNET_MARKET_INFO_URL,
@@ -126,7 +127,7 @@ test('rejects a one-sided order book', async () => {
   const value = snapshot();
   await assert.rejects(preflight(snapshot({
     spotBook: { ...value.spotBook!, levels: [value.spotBook!.levels[0], []] },
-  })).qualify({ plan: plan(), binding }), /must have both bids and asks/);
+  })).qualify({ plan: plan(), binding }), HyperliquidTestnetLiquidityUnavailableError);
 });
 
 test('rejects market identity mismatch', async () => {

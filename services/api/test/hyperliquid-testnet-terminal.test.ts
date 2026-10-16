@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
+import { HyperliquidTestnetLiquidityUnavailableError } from "../src/hyperliquid-testnet-terminal-execution.js";
 import {
   createPrivateTerminalServer,
   type HyperliquidTestnetTerminalContext,
@@ -365,9 +366,10 @@ test("hyperliquid testnet terminal execution boundary is injected and fail-close
     });
 
     next = { ...base("RECONCILED"), submissionStatus: "ACKNOWLEDGED", packageStatus: "COMPLETED_EXACT", reasons: [], actionCommitment: ACTION, requestCommitment: REQUEST, rawEvidenceCommitments: [EVIDENCE] };
+    let failure: Error = new Error("boom");
     const throwing = createGatedExecutionServer(config, {
       execute: async () => {
-        throw new Error("boom");
+        throw failure;
       },
     });
     const throwingUrl = await listen(throwing);
@@ -380,6 +382,16 @@ test("hyperliquid testnet terminal execution boundary is injected and fail-close
       assert.equal(response.status, 502);
       assert.deepEqual(await response.json(), {
         error: { code: "HYPERLIQUID_EXECUTION_FAILED", message: "Hyperliquid Testnet execution failed closed." },
+      });
+      failure = new HyperliquidTestnetLiquidityUnavailableError();
+      const unavailable = await fetch(`${throwingUrl}${ENDPOINT}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: origin },
+        body: JSON.stringify(body),
+      });
+      assert.equal(unavailable.status, 409);
+      assert.deepEqual(await unavailable.json(), {
+        error: { code: "MARKET_LIQUIDITY_UNAVAILABLE", message: failure.message },
       });
     } finally {
       await close(throwing);

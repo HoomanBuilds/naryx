@@ -11,6 +11,13 @@ import type { HyperliquidTestnetRuntimeMarketBinding } from './hyperliquid-testn
 
 export const HYPERLIQUID_TESTNET_MARKET_INFO_URL = TESTNET_API_URL;
 
+export class HyperliquidTestnetLiquidityUnavailableError extends Error {
+  constructor() {
+    super('Hyperliquid Testnet market preflight failed: the book must have both bids and asks');
+    this.name = 'HyperliquidTestnetLiquidityUnavailableError';
+  }
+}
+
 type Book = Exclude<L2BookResponse, null>;
 
 export interface HyperliquidTestnetMarketSnapshot {
@@ -163,8 +170,9 @@ function checkedBook(value: L2BookResponse, expectedCoin: string, name: string):
   requireCondition(Number.isSafeInteger(value.time) && value.time > 0, `${name} timestamp is invalid`);
   requireCondition(Array.isArray(value.levels) && value.levels.length === 2,
     `${name} levels are invalid`);
-  requireCondition(value.levels[0].length > 0 && value.levels[1].length > 0,
-    `${name} must have both bids and asks`);
+  if (value.levels[0].length === 0 || value.levels[1].length === 0) {
+    throw new HyperliquidTestnetLiquidityUnavailableError();
+  }
   for (const [sideIndex, side] of value.levels.entries()) {
     let previousPrice: Decimal | undefined;
     for (const [levelIndex, level] of side.entries()) {

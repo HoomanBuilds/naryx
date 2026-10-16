@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { HyperliquidTestnetLiquidityUnavailableError } from "../src/hyperliquid-testnet-terminal-execution.js";
 import Database from "better-sqlite3";
 import { parseProtocolJson, stringifyProtocolJson } from "@naryx/protocol-types";
 import {
@@ -27,6 +28,22 @@ const OTHER_ATTEMPT: HyperliquidTestnetTerminalExecutionRequest = Object.freeze(
 const ACTION = `0x${"aa".repeat(32)}`;
 const REQUEST_COMMITMENT = `0x${"bb".repeat(32)}`;
 const EVIDENCE = `0x${"cc".repeat(32)}`;
+
+test("executor client exposes only the recognized liquidity refusal", async () => {
+  let code = "MARKET_LIQUIDITY_UNAVAILABLE";
+  const client = new HttpHyperliquidTestnetAttemptExecutor({
+    executorOrigin: "http://127.0.0.1:8815",
+    fetchImplementation: async () => new Response(JSON.stringify({ error: { code, message: "private upstream detail" } }), {
+      status: 409,
+      headers: { "content-type": "application/json" },
+    }),
+  });
+  await assert.rejects(client.executeAttempt(REQUEST), HyperliquidTestnetLiquidityUnavailableError);
+  code = "OTHER_FAILURE";
+  await assert.rejects(client.executeAttempt(REQUEST), (error: unknown) =>
+    error instanceof Error && !(error instanceof HyperliquidTestnetLiquidityUnavailableError)
+    && !error.message.includes("private upstream detail"));
+});
 
 function result(
   request: HyperliquidTestnetTerminalExecutionRequest,

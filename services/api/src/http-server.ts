@@ -87,6 +87,7 @@ import {
   type HyperliquidTestnetRuntimeConfig,
 } from "./hyperliquid-testnet-runtime-client.js";
 import type { HyperliquidTestnetTerminalContext } from "./hyperliquid-testnet-order-context.js";
+import { HyperliquidTestnetLiquidityUnavailableError } from "./hyperliquid-testnet-terminal-execution.js";
 import type {
   DependencyIncidentStatusPort,
   DependencyIncidentStatusSnapshot,
@@ -2480,6 +2481,10 @@ export function createPrivateTerminalRequestHandler(
         if (error instanceof HyperliquidTestnetTerminalValidationError ||
             error instanceof PreviewValidationError) {
           reject(response, 400, error.code, error.message);
+          return;
+        }
+        if (error instanceof HyperliquidTestnetLiquidityUnavailableError) {
+          reject(response, 409, "MARKET_LIQUIDITY_UNAVAILABLE", error.message);
           return;
         }
         reject(response, 502, "HYPERLIQUID_EXECUTION_FAILED", "Hyperliquid Testnet execution failed closed.");

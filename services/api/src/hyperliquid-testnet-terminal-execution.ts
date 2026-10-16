@@ -98,6 +98,13 @@ export class HyperliquidTestnetTerminalExecutionStateError extends Error {
   }
 }
 
+export class HyperliquidTestnetLiquidityUnavailableError extends Error {
+  constructor() {
+    super("Hyperliquid Testnet has no two-sided liquidity. Nothing was submitted. Request a fresh quote when liquidity returns.");
+    this.name = "HyperliquidTestnetLiquidityUnavailableError";
+  }
+}
+
 function repositoryRoot(): string | undefined {
   if (cachedRepositoryRoot !== undefined) return cachedRepositoryRoot;
   let current = dirname(fileURLToPath(import.meta.url));
@@ -255,6 +262,12 @@ implements TrustedHyperliquidTestnetAttemptExecutor {
       throw new Error("Hyperliquid executor request failed.");
     }
     if (!response.ok) {
+      if (response.status === 409) {
+        const body = await boundedProtocolJson(response) as { error?: { code?: unknown } };
+        if (body?.error?.code === "MARKET_LIQUIDITY_UNAVAILABLE") {
+          throw new HyperliquidTestnetLiquidityUnavailableError();
+        }
+      }
       throw new Error(`Hyperliquid executor request failed with HTTP ${response.status}.`);
     }
     return validateHyperliquidTestnetTerminalExecutionResult(

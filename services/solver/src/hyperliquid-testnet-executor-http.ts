@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { HyperliquidTestnetLiquidityUnavailableError } from './hyperliquid-testnet-market-preflight.js';
 import type { HyperliquidStrategyExecutionPlan } from '@naryx/adapter-hyperliquid';
 import {
   assetRef,
@@ -1484,6 +1485,11 @@ export function createHyperliquidTestnetExecutorRequestHandler(
         ? await executor.execute(parseRequest(body))
         : await executor.status(parseStatusRequest(body)));
     } catch (error) {
+      if (error instanceof HyperliquidTestnetLiquidityUnavailableError) {
+        reject(response, 409, 'MARKET_LIQUIDITY_UNAVAILABLE',
+          'Hyperliquid Testnet has no two-sided liquidity. Nothing was submitted. Request a fresh quote when liquidity returns.');
+        return;
+      }
       if (error instanceof HyperliquidTestnetExecutorError) {
         console.error("Hyperliquid Testnet executor request refused:", error.code, error.message);
         const status = error.code === 'ATTEMPT_NOT_FOUND' ? 404

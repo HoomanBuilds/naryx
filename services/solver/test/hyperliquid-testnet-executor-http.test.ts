@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
+import { createServer } from 'node:http';
+import { HyperliquidTestnetLiquidityUnavailableError } from '../src/hyperliquid-testnet-market-preflight.js';
+import { createHyperliquidTestnetExecutorRequestHandler } from '../src/hyperliquid-testnet-executor-http.js';
 import {
   HYPERCORE_EXECUTION_GUARANTEE,
   type HyperliquidExecutionPlan,
@@ -31,6 +34,28 @@ const SPOT_CLOID = `0x${'51'.repeat(16)}` as const;
 const PERP_CLOID = `0x${'52'.repeat(16)}` as const;
 const BASE_ASSET = Object.freeze({ assetId: 'btc', assetManifestHash: hash(7), decimals: 3 });
 const QUOTE_ASSET = Object.freeze({ assetId: 'usdc', assetManifestHash: hash(8), decimals: 2 });
+
+test('executor reports empty liquidity without exposing arbitrary preflight errors', async () => {
+  let failure: Error = new HyperliquidTestnetLiquidityUnavailableError();
+  const handler = createHyperliquidTestnetExecutorRequestHandler({
+    execute: async () => { throw failure; },
+    status: async () => { throw new Error('unused'); },
+  });
+  const server = createServer((request, response) => { void handler(request, response); });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}${SOLVER_TESTNET_EXECUTE_PATH}`;
+    const refused = await execute(url);
+    assert.equal(refused.status, 409);
+    assert.equal((refused.body.error as { code: string }).code, 'MARKET_LIQUIDITY_UNAVAILABLE');
+    failure = new Error('private infrastructure details');
+    const unknown = await execute(url);
+    assert.equal(unknown.status, 502);
+    assert.equal(JSON.stringify(unknown.body).includes(failure.message), false);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
 
 function hash(byte: number): Uint8Array {
   return new Uint8Array(32).fill(byte);
