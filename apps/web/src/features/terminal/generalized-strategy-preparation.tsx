@@ -72,7 +72,7 @@ const DOMAIN_KINDS = new Set([
   "HYPERCORE_EXECUTOR",
 ]);
 const NATIVE_HYPERCORE_TEMPLATES = new Set([
-  "treasury-inventory-hedge-v1",
+  "external-inventory-hedge-v1",
   "perpetual-funding-spread-v1",
   "hedge-migration-v1",
   "delta-neutral-rebalance-v1",
@@ -3574,7 +3574,7 @@ export function GeneralizedStrategyPreparationPanel({
         && (BigInt(position.legs[0]?.signedQuantityAtoms ?? "0") > BigInt(0)
           ? migrationSource.entrySide === "BUY" : migrationSource.entrySide === "SELL")
       : lifecycleAction === "REBALANCE"
-        ? rebalanceMarket !== null && position.templateId === "treasury-inventory-hedge-v1"
+        ? rebalanceMarket !== null && position.templateId === "external-inventory-hedge-v1"
           && position.legs.length === 1
           && position.legs[0]?.underlyingId === selectedNativeProfile.baseAsset.assetId
           && position.legs[0]?.instrumentId === rebalanceMarket.marketId
@@ -5671,7 +5671,7 @@ export function GeneralizedStrategyPreparationPanel({
                   selectedNativeProfile.markets[0]?.coin ?? selectedNativeProfile.baseAsset.assetId,
                 )}.
               </p>
-              {selectedNativeProfile.templateId === "treasury-inventory-hedge-v1" ? (
+              {selectedNativeProfile.templateId === "external-inventory-hedge-v1" ? (
                 <>
                   <label htmlFor="native-strategy-economic-quantity">Inventory exposure to hedge</label>
                   <input
