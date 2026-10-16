@@ -1,8 +1,22 @@
 # Release manifest generator
 
+## Conformance oracle maintenance
+
+The native EVM test perpetual and dated-future markets use an owner-operated test oracle. Its round expires after a day. Refreshing it preserves the existing test answer and advances the onchain timestamp; it is not a live market-price feed. Run the maintenance command at least every twelve hours while demonstrating these markets. Stale rounds remain rejected by the contracts.
+
+Read-only inspection:
+
+```bash
+node --env-file=deployments/.env deployments/tools/refresh-evm-conformance-oracles.mjs --network arbitrum-sepolia
+```
+
+For a refresh, add `--broadcast --account <oracle-owner-keystore>`. Set `NARYX_ORACLE_KEYSTORE_PASSWORD` in an ignored local env file, or select its existing variable with `--password-env <variable-name>` and load that file using Node's `--env-file`. Repeat for `--network base-sepolia`. The tool verifies chain identity, release factory and instrument code hashes, oracle bindings, owner authority, and a bounded testnet gas cost before signing. Without `--broadcast`, it never loads a signer. This tool does not update Chainlink, GMX, or any mainnet oracle.
+
+## Release generation
+
 Operator tooling, not consumed by any workspace. After a reviewed deployment, one command turns the deployment output and the reviewed release values into every runtime file the services and the web app load, and proves each one loads with the services' own loader code.
 
-Nothing here signs, broadcasts, funds, or approves. It reads chains only over read-only RPC, never opens a key file, and writes only key file paths. It refuses mainnet chain ids and the Solana mainnet-beta genesis, refuses any output or data directory inside the repository, and refuses an output that names a mainnet domain or carries key material.
+The release generator never signs, broadcasts, funds, or approves. It reads chains only over read-only RPC, never opens a key file, and writes only key file paths. It refuses mainnet chain ids and the Solana mainnet-beta genesis, refuses any output or data directory inside the repository, and refuses an output that names a mainnet domain or carries key material.
 
 ## Inputs
 
