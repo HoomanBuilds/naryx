@@ -107,6 +107,20 @@ function fail(message: string): never {
   throw new Error(`Solana Devnet order context: ${message}`);
 }
 
+export class SolanaDevnetLegacyStrategyError extends Error {
+  constructor() {
+    super("This wallet has an older devnet strategy account that cannot trade on the current market. Use a fresh devnet wallet until migration is supported.");
+    this.name = "SolanaDevnetLegacyStrategyError";
+  }
+}
+
+export function solanaDevnetAccountReadFailure(error: unknown): { readonly status: number; readonly code: string; readonly message: string } {
+  if (error instanceof SolanaDevnetLegacyStrategyError) {
+    return { status: 409, code: "LEGACY_STRATEGY_UNSUPPORTED", message: error.message };
+  }
+  return { status: 502, code: "ACCOUNT_READ_FAILED", message: "Solana Devnet account read failed closed." };
+}
+
 const RPC_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
 
 function retryDelay(response: Response, attempt: number): number | undefined {
@@ -695,7 +709,7 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
       });
     } else if (strategyState.controller !== derived.executorAuthority || strategyState.position !== derived.position
       || strategyState.market !== new PublicKey(manifest.testPerp.market).toBase58()) {
-      fail("existing strategy is not controlled by the Naryx executor for this market");
+      throw new SolanaDevnetLegacyStrategyError();
     }
     if (executor === null || executor === undefined) {
       const configPda = PublicKey.findProgramAddressSync([Buffer.from("naryx-protocol-config")], new PublicKey(core))[0].toBase58();
@@ -918,7 +932,10 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
     }
     void cachedAccountStatus(owner, BigInt(size), claim === "1").then(
       (status) => sendJson(response, 200, status),
-      () => sendJson(response, 502, { error: { code: "ACCOUNT_READ_FAILED", message: "Solana Devnet account read failed closed." } }),
+      (error) => {
+        const failure = solanaDevnetAccountReadFailure(error);
+        sendJson(response, failure.status, { error: { code: failure.code, message: failure.message } });
+      },
     );
     return true;
   };
