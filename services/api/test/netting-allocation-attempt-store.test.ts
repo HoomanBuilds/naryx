@@ -12,10 +12,8 @@ import {
   type NettingAllocationExecutionAuthorization,
 } from '@naryx/protocol-types';
 import {
-  encodeAbiParameters,
   hexToBytes,
   keccak256,
-  parseAbiParameters,
   stringToHex,
   type Address,
   type Hex,
@@ -24,14 +22,12 @@ import type {
   EvmMultiStrategyExecution,
   EvmNettingAllocationObservationBinding,
 } from '@naryx/adapter-evm';
+import { evmMultiStrategyExecutionHash } from '@naryx/adapter-evm';
 import {
   NettingAllocationAttemptStoreError,
   SqliteNettingAllocationAttemptStore,
 } from '../src/netting-allocation-attempt-store.js';
 
-const EXECUTION_PARAMETERS = parseAbiParameters(
-  '(bytes32 domainIdHash,uint32 domainManifestVersion,bytes32 domainManifestHash,bytes32 packageId,bytes32 orderHash,bytes32 graphHash,bytes32 quoteHash,bytes32 routeHash,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,uint8 operation,bytes32 previousStateHash,bytes32 nextStateHash,uint256 totalGrossNotionalAtoms,(uint32 policyVersion,bytes32 policyManifestHash,address token,uint256 protocolFeeAtoms,uint256 solverFeeAtoms) fees,address solver,uint256 nonce,uint256 deadline)',
-);
 const ACCOUNT = '0x1111111111111111111111111111111111111111' as Address;
 const SOLVER = '0x2222222222222222222222222222222222222222' as Address;
 const TOKEN = '0x3333333333333333333333333333333333333333' as Address;
@@ -64,6 +60,20 @@ function fixture(): Readonly<{
     previousStateHash: hex(0),
     nextStateHash: hex(10),
     totalGrossNotionalAtoms: 100_000_000n,
+    risk: Object.freeze({
+      riskDomainId: hex(12),
+      policyVersion: 1,
+      policyManifestHash: hex(13),
+      series: Object.freeze({ seriesId: hex(14), manifestVersion: 1, manifestHash: hex(15) }),
+      accountingToken: TOKEN,
+      grossQuoteAtoms: 100_000_000n,
+      netQuoteAtoms: 100_000_000n,
+      marginQuoteAtoms: 50_000_000n,
+      reservedRecoveryQuoteAtoms: 1_000_000n,
+      observationAgeMs: 1_000n,
+      timeToUnwindMs: 60_000n,
+      dependencyExposures: Object.freeze([{ dependencyId: hex(16), grossQuoteAtoms: 100_000_000n }]),
+    }),
     fees: Object.freeze({
       policyVersion: 1,
       policyManifestHash: hex(11),
@@ -109,7 +119,7 @@ function fixture(): Readonly<{
     chainReference: 84_532n,
     account: ACCOUNT,
     authorizationHash: hex(12),
-    executionHash: keccak256(encodeAbiParameters(EXECUTION_PARAMETERS, [execution])),
+    executionHash: evmMultiStrategyExecutionHash(execution),
     callsHash: hex(22),
     execution,
   });
