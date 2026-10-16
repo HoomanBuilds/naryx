@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { solverDisplayName } from "../market-label";
 import styles from "./pro.module.css";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -133,7 +134,7 @@ export function SolverMetrics({ publicApiBaseUrl }: { publicApiBaseUrl: string |
       {state.rows.map((entry) => (
         <div key={entry.solverId} className={styles.metricsRow} role="row">
           <span role="cell" className={styles.metricsSolver}>
-            <span>{entry.solverId}</span>
+            <span title={entry.solverId}>{solverDisplayName(entry.solverId)}</span>
             <span className={styles.metricsEvidence} title="Legacy receipt fields and native strategy legs, counted separately by evidence grade">{entry.evidence}</span>
           </span>
           <span role="cell" title={`${entry.quotedOrders} of ${entry.eligibleOrders} eligible orders`}>
