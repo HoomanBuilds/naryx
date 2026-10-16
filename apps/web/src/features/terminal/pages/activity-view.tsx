@@ -288,6 +288,10 @@ type Row = Omit<RecordedAttempt, "transactionHash"> & Readonly<{
   receiptHash?: string | null;
 }>;
 
+function rowKey(row: Row): string {
+  return row.orderHash ?? row.attemptId;
+}
+
 function fromService(entry: OwnerPackageEntry, owner: string): Row | null {
   const lane = DOMAIN_OF[entry.domainId];
   if (lane === undefined || entry.attemptId === null) return null;
@@ -540,10 +544,11 @@ export function ActivityView() {
   const serviceKey = JSON.stringify(serviceRows);
   const ownersKey = owners.join(",");
   const attempts: readonly Row[] = useMemo(() => {
-    const byId = new Map<string, Row>();
-    for (const row of serviceRows) byId.set(row.attemptId, row);
-    for (const attempt of attemptsOf(localAttempts, owners)) if (!byId.has(attempt.attemptId)) byId.set(attempt.attemptId, attempt);
-    return [...byId.values()].sort((left, right) => right.createdAt - left.createdAt);
+    const listedAttemptIds = new Set(serviceRows.map((row) => row.attemptId));
+    return [
+      ...serviceRows,
+      ...attemptsOf(localAttempts, owners).filter((attempt) => !listedAttemptIds.has(attempt.attemptId)),
+    ].sort((left, right) => right.createdAt - left.createdAt);
     // serviceRows and owners are rebuilt each render; their content is captured by serviceKey and ownersKey.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localAttempts, serviceKey, ownersKey]);
@@ -565,7 +570,7 @@ export function ActivityView() {
       },
     })),
   });
-  const openIndex = attempts.findIndex((attempt) => attempt.attemptId === openId);
+  const openIndex = attempts.findIndex((attempt) => rowKey(attempt) === openId);
   const openAttempt = openIndex >= 0 ? attempts[openIndex] : undefined;
   const openLifecycle = openIndex >= 0 ? lifecycles[openIndex]?.data ?? null : null;
   const openState = openAttempt === undefined ? null
@@ -817,7 +822,8 @@ export function ActivityView() {
               ) : attempts.map((attempt, index) => {
                 const query = lifecycles[index];
                 const lifecycle = query?.data ?? null;
-                const open = attempt.attemptId === openId;
+                const identity = rowKey(attempt);
+                const open = identity === openId;
                 const recorded = readable(attempt) ? lifecycle?.attempt.state ?? null : attempt.serviceState ?? null;
                 const state = recorded !== null ? stateText(recorded)
                   : readable(attempt)
@@ -826,15 +832,15 @@ export function ActivityView() {
                       : "See ticket";
                 return (
                   <tr
-                    key={attempt.attemptId}
+                    key={identity}
                     className={open ? `${styles.rowButton} ${styles.rowOpen}` : styles.rowButton}
                     tabIndex={0}
                     aria-expanded={open}
-                    onClick={() => setOpenId(open ? null : attempt.attemptId)}
+                    onClick={() => setOpenId(open ? null : identity)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
-                        setOpenId(open ? null : attempt.attemptId);
+                        setOpenId(open ? null : identity);
                       }
                     }}
                   >
@@ -869,7 +875,7 @@ export function ActivityView() {
         <section className={styles.card} aria-labelledby="receipts-title">
           <div className={styles.cardHead}>
             <h2 id="receipts-title">Receipts</h2>
-            <p className={styles.mono} title={openId}>{compact(openId, 18, 8)}</p>
+            <p className={styles.mono} title={openAttempt?.orderHash ?? openId}>{compact(openAttempt?.orderHash ?? openId, 18, 8)}</p>
           </div>
           <div className={styles.cardBody}>
             {openAttempt?.flow === "devnet" && openAttempt.transactionHash ? (
