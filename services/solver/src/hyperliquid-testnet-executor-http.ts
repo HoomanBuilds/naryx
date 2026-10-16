@@ -48,7 +48,7 @@ export const SOLVER_TESTNET_RECONCILE_RECOVERY_PATH =
 
 const MAX_BODY_BYTES = 4_096;
 const ID = /^[A-Za-z0-9_-]{16,64}$/;
-const ATTEMPT_ID = /^hyperliquid-testnet-[0-9a-f]{48}$/;
+const ATTEMPT_ID = /^(?:hyperliquid-testnet|strategy-hl)-[0-9a-f]{48}$/;
 const HASH = /^0x[0-9a-f]{64}$/;
 const REASON = /^[A-Z][A-Z0-9_]{0,63}$/;
 const MAX_REASONS = 8;

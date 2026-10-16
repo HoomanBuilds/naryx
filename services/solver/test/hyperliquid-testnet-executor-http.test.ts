@@ -278,6 +278,7 @@ test('executor returns sanitized authoritative reconciled evidence', async () =>
 });
 
 test('executor exposes generalized strategy stages without using the cash coordinator', async () => {
+  const attemptId = `strategy-hl-${'ab'.repeat(24)}`;
   const strategyPlan = {
     version: 1,
     guarantee: 'BATCHED_IOC_WITH_BOUNDED_RECOVERY',
@@ -285,7 +286,7 @@ test('executor exposes generalized strategy stages without using the cash coordi
     batches: [{ stage: 0 }, { stage: 1 }],
   } as unknown as HyperliquidStrategyExecutionPlan;
   const handoff = {
-    attemptId: ATTEMPT_ID,
+    attemptId,
     admission: {},
     seriesManifestHash: '11'.repeat(32),
     executionClassManifestHash: '12'.repeat(32),
@@ -299,13 +300,13 @@ test('executor exposes generalized strategy stages without using the cash coordi
     },
   } as unknown as HyperliquidTestnetAttemptHandoff;
   const runtimeResult: HyperliquidStrategyRuntimeResult = {
-    attemptId: ATTEMPT_ID,
+    attemptId,
     status: 'EVIDENCE_INCOMPLETE',
     completedStages: [0],
     stages: [{
       batchStage: 0,
       submission: {
-        attemptId: ATTEMPT_ID,
+        attemptId,
         batchStage: 0,
         actionCommitment: ACTION,
         requestCommitment: REQUEST,
@@ -315,7 +316,7 @@ test('executor exposes generalized strategy stages without using the cash coordi
         responseCommitment: `0x${'ee'.repeat(32)}`,
         reconciliation: {
           collector: 'HYPERLIQUID_TESTNET_AUTHORITATIVE_EVIDENCE',
-          attemptId: ATTEMPT_ID,
+          attemptId,
           batchStage: 0,
           account: { masterAccount: MASTER, tradingAccount: TRADING, accountKind: 'SUBACCOUNT' },
           actionHash: ACTION,
@@ -352,7 +353,7 @@ test('executor exposes generalized strategy stages without using the cash coordi
     }, {
       batchStage: 1,
       submission: {
-        attemptId: ATTEMPT_ID,
+        attemptId,
         batchStage: 1,
         actionCommitment: ACTION,
         requestCommitment: REQUEST,
@@ -362,7 +363,7 @@ test('executor exposes generalized strategy stages without using the cash coordi
         responseCommitment: `0x${'ef'.repeat(32)}`,
         reconciliation: {
           collector: 'HYPERLIQUID_TESTNET_AUTHORITATIVE_EVIDENCE',
-          attemptId: ATTEMPT_ID,
+          attemptId,
           batchStage: 1,
           account: { masterAccount: MASTER, tradingAccount: TRADING, accountKind: 'SUBACCOUNT' },
           actionHash: ACTION,
@@ -408,6 +409,7 @@ test('executor exposes generalized strategy stages without using the cash coordi
     const address = server.address() as AddressInfo;
     const response = await execute(
       `http://127.0.0.1:${address.port}${SOLVER_TESTNET_EXECUTE_PATH}`,
+      { attemptId, idempotencyKey: IDEMPOTENCY_KEY },
     );
     assert.equal(response.status, 200);
     assert.equal(response.body.status, 'STRATEGY_EXECUTION');
