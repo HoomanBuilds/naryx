@@ -399,6 +399,21 @@ export class SqliteOrderActivationStore {
     });
   }
 
+  pendingAttemptIds(limit = 10, afterAttemptId?: string): readonly string[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new OrderActivationStoreError("INVALID_LIMIT", "Pending attempt limit must be between 1 and 100.");
+    }
+    if (afterAttemptId !== undefined && !/^[0-9a-f]{64}$/.test(afterAttemptId)) {
+      throw new OrderActivationStoreError("INVALID_ATTEMPT_ID", "Attempt cursor must be 32 lowercase hex bytes.");
+    }
+    const rows = this.db.prepare(`
+      SELECT attempt_id FROM order_activation_attempts
+      WHERE status = 'RESERVED' AND attempt_id > ?
+      ORDER BY attempt_id LIMIT ?
+    `).all(afterAttemptId ?? "", limit) as { attempt_id: string }[];
+    return Object.freeze(rows.map((row) => row.attempt_id));
+  }
+
   attempt(attemptIdValue: string): OrderActivationAttempt | undefined {
     if (!/^[0-9a-f]{64}$/.test(attemptIdValue)) {
       throw new OrderActivationStoreError("INVALID_ATTEMPT_ID", "Activation attempt id must be 32 lowercase hex bytes.");

@@ -12,6 +12,7 @@ import {
   type StrategyPackageOrderInput,
 } from "@naryx/protocol-types";
 import { AdvancedOrderReconciliation, type OrderActivationAttempt } from "../src/index.js";
+import { reconcilePendingAdvancedOrders } from "../src/advanced-order-reconciliation.js";
 
 const id = (byte: string) => byte.repeat(64);
 const quantityAsset = assetRef("sol", id("1"), 9);
@@ -206,4 +207,24 @@ test("advanced reconciliation fails an unfillable child only after the order exp
   const result = expired.reconciliation.reconcile(expired.attempt.attemptId);
   assert.deepEqual([result.status, result.status === "COMPLETED" ? result.outcome : undefined], ["COMPLETED", "FAILED"]);
   assert.equal(expired.completion(), undefined);
+});
+
+test("background reconciliation bounds work and rotates past pending and corrupt attempts", () => {
+  const ids = [id("1"), id("2"), id("3")];
+  const checked: string[] = [];
+  const activations = {
+    pendingAttemptIds: (limit = 10, after?: string) => ids.filter((value) => value > (after ?? "")).slice(0, limit),
+  };
+  const reconciliation = {
+    reconcile: (attemptId: string) => {
+      checked.push(attemptId);
+      if (attemptId === ids[0]) throw new Error("corrupt evidence");
+      return { status: attemptId === ids[1] ? "PENDING" : "COMPLETED" } as ReturnType<AdvancedOrderReconciliation["reconcile"]>;
+    },
+  };
+  const cursor: { afterAttemptId?: string } = {};
+  assert.deepEqual(reconcilePendingAdvancedOrders(activations, reconciliation, cursor, 2), { completed: 0, pending: 1, failed: 1 });
+  assert.deepEqual(reconcilePendingAdvancedOrders(activations, reconciliation, cursor, 2), { completed: 1, pending: 0, failed: 0 });
+  assert.deepEqual(reconcilePendingAdvancedOrders(activations, reconciliation, cursor, 2), { completed: 0, pending: 1, failed: 1 });
+  assert.deepEqual(checked, [ids[0], ids[1], ids[2], ids[0], ids[1]]);
 });

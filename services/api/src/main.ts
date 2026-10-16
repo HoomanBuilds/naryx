@@ -1196,6 +1196,16 @@ const nettingAllocationAuthorization = explicitlyEnabled('NARYX_NETTING_ALLOCATI
   ? new HttpNettingAllocationAuthorizationClient(solverOrigin)
   : undefined;
 
+if (publicMarket?.reconcileAdvancedOrders !== undefined) {
+  const reconcile = publicMarket.reconcileAdvancedOrders;
+  everyMinute(async () => {
+    const result = reconcile();
+    if (result.completed > 0 || result.failed > 0) {
+      process.stdout.write(`Advanced order reconciliation: ${result.completed} completed, ${result.pending} pending, ${result.failed} failed\n`);
+    }
+  });
+}
+
 const server = createPrivateTerminalServer(
   config,
   runtime.solanaDevnet,

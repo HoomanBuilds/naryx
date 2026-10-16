@@ -43,6 +43,31 @@ export type AdvancedOrderReconciliationResult =
     activation: OrderActivationView;
   }>;
 
+export function reconcilePendingAdvancedOrders(
+  activations: Pick<SqliteOrderActivationStore, "pendingAttemptIds">,
+  reconciliation: Pick<AdvancedOrderReconciliation, "reconcile">,
+  cursor: { afterAttemptId?: string },
+  limit = 10,
+): { completed: number; pending: number; failed: number } {
+  let ids = activations.pendingAttemptIds(limit, cursor.afterAttemptId);
+  if (ids.length === 0 && cursor.afterAttemptId !== undefined) {
+    delete cursor.afterAttemptId;
+    ids = activations.pendingAttemptIds(limit);
+  }
+  const result = { completed: 0, pending: 0, failed: 0 };
+  for (const id of ids) {
+    cursor.afterAttemptId = id;
+    try {
+      const outcome = reconciliation.reconcile(id);
+      if (outcome.status === "COMPLETED") result.completed += 1;
+      else result.pending += 1;
+    } catch {
+      result.failed += 1;
+    }
+  }
+  return result;
+}
+
 type ActivationPort = Pick<SqliteOrderActivationStore, "attempt" | "completeWithEvidence" | "expireReservedAttempt">;
 type StrategyPort = Pick<SqliteStrategyPackageStore, "order" | "packageExecutionLock" | "receiptByOrder">;
 type ExchangePort = Readonly<{

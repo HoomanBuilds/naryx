@@ -34,7 +34,7 @@ import { createOrderActivationAdminHandler } from "./order-activation-admin.js";
 import { createOrderActivationOwnerHandler } from "./order-activation-owner-routes.js";
 import { AdvancedOrderFactory } from "./advanced-order-factory.js";
 import { AdvancedOrderExecutionFactory } from "./advanced-order-execution-factory.js";
-import { AdvancedOrderReconciliation } from "./advanced-order-reconciliation.js";
+import { AdvancedOrderReconciliation, reconcilePendingAdvancedOrders } from "./advanced-order-reconciliation.js";
 import { loadMetricObservationSources, SqliteMetricObservationStore } from "./metric-observation-store.js";
 import { createMetricObservationAdminHandler } from "./metric-observation-admin.js";
 import { createPackageReopeningAdminHandler } from "./package-reopening-admin.js";
@@ -130,6 +130,7 @@ export interface PublicMarketRuntime {
   readonly strategyPackageAuthorizations?: Pick<SqliteStrategyPackageStore, "order" | "ownerAuthorization" | "recordOwnerAuthorization">;
   /** Loopback keeper executor and coordinator routes under `/internal/`; mount only on the private server. */
   readonly internalHandler?: (request: IncomingMessage, response: ServerResponse) => boolean;
+  readonly reconcileAdvancedOrders?: () => { completed: number; pending: number; failed: number };
   close(): void;
 }
 
@@ -621,6 +622,7 @@ export function loadPublicMarketRuntime(
     const advancedOrderReconciliation = strategyPackages === undefined || orderActivations === undefined
       ? undefined
       : new AdvancedOrderReconciliation({ activations: orderActivations, strategies: strategyPackages, exchange: store });
+    const advancedOrderCursor: { afterAttemptId?: string } = {};
     const generalizedQuoteSetting = environment.NARYX_GENERALIZED_STRATEGY_QUOTE_ENABLED ?? "false";
     if (generalizedQuoteSetting !== "true" && generalizedQuoteSetting !== "false") {
       throw new PublicMarketConfigError("NARYX_GENERALIZED_STRATEGY_QUOTE_ENABLED must be true or false.");
@@ -920,6 +922,9 @@ export function loadPublicMarketRuntime(
       clockUnit: support.clockUnit,
       requestsPerMinute,
       solverApiEnabled: solverHandler !== undefined,
+      ...(orderActivations === undefined || advancedOrderReconciliation === undefined ? {} : {
+        reconcileAdvancedOrders: () => reconcilePendingAdvancedOrders(orderActivations, advancedOrderReconciliation, advancedOrderCursor),
+      }),
       ...(strategyOrderIntake === undefined ? {} : { strategyOrderIntake }),
       ...(strategyPackages === undefined ? {} : {
         strategyPackageSources: strategyPackages,

@@ -101,9 +101,15 @@ test("scheduled activation persists one exact attempt per due window across rest
     if (!first.active) assert.fail(first.reason);
     assert.equal(first.attempt.sliceIndex, 0);
     assert.equal(first.attempt.maximumQuantityAtoms, 25n);
+    assert.deepEqual(store.pendingAttemptIds(1), [first.attempt.attemptId]);
+    assert.deepEqual(store.pendingAttemptIds(1, first.attempt.attemptId), []);
+    assert.throws(() => store.pendingAttemptIds(0), { code: "INVALID_LIMIT" });
+    assert.throws(() => store.pendingAttemptIds(101), { code: "INVALID_LIMIT" });
+    assert.throws(() => store.pendingAttemptIds(1, "invalid"), { code: "INVALID_ATTEMPT_ID" });
     const replay = store.reserve({ orderHashHex, observations: [], atValue: 1_000n, side: "BID", limitPriceTicks: 99n });
     assert.equal(replay.active && replay.replayed, true);
     store.complete({ attemptId: first.attempt.attemptId, outcome: "SUCCEEDED", executedQuantityAtoms: 25n, executionPriceTicks: 99n });
+    assert.deepEqual(store.pendingAttemptIds(), []);
     store.close();
 
     store = new SqliteOrderActivationStore(path, { orders, clock: () => now++ });
