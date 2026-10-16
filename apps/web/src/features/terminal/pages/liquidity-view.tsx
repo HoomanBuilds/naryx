@@ -8,6 +8,7 @@ import {
   type MakerShardView,
 } from "../private-http-terminal-provider";
 import { MakerControlPanel } from "./maker-control-panel";
+import { OnchainStandingBook } from "./onchain-standing-book";
 import styles from "./pages.module.css";
 
 type LoadState = Readonly<{
@@ -38,7 +39,7 @@ function short(value: string): string {
 }
 
 export function LiquidityView() {
-  const { privateProvider } = useTerminal();
+  const { privateApiBaseUrl, privateProvider } = useTerminal();
   const [request, setRequest] = useState(0);
   const [load, setLoad] = useState<LoadState>({ status: "idle", snapshot: null });
   const refresh = useCallback(() => {
@@ -80,12 +81,14 @@ export function LiquidityView() {
 
       {snapshot ? (
         <section className={styles.summary} aria-label="Maker summary">
-          <div><span>Live quote shards</span><strong>{snapshot.summary.liveShardCount}/{snapshot.summary.shardCount}</strong><small>{snapshot.solverId}</small></div>
+          <div><span>EVM maker-control shards</span><strong>{snapshot.summary.liveShardCount}/{snapshot.summary.shardCount}</strong><small>{snapshot.solverId}</small></div>
           <div><span>Quoted levels</span><strong>{snapshot.summary.quotedLevelCount}</strong><small>Signed package bids and asks</small></div>
           <div><span>Active capacity scopes</span><strong>{snapshot.summary.activeCapacityScopeCount}/{snapshot.summary.capacityScopeCount}</strong><small>Fresh capital evidence</small></div>
           <div><span>Operational alerts</span><strong>{snapshot.summary.alertCount}</strong><small>Shard and capacity controls</small></div>
         </section>
       ) : null}
+
+      <OnchainStandingBook baseUrl={privateApiBaseUrl} />
 
       {snapshot && (load.status === "error" || load.status === "unconfigured") ? (
         <p className={styles.notice} role="status">The latest refresh failed. Showing the snapshot as of {snapshot.asOfValue.toString()}, which may be stale.</p>
@@ -113,8 +116,8 @@ export function LiquidityView() {
         <>
           <section className={styles.card} aria-labelledby="quote-shards-title">
             <div className={styles.cardHead}>
-              <h2 id="quote-shards-title">Quote shards</h2>
-              <p>One independently sequenced market-maker book per strategy market.</p>
+              <h2 id="quote-shards-title">EVM maker-control shards</h2>
+              <p>One independently sequenced book per strategy market in this maker-control store.</p>
               <span className={styles.pill}>As of {snapshot.asOfValue.toString()}</span>
             </div>
             <div className={styles.scroll}>
@@ -132,7 +135,7 @@ export function LiquidityView() {
                       <td className={styles.num}>{shard.shardSequence.toString()}<small className={styles.cellDetail}>ref {shard.referenceSequence.toString()}</small></td>
                     </tr>
                   ))}
-                  {snapshot.shards.length === 0 ? <tr><td colSpan={7}><div className={styles.empty}><strong>No quote shards</strong><p>This solver has not published a package market yet.</p></div></td></tr> : null}
+                  {snapshot.shards.length === 0 ? <tr><td colSpan={7}><div className={styles.empty}><strong>No EVM maker-control shards</strong><p>This store has not published a shard. Solana&apos;s onchain quote shard is shown separately above.</p></div></td></tr> : null}
                 </tbody>
               </table>
             </div>
