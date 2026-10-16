@@ -50,6 +50,7 @@ import {
   createHyperliquidTestnetGeneralizedTreasuryHedgePricing,
   createHyperliquidTestnetQuoteRuntime,
   GeneralizedStrategyQuoteError,
+  HyperliquidStrategyPreparationContextResolver,
   loadHyperliquidTestnetGeneralizedQuoteLane,
   loadHyperliquidTestnetGeneralizedQuoteLanes,
   loadHyperliquidTestnetQuoteRuntime,
@@ -808,6 +809,14 @@ test('prices a generalized Hyperliquid cash-and-carry package from live fee and 
       maximumPriceDecimals: 3,
     }],
   };
+  const resolver = new HyperliquidStrategyPreparationContextResolver([preparationLane], () => 1_000);
+  const route = { domainPlans: [{ domain, executionPlanKind: 'HYPERCORE_BATCHED_IOC' }] };
+  const entryContext = await resolver.resolve({ ...documents, route } as never);
+  assert.equal(entryContext.identity.previousStateHash, undefined);
+  const previousStateHash = new Uint8Array(32).fill(9);
+  const exitContext = await resolver.resolve({ ...documents, route,
+    order: { ...order, lifecycleAction: 'EXIT', expectedStrategyStateHash: previousStateHash } } as never);
+  assert.deepEqual(exitContext.identity.previousStateHash, previousStateHash);
   const laneEnvironment = {
     NARYX_HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_ENABLED: 'true',
     NARYX_HYPERLIQUID_TESTNET_QUOTE_CONFIG: configPath,

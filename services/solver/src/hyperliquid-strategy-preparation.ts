@@ -130,6 +130,8 @@ export class HyperliquidStrategyPreparationContextResolver implements StrategyPr
         templateVersion: documents.order.templateVersion,
         templateManifestHash: documents.order.packageTemplateManifestHash,
         operation: documents.order.lifecycleAction,
+        ...(documents.order.expectedStrategyStateHash === undefined ? {}
+          : { previousStateHash: documents.order.expectedStrategyStateHash }),
       }),
       compilers: Object.freeze([createHyperliquidStrategyDomainCompiler({ domain: lane.domain, bindings: lane.marketBindings })]),
       bindings: Object.freeze([{ kind: 'HYPERCORE_EXECUTOR' as const, domain: lane.domain }]),
