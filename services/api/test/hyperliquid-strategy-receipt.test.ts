@@ -42,6 +42,7 @@ function admission(): StoredStrategyPackageAdmission {
       owner: "0x1111111111111111111111111111111111111111",
       settlementClass: "BATCHED_IOC_WITH_RECOVERY",
       quoteAsset: quote,
+      maximumVenueFeesByAsset: [{ asset: quote, maxAtoms: 40n }],
       maximumResidualValue: assetAmount(quote, 100n),
     },
     graph: {
@@ -141,6 +142,20 @@ test("authoritative Hyperliquid evidence builds a deterministic bounded strategy
     ["perp", -99n],
     ["spot", 100n],
   ]);
+});
+
+test("actual pass-through fees may exceed an estimate but never the owner-signed asset cap", () => {
+  const result = completed();
+  const source = admission();
+  const bounded: StoredStrategyPackageAdmission = { ...source, quote: { ...source.quote,
+    passThroughCosts: [{ category: "VENUE", amount: assetAmount(quote, 1n) }] } };
+  assert.equal(buildHyperliquidStrategyPackageReceipt({ attemptId: result.attemptId, admission: bounded, result })!.venueFees.atoms, 30n);
+  for (const limits of [[{ asset: quote, maxAtoms: 29n }], [],
+    [{ asset: assetRef(quote.assetId, "99".repeat(32), quote.decimals), maxAtoms: 40n }]]) {
+    assert.throws(() => buildHyperliquidStrategyPackageReceipt({ attemptId: result.attemptId,
+      admission: { ...bounded, order: { ...bounded.order, maximumVenueFeesByAsset: limits } }, result }),
+    { code: "FEE_CAP_EXCEEDED" });
+  }
 });
 
 test("receipt construction fails closed on missing or mismatched evidence", () => {

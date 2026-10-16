@@ -34,6 +34,14 @@ function requireCondition(condition: boolean, code: string, message: string): as
   if (!condition) throw new HyperliquidStrategyReceiptError(code, message);
 }
 
+function requireVenueFeeCap(admission: StoredStrategyPackageAdmission, actualAtoms: bigint): void {
+  const asset = admission.order.quoteAsset;
+  const cap = admission.order.maximumVenueFeesByAsset.find((limit) => limit.asset.assetId === asset.assetId
+    && limit.asset.decimals === asset.decimals && bytesEqual(limit.asset.assetManifestHash, asset.assetManifestHash));
+  requireCondition(actualAtoms <= (cap?.maxAtoms ?? 0n),
+    "FEE_CAP_EXCEEDED", "Observed venue fees exceed the owner-signed asset cap.");
+}
+
 function absolute(value: bigint): bigint {
   return value < 0n ? -value : value;
 }
@@ -228,10 +236,7 @@ function buildGeneralizedReceipt(
   "INVALID_EVIDENCE", "Execution evidence must contain every graph leg exactly once.");
   const legOutcomes = legs.map((leg) => checkedGenericLegOutcome(admission, leg, completed, priorState));
   const venueFeeAtoms = legOutcomes.reduce((sum, outcome) => sum + outcome.venueFee.atoms, 0n);
-  const quotedVenueFeeAtoms = admission.quote.passThroughCosts
-    .find((cost) => cost.category === "VENUE")?.amount.atoms ?? 0n;
-  requireCondition(venueFeeAtoms <= quotedVenueFeeAtoms,
-    "FEE_CAP_EXCEEDED", "Observed venue fees exceed the selected quote.");
+  requireVenueFeeCap(admission, venueFeeAtoms);
   const observedAtMs = stageEvidence.reduce((latest, evidence) => {
     requireCondition(evidence.observedAtMs !== null,
       "MISSING_EXECUTION_EVIDENCE", "Finalized strategy evidence needs an observation time.");
@@ -331,10 +336,7 @@ export function buildHyperliquidStrategyPackageReceipt(input: Readonly<{
     priorState,
   ));
   const venueFeeAtoms = legOutcomes.reduce((sum, outcome) => sum + outcome.venueFee.atoms, 0n);
-  const quotedVenueFeeAtoms = admission.quote.passThroughCosts
-    .find((cost) => cost.category === "VENUE")?.amount.atoms ?? 0n;
-  requireCondition(venueFeeAtoms <= quotedVenueFeeAtoms,
-    "FEE_CAP_EXCEEDED", "Observed venue fees exceed the selected quote.");
+  requireVenueFeeCap(admission, venueFeeAtoms);
   if (result.packageStatus === "NO_EFFECT") {
     requireCondition(legOutcomes.every((outcome) => outcome.status === "NO_EFFECT"
       && outcome.grossNotional.atoms === 0n && outcome.venueFee.atoms === 0n)

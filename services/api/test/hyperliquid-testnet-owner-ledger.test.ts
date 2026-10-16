@@ -512,6 +512,7 @@ function sourceBackedEntry(ledger: HyperliquidTestnetOwnerLedger, n: number, own
       executionClassVersion: 1, executionClassManifestHash: new Uint8Array(32).fill(0x33), lifecycleAction: "ENTRY",
       owner, settlementAccount: TRADING, settlementClass: "BATCHED_IOC_WITH_RECOVERY", quoteAsset: QUOTE,
       maximumResidualValue: assetAmount(QUOTE, 100n),
+      maximumVenueFeesByAsset: [{ asset: QUOTE, maxAtoms: 35n }],
     },
     graph: { legs: [leg("spot", "SPOT_SWAP", "BUY"), leg("perp", "PERP_OPEN", "SELL")] },
     quote: {
