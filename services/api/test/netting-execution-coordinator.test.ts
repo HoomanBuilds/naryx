@@ -119,9 +119,11 @@ class Store implements NettingExternalExecutionStorePort {
 test('executes each pending residual once under intent-hash idempotency', async () => {
   const store = new Store();
   const calls: string[] = [];
+  let unavailable = true;
   const coordinator = new NettingExecutionCoordinator(store, {
     async execute(input) {
       calls.push(input.idempotencyKey);
+      if (unavailable) throw new Error('executor unavailable');
       return nettingExternalExecutionEvidence({
         version: 1,
         intentHash: input.intent.intentHash,
@@ -138,13 +140,17 @@ test('executes each pending residual once under intent-hash idempotency', async 
       }, input.intent);
     },
   });
-  const first = await coordinator.execute(result.proofHash);
+  await assert.rejects(Promise.all([coordinator.execute(result.proofHash), coordinator.execute(toHex(result.proofHash))]), /executor unavailable/);
+  assert.deepEqual(calls, [toHex(intent.intentHash)]);
+  unavailable = false;
+  const [first, concurrent] = await Promise.all([coordinator.execute(result.proofHash), coordinator.execute(toHex(result.proofHash))]);
+  assert.deepEqual(concurrent, first);
   assert.deepEqual(first.executedIntentHashes, [toHex(intent.intentHash)]);
   assert.equal(first.batch.externalExecutionStatus, 'EXACT_FILLED');
   const replay = await coordinator.execute(result.proofHash);
   assert.deepEqual(replay.executedIntentHashes, []);
-  assert.deepEqual(calls, [toHex(intent.intentHash)]);
-  assert.deepEqual(store.claims, [toHex(intent.intentHash)]);
+  assert.deepEqual(calls, [toHex(intent.intentHash), toHex(intent.intentHash)]);
+  assert.deepEqual(store.claims, [toHex(intent.intentHash), toHex(intent.intentHash)]);
 });
 
 test('direct residual execution skips intents committed to cross-batch clearing', async () => {
@@ -217,9 +223,11 @@ test('executes a cross-batch residual once under pooled intent idempotency', asy
 
   const store = new CrossBatchStore();
   const calls: string[] = [];
+  let unavailable = true;
   const coordinator = new CrossBatchClearingCoordinator(store, {
     async execute(input) {
       calls.push(input.idempotencyKey);
+      if (unavailable) throw new Error('executor unavailable');
       return crossBatchExternalExecutionEvidence({
         version: 1,
         intentHash: input.intent.intentHash,
@@ -236,12 +244,16 @@ test('executes a cross-batch residual once under pooled intent idempotency', asy
       }, input.intent);
     },
   });
-  const first = await coordinator.execute(plan.planHash);
+  await assert.rejects(Promise.all([coordinator.execute(plan.planHash), coordinator.execute(toHex(plan.planHash))]), /executor unavailable/);
+  assert.deepEqual(calls, [toHex(pooledIntent.intentHash)]);
+  unavailable = false;
+  const [first, concurrent] = await Promise.all([coordinator.execute(plan.planHash), coordinator.execute(toHex(plan.planHash))]);
+  assert.deepEqual(concurrent, first);
   assert.equal(first.clearing.status, 'EXACT_FILLED');
   assert.equal(first.executedIntentHash, toHex(pooledIntent.intentHash));
   const replay = await coordinator.execute(plan.planHash);
   assert.equal(replay.executedIntentHash, undefined);
-  assert.deepEqual(calls, [toHex(pooledIntent.intentHash)]);
+  assert.deepEqual(calls, [toHex(pooledIntent.intentHash), toHex(pooledIntent.intentHash)]);
 
   const router = new CrossBatchExternalExecutionRouter([{
     routeId: 'hypercore:testnet',

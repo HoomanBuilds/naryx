@@ -1,4 +1,5 @@
 import {
+  commitmentHash,
   toHex,
   verifyNettingExternalExecutionEvidence,
   type NettingExternalExecutionEvidence,
@@ -63,6 +64,7 @@ export interface NettingExecutionCoordinatorResult {
 export class NettingExecutionCoordinator {
   readonly #store: NettingExternalExecutionStorePort;
   readonly #executor: NettingExternalExecutionPort;
+  readonly #pending = new Map<string, Promise<NettingExecutionCoordinatorResult>>();
 
   constructor(store: NettingExternalExecutionStorePort, executor: NettingExternalExecutionPort) {
     if (store === null || typeof store !== 'object'
@@ -79,6 +81,20 @@ export class NettingExecutionCoordinator {
   }
 
   async execute(proofHash: Uint8Array | string): Promise<NettingExecutionCoordinatorResult> {
+    const key = toHex(commitmentHash(proofHash));
+    const pending = this.#pending.get(key);
+    if (pending !== undefined) return pending;
+    if (this.#pending.size >= 100) throw new Error('Netting execution concurrency limit reached.');
+    const task = Promise.resolve().then(() => this.#execute(key));
+    this.#pending.set(key, task);
+    try {
+      return await task;
+    } finally {
+      this.#pending.delete(key);
+    }
+  }
+
+  async #execute(proofHash: string): Promise<NettingExecutionCoordinatorResult> {
     let batch = this.#store.nettingBatch(proofHash);
     if (batch === undefined) throw new Error('prepared netting batch was not found');
     const executedIntentHashes: string[] = [];

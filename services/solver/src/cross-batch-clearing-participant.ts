@@ -188,8 +188,8 @@ export class CrossBatchClearingParticipant {
   readonly #controls: CrossBatchClearingControlPort;
   readonly #now: () => number;
   /**
-   * Plans whose execution request failed in transport or timed out. The API keeps executing such a
-   * plan without deduplication, so it is not re-executed until this time.
+   * A transport timeout does not cancel upstream venue execution. Delay retries while keeping the
+   * durable plan and intent identities unchanged.
    */
   readonly #unsettled = new Map<string, number>();
   #running = false;

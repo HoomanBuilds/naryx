@@ -1,4 +1,5 @@
 import {
+  commitmentHash,
   toHex,
   verifyCrossBatchExternalExecutionEvidence,
   type CrossBatchExternalExecutionEvidence,
@@ -60,6 +61,7 @@ export interface CrossBatchClearingCoordinatorResult {
 export class CrossBatchClearingCoordinator {
   readonly #store: CrossBatchClearingStorePort;
   readonly #executor: CrossBatchExternalExecutionPort;
+  readonly #pending = new Map<string, Promise<CrossBatchClearingCoordinatorResult>>();
 
   constructor(store: CrossBatchClearingStorePort, executor: CrossBatchExternalExecutionPort) {
     if (store === null || typeof store !== 'object'
@@ -75,6 +77,20 @@ export class CrossBatchClearingCoordinator {
   }
 
   async execute(planHash: Uint8Array | string): Promise<CrossBatchClearingCoordinatorResult> {
+    const key = toHex(commitmentHash(planHash));
+    const pending = this.#pending.get(key);
+    if (pending !== undefined) return pending;
+    if (this.#pending.size >= 100) throw new Error('Cross-batch execution concurrency limit reached.');
+    const task = Promise.resolve().then(() => this.#execute(key));
+    this.#pending.set(key, task);
+    try {
+      return await task;
+    } finally {
+      this.#pending.delete(key);
+    }
+  }
+
+  async #execute(planHash: string): Promise<CrossBatchClearingCoordinatorResult> {
     let clearing = this.#store.crossBatchClearing(planHash);
     if (clearing === undefined) throw new Error('cross-batch clearing plan was not found');
     if (clearing.status !== 'PENDING') return Object.freeze({ clearing });
