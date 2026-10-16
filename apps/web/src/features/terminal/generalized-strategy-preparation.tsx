@@ -2089,6 +2089,9 @@ function parseEvmStrategyPositions(payload: unknown, requestedOwner: string): re
     if (owner !== requestedOwner || !EVM_ADDRESS.test(settlementAccount)) {
       throw new Error(`EVM strategy position ${index} owner or account is invalid.`);
     }
+    const quantity = decimalInteger(position.economicQuantityAtoms, `EVM strategy position ${index} quantity`);
+    const stateHash = status === "CLOSED" && quantity === "0" && position.stateHashHex === "0".repeat(64)
+      ? position.stateHashHex : hash(position.stateHashHex, `EVM strategy position ${index} state hash`);
     return Object.freeze({
       packageId: hash(position.packageIdHex, `EVM strategy position ${index} package`),
       owner,
@@ -2100,8 +2103,8 @@ function parseEvmStrategyPositions(payload: unknown, requestedOwner: string): re
       executionClassId: text(position.executionClassId, `EVM strategy position ${index} execution class`),
       baseAssetId: text(position.baseAssetId, `EVM strategy position ${index} base asset`),
       baseAssetDecimals: unsignedInteger(position.baseAssetDecimals, `EVM strategy position ${index} base decimals`),
-      economicQuantityAtoms: decimalInteger(position.economicQuantityAtoms, `EVM strategy position ${index} quantity`),
-      stateHash: hash(position.stateHashHex, `EVM strategy position ${index} state hash`),
+      economicQuantityAtoms: quantity,
+      stateHash,
       status,
     });
   });
