@@ -10,6 +10,7 @@ import { marketAssetLabel } from "../market-label";
 import { packageMarketName, packageMarketVariant } from "../market-label";
 import { chainOf } from "@/features/brand/chain-icons";
 import { MarketTransparency } from "./market-transparency";
+import { OnchainStandingBook } from "./onchain-standing-book";
 import { PaperTradingLab } from "./paper-trading-lab";
 import { RegistryBrowser } from "./registry-browser";
 import { StrategyComparison } from "./strategy-comparison";
@@ -85,7 +86,7 @@ function human(value: string | null): string {
 }
 
 export function MarketsView() {
-  const { publicApiBaseUrl } = useTerminal();
+  const { privateApiBaseUrl, publicApiBaseUrl } = useTerminal();
   const { markets, status, catalogue } = usePublicPackageMarkets(publicApiBaseUrl);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [scanSizeInput, setScanSizeInput] = useState("1");
@@ -156,6 +157,8 @@ export function MarketsView() {
         <div><span>Strategy templates</span><strong>{templates}</strong><small>Published economic series</small></div>
         <div><span>Execution domains</span><strong>{domains}</strong><small>Across active catalogue entries</small></div>
       </section>
+
+      <OnchainStandingBook baseUrl={privateApiBaseUrl} />
 
       <section className={styles.card} aria-labelledby="opportunity-scanner-title">
         <div className={styles.cardHead}>
