@@ -4755,9 +4755,10 @@ export function GeneralizedStrategyPreparationPanel({
         ? BigInt(auctionClockMs)
         : BigInt(Math.floor(auctionClockMs / 1_000));
       const second = sealedAuctionTimeUnit === "HYPERLIQUID_UNIX_MILLISECONDS" ? BigInt(1_000) : BigInt(1);
-      const commitDeadlineValue = now + BigInt(20) * second;
-      const revealDeadlineValue = now + BigInt(35) * second;
-      const settlementDeadlineValue = now + BigInt(50) * second;
+      const shortQuoteWindow = sealedAuctionTimeUnit === "HYPERLIQUID_UNIX_MILLISECONDS";
+      const commitDeadlineValue = now + BigInt(shortQuoteWindow ? 5 : 20) * second;
+      const revealDeadlineValue = now + BigInt(shortQuoteWindow ? 12 : 35) * second;
+      const settlementDeadlineValue = now + BigInt(shortQuoteWindow ? 20 : 50) * second;
       if (privateRfqOrderContext === null || BigInt(privateRfqOrderContext.expiryValue) <= settlementDeadlineValue) {
         throw new Error("This order expires before the auction can settle. Create a fresh order first.");
       }

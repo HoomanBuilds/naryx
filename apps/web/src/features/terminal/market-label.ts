@@ -12,10 +12,11 @@ const ASSET_LABELS: Readonly<Record<string, string>> = {
 
 export function marketAssetLabel(value: string | null): string {
   if (value === null) return "-";
-  const known = ASSET_LABELS[value];
+  const normalized = value.toLowerCase();
+  const known = ASSET_LABELS[value] ?? ASSET_LABELS[normalized];
   if (known !== undefined) return known;
-  if (value.startsWith("asset:naryx-test-usdc:")) return "USDC";
-  if (value.startsWith("asset:naryx-test-base:")) return "WETH";
+  if (normalized.startsWith("asset:naryx-test-usdc:")) return "USDC";
+  if (normalized.startsWith("asset:naryx-test-base:")) return "WETH";
   return value.length > 22 ? `${value.slice(0, 10)}...${value.slice(-6)}` : value;
 }
 
