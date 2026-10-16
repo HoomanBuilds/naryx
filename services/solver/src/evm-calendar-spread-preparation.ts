@@ -429,7 +429,7 @@ export class EvmCalendarSpreadPreparationContextResolver implements StrategyPrep
     const [currentTime, chainId] = await Promise.all([chain.latestBlockTimestamp(), chain.chainId()]);
     requireCondition(chainId === lane.pricing.chainId, 'RPC chain identity differs from the lane');
     const orderHash = strategyPackageOrderHash(documents.order);
-    const packageId = opening
+    const packageId = documents.order.lifecycleAction === 'ENTRY'
       ? toHex(orderHash)
       : await lane.packageIds.resolvePackageId(toHex(documents.order.expectedStrategyStateHash!));
     requireCondition(packageId !== undefined, 'prior strategy package is unknown');

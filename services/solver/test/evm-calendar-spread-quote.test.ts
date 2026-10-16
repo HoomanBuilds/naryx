@@ -202,6 +202,18 @@ class Chain implements EvmOptionSpreadReadPort {
               [107n * 10n ** 18n, -2n * 10n ** 18n, 0n, 107n * 10n ** 15n, 18_893n * 10n ** 15n, 0n],
             ];
         }
+        case 'previewIncrease': {
+          assert.equal(this.active, true);
+          const collateral = request.args?.[2];
+          assert.equal(typeof collateral, 'bigint');
+          const price = (near ? 101n : 105n) * 10n ** 18n;
+          const fee = price / 1_000n;
+          return [[
+            (near ? 40n : 42n) * 10n ** 18n + (collateral as bigint) - fee,
+            (near ? 3n : -3n) * QUANTITY,
+            (near ? 303n : 315n) * 10n ** 18n, 0n, 0n,
+          ], price, fee];
+        }
         default: throw new Error(`unexpected market read ${request.functionName}`);
       }
     }
@@ -238,9 +250,9 @@ class Chain implements EvmOptionSpreadReadPort {
 function documents(
   nearLimit: bigint,
   farLimit: bigint,
-  lifecycleAction: 'ENTRY' | 'DECREASE' = 'ENTRY',
+  lifecycleAction: 'ENTRY' | 'INCREASE' | 'DECREASE' = 'ENTRY',
 ): StoredStrategyPackageOrderDocuments {
-  const opening = lifecycleAction === 'ENTRY';
+  const opening = lifecycleAction === 'ENTRY' || lifecycleAction === 'INCREASE';
   const [nearQuoteAtoms, nearBaseAtoms] = reducedPrice(nearLimit);
   const [farQuoteAtoms, farBaseAtoms] = reducedPrice(farLimit);
   const graph = packageGraph({
@@ -352,7 +364,7 @@ function documents(
     maximumRecoveryCostByAsset: [],
     maximumMarginIncrease: assetAmount(quoteAsset, opening ? 42_000_000n : 0n),
     maximumResidualValue: assetAmount(quoteAsset, 0n),
-    ...(opening ? {} : { expectedStrategyStateHash: OPEN_STATE_HASH }),
+    ...(lifecycleAction === 'ENTRY' ? {} : { expectedStrategyStateHash: OPEN_STATE_HASH }),
     expiryUnit: 'EVM_UNIX_SECONDS',
     expiryValue: 1_200n,
     nonce: 1n,
@@ -520,10 +532,12 @@ test('quotes and prepares an exact atomic EVM calendar spread entry', async () =
   assert.notEqual(envelope.execution.nextStateHash, `0x${'00'.repeat(32)}`);
 });
 
-test('prepares a partial calendar decrease from authoritative market previews', async () => {
+for (const lifecycleAction of ['INCREASE', 'DECREASE'] as const) {
+test(`prepares a calendar ${lifecycleAction.toLowerCase()} on the existing package`, async () => {
   const chain = new Chain(true);
   const quotePricing = pricing(chain);
-  const orderDocuments = documents(98n, 108n, 'DECREASE');
+  const increasing = lifecycleAction === 'INCREASE';
+  const orderDocuments = documents(increasing ? 102n : 98n, increasing ? 104n : 108n, lifecycleAction);
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
   const spki = publicKey.export({ format: 'der', type: 'spki' });
   const quoteService = new GeneralizedStrategyQuoteService({
@@ -540,16 +554,16 @@ test('prepares a partial calendar decrease from authoritative market previews', 
       adapterSupport: [{
         domain,
         adapter: nearAdapter,
-        legFamily: 'FUTURE_CLOSE',
-        supportedSides: ['SELL'],
+        legFamily: increasing ? 'FUTURE_OPEN' : 'FUTURE_CLOSE',
+        supportedSides: increasing ? ['BUY'] : ['SELL'],
         materializationClassId: 'naryx.evm.future-exact',
         executionPlanKind: 'EVM_ATOMIC_BATCH',
         supportedSettlementClasses: ['ATOMIC_POSTCONDITION'],
       }, {
         domain,
         adapter: farAdapter,
-        legFamily: 'FUTURE_CLOSE',
-        supportedSides: ['BUY'],
+        legFamily: increasing ? 'FUTURE_OPEN' : 'FUTURE_CLOSE',
+        supportedSides: increasing ? ['SELL'] : ['BUY'],
         materializationClassId: 'naryx.evm.future-exact',
         executionPlanKind: 'EVM_ATOMIC_BATCH',
         supportedSettlementClasses: ['ATOMIC_POSTCONDITION'],
@@ -607,7 +621,11 @@ test('prepares a partial calendar decrease from authoritative market previews', 
   const prepared = await preparation.prepareByQuote(hexToBytes(`0x${quoted.quoteHash}`) as Hash32);
   assert.equal(prepared?.domains[0]?.kind, 'EVM_MULTI_STRATEGY_ACCOUNT');
   if (prepared?.domains[0]?.kind !== 'EVM_MULTI_STRATEGY_ACCOUNT') throw new Error('missing EVM preparation');
-  assert.deepEqual(prepared.domains[0].envelope.calls.map((call) => call.approvalAtoms), [0n, 0n]);
+  const approvals = prepared.domains[0].envelope.calls.map((call) => call.approvalAtoms);
+  if (increasing) assert.ok(approvals.every((atoms) => atoms > 0n));
+  else assert.deepEqual(approvals, [0n, 0n]);
+  assert.equal(prepared.domains[0].envelope.execution.packageId, OPEN_PACKAGE_ID);
   assert.notEqual(prepared.domains[0].envelope.execution.nextStateHash, `0x${'00'.repeat(32)}`);
   assert.equal(prepared.domains[0].envelope.execution.previousStateHash, `0x${OPEN_STATE_HASH}`);
 });
+}
