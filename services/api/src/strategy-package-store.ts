@@ -573,12 +573,8 @@ export function validateStrategyReceiptEconomics(
 ): void {
   const quotedService = quote.serviceCharges.find((charge) => charge.category === "PROTOCOL")?.amount.atoms ?? 0n;
   const quotedSolver = quote.serviceCharges.find((charge) => charge.category === "SOLVER")?.amount.atoms ?? 0n;
-  const quotedVenue = quote.passThroughCosts.find((cost) => cost.category === "VENUE")?.amount.atoms ?? 0n;
-  const quotedNetwork = quote.passThroughCosts.find((cost) => cost.category === "NETWORK")?.amount.atoms ?? 0n;
   requireCondition(receipt.serviceFee.atoms <= quotedService, "FEE_LIMIT_EXCEEDED", "The receipt service fee exceeds the accepted quote.");
   requireCondition(receipt.solverFee.atoms <= quotedSolver, "FEE_LIMIT_EXCEEDED", "The receipt solver fee exceeds the accepted quote.");
-  requireCondition(receipt.venueFees.atoms <= quotedVenue, "FEE_LIMIT_EXCEEDED", "The receipt venue fees exceed the accepted quote.");
-  requireCondition(receipt.networkCost.atoms <= quotedNetwork, "FEE_LIMIT_EXCEEDED", "The receipt network cost exceeds the accepted quote.");
   requireCondition(receipt.serviceFee.atoms + receipt.solverFee.atoms <= feeCap(order.maximumServiceFeesByAsset, receipt.quoteAsset),
     "FEE_LIMIT_EXCEEDED", "The receipt service fees exceed the signed order cap.");
   requireCondition(receipt.venueFees.atoms <= feeCap(order.maximumVenueFeesByAsset, receipt.quoteAsset),

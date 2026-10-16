@@ -54,6 +54,20 @@ test("terminal strategy receipt economics stay within the accepted quote and sig
   );
 });
 
+test("pass-through estimates do not replace signed venue and network caps", () => {
+  const estimated = { ...quote, passThroughCosts: [
+    { category: "VENUE" as const, amount: amount(1n) },
+    { category: "NETWORK" as const, amount: amount(1n) },
+  ] };
+  assert.doesNotThrow(() => validateStrategyReceiptEconomics(order, estimated, receipt));
+  assert.throws(() => validateStrategyReceiptEconomics(order, estimated,
+    { ...receipt, venueFees: amount(4n) }), /venue fees exceed the signed order cap/);
+  assert.throws(() => validateStrategyReceiptEconomics(order, estimated,
+    { ...receipt, networkCost: amount(5n) }), /network cost exceeds the signed order cap/);
+  assert.throws(() => validateStrategyReceiptEconomics({ ...order, maximumVenueFeesByAsset: [] }, estimated, receipt),
+    /venue fees exceed the signed order cap/);
+});
+
 const hash = (fill: number): Uint8Array => new Uint8Array(32).fill(fill);
 
 const executionReceipt: Parameters<typeof validateStrategyExecutionIntelligence>[0] = {
