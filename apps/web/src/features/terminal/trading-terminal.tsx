@@ -162,6 +162,12 @@ function trimSize(value: string) {
   return value.includes(".") ? value.replace(/0+$/, "").replace(/\.$/, "") : value;
 }
 
+function legActionClass(action: string): string | undefined {
+  const buying = /\b(?:buy|long)\b/i.test(action);
+  const selling = /\b(?:sell|short)\b/i.test(action);
+  return buying === selling ? undefined : buying ? styles.upText : styles.downText;
+}
+
 /**
  * A tenth, a quarter, a half, and all of the lane's default size, rounded down to its decimals, so
  * every preset is denominated in the selected lane's own base asset.
@@ -1370,10 +1376,9 @@ function Ticket({
   const ticketPreview = nativeCashFlow ? preview : null;
   const legs = nativeCashFlow
     ? (preview?.mode === mode ? preview.legs : plan.legs)
-    : (selectedAction?.legRoles.flatMap((role, roleIndex) => Array.from(
+    : (selectedAction?.legRoles.flatMap((role) => Array.from(
       { length: Math.max(role.minimumCount, 1) },
-      (_, index) => ({
-        sequence: roleIndex * 8 + index + 1,
+      () => ({
         action: role.allowedFamilies.join(" / ").replaceAll("_", " ").toLowerCase(),
         instrument: role.legTypeId.replaceAll("-", " "),
         venue: "Qualified adapter",
@@ -1385,7 +1390,7 @@ function Ticket({
           : selectedAction?.activation === "ADAPTER_ACTIVATION_REQUIRED" ? "Adapter activation required" : "Capability check unavailable",
         dependency: "Strategy graph",
       }),
-    )) ?? []);
+    )).map((leg, index) => ({ ...leg, sequence: index + 1 })) ?? []);
   const meta = DOMAIN_META[selectedDomain];
   const hyperliquidStage = hyperliquidFlow?.execution
     ? "executed"
@@ -1611,7 +1616,7 @@ function Ticket({
               <ChainIcon chain={leg.venue} size={12} className={styles.legChain} />
             </span>
             <div>
-              <strong className={/buy/i.test(leg.action) ? styles.upText : styles.downText}>
+              <strong className={legActionClass(leg.action)}>
                 <span className={styles.legSeq}>{leg.sequence}</span>
                 {leg.action}
               </strong>
@@ -1619,7 +1624,9 @@ function Ticket({
             </div>
             <div className={styles.legNumbers}>
               <strong>{tidy(leg.quantity)}</strong>
-              <small title={`${leg.limitLabel} ${leg.limit}`}>{/max/i.test(leg.limitLabel) ? "max" : "min"} {tidy(leg.limit)}</small>
+              <small title={`${leg.limitLabel} ${leg.limit}`}>{leg.limitLabel === "Typed role"
+                ? "Awaiting quote"
+                : `${/max/i.test(leg.limitLabel) ? "max" : "min"} ${tidy(leg.limit)}`}</small>
             </div>
           </li>
         ))}

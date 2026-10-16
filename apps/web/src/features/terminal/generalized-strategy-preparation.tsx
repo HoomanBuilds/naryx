@@ -25,7 +25,7 @@ import {
   type PrivateRfqEnvelope,
 } from "@naryx/sdk/private-rfq";
 import { formatAtomicAmount, formatMetricValue } from "./format";
-import { marketAssetLabel } from "./market-label";
+import { marketAssetLabel, marketProfileName, solverDisplayName } from "./market-label";
 import {
   buildSolanaWalletTransaction,
   getSolanaDevnetBlockhash,
@@ -5586,7 +5586,7 @@ export function GeneralizedStrategyPreparationPanel({
           >
             {matchingNativeProfiles.length === 0 ? <option value="">No reviewed market is active</option> : null}
             {matchingNativeProfiles.map((profile) => (
-              <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
+              <option key={profile.profileId} value={profile.profileId} title={profile.displayName}>{marketProfileName(profile.displayName)}</option>
             ))}
           </select>
           {selectedNativeProfile ? (
@@ -5763,15 +5763,15 @@ export function GeneralizedStrategyPreparationPanel({
           >
             {matchingSolanaProfiles.length === 0 ? <option value="">No reviewed Solana market is active</option> : null}
             {matchingSolanaProfiles.map((profile) => (
-              <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
+              <option key={profile.profileId} value={profile.profileId} title={profile.displayName}>{marketProfileName(profile.displayName)}</option>
             ))}
           </select>
           {selectedSolanaProfile ? (
             <>
               <div className={styles.reviewGrid}>
                 <span>Domain</span><strong>{selectedSolanaProfile.domainId}</strong>
-                <span>Inventory asset</span><strong>{selectedSolanaProfile.inventoryAsset.assetId}</strong>
-                <span>Quote asset</span><strong>{selectedSolanaProfile.quoteAsset.assetId}</strong>
+                <span>Inventory asset</span><strong title={selectedSolanaProfile.inventoryAsset.assetId}>{marketAssetLabel(selectedSolanaProfile.inventoryAsset.assetId)}</strong>
+                <span>Quote asset</span><strong title={selectedSolanaProfile.quoteAsset.assetId}>{marketAssetLabel(selectedSolanaProfile.quoteAsset.assetId)}</strong>
                 <span>Settlement</span><strong>Atomic postconditions</strong>
               </div>
               {lifecycleAction !== "ENTRY" ? (
@@ -5934,7 +5934,7 @@ export function GeneralizedStrategyPreparationPanel({
           >
             {matchingEvmOptionProfiles.length === 0 ? <option value="">No reviewed option market is active on this chain</option> : null}
             {matchingEvmOptionProfiles.map((profile) => (
-              <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
+              <option key={profile.profileId} value={profile.profileId} title={profile.displayName}>{marketProfileName(profile.displayName)}</option>
             ))}
           </select>
           {selectedEvmOptionProfile ? (
@@ -6066,7 +6066,7 @@ export function GeneralizedStrategyPreparationPanel({
             {matchingEvmCalendarProfiles.length === 0
               ? <option value="">No reviewed calendar market is active on this chain</option> : null}
             {matchingEvmCalendarProfiles.map((profile) => (
-              <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
+              <option key={profile.profileId} value={profile.profileId} title={profile.displayName}>{marketProfileName(profile.displayName)}</option>
             ))}
           </select>
           {selectedEvmCalendarProfile ? (
@@ -6226,15 +6226,15 @@ export function GeneralizedStrategyPreparationPanel({
           >
             {matchingEvmDirectionalProfiles.length === 0 ? <option value="">No reviewed EVM market is active</option> : null}
             {matchingEvmDirectionalProfiles.map((profile) => (
-              <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>
+              <option key={profile.profileId} value={profile.profileId} title={profile.displayName}>{marketProfileName(profile.displayName)}</option>
             ))}
           </select>
           {selectedEvmDirectionalProfile ? (
             <>
               <div className={styles.reviewGrid}>
                 <span>Domain</span><strong>{selectedEvmDirectionalProfile.domainId}</strong>
-                <span>Base asset</span><strong>{selectedEvmDirectionalProfile.baseAsset.assetId}</strong>
-                <span>Quote asset</span><strong>{selectedEvmDirectionalProfile.quoteAsset.assetId}</strong>
+                <span>Base asset</span><strong title={selectedEvmDirectionalProfile.baseAsset.assetId}>{marketAssetLabel(selectedEvmDirectionalProfile.baseAsset.assetId)}</strong>
+                <span>Quote asset</span><strong title={selectedEvmDirectionalProfile.quoteAsset.assetId}>{marketAssetLabel(selectedEvmDirectionalProfile.quoteAsset.assetId)}</strong>
                 <span>Settlement</span><strong>Atomic postconditions</strong>
               </div>
               {lifecycleAction !== "ENTRY" ? (
@@ -6610,7 +6610,7 @@ export function GeneralizedStrategyPreparationPanel({
             >
               <option value="">Select a compatible solver</option>
               {eligiblePrivateRfqSolvers.map((solver) => (
-                <option key={solver.solverId} value={solver.solverId}>{solver.solverId}</option>
+                <option key={solver.solverId} value={solver.solverId} title={solver.solverId}>{solverDisplayName(solver.solverId)}</option>
               ))}
             </select>
             <button
@@ -6650,7 +6650,7 @@ export function GeneralizedStrategyPreparationPanel({
               }}
             >
               {eligibleAuctionSolvers.map((solver) => (
-                <option key={solver.solverId} value={solver.solverId}>{solver.solverId}</option>
+                <option key={solver.solverId} value={solver.solverId} title={solver.solverId}>{solverDisplayName(solver.solverId)}</option>
               ))}
             </select>
             <button
@@ -6677,7 +6677,7 @@ export function GeneralizedStrategyPreparationPanel({
         <div className={styles.quoteReview}>
           <div className={styles.reviewGrid}>
             <span>Private envelope</span><strong title={privateRfqSession.envelopeHash}>{compact(privateRfqSession.envelopeHash)}</strong>
-            <span>Recipient</span><strong>{privateRfqSession.solverId}</strong>
+            <span>Recipient</span><strong title={privateRfqSession.solverId}>{solverDisplayName(privateRfqSession.solverId)}</strong>
             <span>Relay receipt</span><strong>{privateRfqSession.acknowledged ? "ACKNOWLEDGED" : "WAITING"}</strong>
             <span>Response</span><strong>{privateRfqSession.preview === null ? "ENCRYPTED QUOTE PENDING" : "DECRYPTED IN BROWSER"}</strong>
             <span>Relay visibility</span><strong>CIPHERTEXT AND COMMITMENTS ONLY</strong>
@@ -6733,7 +6733,7 @@ export function GeneralizedStrategyPreparationPanel({
             {sealedAuction.outcome !== null ? <><span>Outcome</span><strong>{sealedAuction.outcome}</strong></> : null}
             {sealedAuction.winner !== null ? (
               <>
-                <span>Winning solver</span><strong>{sealedAuction.winner.solverId}</strong>
+                <span>Winning solver</span><strong title={sealedAuction.winner.solverId}>{solverDisplayName(sealedAuction.winner.solverId)}</strong>
                 <span>Winning quote</span><strong title={sealedAuction.winner.quoteHash}>{compact(sealedAuction.winner.quoteHash)}</strong>
                 <span>Net outcome atoms</span><strong>{sealedAuction.winner.netOutcomeAtoms}</strong>
               </>
@@ -6784,7 +6784,7 @@ export function GeneralizedStrategyPreparationPanel({
                   onClick={() => activateQuote(quote, candidate.origin)}
                 >
                   <span className={styles.quoteCandidateHead}>
-                    <strong>{quote.solverId}</strong>
+                    <strong title={quote.solverId}>{solverDisplayName(quote.solverId)}</strong>
                     <small>{quoteOriginLabel(candidate.origin)}</small>
                   </span>
                   <span><small>Net outcome</small><strong title={quote.quoteAsset}>{formatAtomicAmount(quote.netOutcomeAtoms, quote.quoteDecimals, quoteAssetLabel)}</strong></span>
@@ -6816,7 +6816,7 @@ export function GeneralizedStrategyPreparationPanel({
           </p>
           <div className={styles.reviewGrid}>
             <span>Series</span><strong>{quoteReview.seriesId}</strong>
-            <span>Solver</span><strong>{quoteReview.solverId}</strong>
+            <span>Solver</span><strong title={quoteReview.solverId}>{solverDisplayName(quoteReview.solverId)}</strong>
             <span>Quote mode</span><strong>{quoteReview.quoteMode}</strong>
             <span>Settlement</span><strong>{quoteReview.settlementClass}</strong>
             <span>Valid until</span><strong>{expiryText(quoteReview.validUntilUnit, quoteReview.validUntilValue)}</strong>
@@ -7345,7 +7345,7 @@ export function GeneralizedStrategyPreparationPanel({
                   <div className={styles.reviewGrid}>
                     <span>Terminal state</span><strong>{strategyReceipt.terminalState}</strong>
                     <span>Finality</span><strong>{strategyReceipt.finalityStatus}</strong>
-                    <span>Solver</span><strong>{strategyReceipt.solverId}</strong>
+                    <span>Solver</span><strong title={strategyReceipt.solverId}>{solverDisplayName(strategyReceipt.solverId)}</strong>
                     <span>Receipt</span><strong title={strategyReceipt.receiptHash}>{compact(strategyReceipt.receiptHash)}</strong>
                     <span>Executed at</span><strong>{strategyReceipt.executedAtValue}</strong>
                   </div>

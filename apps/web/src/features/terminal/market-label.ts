@@ -20,6 +20,17 @@ export function marketAssetLabel(value: string | null): string {
   return value.length > 22 ? `${value.slice(0, 10)}...${value.slice(-6)}` : value;
 }
 
+export function marketProfileName(displayName: string): string {
+  const name = displayName.replace(/^(?:solana[ -]devnet|base[ -]sepolia|arbitrum[ -]sepolia|hyperliquid[ -]testnet)\s+/i, "");
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+export function solverDisplayName(solverId: string): string {
+  const reference = /^(solana-devnet|base-sepolia|arbitrum-sepolia|hyperliquid-testnet)-(?:multi-strategy|reference)-solver$/.exec(solverId);
+  if (reference) return `${chainOf(reference[1])?.name ?? reference[1]} solver`;
+  return solverId.length > 36 ? `${solverId.slice(0, 22)}...${solverId.slice(-8)}` : solverId;
+}
+
 const STRATEGY_NAMES: readonly [string, string][] = [
   ["cash-and-carry", "Cash and carry"],
   ["reverse-basis", "Reverse basis"],
