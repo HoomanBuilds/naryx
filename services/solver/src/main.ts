@@ -844,6 +844,7 @@ function shutdown(): void {
   stopSealedAuctions?.();
   stopPrivateRfqs?.();
   stopNettingBatches?.();
+  stopCrossBatchClearing?.();
   if (clockRefresh !== undefined) clearInterval(clockRefresh);
   void Promise.allSettled([
     close(quoteServer), close(executorServer), close(arbitrumExecutorServer), baseSolver?.close(),
