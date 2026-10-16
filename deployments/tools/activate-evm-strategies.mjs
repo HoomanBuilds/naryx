@@ -772,7 +772,7 @@ for (const network of networks) {
     spot: { adapter: ref.reverseSpot, venue: ref.spotVenue, market: ref.spotMarket },
     hedge: { adapter: ref.reversePerp, venue: ref.treasuryVenue, market: ref.perpMarket },
     minimumPostHealthFactor: 2n * 10n ** 18n,
-    borrowCollateralRatioBps: 15_000n,
+    borrowCollateralRatioBps: 30_000n,
     annualBorrowRatePpm: 100_000n,
     holdingDurationSeconds: 86_400n,
     adapters: [
