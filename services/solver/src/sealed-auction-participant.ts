@@ -569,6 +569,10 @@ export class SealedAuctionParticipant {
         record = this.#journal.get(record.auctionHash) as SealedAuctionJournalRecord;
       }
       if (record.status !== 'REVEALED' || record.awardState !== 'PENDING') return;
+      if (currentValue(record.definition.timeUnit, this.#clockMs()) >= record.definition.settlementDeadlineValue) {
+        this.#journal.markAward(record.auctionHash, 'NOT_AWARDED', this.#clockMs());
+        return;
+      }
       const view = await this.#relay.view(record.auctionHash);
       if (view.phase !== 'CLOSED') return;
       if (view.outcome !== 'AWARDED' || view.winner?.solverId !== this.#solverId) {

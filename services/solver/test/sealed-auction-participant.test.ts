@@ -16,6 +16,41 @@ import {
 const START_MS = 1_900_000_000_000;
 const START_S = BigInt(START_MS / 1_000);
 
+test('an expired revealed auction stops retrying its settlement award', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-sealed-expired-'));
+  const journal = new SqliteSealedAuctionJournal(join(directory, 'journal.sqlite'));
+  const definition = sealedAuctionDefinition({
+    version: 1, auctionId: 'expired-award', environment: 'testnet', orderHash: '55'.repeat(32),
+    eligibleSolverIds: ['solver-a'], timeUnit: 'EVM_UNIX_SECONDS',
+    commitDeadlineValue: START_S + 10n, revealDeadlineValue: START_S + 20n,
+    settlementDeadlineValue: START_S + 30n, minimumValidReveals: 1,
+  });
+  const auctionHash = toHex(sealedAuctionHash(definition));
+  journal.discover({ auctions: [{ cursor: 1, auctionHash, definition, createdAtMs: START_MS }], nextCursor: 1 }, START_MS);
+  journal.saveOpening(auctionHash, '77'.repeat(32), 1n, new Uint8Array(32).fill(1), START_MS);
+  journal.mark(auctionHash, 'OPENING_READY', 'COMMITTED', START_MS);
+  journal.mark(auctionHash, 'COMMITTED', 'REVEALED', START_MS + 11_000);
+  const participant = new SealedAuctionParticipant({
+    solverId: 'solver-a', journal, clockMs: () => START_MS + 30_000,
+    quotes: { quote: async () => assert.fail('an expired award must not request a quote') },
+    relay: {
+      poll: async () => ({ auctions: [], nextCursor: 1 }),
+      commit: async () => assert.fail('unexpected commitment'),
+      reveal: async () => assert.fail('unexpected reveal'),
+      view: async () => assert.fail('an expired award must not poll the relay'),
+      finalizeAward: async () => assert.fail('an expired award must not finalize'),
+    },
+  });
+  try {
+    await participant.tick();
+    assert.equal(journal.get(auctionHash)?.awardState, 'NOT_AWARDED');
+    assert.equal(journal.active().length, 0);
+  } finally {
+    journal.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('auction relay authenticates private solver actions but not public view and award routes', async () => {
   const definition = sealedAuctionDefinition({
     version: 1, auctionId: 'transport-auction', environment: 'testnet', orderHash: '55'.repeat(32),
