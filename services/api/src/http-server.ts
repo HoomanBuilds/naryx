@@ -122,6 +122,7 @@ import {
   type StoredNativeStrategyPosition,
   type StoredEvmStrategyPosition,
   type StoredStrategyPackageQuote,
+  type StoredStrategyPackageAdmission,
   type StoredSolanaStrategyPosition,
 } from "./strategy-package-store.js";
 import { StrategyOrderIntakeError } from "./strategy-order-intake.js";
@@ -209,6 +210,7 @@ interface GeneralizedStrategyExecutionPort {
   evmStrategyPositionsByOwner?(owner: string): readonly StoredEvmStrategyPosition[];
   solanaStrategyPositionsByOwner?(owner: string): readonly StoredSolanaStrategyPosition[];
   quotes?(orderHashHex: string): readonly StoredStrategyPackageQuote[];
+  admissionByQuote?(quoteHashHex: string): StoredStrategyPackageAdmission | undefined;
   recordEvmStrategyPosition?(evidence: import('./strategy-package-store.js').EvmStrategyPositionEvidence): StoredEvmStrategyPosition;
   recordSolanaStrategyPosition?(evidence: import('./strategy-package-store.js').SolanaStrategyPositionEvidence): StoredSolanaStrategyPosition;
   recordReceipt?(receipt: import('@naryx/protocol-types').StrategyPackageReceiptInput): { readonly created: boolean; readonly receiptHashHex: string };
@@ -221,6 +223,27 @@ type NativeHyperliquidStrategyRuntime = Pick<
   baseAsset: NonNullable<HyperliquidTestnetRuntimeConfig["orderContext"]>["baseAsset"];
   quoteAsset: NonNullable<HyperliquidTestnetRuntimeConfig["orderContext"]>["quoteAsset"];
 }>;
+
+export function bindNativeHyperliquidStrategyRuntime(
+  runtime: NativeHyperliquidStrategyRuntime,
+  admission: StoredStrategyPackageAdmission,
+  profiles: ReturnType<HyperliquidNativeStrategyOrderPort["profiles"]>,
+): NativeHyperliquidStrategyRuntime {
+  const order = admission.order;
+  if (Buffer.from(order.seriesManifestHash).toString("hex") === runtime.seriesManifestHash
+    && Buffer.from(order.executionClassManifestHash).toString("hex") === runtime.executionClassManifestHash) return runtime;
+  const profile = profiles.find((candidate) => candidate.templateId === order.templateId
+    && candidate.templateVersion === order.templateVersion && candidate.seriesId === order.seriesId
+    && candidate.seriesVersion === order.seriesVersion && bytesEqual(candidate.seriesManifestHash, order.seriesManifestHash)
+    && candidate.executionClassId === order.executionClassId && candidate.executionClassVersion === order.executionClassVersion
+    && bytesEqual(candidate.executionClassManifestHash, order.executionClassManifestHash)
+    && bytesEqual(candidate.packageTemplateManifestHash, order.packageTemplateManifestHash)
+    && candidate.settlementAccount === order.settlementAccount);
+  if (profile === undefined) throw new Error("No reviewed native runtime profile matches the admitted strategy.");
+  return { ...runtime, domain: profile.domain, baseAsset: profile.baseAsset, quoteAsset: profile.quoteAsset,
+    seriesManifestHash: Buffer.from(profile.seriesManifestHash).toString("hex"),
+    executionClassManifestHash: Buffer.from(profile.executionClassManifestHash).toString("hex") };
+}
 
 function privateRfqOrderContext(order: StrategyPackageOrder, graph: PackageGraph) {
   const domain = graph.legs[0]?.domain;
@@ -697,7 +720,10 @@ export function createPrivateTerminalRequestHandler(
             reject(response, 503, "ATTEMPT_RETRIEVAL_UNAVAILABLE", "Native Hyperliquid runtime binding is unavailable.");
             return;
           }
-          const runtime = nativeHyperliquidStrategyRuntime;
+          const admission = generalizedStrategyExecutions.admissionByQuote?.(nativeAttempt.quoteHashHex);
+          const runtime = admission === undefined ? nativeHyperliquidStrategyRuntime
+            : bindNativeHyperliquidStrategyRuntime(nativeHyperliquidStrategyRuntime, admission,
+              hyperliquidNativeStrategyOrders?.profiles() ?? []);
           sendJson(response, 200, {
             version: 2,
             attempt: nativeAttempt,
