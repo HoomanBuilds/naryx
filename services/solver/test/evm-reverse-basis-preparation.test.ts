@@ -125,7 +125,8 @@ class Chain implements EvmOptionSpreadReadPort {
     }
     if (request.address === LENDING_ADAPTER && request.functionName === 'accountData') {
       const available = this.collateralBase * 2n / 3n;
-      return [this.collateralBase, 0n, available, 8_000n, 7_500n, (2n ** 256n) - 1n];
+      return { totalCollateralBase: this.collateralBase, totalDebtBase: 0n, availableBorrowsBase: available,
+        currentLiquidationThreshold: 8_000n, ltv: 7_500n, healthFactor: (2n ** 256n) - 1n };
     }
     if (request.address === LENDING_ADAPTER && request.functionName === 'managedCollateralPrincipalAtoms') return 0n;
     if (request.address === QUOTE && request.functionName === 'allowance') return 0n;

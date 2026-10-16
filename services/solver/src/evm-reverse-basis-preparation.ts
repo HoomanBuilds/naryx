@@ -213,12 +213,12 @@ function field(value: unknown, index: number, context: string): bigint {
 
 function accountData(value: unknown): AccountData {
   return Object.freeze({
-    totalCollateralBase: field(value, 0, 'total collateral'),
-    totalDebtBase: field(value, 1, 'total debt'),
-    availableBorrowsBase: field(value, 2, 'available borrows'),
-    currentLiquidationThreshold: field(value, 3, 'liquidation threshold'),
+    totalCollateralBase: field(value, 0, 'totalCollateralBase'),
+    totalDebtBase: field(value, 1, 'totalDebtBase'),
+    availableBorrowsBase: field(value, 2, 'availableBorrowsBase'),
+    currentLiquidationThreshold: field(value, 3, 'currentLiquidationThreshold'),
     ltv: field(value, 4, 'ltv'),
-    healthFactor: field(value, 5, 'health factor'),
+    healthFactor: field(value, 5, 'healthFactor'),
   });
 }
 

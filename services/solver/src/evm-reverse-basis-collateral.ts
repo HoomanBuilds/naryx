@@ -1,5 +1,6 @@
 import {
   compileEvmPackageCollateralManagement,
+  structField,
   type EvmPackageCollateralAction,
   type EvmPackageCollateralManagementPlan,
 } from '@naryx/adapter-evm';
@@ -73,7 +74,7 @@ function hash(value: unknown, context: string): Hex {
 
 function tupleField(value: unknown, index: number, context: string): unknown {
   requireCondition(Array.isArray(value) || (typeof value === 'object' && value !== null), `${context} is invalid`);
-  return Array.isArray(value) ? value[index] : Object.values(value)[index];
+  return structField(value, index, context);
 }
 
 function natural(value: unknown, context: string): bigint {
@@ -83,9 +84,9 @@ function natural(value: unknown, context: string): bigint {
 
 function accountData(value: unknown): AccountData {
   return Object.freeze({
-    totalCollateralBase: natural(tupleField(value, 0, 'total collateral'), 'total collateral'),
-    totalDebtBase: natural(tupleField(value, 1, 'total debt'), 'total debt'),
-    healthFactor: natural(tupleField(value, 5, 'health factor'), 'health factor'),
+    totalCollateralBase: natural(tupleField(value, 0, 'totalCollateralBase'), 'total collateral'),
+    totalDebtBase: natural(tupleField(value, 1, 'totalDebtBase'), 'total debt'),
+    healthFactor: natural(tupleField(value, 5, 'healthFactor'), 'health factor'),
   });
 }
 
@@ -98,8 +99,8 @@ function accountDataHash(value: unknown): Hex {
   ] }], [{
     totalCollateralBase: data.totalCollateralBase,
     totalDebtBase: data.totalDebtBase,
-    availableBorrowsBase: natural(tupleField(value, 2, 'available borrows'), 'available borrows'),
-    currentLiquidationThreshold: natural(tupleField(value, 3, 'liquidation threshold'), 'liquidation threshold'),
+    availableBorrowsBase: natural(tupleField(value, 2, 'availableBorrowsBase'), 'available borrows'),
+    currentLiquidationThreshold: natural(tupleField(value, 3, 'currentLiquidationThreshold'), 'liquidation threshold'),
     ltv: natural(tupleField(value, 4, 'ltv'), 'ltv'),
     healthFactor: data.healthFactor,
   }]));
@@ -184,7 +185,7 @@ export class EvmReverseBasisCollateralService {
     ]);
     requireCondition(adapterCode !== undefined && valid === true,
       'lending adapter is not the factory-validated package instance');
-    requireCondition(tupleField(packageStateValue, 7, 'package state') === false, 'package must be inactive');
+    requireCondition(tupleField(packageStateValue, 7, 'active') === false, 'package must be inactive');
     const observed = accountData(accountDataValue);
     requireCondition(observed.totalDebtBase === 0n, 'lending adapter still has debt');
     const principalAtoms = natural(principalValue, 'managed collateral principal');
