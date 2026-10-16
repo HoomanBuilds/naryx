@@ -210,9 +210,11 @@ async function readSpot(
     code(input, input.lendingPool, 'lending pool'),
   ]);
   const tokens = new Set([getAddress(String(token0)), getAddress(String(token1))]);
+  const poolFee = typeof feeValue === 'number' && Number.isSafeInteger(feeValue)
+    ? BigInt(feeValue) : natural(feeValue, 'pool fee');
   requireCondition(getAddress(String(factoryPool)) === pool && getAddress(String(poolFactory)) === factory
     && getAddress(String(quoterFactory)) === factory && tokens.has(collateral) && tokens.has(quote)
-    && natural(feeValue, 'pool fee') === BigInt(input.spotPoolFee), 'spot venue identity changed');
+    && poolFee === BigInt(input.spotPoolFee), 'spot venue identity changed');
   const amount = natural(tuple(quoted, 4, 'spot quote')[0], 'spot quote amount');
   requireCondition(amount > 0n, 'spot quote is empty');
   const priceNumerator = opening ? amount : amount;

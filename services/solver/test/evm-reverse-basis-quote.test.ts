@@ -62,7 +62,7 @@ class Chain implements EvmOptionSpreadReadPort {
       if (request.functionName === 'factory') return SPOT_FACTORY;
       if (request.functionName === 'token0') return BASE;
       if (request.functionName === 'token1') return QUOTE;
-      if (request.functionName === 'fee') return 3_000n;
+      if (request.functionName === 'fee') return 3_000;
     }
     if (request.address === SPOT_QUOTER) {
       if (request.functionName === 'factory') return SPOT_FACTORY;

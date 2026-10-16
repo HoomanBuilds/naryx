@@ -46,6 +46,7 @@ const lendingMarket = versionedManifestRef('ntbase-lending', 1, hash('9'));
 const hedgeMarket = versionedManifestRef('ntbase-perpetual', 1, hash('a'));
 
 class Chain implements EvmOptionSpreadReadPort {
+  poolFee: number | bigint = 3_000;
   readonly codes = new Map<string, Hex>([
     [COLLATERAL, codeHash('1')], [QUOTE, codeHash('2')], [SPOT_FACTORY, codeHash('3')],
     [SPOT_POOL, codeHash('4')], [SPOT_QUOTER, codeHash('5')], [LENDING_POOL, codeHash('6')],
@@ -62,7 +63,7 @@ class Chain implements EvmOptionSpreadReadPort {
       if (request.functionName === 'factory') return SPOT_FACTORY;
       if (request.functionName === 'token0') return COLLATERAL;
       if (request.functionName === 'token1') return QUOTE;
-      if (request.functionName === 'fee') return 3_000n;
+      if (request.functionName === 'fee') return this.poolFee;
     }
     if (request.address === SPOT_QUOTER) {
       if (request.functionName === 'factory') return SPOT_FACTORY;
@@ -161,7 +162,8 @@ function pricing(chain: Chain): EvmCollateralConversionPricingInput {
 }
 
 test('prices an atomic collateral conversion and rejects a swap above the signed buy limit', async () => {
-  const port = createEvmCollateralConversionGeneralizedPricing(pricing(new Chain()));
+  const chain = new Chain();
+  const port = createEvmCollateralConversionGeneralizedPricing(pricing(chain));
   const terms = await port.quote({ documents: documents(102n), currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW } });
   assert.equal(terms.legEconomics.length, 3);
   assert.equal(terms.legEconomics[0]?.grossNotional.atoms, 101_000_000n);
@@ -172,4 +174,8 @@ test('prices an atomic collateral conversion and rejects a swap above the signed
     port.quote({ documents: documents(100n), currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW } }),
     /executable collateral price violates the signed limit/,
   );
+  chain.poolFee = 3_001;
+  await assert.rejects(port.quote({ documents: documents(102n), currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW } }), /spot venue identity changed/);
+  chain.poolFee = Number.NaN;
+  await assert.rejects(port.quote({ documents: documents(102n), currentTime: { unit: 'EVM_UNIX_SECONDS', value: NOW } }), /pool fee is invalid/);
 });
