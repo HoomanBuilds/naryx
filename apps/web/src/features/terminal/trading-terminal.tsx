@@ -2,6 +2,7 @@
 
 import { Fragment, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
 import { encodeFunctionData, erc20Abi, formatEther, parseAbi } from "viem";
 import { useBalance, useReadContract } from "wagmi";
 import { fixtureMarketFeed } from "./market-feed";
@@ -81,6 +82,9 @@ import {
 } from "./strategy-presets";
 import styles from "./trading-terminal.module.css";
 import { randomId } from "./secure-context";
+import { ownerStrategyReceipts } from "./strategy-receipt-history";
+import { formatAtomicAmount } from "./format";
+import { marketProfileName } from "./market-label";
 
 /** How long a prepared Devnet review stays signable. */
 const REVIEW_TTL_MS = 45_000;
@@ -1823,7 +1827,23 @@ function BottomWorkspace({
   const activeWorkspace =
     snapshot.workspaces.find((workspace) => workspace.tab === activeTab) ??
     snapshot.workspaces[0];
-  const { selectedDomain } = useTerminal();
+  const { selectedDomain, publicApiBaseUrl } = useTerminal();
+  const evmWallet = useEvmWallet();
+  const solanaWallet = useSolanaWallet();
+  const receiptOwner = selectedDomain === "solana" ? solanaWallet.selectedAccount?.address ?? null
+    : evmWallet.account?.toLowerCase() ?? null;
+  const showOwnerHistory = (activeWorkspace.tab === "receipts" || activeWorkspace.tab === "history")
+    && receiptOwner !== null && publicApiBaseUrl !== null;
+  const ownerHistory = useQuery({
+    queryKey: ["owner-strategy-receipts", publicApiBaseUrl, receiptOwner],
+    enabled: showOwnerHistory,
+    refetchInterval: showOwnerHistory ? 15_000 : false,
+    queryFn: ({ signal }) => {
+      if (publicApiBaseUrl === null || receiptOwner === null) throw new Error("Connect a wallet to read its strategy receipts.");
+      return ownerStrategyReceipts(publicApiBaseUrl, receiptOwner, signal);
+    },
+  });
+  const ownerReceipts = (ownerHistory.data ?? []).filter((receipt) => onLane({ domainIds: receipt.domainIds }, selectedDomain));
   const walletPackages = usePositions();
   const walletStrategies = useStrategyPositions();
   const positionRows = [
@@ -1850,6 +1870,8 @@ function BottomWorkspace({
       <div className={styles.workspaceTabs} role="tablist" aria-label="Orders and positions" onKeyDown={handleTablistKeys}>
         {snapshot.workspaces.map((workspace) => {
           const count = workspace.tab === "positions" ? positionRows.length
+            : (workspace.tab === "receipts" || workspace.tab === "history") && receiptOwner !== null
+              && ownerHistory.data !== undefined ? ownerReceipts.length
             : workspace.tab === "receipts" && lifecycle ? lifecycle.receipts.length : workspace.count;
           return (
             <button
@@ -1930,7 +1952,51 @@ function BottomWorkspace({
             ) : null}
           </p>
         ) : null}
-        <table className={styles.dataTable}>
+        {showOwnerHistory ? (
+          <>
+            <p className={styles.inlineNotice} role="status">
+              Recent recorded strategy executions for this wallet on {DOMAIN_META[selectedDomain].label}.
+              {ownerHistory.isFetching ? " Refreshing receipts." : ""}
+              {ownerHistory.isError ? " Receipt history is unavailable. Cached rows may be stale." : ""}
+            </p>
+            <table className={styles.dataTable} aria-label="Wallet strategy executions">
+              <thead><tr>
+                <th scope="col">Receipt</th><th scope="col">Strategy</th><th scope="col">Action</th>
+                <th scope="col">Finality</th><th scope="col">Evidence</th>
+                <th scope="col" className={styles.numericColumn}>Explicit costs</th><th scope="col">Recorded</th>
+              </tr></thead>
+              <tbody>
+                {ownerReceipts.map((receipt) => (
+                  <tr key={receipt.receiptHash}>
+                    <td className={styles.monoCell}>
+                      <a href={`${publicApiBaseUrl.replace(/\/+$/, "")}/v1/strategy-receipts/${receipt.receiptHash}`}
+                        title={receipt.receiptHash} target="_blank" rel="noreferrer">
+                        {compact(receipt.receiptHash, 10, 6)}
+                      </a>
+                    </td>
+                    <td title={receipt.templateId}>{marketProfileName(receipt.templateId.replace(/-v\d+$/, "").replaceAll("-", " "))}</td>
+                    <td>{receipt.lifecycleAction.replaceAll("_", " ")}</td>
+                    <td title={receipt.terminalState}>{receipt.finalityStatus.replaceAll("_", " ")}</td>
+                    <td>{receipt.executionEvidence.evidenceGrades.map((grade) => grade.replaceAll("_", " ")).join(", ")}</td>
+                    <td className={styles.numericColumn}>{formatAtomicAmount(receipt.executionEconomics.explicitCostAtoms,
+                      receipt.executionEconomics.quoteAssetDecimals, receipt.executionEconomics.quoteAssetId)}</td>
+                    <td title={new Date(receipt.recordedAtMs).toISOString()}>{new Date(receipt.recordedAtMs).toLocaleString("en-US", {
+                      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false,
+                    })}</td>
+                  </tr>
+                ))}
+                {ownerReceipts.length === 0 ? <tr className={styles.emptyRow}><td colSpan={7}>
+                  <div className={styles.emptyState}>
+                    <strong>{ownerHistory.isPending ? "Reading wallet receipts" : ownerHistory.isError ? "Receipt history unavailable" : "No recorded strategy executions"}</strong>
+                    <p>{ownerHistory.isError ? "Refresh the tab to retry. Missing rows are not confirmed empty."
+                      : "The latest 50 wallet receipts are filtered to this network. Executions appear after the service records their settlement evidence."}</p>
+                  </div>
+                </td></tr> : null}
+              </tbody>
+            </table>
+          </>
+        ) : null}
+        {!showOwnerHistory || lifecycle || showNetworkEvidence ? <table className={styles.dataTable}>
           <thead>
             <tr>
               {(showReceipts && lifecycle ? LIFECYCLE_RECEIPT_COLUMNS : activeWorkspace.columns).map((column) => (
@@ -1990,7 +2056,7 @@ function BottomWorkspace({
               </tr>
             )}
           </tbody>
-        </table>
+        </table> : null}
       </div>
     </section>
   );
