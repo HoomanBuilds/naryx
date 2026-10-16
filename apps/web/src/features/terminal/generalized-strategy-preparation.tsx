@@ -6788,7 +6788,7 @@ export function GeneralizedStrategyPreparationPanel({
                     <small>{quoteOriginLabel(candidate.origin)}</small>
                   </span>
                   <span><small>Net outcome</small><strong title={quote.quoteAsset}>{formatAtomicAmount(quote.netOutcomeAtoms, quote.quoteDecimals, quoteAssetLabel)}</strong></span>
-                  <span><small>Total cost</small><strong title={quote.quoteAsset}>{formatAtomicAmount(totalCost, quote.quoteDecimals, quoteAssetLabel)}</strong></span>
+                  <span><small>Est. costs</small><strong title={quote.quoteAsset}>{formatAtomicAmount(totalCost, quote.quoteDecimals, quoteAssetLabel)}</strong></span>
                   <span><small>Margin</small><strong title={quote.quoteAsset}>{formatAtomicAmount(quote.marginDeltaAtoms, quote.quoteDecimals, quoteAssetLabel)}</strong></span>
                   <span><small>Settlement</small><strong>{quote.settlementClass.replaceAll("_", " ")}</strong></span>
                   <span><small>Valid until</small><strong>{expiryText(quote.validUntilUnit, quote.validUntilValue)}</strong></span>
@@ -6796,7 +6796,7 @@ export function GeneralizedStrategyPreparationPanel({
               );
             })}
           </div>
-          <p className={styles.fieldContext}>Quotes are ranked by exact net outcome only when their quote asset and decimals match. Selecting one does not sign or execute it.</p>
+          <p className={styles.fieldContext}>Quotes are compared by quoted net outcome only when their asset and decimals match. Venue costs are estimates within your signed caps. Selecting a quote does not execute it.</p>
         </div>
       ) : null}
       {quoteReview ? (
@@ -6805,7 +6805,7 @@ export function GeneralizedStrategyPreparationPanel({
             <div><span>Net outcome</span><strong>{formatAtomicAmount(quoteReview.netOutcomeAtoms, quoteReview.quoteDecimals, quoteReview.quoteAsset)}</strong></div>
             <div><span>Gross notional</span><strong>{formatAtomicAmount(quoteReview.grossNotionalAtoms, quoteReview.quoteDecimals, quoteReview.quoteAsset)}</strong></div>
             <div><span>Margin delta</span><strong>{formatAtomicAmount(quoteReview.marginDeltaAtoms, quoteReview.quoteDecimals, quoteReview.quoteAsset)}</strong></div>
-            <div><span>Venue costs</span><strong>{formatAtomicAmount(quoteReview.passThroughCostAtoms, quoteReview.quoteDecimals, quoteReview.quoteAsset)}</strong></div>
+            <div><span>Venue costs (est.)</span><strong>{formatAtomicAmount(quoteReview.passThroughCostAtoms, quoteReview.quoteDecimals, quoteReview.quoteAsset)}</strong></div>
             <div><span>Service fees</span><strong>{formatAtomicAmount(quoteReview.serviceFeeAtoms, quoteReview.quoteDecimals, quoteReview.quoteAsset)}</strong></div>
             <div><span>Residual value</span><strong>{formatAtomicAmount(quoteReview.residualValueAtoms, quoteReview.quoteDecimals, quoteReview.quoteAsset)}</strong></div>
           </div>
