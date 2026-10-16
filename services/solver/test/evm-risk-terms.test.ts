@@ -59,6 +59,7 @@ test('risk terms refuse insufficient post-spend balance and margin', async () =>
   } as const;
   await assert.rejects(evmTestnetRiskTerms(input), /lacks quote balance/);
   await assert.rejects(evmTestnetRiskTerms({ ...input, chain: chain(10_000_000n), marginQuoteAtoms: 999_999n }), /margin is below/);
+  await assert.rejects(evmTestnetRiskTerms({ ...input, chain: chain(0n), marginQuoteAtoms: 999_999n }), /margin is below/);
 });
 
 test('risk identity rejects unsupported chains and duplicate dependencies', () => {

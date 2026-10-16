@@ -1,9 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { commitmentHash, stringifyProtocolJson } from "@naryx/protocol-types";
-import { HttpStrategyPreparationClient } from "../src/index.js";
+import { HttpStrategyPreparationClient, StrategyPreparationClientError } from "../src/index.js";
 
 const QUOTE_HASH = "ab".repeat(32);
+
+test("strategy preparation exposes only recognized actionable refusals", async () => {
+  for (const [message, code] of [
+    ["strategy account lacks quote balance after maximum spend for recovery", "ACCOUNT_FUNDING_REQUIRED"],
+    ["quoted margin is below the risk-policy floor", "MINIMUM_MARGIN_REQUIRED"],
+    ["EVM calendar spread preparation refused: order, quote, or route expired", "QUOTE_EXPIRED"],
+    ["private infrastructure error", "UPSTREAM_REJECTED"],
+  ]) {
+    const client = new HttpStrategyPreparationClient("http://127.0.0.1:8788", async () =>
+      new Response(JSON.stringify({ error: { code: "PREPARATION_REJECTED", message } }), {
+        status: 400, headers: { "Content-Type": "application/json" },
+      }));
+    await assert.rejects(client.prepare(QUOTE_HASH), (error: unknown) =>
+      error instanceof StrategyPreparationClientError && error.code === code
+      && !error.message.includes("private infrastructure error"));
+  }
+});
 
 test("strategy preparation client accepts only loopback and verifies the returned quote", async () => {
   assert.throws(() => new HttpStrategyPreparationClient("https://solver.example"), /loopback/);

@@ -1652,7 +1652,8 @@ export function createPrivateTerminalRequestHandler(
         });
       } catch (error) {
         if (error instanceof StrategyPreparationClientError) {
-          const status = error.code === "NOT_FOUND" ? 404 : error.code === "INVALID_REQUEST" ? 400 : 502;
+          const status = error.code === "NOT_FOUND" ? 404 : error.code === "INVALID_REQUEST" ? 400
+            : error.code === "ACCOUNT_FUNDING_REQUIRED" || error.code === "MINIMUM_MARGIN_REQUIRED" || error.code === "QUOTE_EXPIRED" ? 409 : 502;
           reject(response, status, error.code, error.message);
           return;
         }

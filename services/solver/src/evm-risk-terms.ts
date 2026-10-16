@@ -69,6 +69,7 @@ export async function evmTestnetRiskTerms(input: Readonly<{
   });
   let reservedRecoveryQuoteAtoms = 0n;
   if (input.riskIncreasing) {
+    requireCondition(input.marginQuoteAtoms >= MINIMUM_RECOVERY_RESERVE, 'quoted margin is below the risk-policy floor');
     const balance = await input.chain.readContract({
       address: accountingToken,
       abi: BALANCE_ABI,
@@ -77,7 +78,6 @@ export async function evmTestnetRiskTerms(input: Readonly<{
     });
     requireCondition(typeof balance === 'bigint' && balance >= maximumQuoteSpend + MINIMUM_RECOVERY_RESERVE,
       'strategy account lacks quote balance after maximum spend for recovery');
-    requireCondition(input.marginQuoteAtoms >= MINIMUM_RECOVERY_RESERVE, 'quoted margin is below the risk-policy floor');
     reservedRecoveryQuoteAtoms = balance - maximumQuoteSpend;
   }
   return Object.freeze({

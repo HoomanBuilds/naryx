@@ -23,7 +23,8 @@ export interface GeneralizedStrategyPreparationPort {
 }
 
 export class StrategyPreparationClientError extends Error {
-  readonly code: 'INVALID_ENDPOINT' | 'INVALID_REQUEST' | 'NOT_FOUND' | 'UPSTREAM_REJECTED' | 'INVALID_RESPONSE';
+  readonly code: 'INVALID_ENDPOINT' | 'INVALID_REQUEST' | 'NOT_FOUND' | 'UPSTREAM_REJECTED' | 'INVALID_RESPONSE'
+    | 'ACCOUNT_FUNDING_REQUIRED' | 'MINIMUM_MARGIN_REQUIRED' | 'QUOTE_EXPIRED';
 
   constructor(code: StrategyPreparationClientError['code'], message: string) {
     super(message);
@@ -122,6 +123,22 @@ export class HttpStrategyPreparationClient implements GeneralizedStrategyPrepara
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     if (response.status === 404) throw new StrategyPreparationClientError('NOT_FOUND', 'No admitted strategy package exists for this quote');
+    if (response.status === 400) {
+      const body = await boundedJson(response) as { error?: { code?: unknown; message?: unknown } };
+      if (body?.error?.code === 'PREPARATION_REJECTED') {
+        if (body.error.message === 'strategy account lacks quote balance after maximum spend for recovery') {
+          throw new StrategyPreparationClientError('ACCOUNT_FUNDING_REQUIRED',
+            'Fund the isolated strategy account with the required test quote tokens plus its recovery reserve, then request a fresh quote.');
+        }
+        if (body.error.message === 'quoted margin is below the risk-policy floor') {
+          throw new StrategyPreparationClientError('MINIMUM_MARGIN_REQUIRED',
+            'Increase the package size until its quoted margin is at least 1 test USDC. Nothing was signed or submitted.');
+        }
+        if (body.error.message === 'EVM calendar spread preparation refused: order, quote, or route expired') {
+          throw new StrategyPreparationClientError('QUOTE_EXPIRED', 'This quote expired. Request a fresh quote before preparing the package.');
+        }
+      }
+    }
     if (!response.ok) throw new StrategyPreparationClientError('UPSTREAM_REJECTED', `strategy preparation failed with HTTP ${response.status}`);
     return validateResponse(await boundedJson(response), quoteHash);
   }
