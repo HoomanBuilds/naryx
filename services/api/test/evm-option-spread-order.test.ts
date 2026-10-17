@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { AddressInfo } from "node:net";
 import {
   adapterRef,
   assetRef,
@@ -10,6 +11,7 @@ import {
   manifestHash,
   packageGraph,
   packageGraphHash,
+  parseProtocolJson,
   strategyPackageOrder,
   strategyPackageOrderHash,
   stringifyProtocolJson,
@@ -21,6 +23,7 @@ import {
 } from "@naryx/protocol-types";
 import {
   createEvmOptionSpreadOrderPort,
+  createPrivateTerminalServer,
   EvmOptionSpreadOrderError,
   loadEvmOptionSpreadProfiles,
   type EvmOptionSpreadProfile,
@@ -112,6 +115,31 @@ function request(lifecycleAction: "ENTRY" | "EXIT") {
     ...(lifecycleAction === "ENTRY" ? {} : { expectedStrategyStateHash: "61".repeat(32) }),
   };
 }
+
+test('HTTP option creation returns the exact admitted graph and order without lossy integer serialization', async () => {
+  const options: Parameters<typeof createPrivateTerminalServer> = [{ host: '127.0.0.1', port: 0, terminalOrigin: 'http://localhost:3000' }];
+  options[26] = createEvmOptionSpreadOrderPort({ profiles: [profile()], intake, currentTimeSeconds: () => NOW_SECONDS });
+  options[31] = {
+    resolveAccount: async () => ({ chainId: 84532, factory: '0x3333333333333333333333333333333333333333', owner: OWNER, account: ACCOUNT, deployed: true }),
+    provision: async () => { throw new Error('Not used'); },
+  };
+  const server = createPrivateTerminalServer(...options);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/internal/terminal/evm-option-spread-orders/create`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request('ENTRY')),
+    });
+    assert.equal(response.status, 200);
+    const value = parseProtocolJson(await response.text()) as {
+      orderHash: string; graphHash: string; order: StrategyPackageOrderInput; graph: PackageGraphInput;
+    };
+    assert.equal(toHex(strategyPackageOrderHash(value.order)), value.orderHash);
+    assert.equal(toHex(packageGraphHash(value.graph)), value.graphHash);
+    assert.equal(value.order.economicQuantity.atoms, 1_000_000_000_000_000n);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
 
 test("loads a reviewed EVM profile and creates atomic option entry and exit orders", () => {
   const directory = mkdtempSync(join(tmpdir(), "naryx-evm-options-"));

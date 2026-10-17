@@ -1174,6 +1174,8 @@ export function createPrivateTerminalRequestHandler(
           profileId: created.profileId,
           orderHash: created.intake.orderHashHex,
           graphHash: created.intake.graphHashHex,
+          order: toProtocolJson(created.order),
+          graph: toProtocolJson(created.graph),
           templateId: created.order.templateId,
           lifecycleAction: created.order.lifecycleAction,
           seriesId: created.order.seriesId,

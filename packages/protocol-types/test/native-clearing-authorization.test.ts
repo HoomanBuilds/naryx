@@ -7,6 +7,7 @@ import {
   domainRef,
   manifestHash,
   nativeClearingMatchAuthorization,
+  nativeClearingAccount,
   nativeClearingPolicy,
   packageAllocation,
   packageAllocationHash,
@@ -149,6 +150,21 @@ test('native clearing authorization derives exact clearing sides from verified p
   assert.equal(authorization.quantityAtoms, 10n);
   assert.equal(authorization.priceTicks, 1_000n);
   assert.equal(authorization.validUntilValue, 90n);
+});
+
+test('native clearing account bindings preserve the owners and bind a distinct native settlement identity', () => {
+  const value = fixture();
+  const account = (owner: string, accountId: string) => nativeClearingAccount({ version: 1, policyHash: value.policy.policyHash,
+    accountId, ownerId: owner, collateralQuoteAtoms: 5_000n, cashBalanceQuoteAtoms: 0n, positionAtoms: 0n, sequence: 1n }, value.policy);
+  const base = { ...value, takerSettlementCommitment: value.taker, makerSettlementCommitment: value.maker,
+    fillSequence: 1n, currentExpiryUnit: 'SOLANA_SLOT' as const, currentExpiryValue: 50n };
+  const mapped = { ...base, takerClearingAccount: account('taker', 'native-taker'), makerClearingAccount: account('maker', 'native-maker') };
+  const result = nativeClearingMatchAuthorization(mapped);
+  assert.equal(result.longAccountId, 'native-taker');
+  assert.equal(result.shortAccountId, 'native-maker');
+  assert.notDeepEqual(result.authorizationHash, nativeClearingMatchAuthorization(base).authorizationHash);
+  assert.throws(() => nativeClearingMatchAuthorization({ ...base, takerClearingAccount: mapped.takerClearingAccount }), /both native/);
+  assert.throws(() => nativeClearingMatchAuthorization({ ...mapped, makerClearingAccount: account('third-party', 'native-maker') }), /consenting package owners/);
 });
 
 test('native clearing authorization rejects implied fills, mismatched commitments, and expiry', () => {

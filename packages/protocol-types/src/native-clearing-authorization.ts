@@ -33,7 +33,9 @@ import {
   type ProtocolId,
 } from './primitives.js';
 import {
+  nativeClearingAccount,
   nativeClearingPolicy,
+  type NativeClearingAccount,
   type NativeClearingPolicy,
 } from './native-package-clearing.js';
 import { packageGraph, packageGraphHash, type PackageGraphInput } from './package-graph.js';
@@ -54,6 +56,8 @@ export interface NativeClearingMatchAuthorizationInput {
   readonly currentExpiryValue: bigint;
   readonly takerGraph?: PackageGraphInput;
   readonly makerGraph?: PackageGraphInput;
+  readonly takerClearingAccount?: NativeClearingAccount;
+  readonly makerClearingAccount?: NativeClearingAccount;
 }
 
 function verifyEconomicUnit(
@@ -214,6 +218,22 @@ export function nativeClearingMatchAuthorization(
     throw new MalformedInputError('nativeClearingMatchAuthorization.commitments', 'settlement commitment is expired');
   }
 
+  if ((input.takerClearingAccount === undefined) !== (input.makerClearingAccount === undefined)) {
+    throw new MalformedInputError('nativeClearingMatchAuthorization.accounts', 'both native clearing account bindings are required');
+  }
+  let takerAccountId = taker.settlementAccount;
+  let makerAccountId = maker.settlementAccount;
+  if (input.takerClearingAccount !== undefined && input.makerClearingAccount !== undefined) {
+    const takerAccount = nativeClearingAccount(input.takerClearingAccount, policy);
+    const makerAccount = nativeClearingAccount(input.makerClearingAccount, policy);
+    if (takerAccount.ownerId !== taker.participantId || makerAccount.ownerId !== maker.participantId
+      || takerAccount.accountId === makerAccount.accountId) {
+      throw new MalformedInputError('nativeClearingMatchAuthorization.accounts', 'native clearing accounts differ from the consenting package owners');
+    }
+    takerAccountId = takerAccount.accountId;
+    makerAccountId = makerAccount.accountId;
+  }
+
   const takerIsLong = allocation.takerSide === 'BID';
   const payload = Object.freeze({
     version: NATIVE_CLEARING_MATCH_AUTHORIZATION_VERSION as 1,
@@ -223,10 +243,10 @@ export function nativeClearingMatchAuthorization(
     fillSequence,
     takerOrderId: allocation.takerOrderId,
     makerEntryId: fill.makerEntryId,
-    longAccountId: protocolId(takerIsLong ? taker.settlementAccount : maker.settlementAccount),
+    longAccountId: protocolId(takerIsLong ? takerAccountId : makerAccountId),
     longParticipantId: protocolId(takerIsLong ? taker.participantId : maker.participantId),
     longSettlementCommitmentHash: commitmentHash(takerIsLong ? takerHash : makerHash),
-    shortAccountId: protocolId(takerIsLong ? maker.settlementAccount : taker.settlementAccount),
+    shortAccountId: protocolId(takerIsLong ? makerAccountId : takerAccountId),
     shortParticipantId: protocolId(takerIsLong ? maker.participantId : taker.participantId),
     shortSettlementCommitmentHash: commitmentHash(takerIsLong ? makerHash : takerHash),
     quantityAtoms: fill.quantity,
