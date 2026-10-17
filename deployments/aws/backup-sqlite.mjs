@@ -5,8 +5,8 @@
 //
 //   node deployments/aws/backup-sqlite.mjs <data-dir> <destination-dir>
 import { createRequire } from 'node:module';
-import { copyFileSync, mkdirSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { closeSync, copyFileSync, lstatSync, mkdirSync, openSync, readSync, readdirSync } from 'node:fs';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const [dataArgument, destinationArgument] = process.argv.slice(2);
@@ -16,41 +16,49 @@ if (dataArgument === undefined || destinationArgument === undefined) {
 }
 const dataDir = resolve(dataArgument);
 const destination = resolve(destinationArgument);
+if (destination === dataDir || destination.startsWith(dataDir + sep)) {
+  throw new Error('Backup destination must be outside the data directory.');
+}
+process.umask(0o077);
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const Database = createRequire(join(repository, 'services/api/package.json'))('better-sqlite3');
 
-function files(directory, extension) {
+function files(directory) {
   return readdirSync(directory).flatMap((name) => {
     const path = join(directory, name);
-    if (statSync(path).isDirectory()) return files(path, extension);
-    return name.endsWith(extension) ? [path] : [];
+    const status = lstatSync(path);
+    if (status.isSymbolicLink()) return [];
+    if (status.isDirectory()) return files(path);
+    return status.isFile() ? [path] : [];
   });
 }
 
-let failures = 0;
-for (const source of files(dataDir, '.json')) {
-  const target = join(destination, relative(dataDir, source));
-  mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+function isDatabase(path) {
+  const descriptor = openSync(path, 'r');
   try {
-    copyFileSync(source, target);
-    process.stdout.write(`backed up ${relative(dataDir, source)}\n`);
-  } catch (error) {
-    failures += 1;
-    process.stderr.write(`failed ${relative(dataDir, source)}: ${error instanceof Error ? error.message : String(error)}\n`);
-  }
+    const header = Buffer.alloc(16);
+    return readSync(descriptor, header, 0, 16, 0) === 16 && header.toString('ascii') === 'SQLite format 3\0';
+  } finally { closeSync(descriptor); }
 }
-for (const source of files(dataDir, '.db')) {
-  const target = join(destination, relative(dataDir, source));
-  mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-  const db = new Database(source, { fileMustExist: true });
+
+let failures = 0;
+for (const source of files(dataDir)) {
+  let db;
   try {
-    await db.backup(target);
+    const database = isDatabase(source);
+    if (!database && !source.endsWith('.json')) continue;
+    const target = join(destination, relative(dataDir, source));
+    mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+    if (database) {
+      db = new Database(source, { readonly: true, fileMustExist: true });
+      await db.backup(target);
+    } else copyFileSync(source, target);
     process.stdout.write(`backed up ${relative(dataDir, source)}\n`);
   } catch (error) {
     failures += 1;
     process.stderr.write(`failed ${relative(dataDir, source)}: ${error instanceof Error ? error.message : String(error)}\n`);
   } finally {
-    db.close();
+    db?.close();
   }
 }
 process.exit(failures === 0 ? 0 : 1);
