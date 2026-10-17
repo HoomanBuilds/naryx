@@ -145,11 +145,15 @@ export async function loadHyperliquidTestnetPerUserRuntime(input: Readonly<{
     close();
     throw error;
   }
-  const select = async (attemptId: string) => {
-    const resolved = await input.attempts.resolve(attemptId);
-    if (resolved === undefined) throw new HyperliquidTestnetExecutorError('ATTEMPT_NOT_FOUND', 'attempt was not found');
-    const attempt = validateHyperliquidTestnetRuntimeAttempt(attemptId, resolved);
-    const binding = hyperliquidTestnetAttemptAccount(attempt);
+  const select = async (attemptId: string, identityOnly = false) => {
+    const binding = identityOnly && input.attempts.resolveAccountBinding !== undefined
+      ? await input.attempts.resolveAccountBinding(attemptId)
+      : await (async () => {
+        const resolved = await input.attempts.resolve(attemptId);
+        return resolved === undefined ? undefined
+          : hyperliquidTestnetAttemptAccount(validateHyperliquidTestnetRuntimeAttempt(attemptId, resolved));
+      })();
+    if (binding === undefined) throw new HyperliquidTestnetExecutorError('ATTEMPT_NOT_FOUND', 'attempt was not found');
     const entry = runtimes.get(binding.owner);
     if (entry === undefined || binding.owner !== binding.settlementAccount) {
       throw new HyperliquidTestnetExecutorError('INVALID_ATTEMPT',
@@ -159,10 +163,10 @@ export async function loadHyperliquidTestnetPerUserRuntime(input: Readonly<{
   };
   const executor: HyperliquidTestnetExecutorPort = {
     execute: async (request) => (await select(request.attemptId)).executor.execute(request),
-    status: async (request) => (await select(request.attemptId)).executor.status(request),
+    status: async (request) => (await select(request.attemptId, true)).executor.status(request),
   };
   const operator: HyperliquidTestnetLaneOperator = {
-    releaseLane: async (request) => (await select(request.attemptId)).runtime.releaseLane(request),
+    releaseLane: async (request) => (await select(request.attemptId, true)).runtime.releaseLane(request),
     recover: async (request) => (await select(request.attemptId)).runtime.recover(request),
     reconcileRecovery: async (request) => (await select(request.attemptId)).runtime.reconcileRecovery(request),
   };

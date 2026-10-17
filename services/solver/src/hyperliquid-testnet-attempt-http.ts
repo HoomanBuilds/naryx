@@ -9,7 +9,9 @@ import {
   type HyperliquidTestnetAttemptHandoff,
   type HyperliquidTestnetTrustedAttemptProvider,
 } from './hyperliquid-testnet-executor-http.js';
+import { hyperliquidTestnetAttemptAccount } from './hyperliquid-testnet-account-binding.js';
 import type {
+  StoredStrategyPackageDocuments,
   StrategyPackageProvider,
 } from './http-strategy-package-provider.js';
 import type { StrategyPreparationService } from './strategy-preparation-service.js';
@@ -402,6 +404,27 @@ implements HyperliquidTestnetTrustedAttemptProvider {
   async resolve(attemptId: string): Promise<HyperliquidTestnetAttemptHandoff | undefined> {
     if (SOURCE_ATTEMPT_ID.test(attemptId)) return this.#sourceAttempts.resolve(attemptId);
     if (!STRATEGY_ATTEMPT_ID.test(attemptId)) return this.#liveAttempts.resolve(attemptId);
+    const selected = await this.#selectedDocuments(attemptId);
+    if (selected === undefined) return undefined;
+    const { metadata, documents } = selected;
+    const prepared = await this.#preparations.prepareDocuments(documents);
+    return this.#handoff(attemptId, metadata, documents, prepared);
+  }
+
+  async resolveAccountBinding(attemptId: string): Promise<Readonly<{ owner: string; settlementAccount: string }> | undefined> {
+    if (!STRATEGY_ATTEMPT_ID.test(attemptId)) {
+      const handoff = await (SOURCE_ATTEMPT_ID.test(attemptId)
+        ? this.#sourceAttempts : this.#liveAttempts).resolve(attemptId);
+      return handoff === undefined ? undefined : hyperliquidTestnetAttemptAccount(handoff);
+    }
+    const selected = await this.#selectedDocuments(attemptId);
+    return selected === undefined ? undefined : Object.freeze({
+      owner: selected.documents.order.owner,
+      settlementAccount: selected.documents.order.settlementAccount,
+    });
+  }
+
+  async #selectedDocuments(attemptId: string) {
     let response: Response;
     try {
       response = await this.#fetch(
@@ -422,7 +445,15 @@ implements HyperliquidTestnetTrustedAttemptProvider {
       || documents.routeHashHex !== metadata.attempt.routeHashHex) {
       throw new Error('strategy attempt commitments do not match stored documents');
     }
-    const prepared = await this.#preparations.prepareDocuments(documents);
+    return { metadata, documents };
+  }
+
+  async #handoff(
+    attemptId: string,
+    metadata: StrategyAttemptMetadataEnvelope,
+    documents: StoredStrategyPackageDocuments,
+    prepared: Awaited<ReturnType<StrategyPreparationService['prepareDocuments']>>,
+  ): Promise<HyperliquidTestnetAttemptHandoff> {
     if (!bytesEqual(prepared.orderHash, commitmentHash(metadata.attempt.orderHashHex))
       || !bytesEqual(prepared.graphHash, commitmentHash(metadata.attempt.graphHashHex))
       || !bytesEqual(prepared.quoteHash, commitmentHash(metadata.attempt.quoteHashHex))

@@ -288,6 +288,10 @@ type FinalPackageStatus = 'NO_EFFECT' | 'COMPLETED_EXACT' | 'COMPLETED_BOUNDED' 
 export interface HyperliquidTestnetTrustedAttemptProvider {
   resolve(attemptId: string): HyperliquidTestnetAttemptHandoff | undefined |
     Promise<HyperliquidTestnetAttemptHandoff | undefined>;
+  resolveAccountBinding?(attemptId: string): Promise<Readonly<{
+    owner: string;
+    settlementAccount: string;
+  }> | undefined>;
 }
 
 interface HyperliquidTestnetAttemptHandoffBase {

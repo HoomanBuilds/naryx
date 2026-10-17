@@ -143,6 +143,42 @@ test('closes previously loaded accounts if a later account fails to initialize',
   assert.equal(closed, 1);
 });
 
+test('expired attempt status resolves only its owner lane without preparing a new trade', async () => {
+  let preparationCalls = 0;
+  const pool = await loadHyperliquidTestnetPerUserRuntime({
+    environment: {}, accounts: [account(ownerA, '3'), account(ownerB, '4')],
+    attempts: {
+      resolve: async () => { preparationCalls++; throw new Error('EXPIRED'); },
+      resolveAccountBinding: async id => id === attemptA
+        ? { owner: ownerA, settlementAccount: ownerA }
+        : id === attemptB ? { owner: ownerB, settlementAccount: ownerA } : undefined,
+    },
+    loadSigner: () => ({}) as never,
+    loadRuntime: async (_environment, dependencies) => ({
+      status: {} as never,
+      clearAuthorityIncident: async () => { throw new Error('unused'); },
+      releaseLane: async () => { throw new Error('unused'); },
+      recover: async () => { throw new Error('unused'); },
+      reconcileRecovery: async () => { throw new Error('unused'); },
+      runtimeFactory: () => ({
+        attempts: dependencies.attempts!, preflight: async () => {},
+        prepareAttempt: async () => { throw new Error('unused'); }, coordinator: { execute() {} } as never,
+      }),
+      close() {},
+    }) as LoadedHyperliquidTestnetExecutorRuntime,
+  });
+  const request = { attemptId: attemptA, idempotencyKey: 'expired-attempt-status' };
+  try {
+    const status = await pool.executor.status({ ...request, resolve: true });
+    assert.equal(status.state, 'COMPLETED');
+    assert.equal(status.result?.status, 'NOT_SUBMITTED');
+    await assert.rejects(pool.executor.status({ ...request, attemptId: attemptB, resolve: true }), /fallback is disabled/);
+    assert.equal(preparationCalls, 0);
+    await assert.rejects(pool.executor.execute(request), /EXPIRED/);
+    assert.equal(preparationCalls, 1);
+  } finally { pool.close(); }
+});
+
 test('rejects mainnet configuration before loading any signer', async () => {
   await assert.rejects(loadHyperliquidTestnetPerUserRuntime({
     environment: { NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT: 'MAINNET' },

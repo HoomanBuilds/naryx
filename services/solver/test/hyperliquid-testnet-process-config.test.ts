@@ -166,6 +166,7 @@ test('composes a generalized strategy attempt from exact package and source comm
 });
 
 test('composes a native generalized attempt only for the trusted market assets', async () => {
+  let expired = false;
   const strategyAttemptId = `strategy-hl-${'40'.repeat(24)}`;
   const orderHash = '41'.repeat(32);
   const graphHash = '42'.repeat(32);
@@ -244,11 +245,14 @@ test('composes a native generalized attempt only for the trusted market assets',
       }) as never,
     },
     preparations: {
-      prepareDocuments: async () => ({
-        orderHash: commitmentHash(orderHash), graphHash: commitmentHash(graphHash),
-        quoteHash: commitmentHash(quoteHash), routeHash: commitmentHash(routeHash),
-        domains: [{ kind: 'HYPERCORE_EXECUTOR', plan: strategyPlan }],
-      }) as never,
+      prepareDocuments: async () => {
+        if (expired) throw new Error('EXPIRED');
+        return {
+          orderHash: commitmentHash(orderHash), graphHash: commitmentHash(graphHash),
+          quoteHash: commitmentHash(quoteHash), routeHash: commitmentHash(routeHash),
+          domains: [{ kind: 'HYPERCORE_EXECUTOR', plan: strategyPlan }],
+        } as never;
+      },
     },
   });
 
@@ -260,6 +264,9 @@ test('composes a native generalized attempt only for the trusted market assets',
     owner: `0x${'11'.repeat(20)}`, settlementAccount: `0x${'11'.repeat(20)}`,
   });
   assert.equal(resolved.strategy.plan, strategyPlan);
+  expired = true;
+  await assert.rejects(provider.resolve(strategyAttemptId), /EXPIRED/);
+  assert.deepEqual(await provider.resolveAccountBinding(strategyAttemptId), resolved.accountBinding);
 });
 
 test('rejects non-loopback origins, malformed envelopes, and oversized responses', async () => {
