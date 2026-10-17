@@ -99,6 +99,11 @@ and the terminal use the same owner-account binding in per-user mode. The termin
 substitutes the operator account when the wallet is disconnected. Historical shared positions
 are not silently reassigned to a new venue account.
 
+Native attempt status and lane release resolve the account from the selected attempt's stored
+package commitments without preparing another trade. Expired orders remain observable and
+an uncertain request that never reached submission can be durably fenced as not submitted.
+New execution still requires fresh preparation, account binding, and authority checks.
+
 Self-service API-wallet enrollment and historical shared-position migration are not implemented.
 Accounts must be provisioned explicitly in the external registry. Before enabling a registered
 account, verify its owner approval, funding, and a real owner-account execution. An unregistered
@@ -151,6 +156,11 @@ The same boundary performs a signerless authority inventory before market qualif
 Authority state is durable in the external SQLite journal as `INITIALIZING`, `ACTIVE`, `INCIDENT_LOCKED`, `FENCED`, or `MANUAL_TAKEOVER`. Only a fresh `INITIALIZING` runtime can become `ACTIVE` from an exact inventory. Any drift, ambiguity, expiry, or failed observation moves it to `INCIDENT_LOCKED`, which normal qualification can never reopen. `FENCED` and `MANUAL_TAKEOVER` are also terminal to observation.
 
 Clearing `INCIDENT_LOCKED` is a separate explicit operation. It requires an injected signerless Testnet clearance reader, a fresh observation proving zero unexpected orders and positions, exact reconciliation and evidence commitments, and two distinct nonzero incident-reviewer role commitments. The complete clearance record is stored durably before execution becomes active again. Fencing, approval, revocation, rotation, and master-account recovery remain offline actions outside this service.
+
+`inspectUntil` validates the same authority inventory without changing the durable fence. It
+allows an operator to check a corrected account policy while the incident lock remains held.
+Inspection alone never clears an incident. Clearance freshness is measured after the network
+observation completes, and its reader must supply actual reconciliation evidence.
 
 Execution additionally requires `NARYX_HYPERLIQUID_TESTNET_SPOT_UNIVERSE_NAME`, `NARYX_HYPERLIQUID_TESTNET_SPOT_TOKEN_NAME`, `NARYX_HYPERLIQUID_TESTNET_QUOTE_TOKEN_NAME`, `NARYX_HYPERLIQUID_TESTNET_PERPETUAL_NAME`, exact base and quote `*_TOKEN_ID` values, the three expected `*_CANONICAL` flags, both `*_SIZE_DECIMALS`, `NARYX_HYPERLIQUID_TESTNET_MAX_BOOK_AGE_MS`, `NARYX_HYPERLIQUID_TESTNET_MAX_BOOK_SNAPSHOT_SKEW_MS`, `NARYX_HYPERLIQUID_TESTNET_MAX_REFERENCE_DIVERGENCE_BPS`, and both `NARYX_HYPERLIQUID_TESTNET_MINIMUM_*_DEPTH` values. These are reviewed Testnet market bindings and risk bounds, not discovery defaults. The executor remains unavailable when any value is absent or invalid.
 
