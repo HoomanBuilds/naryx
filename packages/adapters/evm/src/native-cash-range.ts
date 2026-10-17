@@ -17,6 +17,8 @@ export const NATIVE_CASH_HOUSE_ABI = parseAbi([
   'function collateralToken() view returns(address)', 'function feeBps() view returns(uint16)',
   'function entryPaused() view returns(bool)', 'function openInterestAtoms() view returns(uint128)',
   'function recoveryReserveQuoteAtoms() view returns(uint256)',
+  'function consumedAuthorization(bytes32) view returns(bool)',
+  'function matchDigest((bytes32 authorizationHash,bytes32 longAccountId,bytes32 shortAccountId,bytes32 feePayerAccountId,uint64 longSequence,uint64 shortSequence,uint128 quantityAtoms,uint128 priceTicks,uint16 maxFeeBps,uint64 expiry)) view returns(bytes32)',
   'function currentMark() view returns(bytes32 observationHash,uint128 priceTicks,uint64 sourceSequence,uint64 observedAt,uint64 validUntil)',
   'function account(bytes32) view returns((address owner,uint256 collateralQuoteAtoms,int256 cashBalanceQuoteAtoms,int128 positionAtoms,uint64 sequence))',
   'function executeMatch((bytes32 authorizationHash,bytes32 longAccountId,bytes32 shortAccountId,bytes32 feePayerAccountId,uint64 longSequence,uint64 shortSequence,uint128 quantityAtoms,uint128 priceTicks,uint16 maxFeeBps,uint64 expiry),bytes,bytes)',

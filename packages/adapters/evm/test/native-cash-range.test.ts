@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { assetRef, domainRef, nativeClearingPolicy, toHex, versionedManifestRef } from '@naryx/protocol-types';
-import { getAddress, hashTypedData, keccak256, type Address, type Hex } from 'viem';
+import { encodeAbiParameters, encodeEventTopics, encodeFunctionData, getAddress, hashTypedData, keccak256, parseAbi, type Address, type Hex, type TransactionReceipt } from 'viem';
 import { EvmNativeCashRangeAdapter, type EvmNativeCashRangeBinding, type EvmNativeCashRangeReadPort } from '../src/native-cash-range.js';
+import { NATIVE_CASH_HOUSE_ABI } from '../src/native-cash-range.js';
+import { observeNativeCashMatch } from '../src/native-cash-observation.js';
+import type { EvmNativeClearingTransitionReadPort } from '../src/native-clearing-transition.js';
 import { evmNativeClearingAccountId } from '../src/native-clearing-backing.js';
 
 const address = (digit: string) => getAddress(`0x${digit.repeat(40)}`);
@@ -89,4 +92,37 @@ test('range endpoints stay bounded and a replacement runtime cannot masquerade a
   assert.throws(() => new EvmNativeCashRangeAdapter({ ...binding, kind: 'OTHER' as never }, fixture().reads), /recognized Sepolia/);
   const f = fixture(); f.reads.code = async (_address: Address) => '0x02';
   await assert.rejects(new EvmNativeCashRangeAdapter(binding, f.reads).quote(input), /contract code differs/);
+});
+
+test('cash settlement records only exact finalized owner matches and rejects replays of different terms', async () => {
+  const f = fixture();
+  const quote = await new EvmNativeCashRangeAdapter(binding, f.reads).quote(input);
+  const tx = `0x${'ef'.repeat(32)}` as Hex;
+  const abi = parseAbi(['event PackageMatched(bytes32 indexed authorizationHash,bytes32 indexed longAccountId,bytes32 indexed shortAccountId,uint128 quantityAtoms,uint128 priceTicks,uint256 feeAtoms)']);
+  const log = { address: house, blockNumber: 12n, blockHash: `0x${hash}`, transactionHash: tx, transactionIndex: 0,
+    logIndex: 0, removed: false, topics: encodeEventTopics({ abi, eventName: 'PackageMatched', args: {
+      authorizationHash: quote.match.authorizationHash, longAccountId: quote.match.longAccountId, shortAccountId: quote.match.shortAccountId } }),
+    data: encodeAbiParameters([{ type: 'uint128' }, { type: 'uint128' }, { type: 'uint256' }], [1n, quote.priceTicks, 0n]) } as TransactionReceipt['logs'][number];
+  const transaction = { hash: tx, from: owner, to: house, value: 0n, blockNumber: 12n, blockHash: `0x${hash}` as Hex,
+    input: encodeFunctionData({ abi: NATIVE_CASH_HOUSE_ABI, functionName: 'executeMatch', args: [quote.match, '0x11', '0x22'] }) };
+  const reads: EvmNativeClearingTransitionReadPort = { ...f.reads,
+    finalizedBlock: async () => ({ number: 12n, hash: `0x${hash}` }), blockHash: async () => `0x${hash}`,
+    timestamp: async () => 1010n, clearingLogs: async () => [log], transaction: async () => transaction,
+    receipt: async () => ({ transactionHash: tx, status: 'success', blockNumber: 12n, blockHash: `0x${hash}`, logs: [log] }),
+    read: async request => request.functionName === 'consumedAuthorization' ? true : request.functionName === 'matchDigest' ? quote.digest
+      : [request.args?.[0] === quote.match.longAccountId ? owner : maker, 2_000_000n, 0n, 1n, 2n],
+  };
+  const receipt = await observeNativeCashMatch(binding, reads, quote, tx);
+  assert.equal(receipt.evidenceGrade, 'FINALIZED_CONTRACT_RECEIPT');
+  assert.equal(receipt.authorizationHash, quote.match.authorizationHash);
+  assert.equal(receipt.quantityAtoms, 1n);
+  for (const variant of [
+    { finalizedBlock: async () => ({ number: 11n, hash: `0x${hash}` as Hex }) },
+    { blockHash: async () => `0x${'99'.repeat(32)}` as Hex },
+    { timestamp: async () => quote.match.expiry },
+    { transaction: async () => ({ ...transaction, to: token }) },
+    { read: async (request: Parameters<typeof reads.read>[0], block: bigint) => request.functionName === 'consumedAuthorization' ? false : reads.read(request, block) },
+    { chainId: async () => 1n },
+  ]) await assert.rejects(observeNativeCashMatch(binding, { ...reads, ...variant }, quote, tx));
+  await assert.rejects(observeNativeCashMatch(binding, reads, { ...quote, match: { ...quote.match, quantityAtoms: 2n } }, tx));
 });
