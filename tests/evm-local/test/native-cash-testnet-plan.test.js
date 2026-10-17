@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { assetRef, toHex } from '@naryx/protocol-types';
-import { nativeCashPolicy, nativeCashSource } from '../src/run-native-cash-testnet.mjs';
+import { nativeCashPolicy, nativeCashSource, reserveNativeCashOperatorBudget } from '../src/run-native-cash-testnet.mjs';
 
 test('dedicated cash policies fully collateralize the entire recognized range without changing existing series', () => {
   const asset = assetRef('native-test-usdc', '11'.repeat(32), 6);
@@ -15,4 +15,10 @@ test('dedicated cash policies fully collateralize the entire recognized range wi
   assert.notEqual(toHex(policy.policyHash), toHex(nativeCashPolicy('arbitrum-sepolia', asset, controller, nativeCashSource(421614)).policyHash));
   assert.throws(() => nativeCashSource(8453), /Sepolia/);
   assert.throws(() => nativeCashPolicy('base', asset, controller, source));
+});
+
+test('operator gas cannot consume the oracle worker budget slice', () => {
+  assert.equal(reserveNativeCashOperatorBudget(999_999_999_999_899n, 10n, 10n, 1n), 1_000_000_000_000_000n);
+  assert.throws(() => reserveNativeCashOperatorBudget(999_999_999_999_899n, 10n, 10n, 2n), /exhausted/);
+  assert.throws(() => reserveNativeCashOperatorBudget(-1n, 10n, 10n));
 });

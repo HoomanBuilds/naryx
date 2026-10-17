@@ -5,7 +5,7 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { createPublicClient, createWalletClient, encodeDeployData, encodeFunctionData, getAddress,
-  getContractAddress, http, keccak256, parseAbi, stringToHex, zeroAddress } from 'viem';
+  getContractAddress, hashTypedData, http, keccak256, parseAbi, recoverTypedDataAddress, stringToHex, zeroAddress } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { arbitrumSepolia, baseSepolia } from 'viem/chains';
 import { domainRef, nativeClearingPolicy, parseProtocolJson, stringifyProtocolJson, toHex, versionedManifestRef } from '@naryx/protocol-types';
@@ -19,6 +19,13 @@ const sourceAbi = parseAbi(['function description() view returns(string)', 'func
   'function latestRoundData() view returns(uint80,int256,uint256,uint256,uint80)']);
 const roles = { operator: 'naryx-market-owner-v1', maker: 'naryx-clearing-maker-v1', trader: 'naryx-test-trader-v1',
   mark: 'naryx-funding-keeper-v1', pauser: 'naryx-pauser-v1' };
+
+export function reserveNativeCashOperatorBudget(reservedWei, gas, maxFeePerGas, value = 0n) {
+  for (const amount of [reservedWei, gas, maxFeePerGas, value]) assert.ok(typeof amount === 'bigint' && amount >= 0n);
+  const next = reservedWei + gas * maxFeePerGas + value;
+  assert.ok(next <= 1_000_000_000_000_000n, 'Reserved operator test gas slice is exhausted');
+  return next;
+}
 
 export function nativeCashSource(chainId) {
   assert.ok(chainId === 84532 || chainId === 421614, 'Native cash setup is Sepolia only');
@@ -43,11 +50,12 @@ export function nativeCashPolicy(network, asset, controller, source) {
 async function main() {
   const { values } = parseArgs({ options: { network: { type: 'string' }, output: { type: 'string' },
     'previous-evidence': { type: 'string' }, 'password-env': { type: 'string', default: 'SETRYN_DEPLOYER_PASSWORD' },
+    'service-origin': { type: 'string' },
     step: { type: 'string', default: 'prepare' }, broadcast: { type: 'boolean', default: false } } });
   const chain = values.network === 'base-sepolia' ? baseSepolia : values.network === 'arbitrum-sepolia' ? arbitrumSepolia : undefined;
   assert.ok(chain, 'Select a supported Sepolia network');
   assert.ok(values.output && isAbsolute(values.output) && !resolve(values.output).startsWith(root + '/'), 'Checkpoint must be outside the repository');
-  assert.ok(['prepare', 'deploy', 'fund', 'mark', 'activate', 'pause'].includes(values.step), 'Unknown native cash step');
+  assert.ok(['prepare', 'deploy', 'fund', 'mark', 'activate', 'pause', 'entry', 'exit', 'observe'].includes(values.step), 'Unknown native cash step');
   const rpc = process.env[chain.id === 84532 ? 'NARYX_BASE_SEPOLIA_RPC_URL' : 'NARYX_ARBITRUM_SEPOLIA_RPC_URL'];
   assert.ok(rpc, 'Testnet RPC is required');
   const client = createPublicClient({ chain, transport: http(rpc, { timeout: 15_000, retryCount: 1 }) });
@@ -127,6 +135,9 @@ async function main() {
       const gas = (await client.estimateGas({ ...request, account: signer.account })) * 12n / 10n;
       const fees = await client.estimateFeesPerGas();
       const next = reserveTestnetBudget(record.budgetReservedWei, gas, fees.maxFeePerGas, request.value ?? 0n);
+      if (record.transactions['deposit-trader']) {
+        record.operatorGasReservedWei = reserveNativeCashOperatorBudget(record.operatorGasReservedWei ?? 0n, gas, fees.maxFeePerGas, request.value ?? 0n);
+      }
       const prepared = await signer.prepareTransactionRequest({ ...request, gas, ...fees });
       const raw = await signer.signTransaction(prepared);
       transaction = { hash: keccak256(raw), raw, from: signer.account.address };
@@ -184,7 +195,77 @@ async function main() {
   if (values.step === 'activate') {
     assert.ok(record.transactions['deposit-maker'] && record.transactions['deposit-trader'], 'Funding must finish before activation');
     await client.readContract({ address: record.controller, abi: artifact.abi, functionName: 'previewMark' });
-    throw new Error('Public activation requires the market service, fresh mark worker and registration gates; deployment does not bypass them');
+    const markets = await service('/v1/native-cash/markets');
+    const market = markets.markets.find(item => item.binding.clearingHouse === record.house);
+    assert.ok(market && market.reference.registration.state === 'ACTIVE', 'Delayed governor-signed registration is not active');
+    assert.equal(market.binding.controllerCodeHash, record.controllerCodeHash);
+    assert.equal(market.binding.clearingHouseCodeHash, record.houseCodeHash);
+    assert.equal(toHex(market.binding.policy.policyHash), toHex(record.policy.policyHash));
+    const mark = await client.readContract({ address: record.house, abi: houseArtifact.abi, functionName: 'currentMark' });
+    assert.ok(mark[4] > (await client.getBlock()).timestamp + 60n, 'Fresh oracle worker mark is required');
+    await houseCall('activate-entry', 'operator', 'setEntryPaused', [false]); return;
+  }
+  async function service(path, body) {
+    const origin = new URL(values['service-origin'] ?? 'http://invalid');
+    assert.ok(origin.protocol === 'http:' && origin.hostname === '127.0.0.1' && origin.pathname === '/', 'A direct loopback service origin is required');
+    const response = await fetch(origin.origin + path, { method: body === undefined ? 'GET' : 'POST',
+      headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15_000),
+      ...(body === undefined ? {} : { body: stringifyProtocolJson(body) }) });
+    const payload = parseProtocolJson(await response.text());
+    assert.equal(response.ok, true, `Native cash service has not qualified this operation (${response.status})`); return payload;
+  }
+  if (values.step === 'observe') {
+    for (const action of ['entry', 'exit']) {
+      const trade = record[`trade-${action}`];
+      assert.ok(trade?.signed && record.transactions[`trade-${action}`], 'Complete both controlled trades first');
+      const result = await service(`/v1/native-cash/quotes/${trade.signed.requestId}/settlement`,
+        { transactionHash: record.transactions[`trade-${action}`].hash });
+      trade.receipt = result.result; save();
+      console.log(JSON.stringify({ action, status: trade.receipt.evidenceGrade, transactionHash: trade.receipt.transactionHash }));
+    }
+    return;
+  }
+  if (values.step === 'entry' || values.step === 'exit') {
+    const action = values.step;
+    const key = `trade-${action}`;
+    const accountId = `${record.network}-cash-range-trader-v1`;
+    if (!record[key]) { record[key] = { requestId: `native-cash-${record.network}-${action}-${Date.now()}`, rejected: [] }; save(); }
+    const trade = record[key];
+    if (!record.transactions[key]) {
+      const account = await client.readContract({ address: record.house, abi: houseArtifact.abi, functionName: 'account',
+        args: [evmNativeClearingAccountId(record.configuration.policyHash, accountId)] });
+      assert.equal(account.owner, actors.trader);
+      assert.equal(account.positionAtoms, action === 'entry' ? 0n : 1n, 'Unexpected trader exposure');
+      const now = (await client.getBlock()).timestamp;
+      if (trade.signed && trade.signed.quote.match.expiry <= now + 10n) {
+        trade.rejected.push(trade.signed); delete trade.signed; delete trade.ownerSignature;
+        trade.requestId = `native-cash-${record.network}-${action}-${Date.now()}`; save();
+      }
+      if (!trade.signed) {
+        const response = await service('/v1/native-cash/quotes', { requestId: trade.requestId,
+          marketId: `${record.network}-eth-cash-range-v1`, owner: actors.trader, accountId,
+          side: action === 'entry' ? 'BUY' : 'SELL', quantityAtoms: 1n });
+        trade.signed = response.result; save();
+      }
+      const { quote, makerSignature } = trade.signed;
+      assert.equal(quote.chainId, chain.id); assert.equal(quote.clearingHouse, record.house);
+      assert.equal(quote.marketId, `${record.network}-eth-cash-range-v1`);
+      assert.equal(quote.owner, actors.trader); assert.equal(quote.makerOwner, actors.maker);
+      assert.equal(quote.side, action === 'entry' ? 'BUY' : 'SELL');
+      assert.equal(quote.match.quantityAtoms, 1n); assert.equal(quote.match.maxFeeBps, 0);
+      assert.ok(quote.match.priceTicks >= 1n && quote.match.priceTicks <= 4_000_001n);
+      assert.equal(quote.typedData.message.policyHash, record.configuration.policyHash);
+      assert.equal(hashTypedData(quote.typedData), quote.digest);
+      assert.equal(await client.readContract({ address: record.house, abi: houseArtifact.abi, functionName: 'matchDigest', args: [quote.match] }), quote.digest);
+      assert.equal(getAddress(await recoverTypedDataAddress({ ...quote.typedData, signature: makerSignature })), actors.maker);
+      if (!trade.ownerSignature) {
+        assert.equal(await client.getChainId(), chain.id);
+        trade.ownerSignature = await wallet('trader').signTypedData(quote.typedData); save();
+      }
+    }
+    const { quote, makerSignature } = trade.signed;
+    await houseCall(key, 'trader', 'executeMatch', [quote.match,
+      action === 'entry' ? trade.ownerSignature : makerSignature, action === 'entry' ? makerSignature : trade.ownerSignature]); return;
   }
   await houseCall('pause', 'pauser', 'setEntryPaused', [true]);
 }

@@ -12,6 +12,6 @@ server.requestTimeout = 15_000;
 server.headersTimeout = 10_000;
 server.listen(port, '127.0.0.1', () => process.stdout.write(`Native cash testnet service listening on 127.0.0.1:${port}\n`));
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => {
-  server.close(() => { runtime.service.close(); });
+  server.close(() => { runtime.service.close(); runtime.registration.close(); });
   server.closeIdleConnections();
 });

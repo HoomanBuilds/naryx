@@ -33,7 +33,7 @@ function fixture() {
         primaryType: 'NativeMatch' as const, message: { policyHash: hash, ...match } } as const;
       return { version: 1, kind: 'EVM_NATIVE_CASH_RANGE_V1', marketId: request.marketId, environment: 'testnet',
         domain: domainRef('eip155:84532', 1, hash), guarantee: 'OWNER_SIGNED_NATIVE_CASH_MATCH', quoteMode: 'EXECUTION_COMMITMENT',
-        chainId: 84532, clearingHouse: house, makerOwner: maker.address, owner: input.owner, side: input.side,
+        chainId: 84532, clearingHouse: house, makerOwner: maker.address, owner: input.owner, side: input.side, reducingOnly: false,
         priceTicks: match.priceTicks, referencePriceTicks: 499_500n, maximumPriceTicks: 1_000_001n,
         observedBlock: { number: 1n, hash, timestamp: input.nowSeconds }, match, typedData, digest: hashTypedData(typedData) };
     },

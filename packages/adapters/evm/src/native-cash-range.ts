@@ -145,8 +145,9 @@ export class EvmNativeCashRangeAdapter {
       && integer(balance) >= equity(makerAccount) + equity(takerAccount), 'clearing collateral is not funded');
     const long = input.side === 'BUY' ? takerAccount : makerAccount;
     const short = input.side === 'BUY' ? makerAccount : takerAccount;
-    requireCondition(!paused || (long.positionAtoms < 0n && short.positionAtoms > 0n
-      && input.quantityAtoms <= -long.positionAtoms && input.quantityAtoms <= short.positionAtoms), 'entry is paused');
+    const reducingOnly = long.positionAtoms < 0n && short.positionAtoms > 0n
+      && input.quantityAtoms <= -long.positionAtoms && input.quantityAtoms <= short.positionAtoms;
+    requireCondition(!paused || reducingOnly, 'entry is paused');
     const offset = (markPrice * BigInt(input.spreadBps) + 9999n) / 10000n;
     const price = input.side === 'BUY' ? (markPrice + offset > binding.maximumPriceTicks ? binding.maximumPriceTicks : markPrice + offset)
       : markPrice - offset < 1n ? 1n : markPrice - offset;
@@ -168,7 +169,7 @@ export class EvmNativeCashRangeAdapter {
     return Object.freeze({ version: 1, kind: binding.kind, marketId: binding.marketId, environment: 'testnet' as const,
       domain: binding.domain, guarantee: 'OWNER_SIGNED_NATIVE_CASH_MATCH' as const, quoteMode: 'EXECUTION_COMMITMENT' as const,
       chainId: typedData.domain.chainId, clearingHouse: binding.clearingHouse, makerOwner: binding.makerOwner, owner,
-      side: input.side, priceTicks: price, referencePriceTicks: markPrice, maximumPriceTicks: binding.maximumPriceTicks,
+      side: input.side, reducingOnly, priceTicks: price, referencePriceTicks: markPrice, maximumPriceTicks: binding.maximumPriceTicks,
       observedBlock: Object.freeze(head), match: Object.freeze(match), typedData, digest: hashTypedData(typedData) });
   }
 }

@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { keccak256, type Hex } from 'viem';
 import { nativeCashDataPath } from './native-cash-service.js';
 
-const MAXIMUM_BUDGET_WEI = 10_000_000_000_000_000n;
+export const NATIVE_CASH_MARK_GAS_CAP_WEI = 9_000_000_000_000_000n;
 export interface NativeCashMarkTransaction {
   readonly id: string; readonly chainId: number; readonly hash: string; readonly raw: string; readonly costWei: bigint;
 }
@@ -18,7 +18,7 @@ export class NativeCashMarkJournal {
     try {
       for (const entry of initial) {
         if (![84532, 421614].includes(entry.chainId) || typeof entry.reservedWei !== 'bigint'
-          || entry.reservedWei < 0n || entry.reservedWei > MAXIMUM_BUDGET_WEI) throw new Error('Native cash mark budget is invalid.');
+          || entry.reservedWei < 0n || entry.reservedWei > NATIVE_CASH_MARK_GAS_CAP_WEI) throw new Error('Native cash mark budget is invalid.');
         this.#db.prepare('INSERT OR IGNORE INTO budgets VALUES(?,?)').run(entry.chainId, entry.reservedWei.toString());
         if (this.reserved(entry.chainId) < entry.reservedWei) throw new Error('Native cash mark budget changed outside its journal.');
       }
@@ -42,7 +42,7 @@ export class NativeCashMarkJournal {
     this.#db.transaction(() => {
       if (this.pending(transaction.chainId) !== undefined) throw new Error('Native cash mark chain has an unresolved transaction.');
       const next = this.reserved(transaction.chainId) + transaction.costWei;
-      if (next > MAXIMUM_BUDGET_WEI) throw new Error('Approved native cash test gas budget is exhausted.');
+      if (next > NATIVE_CASH_MARK_GAS_CAP_WEI) throw new Error('Approved native cash test gas budget is exhausted.');
       this.#db.prepare('INSERT INTO transactions VALUES(?,?,?,?,?,\'PENDING\')')
         .run(transaction.id, transaction.chainId, transaction.hash, transaction.raw, transaction.costWei.toString());
       this.#db.prepare('UPDATE budgets SET reserved_wei=? WHERE chain_id=?').run(next.toString(), transaction.chainId);
