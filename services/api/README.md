@@ -14,6 +14,8 @@ Native-clearing ledger mutations require a reviewed onchain backing configuratio
 
 Reconciliation selects the recorded observation by the transaction's historical onchain mark hash, not a newer live observation. The selected observation is revalidated against its clearing policy and canonical hash before use.
 
+`POST /internal/native-clearing/normalization-observations` takes `clearingDomainId`, `transactionHash`, and `accountId`. It verifies the registered owner's direct `normalizeFlatAccount` calldata, successful finalized receipt, pinned code, and exact pre/post account state. No synthetic contract event is created. Normalization advances one account sequence without changing domain exposure or reserve. Native cash gains must have token backing before conversion to withdrawable collateral.
+
 The initial transition cohort is zero-fee and requires exactly one clearing-house event in the execution block. Ambiguous multi-operation blocks fail closed rather than guessing intra-block state. Clearing is cash-settled native package exposure, not evidence that external spot/perp positions were created. No binding, standing maker liquidity, funded reserve, or completed live workflow is implied by deployment alone.
 
 The service exposes live package snapshots and previews plus injected boundaries for preparing unsigned Solana Devnet transactions and observing a submitted Devnet signature. The default process has no execution ports, so preparation and observation fail with `EXECUTION_UNAVAILABLE`.
@@ -133,7 +135,7 @@ Setting `NARYX_MAKER_SOLVER_ID` adds a private terminal snapshot for that solver
 | Route | Rule |
 |---|---|
 | `PUT /v1/solver/quote-shards/{templateId.marketGroupId}`, `GET` the same | the shard must also be signed by a valid quote key over its hash, belong to the caller, and advance its sequence; an identical repeat is idempotent |
-| `GET /v1/solver/quote-shards/{id}/fills` | the fills the controller settled against the caller's shard, newest first, each with its fill commitment and the exact signed state it bound, so a maker can reconcile inventory and re-sign its reserved capacity |
+| `GET /v1/solver/quote-shards/{id}/fills?before=` | authenticated fill-history pages, newest first, with exact fill commitments and signed-state bindings; `nextCursor` identifies the next page, including fills sharing a timestamp |
 | `POST .../replace`, `.../heartbeat`, `.../cancel-all`, `POST /v1/solver/kill-switch` | each may change only its own fields: levels and reference, heartbeat expiry, all levels removed, or the kill switch activated |
 | `PUT /v1/solver/capacity`, `POST /v1/solver/reservations`, `POST /v1/solver/reservations/release` | per-scope capacity ledgers; evidence only moves forward and commitments cannot exceed it |
 | `POST /v1/solver/quotes`, `POST /v1/solver/quotes/batch`, `POST /v1/solver/quotes/cancel` | implied liquidity is derived server-side from its leg sources, so a solver cannot post a price its sources do not imply; every reservation or firm commitment behind a quote must be outstanding for the solver and back no other live entry or batch member; a batch of up to 16 quotes posts atomically; only the owner can cancel |

@@ -47,7 +47,19 @@ to its loopback listener. Each deposit is reconciled against its own historical 
 The authority signature authenticates the mark; account backing receipts prove account state,
 not the truth of a market price. Executions separately require exact onchain mark identity.
 
-The runner does not unpause entries, publish continuous liquidity, or claim that native cash-settled
-package exposure executes external option legs. Those require separate activation. Keep the
-owner-only evidence file outside Git. Resuming reconciliation checks existing canonical ledger
-state before sending another control command.
+After funding reconciliation, `--step lifecycle --broadcast --admin-url http://127.0.0.1:18807`
+creates real owner-bound strategy accounts, admits two independently signed public package orders,
+and obtains separate native-clearing consent from both owners. It briefly enables one 0.1-unit entry,
+pauses entries again, exercises a controlled mark shock and default auction, transfers the exposure
+to the funded backstop, and exits while paused. The test consumes 5 test USDC of maker collateral
+and 0.02 test USDC of the reserve. This is deliberate fault injection, not organic market activity.
+
+`--step cashout --broadcast` normalizes the flat trader account and withdraws its 6.02 test USDC
+to that account's owner. After the final transaction is finalized, `--step reconcile-lifecycle
+--broadcast --admin-url http://127.0.0.1:18807` verifies each historical transition in order and
+commits its balances, immutable receipt and backing evidence. Neither successful broadcast nor
+two confirmations substitutes for chain finality.
+
+Native cash settlement does not execute the external option legs described by the economic
+reference graphs. The runner does not publish continuous liquidity. Keep the owner-only evidence
+file outside Git. Resuming reuses journaled transactions and checks canonical ledger state.
