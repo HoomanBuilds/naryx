@@ -2,7 +2,7 @@
 
 Reference solver runtime. Venue market-data ingestion, implied and direct quote generation, cost modelling, quote signing, inventory and exposure limits, and capacity reservation.
 
-Public control reaches `services/api` over the published solver protocol, so an independent solver can run the same path from outside this repository. The only direct venue write implemented here is the private Hyperliquid Testnet submission boundary described below.
+Public control reaches `services/api` over the published solver protocol, so an independent solver can run the same path from outside this repository. Direct venue writes are limited to the private Hyperliquid Testnet submission boundary and the bounded testnet setup CLI described below.
 
 May depend on `packages/protocol-types`, `packages/adapter-core`, `packages/adapters/*`, and `deployments`.
 
@@ -11,6 +11,12 @@ Must not depend on `apps/web`, `packages/sdk`, or another service's internals.
 Being the reference implementation is not a network claim. Team-operated solver volume is reported separately from independent volume.
 
 ## Current implementation
+
+### Bounded testnet venue setup
+
+`node dist/testnet-dex-margin.js --journal /absolute/external/setup.json` checks the configured Hyperliquid Testnet account and prints a non-broadcast plan. With `--broadcast`, it moves exactly 20 mock USDC from default perp margin to the same owner's `sekaw` margin. It uses the existing approved testnet agent, pins the testnet endpoint and collateral catalog, refuses mainnet signatures and active positions, and saves the signed request before submission. Reopening an existing journal performs read-only checks and never sends another transfer.
+
+After verified funding, `--leverage --broadcast` configures only the two reviewed testnet BTC markets for isolated 5x leverage, verifying each result. Its separate `.leverage` journal prevents automatic resubmission after an interrupted response. This is a bounded one-time testnet setup tool, not a production rebalancer, maker daemon, or permission to trade other markets. Both commands require the configured trading account, master account, agent address and external testnet agent key path.
 
 ### Process composition and what is real
 
