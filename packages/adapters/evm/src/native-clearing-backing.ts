@@ -80,7 +80,7 @@ export class EvmNativeClearingBackingVerifier {
     this.#reads = reads;
   }
 
-  async verify(policyInput: NativeClearingPolicy, stateInput: NativeClearingDomainState, inputs: readonly NativeClearingAccount[]) {
+  async verify(policyInput: NativeClearingPolicy, stateInput: NativeClearingDomainState, inputs: readonly NativeClearingAccount[], atBlock?: { readonly number: bigint; readonly hash: Hex }) {
     const policy = nativeClearingPolicy(policyInput);
     if (policy.environment !== 'testnet' && policy.environment !== 'devnet') throw new Error('Native clearing backing requires a test environment.');
     const state = nativeClearingDomainState(stateInput, policy);
@@ -96,7 +96,11 @@ export class EvmNativeClearingBackingVerifier {
     }
     const chainId = BigInt(binding.domain.domainId.slice('eip155:'.length));
     if (await this.#reads.chainId() !== chainId) throw new Error('Native clearing backing RPC chain differs from its domain.');
-    const block = await this.#reads.finalizedBlock();
+    const finalized = await this.#reads.finalizedBlock();
+    const block = atBlock ?? finalized;
+    if (block.number > finalized.number || (atBlock !== undefined && await this.#reads.blockHash(block.number) !== block.hash)) {
+      throw new Error('Native clearing evidence block is not canonical and finalized.');
+    }
     if (block.number <= 0n) throw new Error('Native clearing backing requires a finalized block.');
     hash32(block.hash, 'finalized block hash');
     for (const [address, codeHash] of [[binding.clearingHouse, binding.clearingHouseCodeHash], [binding.collateralToken, binding.collateralTokenCodeHash]] as const) {

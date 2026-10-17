@@ -57,6 +57,10 @@ test('clearing backing verifies pinned finalized account state and real token co
   const empty = await new EvmNativeClearingBackingVerifier(binding, reads()).verify(policy, state, []);
   assert.equal(empty.verifiedCollateralAndReserveAtoms, 5n);
   assert.notEqual(evmNativeClearingAccountId(`0x${hash}`, 'one'), evmNativeClearingAccountId(`0x${hash}`, 'two'));
+  const historical = await new EvmNativeClearingBackingVerifier(binding, reads({ finalizedBlock: async () => ({ number: 100n, hash: blockHash }) }))
+    .verify(policy, state, [account], { number: 42n, hash: blockHash });
+  assert.equal(historical.blockNumber, 42n);
+  await assert.rejects(new EvmNativeClearingBackingVerifier(binding, reads()).verify(policy, state, [account], { number: 43n, hash: blockHash }), /finalized/);
 });
 
 test('clearing backing rejects wrong networks, code, policy, funding and reorg evidence', async () => {

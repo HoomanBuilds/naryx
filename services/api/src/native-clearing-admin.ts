@@ -26,6 +26,7 @@ import type { SqlitePackageExchangeStore } from './package-exchange-store.js';
 
 export interface NativeClearingAdminOptions {
   readonly verifyBacking?: (path: string, body: Record<string, unknown>) => Promise<NativeClearingBackingCheck | void>;
+  readonly observe?: (kind: 'MATCH' | 'DEFAULT', body: Record<string, unknown>) => Promise<unknown>;
   readonly clearing: Pick<
     SqliteNativeClearingStore,
     'registerDomain' | 'openAccount' | 'adjustReserve' | 'recordMark' | 'adjustAuthorizedCollateral'
@@ -102,6 +103,8 @@ export function createNativeClearingAdminHandler(
       ['/internal/native-clearing/auctions', ['clearingDomainId', 'defaultedAccountId', 'expectedDefaultedAccountHash', 'auctionId', 'bidsCloseAtMs']],
       ['/internal/native-clearing/auction-bids', ['auctionId', 'bid', 'ownerSignature']],
       ['/internal/native-clearing/auction-settlements', ['auctionId', 'expectedStateHash']],
+      ['/internal/native-clearing/match-observations', ['clearingDomainId', 'transactionHash', 'authorization']],
+      ['/internal/native-clearing/recovery-observations', ['clearingDomainId', 'transactionHash', 'auctionId']],
     ]).get(url.pathname);
     if (action === undefined) return false;
     if (!internalCaller(request)) {
@@ -113,11 +116,23 @@ export function createNativeClearingAdminHandler(
       return sendError(response, 415, 'INVALID_CONTENT_TYPE', 'Content-Type must be application/json.');
     }
     readInternalBody(request, response, (body) => {
-      if (!exactKeys(body, action)) {
+      const evidence = body.evidenceBlock !== undefined && ['domains', 'accounts', 'reserve', 'marks', 'collateral']
+        .some((name) => url.pathname === `/internal/native-clearing/${name}`);
+      if (!exactKeys(body, evidence ? [...action, 'evidenceBlock'] : action)) {
         sendError(response, 400, 'INVALID_REQUEST', 'Native clearing request fields are invalid.');
         return;
       }
       const run = async (): Promise<unknown> => {
+        if (url.pathname.endsWith('-observations')) {
+          if (options.observe === undefined) throw new NativeClearingStoreError('BACKING_UNAVAILABLE', 'Clearing observation is not configured.');
+          if (url.pathname.endsWith('/match-observations')) {
+            const authorization = object(body.authorization);
+            if (authorization === undefined || 'currentExpiryUnit' in authorization || 'currentExpiryValue' in authorization) throw new TypeError('Match authorization cannot supply an execution clock.');
+            requireExchangeBinding(options.exchange, authorization as unknown as MatchAuthorizationInput);
+            return options.observe('MATCH', body);
+          }
+          return options.observe('DEFAULT', body);
+        }
         const verified = await options.verifyBacking?.(url.pathname, body);
         const backing = verified === undefined ? undefined : verified;
         switch (url.pathname) {

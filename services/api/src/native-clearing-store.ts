@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { EvmNativeClearingBackingVerifier } from '@naryx/adapter-evm';
+import type { EvmNativeClearingBackingVerifier, EvmNativeClearingTransition } from '@naryx/adapter-evm';
 import {
   adjustNativeClearingCollateral,
   adjustNativeClearingRecoveryReserve,
@@ -149,6 +149,18 @@ CREATE TRIGGER IF NOT EXISTS reject_native_clearing_backing_receipt_update
 CREATE TRIGGER IF NOT EXISTS reject_native_clearing_backing_receipt_delete
   BEFORE DELETE ON native_clearing_backing_receipts
   BEGIN SELECT RAISE(ABORT, 'native clearing backing receipts are durable'); END;
+CREATE TABLE IF NOT EXISTS native_clearing_contract_transitions (
+  transaction_hash TEXT PRIMARY KEY,
+  policy_hash BLOB NOT NULL REFERENCES native_clearing_policies(policy_hash),
+  transition_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE TRIGGER IF NOT EXISTS reject_native_clearing_contract_transition_update
+  BEFORE UPDATE ON native_clearing_contract_transitions
+  BEGIN SELECT RAISE(ABORT, 'native clearing contract transitions are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS reject_native_clearing_contract_transition_delete
+  BEFORE DELETE ON native_clearing_contract_transitions
+  BEGIN SELECT RAISE(ABORT, 'native clearing contract transitions are durable'); END;
 `;
 
 export interface NativeClearingBackingCheck {
@@ -460,6 +472,7 @@ export class SqliteNativeClearingStore {
         currentExpiryValue: expiryNow(currentExpiryUnit, nowMs),
       });
       const { policy, state } = this.#requiredDomain(input.authorization.policy.clearingDomainId);
+      this.#requireBacking(undefined, policy, 'matches');
       expected(policy.policyHash, authorization.policyHash, 'authorized policy hash');
       const long = this.#requiredAccount(authorization.longAccountId, policy);
       const short = this.#requiredAccount(authorization.shortAccountId, policy);
@@ -516,6 +529,7 @@ export class SqliteNativeClearingStore {
       const nowMs = this.#nowMs();
       const { policy } = this.#requiredDomain(input.clearingDomainId);
       const defaulter = this.#requiredAccount(input.defaultedAccountId, policy);
+      this.#requireBacking(undefined, policy, 'auctions');
       expected(defaulter.accountHash, input.expectedDefaultedAccountHash, 'expected defaulted account hash');
       const mark = this.#liveMark(policy, nowMs);
       const auction = nativeClearingDefaultAuction({
@@ -552,6 +566,7 @@ export class SqliteNativeClearingStore {
     }
     const bid = nativeClearingDefaultBid(input.bid, auctionRecord.auction);
     const policy = this.#policy(auctionRecord.auction.policyHash);
+    this.#requireBacking(undefined, policy, 'auction-bids');
     const backstop = this.#requiredAccount(bid.backstopAccountId, policy);
     if (!bytesEqual(backstop.accountHash, bid.backstopAccountHash)
       || backstop.ownerId !== bid.backstopOwnerId
@@ -601,6 +616,7 @@ export class SqliteNativeClearingStore {
       }
       const auction = auctionRecord.auction;
       const policy = this.#policy(auction.policyHash);
+      this.#requireBacking(undefined, policy, 'auction-settlements');
       const state = this.#state(policy);
       expected(state.stateHash, input.expectedStateHash, 'expected domain state hash');
       const mark = this.#mark(auction.markObservationHash, policy);
@@ -680,6 +696,59 @@ export class SqliteNativeClearingStore {
       return nativeClearingBackingSnapshot(domain, domain === undefined ? [] : this.accounts(clearingDomainId),
         domain === undefined ? undefined : this.latestMark(clearingDomainId));
     })();
+  }
+
+  contractTransition(transactionHash: string): EvmNativeClearingTransition | undefined {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(transactionHash)) throw new NativeClearingStoreError('INVALID_INPUT', 'Clearing transaction hash is invalid.');
+    const row = this.#db.prepare('SELECT transition_json FROM native_clearing_contract_transitions WHERE transaction_hash = ?')
+      .get(transactionHash.toLowerCase()) as { transition_json: string } | undefined;
+    return row === undefined ? undefined : parseProtocolJson(row.transition_json) as EvmNativeClearingTransition;
+  }
+
+  recordFinalizedTransition(clearingDomainId: string, beforeSnapshot: string, transition: EvmNativeClearingTransition): EvmNativeClearingTransition {
+    const { policy } = this.#requiredDomain(clearingDomainId);
+    const afterSnapshot = nativeClearingBackingSnapshot({ policy, state: transition.state }, transition.accounts, this.latestMark(clearingDomainId));
+    return this.#backedTransaction({ clearingDomainId, beforeSnapshot, afterSnapshot,
+      action: transition.kind === 'MATCH' ? 'matches' : 'recoveries', proof: transition.proof }, () => {
+      const { state } = this.#requiredDomain(clearingDomainId);
+      const accounts = this.accounts(clearingDomainId);
+      if (!bytesEqual(policy.policyHash, transition.receipt.policyHash)
+        || transition.state.sequence !== state.sequence + 1n
+        || !bytesEqual(state.stateHash, transition.receipt.previousDomainStateHash)
+        || accounts.length !== transition.accounts.length || new Set(transition.accounts.map((account) => account.accountId)).size !== accounts.length) {
+        throw new NativeClearingStoreError('BACKING_STATE_MISMATCH', 'Clearing transition does not extend the durable ledger.');
+      }
+      if (this.contractTransition(transition.proof.transactionHash) !== undefined) throw new NativeClearingStoreError('SETTLEMENT_CONFLICT', 'Clearing transaction was already reconciled.');
+      const changed = accounts.filter((account) => {
+        const next = transition.accounts.find((candidate) => candidate.accountId === account.accountId);
+        if (next === undefined || next.ownerId !== account.ownerId || !bytesEqual(next.policyHash, policy.policyHash)) {
+          throw new NativeClearingStoreError('BACKING_STATE_MISMATCH', 'Clearing transition changes account identity.');
+        }
+        return !bytesEqual(next.accountHash, account.accountHash);
+      });
+      if (changed.length !== 2) throw new NativeClearingStoreError('BACKING_STATE_MISMATCH', 'Clearing transition must change exactly two accounts.');
+      for (const account of changed) {
+        const next = transition.accounts.find((candidate) => candidate.accountId === account.accountId)!;
+        if (next.sequence !== account.sequence + 1n) throw new NativeClearingStoreError('BACKING_STATE_MISMATCH', 'Clearing transition account sequence differs.');
+        this.#updateAccount(account, nativeClearingAccount(next, policy));
+      }
+      this.#updateState(state, nativeClearingDomainState(transition.state, policy));
+      const receiptHash = transition.kind === 'MATCH' ? transition.receipt.receiptHash : transition.receipt.resolutionHash;
+      if (transition.kind === 'MATCH') {
+        if (this.#db.prepare('SELECT 1 FROM native_clearing_match_settlements WHERE authorization_hash = ?').get(transition.authorizationHash) !== undefined) {
+          throw new NativeClearingStoreError('SETTLEMENT_CONFLICT', 'Clearing match authorization was already reconciled.');
+        }
+        this.#db.prepare('INSERT INTO native_clearing_match_settlements VALUES (?, ?, ?, ?)')
+          .run(transition.authorizationHash, policy.policyHash, receiptHash, clock(this.#clock()));
+      }
+      this.#event(transition.kind, receiptHash, policy, transition.state.sequence, {
+        transactionHash: transition.proof.transactionHash, markObservationHash: transition.markObservationHash, receipt: transition.receipt,
+        ...(transition.kind === 'MATCH' ? { authorizationHash: transition.authorizationHash } : {}),
+      });
+      this.#db.prepare('INSERT INTO native_clearing_contract_transitions VALUES (?, ?, ?, ?)')
+        .run(transition.proof.transactionHash.toLowerCase(), policy.policyHash, json(transition, 'clearing transition'), clock(this.#clock()));
+      return transition;
+    });
   }
 
   backingReceipts(clearingDomainId: string, after = 0, limit = 100) {

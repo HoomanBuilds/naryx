@@ -47,6 +47,7 @@ export * from './strategy-provisioning.js';
 export * from './package-collateral-management.js';
 export * from './netting-residual.js';
 export * from './native-clearing-backing.js';
+export * from './native-clearing-transition.js';
 
 const UINT32_MAX = (1n << 32n) - 1n;
 const UINT128_MAX = (1n << 128n) - 1n;

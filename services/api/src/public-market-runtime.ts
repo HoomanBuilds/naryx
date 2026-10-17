@@ -839,6 +839,7 @@ export function loadPublicMarketRuntime(
         clearing: nativeClearing,
         exchange: store,
         verifyBacking: (path, body) => nativeClearingBacking!.verifyMutation(path, body),
+        observe: (kind, body) => nativeClearingBacking!.observe(kind, body),
       })]),
       ...(orderActivations === undefined ? [] : [createOrderActivationAdminHandler({
         activations: orderActivations,

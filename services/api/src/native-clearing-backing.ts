@@ -7,6 +7,7 @@ import {
   nativeClearingCollateralAuthorization,
   nativeClearingDomainState,
   nativeClearingMarkObservation,
+  nativeClearingMatchAuthorization,
   nativeClearingPolicy,
   parseProtocolJson,
   type NativeClearingAccount,
@@ -17,30 +18,35 @@ import {
   type NativeClearingPolicy,
   type NativeClearingPolicyInput,
   type NativeClearingMarkObservationInput,
+  type NativeClearingMatchAuthorizationInput,
 } from '@naryx/protocol-types';
-import { EvmNativeClearingBackingVerifier, type EvmNativeClearingBinding } from '@naryx/adapter-evm';
-import { createPublicClient, http } from 'viem';
+import { EvmNativeClearingBackingVerifier, EvmNativeClearingTransitionVerifier, type EvmNativeClearingBinding, type EvmNativeClearingTransitionReadPort } from '@naryx/adapter-evm';
+import { createPublicClient, http, type Hex } from 'viem';
 import { NativeClearingStoreError, nativeClearingBackingSnapshot, type NativeClearingBackingCheck, type SqliteNativeClearingStore } from './native-clearing-store.js';
 
-type Clearing = Pick<SqliteNativeClearingStore, 'domain' | 'accounts' | 'account' | 'latestMark' | 'backingSnapshot'>;
+type Clearing = Pick<SqliteNativeClearingStore, 'domain' | 'accounts' | 'account' | 'latestMark' | 'backingSnapshot'>
+  & Partial<Pick<SqliteNativeClearingStore, 'contractTransition' | 'recordFinalizedTransition'>>;
 type Verifier = Pick<EvmNativeClearingBackingVerifier, 'verify'>;
 
 export class NativeClearingBackingService {
   readonly #clearing: Clearing;
   readonly #verifiers: ReadonlyMap<string, Verifier>;
   readonly #clock: () => number;
+  readonly #transitions: ReadonlyMap<string, EvmNativeClearingTransitionVerifier>;
 
-  constructor(clearing: Clearing, verifiers: ReadonlyMap<string, Verifier>, clock: () => number = Date.now) {
+  constructor(clearing: Clearing, verifiers: ReadonlyMap<string, Verifier>, clock: () => number = Date.now,
+    transitions: ReadonlyMap<string, EvmNativeClearingTransitionVerifier> = new Map()) {
     this.#clearing = clearing;
     this.#verifiers = new Map(verifiers);
     this.#clock = clock;
+    this.#transitions = new Map(transitions);
   }
 
-  async #verify(policy: NativeClearingPolicy, state: NativeClearingDomainState, accounts: readonly NativeClearingAccount[]) {
+  async #verify(policy: NativeClearingPolicy, state: NativeClearingDomainState, accounts: readonly NativeClearingAccount[], atBlock?: { readonly number: bigint; readonly hash: Hex }) {
     const verifier = this.#verifiers.get(policy.clearingDomainId);
     if (verifier === undefined) throw new NativeClearingStoreError('BACKING_UNAVAILABLE', 'No reviewed onchain backing is configured for this clearing domain.');
     try {
-      return await verifier.verify(policy, state, accounts);
+      return await verifier.verify(policy, state, accounts, atBlock);
     } catch {
       throw new NativeClearingStoreError('BACKING_UNVERIFIED', 'Finalized onchain clearing state does not verify the proposed ledger state.');
     }
@@ -52,6 +58,44 @@ export class NativeClearingBackingService {
     return this.#verify(domain.policy, domain.state, this.#clearing.accounts(clearingDomainId));
   }
 
+  async observe(kind: 'MATCH' | 'DEFAULT', body: Record<string, unknown>) {
+    if (typeof body.clearingDomainId !== 'string' || typeof body.transactionHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(body.transactionHash)) {
+      throw new NativeClearingStoreError('INVALID_INPUT', 'Clearing domain and transaction hash are required.');
+    }
+    const verifier = this.#transitions.get(body.clearingDomainId);
+    if (verifier === undefined || this.#clearing.recordFinalizedTransition === undefined) throw new NativeClearingStoreError('BACKING_UNAVAILABLE', 'Clearing transaction reconciliation is not configured.');
+    const domain = this.#clearing.domain(body.clearingDomainId);
+    if (domain === undefined) throw new NativeClearingStoreError('DOMAIN_NOT_FOUND', 'Native clearing domain was not found.');
+    const existing = this.#clearing.contractTransition?.(body.transactionHash);
+    if (existing !== undefined) {
+      if (existing.kind !== kind || !bytesEqual(existing.receipt.policyHash, domain.policy.policyHash)) throw new NativeClearingStoreError('SETTLEMENT_CONFLICT', 'Clearing transaction belongs to another operation.');
+      if (existing.kind === 'MATCH') {
+        const authorization = nativeClearingMatchAuthorization({
+          ...body.authorization as Omit<NativeClearingMatchAuthorizationInput, 'currentExpiryUnit' | 'currentExpiryValue'>,
+          currentExpiryUnit: 'EVM_UNIX_SECONDS', currentExpiryValue: existing.proof.executedAtMs / 1_000n,
+        });
+        if (!bytesEqual(authorization.authorizationHash, existing.authorizationHash)) throw new NativeClearingStoreError('SETTLEMENT_CONFLICT', 'Clearing transaction belongs to another match authorization.');
+      } else if (body.auctionId !== existing.receipt.resolutionId) {
+        throw new NativeClearingStoreError('SETTLEMENT_CONFLICT', 'Clearing transaction belongs to another recovery auction.');
+      }
+      return existing;
+    }
+    const before = this.#clearing.backingSnapshot(body.clearingDomainId);
+    const mark = this.#clearing.latestMark(body.clearingDomainId);
+    if (mark === undefined) throw new NativeClearingStoreError('MARK_UNAVAILABLE', 'Clearing mark is unavailable.');
+    const input = { policy: domain.policy, state: domain.state, accounts: this.#clearing.accounts(body.clearingDomainId),
+      mark, transactionHash: body.transactionHash as Hex };
+    let transition;
+    try {
+      transition = kind === 'MATCH'
+        ? await verifier.match({ ...input, authorization: body.authorization as Omit<NativeClearingMatchAuthorizationInput, 'currentExpiryUnit' | 'currentExpiryValue'> })
+        : await verifier.recover({ ...input, auctionId: body.auctionId as string });
+    } catch {
+      throw new NativeClearingStoreError('BACKING_UNVERIFIED', 'Clearing transaction is not finalized or does not verify the ledger transition.');
+    }
+    return this.#clearing.recordFinalizedTransition(body.clearingDomainId, before, transition);
+  }
+
   async verifyMutation(path: string, body: Record<string, unknown>): Promise<NativeClearingBackingCheck> {
     if (!['domains', 'accounts', 'reserve', 'marks', 'collateral'].some((action) => path === `/internal/native-clearing/${action}`)) {
       throw new NativeClearingStoreError('BACKING_OPERATION_UNSUPPORTED', 'This clearing operation has no onchain reconciliation route.');
@@ -61,6 +105,15 @@ export class NativeClearingBackingService {
     let accounts: readonly NativeClearingAccount[];
     let beforeSnapshot: string;
     let mark: ReturnType<Clearing['latestMark']>;
+    let atBlock: { number: bigint; hash: Hex } | undefined;
+    if (body.evidenceBlock !== undefined) {
+      const value = body.evidenceBlock as Record<string, unknown>;
+      if (typeof value !== 'object' || value === null || Object.keys(value).sort().join(',') !== 'hash,number'
+        || typeof value.number !== 'bigint' || value.number <= 0n || typeof value.hash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(value.hash)) {
+        throw new NativeClearingStoreError('INVALID_INPUT', 'Clearing evidence block is invalid.');
+      }
+      atBlock = { number: value.number, hash: value.hash as Hex };
+    }
     if (path === '/internal/native-clearing/domains') {
       policy = nativeClearingPolicy(body.policy as unknown as NativeClearingPolicyInput);
       state = nativeClearingDomainState(body.state as unknown as NativeClearingDomainStateInput, policy);
@@ -102,11 +155,12 @@ export class NativeClearingBackingService {
         throw new NativeClearingStoreError('BACKING_OPERATION_UNSUPPORTED', 'This clearing operation has no onchain reconciliation route.');
       }
     }
-    if (state.openInterestAtoms !== 0n || accounts.some((account) => account.positionAtoms !== 0n || account.cashBalanceQuoteAtoms !== 0n)) {
+    const tradingReconciliation = this.#transitions.has(policy.clearingDomainId);
+    if (!tradingReconciliation && path !== '/internal/native-clearing/marks' && (state.openInterestAtoms !== 0n || accounts.some((account) => account.positionAtoms !== 0n || account.cashBalanceQuoteAtoms !== 0n))) {
       throw new NativeClearingStoreError('BACKING_OPERATION_UNSUPPORTED', 'Funding reconciliation requires flat native clearing accounts.');
     }
-    const proof = await this.#verify(policy, state, accounts);
-    if (!proof.entryPaused) throw new NativeClearingStoreError('BACKING_OPERATION_UNSUPPORTED', 'Funding reconciliation requires native clearing entries to remain paused.');
+    const proof = await this.#verify(policy, state, accounts, atBlock);
+    if (!tradingReconciliation && path !== '/internal/native-clearing/marks' && !proof.entryPaused) throw new NativeClearingStoreError('BACKING_OPERATION_UNSUPPORTED', 'Funding reconciliation requires native clearing entries to remain paused.');
     return Object.freeze({ clearingDomainId: policy.clearingDomainId, action: path.slice('/internal/native-clearing/'.length),
       beforeSnapshot, afterSnapshot: nativeClearingBackingSnapshot({ policy, state }, accounts, mark), proof });
   }
@@ -119,6 +173,7 @@ export function loadNativeClearingBacking(
   clock?: () => number,
 ): NativeClearingBackingService {
   const verifiers = new Map<string, Verifier>();
+  const transitions = new Map<string, EvmNativeClearingTransitionVerifier>();
   if (path !== undefined) {
     const stat = lstatSync(path);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 262_144) throw new Error('Native clearing backing configuration must be a bounded regular file.');
@@ -136,7 +191,7 @@ export function loadNativeClearingBacking(
       const rpc = environment[entry.rpcEnvironmentVariable];
       if (!rpc) throw new Error('Native clearing backing RPC is not configured.');
       const client = createPublicClient({ transport: http(rpc, { timeout: 10_000, retryCount: 0 }) });
-      verifiers.set(entry.clearingDomainId, new EvmNativeClearingBackingVerifier(entry.binding, {
+      const reads: EvmNativeClearingTransitionReadPort = {
         chainId: async () => BigInt(await client.getChainId()),
         finalizedBlock: async () => {
           const block = await client.getBlock({ blockTag: 'finalized' });
@@ -150,8 +205,13 @@ export function loadNativeClearingBacking(
         },
         code: async (address, blockNumber) => await client.getCode({ address, blockNumber }) ?? '0x',
         read: async (read, blockNumber) => client.readContract({ ...read, blockNumber }),
-      }));
+        receipt: (transactionHash) => client.getTransactionReceipt({ hash: transactionHash }),
+        timestamp: async (blockNumber) => (await client.getBlock({ blockNumber })).timestamp,
+        clearingLogs: (blockNumber) => client.getLogs({ address: entry.binding.clearingHouse, fromBlock: blockNumber, toBlock: blockNumber }),
+      };
+      verifiers.set(entry.clearingDomainId, new EvmNativeClearingBackingVerifier(entry.binding, reads));
+      transitions.set(entry.clearingDomainId, new EvmNativeClearingTransitionVerifier(entry.binding, reads));
     }
   }
-  return new NativeClearingBackingService(clearing, verifiers, clock);
+  return new NativeClearingBackingService(clearing, verifiers, clock, transitions);
 }

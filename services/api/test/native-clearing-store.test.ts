@@ -6,6 +6,10 @@ import test from 'node:test';
 import Database from 'better-sqlite3';
 import {
   nativeClearingAccount,
+  applyNativeClearingMatch,
+  domainRef,
+  nativeClearingExecutionId,
+  nativeClearingMatchAuthorization,
   nativeClearingCollateralAuthorization,
   nativeClearingDefaultBid,
   nativeClearingMarkObservation,
@@ -25,6 +29,49 @@ import {
   markSigner,
   takerSigner,
 } from './native-clearing-fixtures.js';
+import type { EvmNativeClearingTransition } from '@naryx/adapter-evm';
+
+test('finalized contract transitions commit balances, replay protection, events and backing evidence together', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-clearing-transition-'));
+  const path = join(directory, 'clearing.db');
+  const store = new SqliteNativeClearingStore(path, () => 10_000);
+  try {
+    const { policy, state } = fixture();
+    store.registerDomain(policy, state);
+    await recordMark(store, 1_000n, 1n);
+    const long = await open(store, 'account-taker', takerSigner, 5_000n);
+    const short = await open(store, 'account-maker', makerSigner, 5_000n);
+    const authorized = nativeClearingMatchAuthorization({ ...authorization(), currentExpiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS', currentExpiryValue: 10_000n });
+    const result = applyNativeClearingMatch({ policy, domainState: state, longAccount: long, shortAccount: short,
+      executionId: nativeClearingExecutionId(authorized), quantityAtoms: 10n, priceTicks: 1_000n, markPriceTicks: 1_000n, observedAtMs: 10_000n, nowMs: 10_000n });
+    const transactionHash = `0x${'77'.repeat(32)}` as const;
+    const transition: EvmNativeClearingTransition = { kind: 'MATCH', state: result.domainState, accounts: [result.longAccount, result.shortAccount],
+      receipt: result.receipt, authorizationHash: authorized.authorizationHash, markObservationHash: store.latestMark(policy.clearingDomainId)!.observationHash,
+      proof: { evidenceGrade: 'FINALIZED_CONTRACT_STATE', scope: 'REGISTERED_ACCOUNTS', domain: domainRef('eip155:84532', 1, '11'.repeat(32)),
+        clearingHouse: '0x1111111111111111111111111111111111111111', collateralToken: '0x2222222222222222222222222222222222222222',
+        blockNumber: 100n, blockHash: `0x${'55'.repeat(32)}`, tokenBalanceAtoms: 10_300n, verifiedCollateralAndReserveAtoms: 10_300n,
+        verifiedAccountCount: 2, entryPaused: false, transactionHash, logIndex: 0, executedAtMs: 10_000n } };
+    const before = store.backingSnapshot(policy.clearingDomainId);
+    assert.throws(() => store.recordFinalizedTransition(policy.clearingDomainId, 'null', transition), { code: 'STALE_BACKING' });
+    assert.equal(store.contractTransition(transactionHash), undefined);
+    const raw = new Database(path);
+    try {
+      raw.exec("CREATE TRIGGER fail_transition BEFORE INSERT ON native_clearing_contract_transitions BEGIN SELECT RAISE(ABORT, 'transition unavailable'); END;");
+      assert.throws(() => store.recordFinalizedTransition(policy.clearingDomainId, before, transition), /transition unavailable/);
+      assert.equal(store.account(long.accountId)!.positionAtoms, 0n);
+      assert.equal(store.events(policy.clearingDomainId).filter((event) => event.kind === 'MATCH').length, 0);
+      raw.exec('DROP TRIGGER fail_transition');
+    } finally { raw.close(); }
+    store.recordFinalizedTransition(policy.clearingDomainId, before, transition);
+    assert.equal(store.account(long.accountId)!.positionAtoms, 10n);
+    assert.equal(store.events(policy.clearingDomainId).filter((event) => event.kind === 'MATCH').length, 1);
+    assert.equal(store.backingReceipts(policy.clearingDomainId).length, 1);
+    assert.deepEqual(store.contractTransition(transactionHash), transition);
+    assert.throws(() => store.recordFinalizedTransition(policy.clearingDomainId, before, transition), { code: 'STALE_BACKING' });
+    assert.throws(() => store.settleAuthorizedMatch({ authorization: authorization(), expectedStateHash: result.domainState.stateHash,
+      expectedLongAccountHash: result.longAccount.accountHash, expectedShortAccountHash: result.shortAccount.accountHash }), { code: 'BACKING_REQUIRED' });
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
 
 async function open(
   store: SqliteNativeClearingStore,

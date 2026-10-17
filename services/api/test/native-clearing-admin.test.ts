@@ -119,3 +119,29 @@ test('a native clearing match settles only the exchange-stored allocation both p
   }
   assert.equal(settled, 1);
 });
+
+test('contract observations require stored exchange consent and cannot supply the execution clock', async () => {
+  const match = authorization();
+  const calls: unknown[] = [];
+  const authorized = new Map([match.takerSettlementCommitment, match.makerSettlementCommitment].map((commitment) => [
+    toHex(commitment.packageOrderId), { settlementCommitmentHashHex: toHex(packageSettlementCommitmentHash(commitment)) },
+  ]));
+  const exchange = { getAllocation: () => match.allocation, settlementHandoff: () => match.handoff,
+    settlementAuthorization: (id: Uint8Array | string) => authorized.get(typeof id === 'string' ? id : toHex(id)),
+  } as unknown as NativeClearingAdminOptions['exchange'];
+  const options = { clearing: {} as SqliteNativeClearingStore, exchange,
+    observe: async (kind: 'MATCH' | 'DEFAULT', body: Record<string, unknown>) => { calls.push({ kind, body }); return { recorded: true }; },
+  };
+  const server = await serve(options);
+  try {
+    const body = { clearingDomainId: 'test-clearing', transactionHash: `0x${'aa'.repeat(32)}`, authorization: match };
+    assert.equal((await server.request('match-observations', body)).status, 200);
+    assert.equal((await server.request('match-observations', { ...body, authorization: { ...match, currentExpiryValue: 1n } })).status, 400);
+    assert.equal((await server.request('recovery-observations', { clearingDomainId: 'test-clearing', transactionHash: body.transactionHash, auctionId: 'recovery-1' })).status, 200);
+    assert.equal(calls.length, 2);
+    const unauthorized = await serve({ ...options, exchange: noExchange });
+    try { assert.equal((await unauthorized.request('match-observations', body)).status, 403); }
+    finally { await unauthorized.close(); }
+    assert.equal(calls.length, 2);
+  } finally { await server.close(); }
+});
