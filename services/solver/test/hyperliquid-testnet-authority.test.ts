@@ -178,6 +178,22 @@ test('activates INITIALIZING only for the exact authority inventory', async () =
   });
 });
 
+test('inspection validates inventory without releasing a locked authority', async () => {
+  await withStore(async (store) => {
+    store.incidentLock();
+    const preflight = new HyperliquidTestnetAuthorityPreflight(
+      reader(snapshot()), store, config, () => nowMs,
+    );
+    assert.deepEqual(await preflight.inspectUntil(BigInt(nowMs + 120_000)), snapshot());
+    assert.equal(store.state(), 'INCIDENT_LOCKED');
+    const invalid = { ...snapshot(), abstraction: 'unifiedAccount' as const };
+    await assert.rejects(new HyperliquidTestnetAuthorityPreflight(
+      reader(invalid), store, config, () => nowMs,
+    ).inspectUntil(BigInt(nowMs + 120_000)), /is not the configured account mode/);
+    assert.equal(store.state(), 'INCIDENT_LOCKED');
+  });
+});
+
 test('accepts the Testnet default Standard account label', async () => {
   await withStore(async (store) => {
     const standardSnapshot = snapshot();
@@ -315,6 +331,27 @@ test('rejects stale signerless clearance evidence', async () => {
     );
     await assert.rejects(preflight.clearIncident(clearanceInput), /clearance observation is stale/);
     assert.equal(store.state(), 'INCIDENT_LOCKED');
+  });
+});
+
+test('samples clearance time after an asynchronous signerless observation completes', async () => {
+  await withStore(async (store) => {
+    store.incidentLock();
+    let currentTime = nowMs - 20;
+    const liveReader: HyperliquidAuthorityClearancePort = {
+      ...clearance(),
+      async read() {
+        const observed = await clearance().read(config.account);
+        currentTime = nowMs;
+        return observed;
+      },
+    };
+    const preflight = new HyperliquidTestnetAuthorityPreflight(
+      reader(snapshot()), store, config, () => currentTime, liveReader,
+    );
+    await preflight.clearIncident(clearanceInput);
+    assert.equal(store.state(), 'ACTIVE');
+    assert.equal(store.clearanceRecord()?.clearedAtMs, nowMs);
   });
 });
 

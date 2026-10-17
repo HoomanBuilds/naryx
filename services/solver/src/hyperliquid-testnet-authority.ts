@@ -394,14 +394,7 @@ export class HyperliquidTestnetAuthorityPreflight {
     try {
       requireCondition(this.#store.state() === 'ACTIVE' || this.#store.state() === 'INITIALIZING',
         'durable authority fence blocks new submissions');
-      const snapshot = await this.#reader.read(
-        this.#config.account,
-        this.#config.approvedAgent,
-        this.#config.allowedPerpetualCoins,
-      );
-      const nowMs = this.#currentTimeMs();
-      requireCondition(Number.isSafeInteger(nowMs) && nowMs > 0, 'trusted clock is invalid');
-      this.#validateSnapshot(snapshot, requiredUntilMs, nowMs);
+      const snapshot = await this.inspectUntil(requiredUntilMs);
       requireCondition(this.#store.activate() === 'ACTIVE',
         'durable authority fence is not active');
       return snapshot;
@@ -409,6 +402,18 @@ export class HyperliquidTestnetAuthorityPreflight {
       this.#store.incidentLock();
       throw error;
     }
+  }
+
+  async inspectUntil(requiredUntilMs: bigint): Promise<HyperliquidTestnetAuthoritySnapshot> {
+    const snapshot = await this.#reader.read(
+      this.#config.account,
+      this.#config.approvedAgent,
+      this.#config.allowedPerpetualCoins,
+    );
+    const nowMs = this.#currentTimeMs();
+    requireCondition(Number.isSafeInteger(nowMs) && nowMs > 0, 'trusted clock is invalid');
+    this.#validateSnapshot(snapshot, requiredUntilMs, nowMs);
+    return snapshot;
   }
 
   async clearIncident(input: HyperliquidAuthorityClearanceInput): Promise<void> {
@@ -425,8 +430,8 @@ export class HyperliquidTestnetAuthorityPreflight {
       && !/^0x0+$/.test(value)), 'clearance commitments must be nonzero 32-byte hashes');
     requireCondition(input.firstReviewerRoleCommitment !== input.secondReviewerRoleCommitment,
       'incident reviewers must be distinct');
-    const nowMs = this.#currentTimeMs();
     const snapshot = await this.#clearance.read(this.#config.account);
+    const nowMs = this.#currentTimeMs();
     requireCondition(snapshot.environment === 'testnet' && snapshot.apiUrl === TESTNET_API_URL,
       'clearance source is not exact Hyperliquid Testnet');
     requireCondition(Number.isSafeInteger(snapshot.requestedAtMs)
