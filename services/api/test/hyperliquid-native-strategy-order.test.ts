@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { AddressInfo } from 'node:net';
 import Database from "better-sqlite3";
 import {
   adapterRef,
@@ -13,6 +14,7 @@ import {
   manifestHash,
   packageGraph,
   packageGraphHash,
+  parseProtocolJson,
   protocolId,
   requireStrategyTemplateDefinition,
   strategyPackageOrder,
@@ -32,6 +34,7 @@ import {
   type TypedStrategyRoute,
 } from "@naryx/protocol-types";
 import {
+  createPrivateTerminalServer,
   applyNativeStrategyExitReceipt,
   applyNativeStrategyMigrationReceipt,
   applyNativeStrategyRebalanceReceipt,
@@ -143,6 +146,32 @@ const intake: StrategyOrderIntakePort = Object.freeze({
       stages: Object.freeze([]),
     });
   },
+});
+
+test('native strategy HTTP creation returns the exact admitted objects for owner-authorized package liquidity', async () => {
+  const options: Parameters<typeof createPrivateTerminalServer> = [{ host: '127.0.0.1', port: 0, terminalOrigin: 'http://localhost:3000' }];
+  options[25] = createHyperliquidNativeStrategyOrderPort({ profiles: [profile('btc-treasury-hedge', 'external-inventory-hedge-v1')],
+    intake, currentTimeMs: () => NOW_MS });
+  const server = createPrivateTerminalServer(...options);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/internal/terminal/strategy-orders/create`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        profileId: 'btc-treasury-hedge', owner: OWNER, lifecycleAction: 'ENTRY', quantityAtoms: '100000',
+        economicQuantityAtoms: '200000', limitPrices: [{ legId: 'treasury-hedge', quoteAtoms: '60001', baseAtoms: '1' }],
+        expiryValue: '1020000', nonce: '1',
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = parseProtocolJson(await response.text()) as {
+      orderHash: string; graphHash: string; order: StrategyPackageOrderInput; graph: PackageGraphInput;
+    };
+    assert.equal(toHex(strategyPackageOrderHash(body.order)), body.orderHash);
+    assert.equal(toHex(packageGraphHash(body.graph)), body.graphHash);
+    assert.equal(body.order.economicQuantity.atoms, 200000n);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });
 
 test("loads reviewed profiles and creates treasury entry plus funding exit orders", () => {
