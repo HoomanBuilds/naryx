@@ -63,6 +63,7 @@ import { annotateAttempt } from "./shell/attempt-index";
 import { TransactionLink, claimTicketWatch, refreshOnReturn } from "./transaction-status";
 import { EVM_CHAINS, type EvmDomain } from "@/features/wallet/evm-config";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
+import { HyperliquidAccountSetup } from "./hyperliquid-account-setup";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
 import { shortAddress, useWalletModal } from "@/features/wallet/wallet-modal";
 import { AssetIcon, ChainIcon, chainOf } from "@/features/brand/chain-icons";
@@ -1431,6 +1432,7 @@ function Ticket({
   return (
     <aside className={styles.ticket} aria-labelledby="ticket-title">
       <h2 id="ticket-title" className={styles.visuallyHidden}>Package ticket</h2>
+      {selectedDomain === "hyperliquid" ? <HyperliquidAccountSetup apiOrigin={privateApiBaseUrl} /> : null}
 
       <div className={styles.strategySelector}>
         <label htmlFor="strategy-template">Strategy market</label>
