@@ -79,6 +79,11 @@ export class HyperliquidPooledCollateralStore {
         CREATE UNIQUE INDEX IF NOT EXISTS pool_one_pending_operation ON pool_operations(state) WHERE state = 'PENDING';
         CREATE TABLE IF NOT EXISTS pool_transfer_evidence (hash TEXT PRIMARY KEY, operation_id TEXT NOT NULL UNIQUE) STRICT;
         CREATE TABLE IF NOT EXISTS pool_epoch_evidence (hash TEXT PRIMARY KEY, operation_id TEXT NOT NULL UNIQUE) STRICT;
+        CREATE TABLE IF NOT EXISTS pool_epoch_sources (hash TEXT PRIMARY KEY, operation_id TEXT NOT NULL) STRICT;
+        CREATE TABLE IF NOT EXISTS pool_epoch_stages (
+          operation_id TEXT NOT NULL, stage TEXT NOT NULL, payload TEXT NOT NULL,
+          PRIMARY KEY(operation_id, stage)
+        ) STRICT;
         CREATE TABLE IF NOT EXISTS pool_withdrawal_submissions (
           operation_id TEXT PRIMARY KEY, nonce INTEGER NOT NULL UNIQUE, payload TEXT NOT NULL,
           state TEXT NOT NULL CHECK(state IN ('SUBMITTED_UNKNOWN', 'ACKNOWLEDGED'))
@@ -113,6 +118,33 @@ export class HyperliquidPooledCollateralStore {
     const row = this.#operation(id);
     return row === undefined ? undefined : Object.freeze({ kind: row.kind, state: row.state,
       payload: parseProtocolJson(row.payload), result: row.result === null ? null : parseProtocolJson(row.result) });
+  }
+
+  epochStage(id: string, stage: string): unknown | undefined {
+    check(ID.test(id) && ID.test(stage), 'invalid epoch stage identity');
+    const row = this.#db.prepare('SELECT payload FROM pool_epoch_stages WHERE operation_id = ? AND stage = ?')
+      .get(id, stage) as { payload: string } | undefined;
+    return row === undefined ? undefined : parseProtocolJson(row.payload);
+  }
+
+  recordEpochStage(id: string, stage: string, value: unknown): void {
+    check(ID.test(stage), 'invalid epoch stage');
+    const payload = stringifyProtocolJson(value);
+    check(payload.length <= 1_048_576, 'epoch stage exceeds size bound');
+    this.#db.transaction(() => {
+      const operation = this.#operation(id);
+      check(operation?.kind === 'EPOCH' && operation.state === 'PENDING', 'epoch is not pending');
+      if (stage.startsWith('ENTRY_DISPATCH_')) check(this.epochStage(id, 'RECOVERY_REQUESTED') === undefined,
+        'recovery has locked new entry dispatch');
+      if (stage === 'ENTRY_RESULT') check(this.epochStage(id, 'RECOVERY_REQUESTED') === undefined,
+        'recovery has locked entry allocation');
+      if (stage === 'RECOVERY_REQUESTED') check(this.epochStage(id, 'ENTRY_RESULT') === undefined,
+        'allocated owner positions require a coordinated close');
+      const prior = this.#db.prepare('SELECT payload FROM pool_epoch_stages WHERE operation_id = ? AND stage = ?')
+        .get(id, stage) as { payload: string } | undefined;
+      check(prior === undefined || prior.payload === payload, 'epoch stage replay changed');
+      if (prior === undefined) this.#db.prepare('INSERT INTO pool_epoch_stages VALUES (?, ?, ?)').run(id, stage, payload);
+    }).immediate();
   }
 
   withdrawalSubmission(id: string): Readonly<{ nonce: number; payload: string; state: string }> | undefined {
@@ -216,8 +248,15 @@ export class HyperliquidPooledCollateralStore {
     }).immediate();
   }
 
-  reserveEpoch(input: Readonly<{ id: string; reservations: readonly HyperliquidPoolReservation[]; verifiedFlatEquityQuoteAtoms: bigint }>): void {
+  reserveEpoch(input: Readonly<{ id: string; reservations: readonly HyperliquidPoolReservation[]; verifiedFlatEquityQuoteAtoms: bigint;
+    context?: Readonly<{ planHash: string; plan: string; sourceOrderHashes: readonly string[] }> }>): void {
     amount(input.verifiedFlatEquityQuoteAtoms);
+    if (input.context !== undefined) check(HASH.test(input.context.planHash) && !/^0x0+$/.test(input.context.planHash)
+      && typeof input.context.plan === 'string' && input.context.plan.length <= 1_048_576
+      && Array.isArray(input.context.sourceOrderHashes) && input.context.sourceOrderHashes.length > 0
+      && input.context.sourceOrderHashes.length <= 512
+      && new Set(input.context.sourceOrderHashes).size === input.context.sourceOrderHashes.length
+      && input.context.sourceOrderHashes.every(hash => HASH.test(hash) && !/^0x0+$/.test(hash)), 'invalid epoch plan');
     check(Array.isArray(input.reservations) && input.reservations.length >= 2 && input.reservations.length <= 64
       && new Set(input.reservations.map(row => row.owner)).size === input.reservations.length, 'epoch requires distinct consenting owners');
     const payload = stringifyProtocolJson(input);
@@ -230,6 +269,9 @@ export class HyperliquidPooledCollateralStore {
         amount(row.maximumLossQuoteAtoms, true);
         check(HASH.test(row.authorizationHash) && !/^0x0+$/.test(row.authorizationHash), 'missing owner epoch authorization');
         check(row.maximumLossQuoteAtoms <= this.#member(row.owner).balanceQuoteAtoms, 'owner loss reservation exceeds funded balance');
+      }
+      for (const hash of input.context?.sourceOrderHashes ?? []) {
+        this.#db.prepare('INSERT INTO pool_epoch_sources VALUES (?, ?)').run(hash, input.id);
       }
       this.#db.prepare("INSERT INTO pool_operations VALUES (?, 'EPOCH', 'PENDING', ?, NULL)").run(input.id, payload);
     }).immediate();

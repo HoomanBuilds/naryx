@@ -80,6 +80,15 @@ export interface HyperliquidPoolFundingReadPort {
   transfer(hash: string, timeMs: number, source: `0x${string}`, destination: `0x${string}`): Promise<HyperliquidPoolTransferEvidence>;
 }
 
+export function verifyPoolFlatEvidence(binding: HyperliquidPoolBinding, proof: HyperliquidPoolFlatEvidence, now: number): void {
+  check(proof.environment === 'TESTNET' && proof.account === binding.poolAccount
+    && Number.isSafeInteger(now) && Number.isSafeInteger(proof.requestedAtMs) && proof.requestedAtMs > 0
+    && Number.isSafeInteger(proof.observedAtMs) && proof.requestedAtMs <= proof.observedAtMs
+    && proof.observedAtMs <= now && now - proof.requestedAtMs <= MAX_AGE_MS
+    && typeof proof.equityQuoteAtoms === 'bigint' && proof.equityQuoteAtoms >= 0n
+    && proof.withdrawableQuoteAtoms === proof.equityQuoteAtoms, 'fresh flat withdrawable testnet backing is required');
+}
+
 export class HyperliquidPoolFundingService {
   readonly #store: HyperliquidPooledCollateralStore;
   readonly #reads: HyperliquidPoolFundingReadPort;
@@ -91,13 +100,7 @@ export class HyperliquidPoolFundingService {
 
   async #flat() {
     const proof = await this.#reads.flat(this.#store.binding.poolAccount);
-    const now = this.#clock();
-    check(proof.environment === 'TESTNET' && proof.account === this.#store.binding.poolAccount
-      && Number.isSafeInteger(now) && Number.isSafeInteger(proof.requestedAtMs) && proof.requestedAtMs > 0
-      && Number.isSafeInteger(proof.observedAtMs) && proof.requestedAtMs <= proof.observedAtMs
-      && proof.observedAtMs <= now && now - proof.requestedAtMs <= MAX_AGE_MS
-      && typeof proof.equityQuoteAtoms === 'bigint' && proof.equityQuoteAtoms >= 0n
-      && proof.withdrawableQuoteAtoms === proof.equityQuoteAtoms, 'fresh flat withdrawable testnet backing is required');
+    verifyPoolFlatEvidence(this.#store.binding, proof, this.#clock());
     return proof;
   }
 
