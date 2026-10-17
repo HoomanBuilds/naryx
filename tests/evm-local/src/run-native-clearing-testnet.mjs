@@ -105,7 +105,7 @@ async function main() {
     return;
   }
   assert.equal(values.broadcast, true, 'Writes require --broadcast');
-  record = parseProtocolJson(readFileSync(values.output, 'utf8'));
+  record = structuredClone(parseProtocolJson(readFileSync(values.output, 'utf8')));
   assert.equal(record.environment, 'testnet');
   assert.equal(record.chainId, chain.id);
   assert.deepEqual(record.actors, actors);

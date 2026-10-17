@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assetRef, toHex } from '@naryx/protocol-types';
+import { assetRef, parseProtocolJson, stringifyProtocolJson, toHex } from '@naryx/protocol-types';
 import { buildClearingPolicy, reserveTestnetBudget } from '../src/run-native-clearing-testnet.mjs';
 
 test('the per-network cap includes ETH transfers and worst-case gas without rounding', () => {
@@ -8,6 +8,15 @@ test('the per-network cap includes ETH transfers and worst-case gas without roun
   assert.equal(reserveTestnetBudget(maximum - 101n, 10n, 10n, 1n), maximum);
   assert.throws(() => reserveTestnetBudget(maximum - 101n, 10n, 10n, 2n), /cap exceeded/);
   assert.throws(() => reserveTestnetBudget(0n, 1n, 1n, -1n), /Invalid/);
+});
+
+test('resumed evidence is mutable without changing immutable protocol documents', () => {
+  const parsed = parseProtocolJson(stringifyProtocolJson({ transactions: {}, budgetReservedWei: 0n }));
+  const record = structuredClone(parsed);
+  record.transactions.deposit = { hash: '11'.repeat(32) };
+  record.budgetReservedWei = 1n;
+  assert.equal(Object.keys(parsed.transactions).length, 0);
+  assert.equal(record.budgetReservedWei, 1n);
 });
 
 test('clearing testnet plan binds live matching and series identities with bounded collateral units', () => {
