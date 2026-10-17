@@ -94,6 +94,50 @@ netting execution is refused in per-user mode: cancelling obligations between di
 cannot settle their independent HyperCore accounts. It requires a separately qualified funded
 clearing or novation mechanism. Historical shared-account evidence is not per-user settlement.
 
+### Optional pooled test-account custody foundation
+
+`hyperliquid-pooled-collateral-store.ts`, `hyperliquid-pool-funding.ts`,
+`hyperliquid-pool-funding-reads.ts`, and `hyperliquid-pool-withdrawal.ts` implement an
+inactive, separate testnet custody boundary. They are not connected to `main.ts`, the
+public API, or the terminal. Existing per-user accounts are not migrated or pooled.
+Consent creates a claim in Naryx's ledger, not an owner-specific HyperCore position.
+
+- An immutable database binding pins the testnet domain, dedicated pool account,
+  collateral identity, funding cap, and explicit dedicated-test-owner allowlist.
+  Wallet-signed custody and withdrawal messages bind the full configuration hash.
+- Deposits credit only the amount actually received after venue fees. Both account
+  ledgers and the successful testnet explorer action must agree. Reused transfer
+  evidence cannot credit another operation.
+- Funding and withdrawal require freshly observed, fully withdrawable equity that
+  exactly reconciles with owner liabilities. Standard account mode is required;
+  foreign-DEX collateral, positions, spot liabilities, pending default-DEX orders,
+  and active TWAPs refuse admission.
+- One durable pending operation locks the pool. Withdrawal submission is claimed
+  transactionally before signing, so concurrent workers or a restart cannot send
+  twice. An acknowledgement does not debit a user: observed transfer evidence does.
+  A delayed inclusion can settle only with a nonce inside the owner authorization
+  window and matching the journaled submission when present.
+- An expired withdrawal that was never claimed for signing can release its lock
+  after reconciliation. A claimed or uncertain submission cannot be released merely
+  because its authorization expired. Unknown outcomes require receipt reconciliation.
+- Epoch ledger primitives conserve total cash and reject allocations exceeding an
+  owner's reserved loss. Profits above the funding cap can settle and withdraw;
+  the cap stops new exposure, not exits.
+
+The venue reader pins the official testnet HTTP, explorer, and WebSocket endpoints.
+Its observations are trusted venue API evidence, not cryptographic solvency proofs.
+The all-DEX snapshot checks balances and positions; open-order inspection is limited
+to the default settlement DEX. Exclusive operator control and no out-of-band writes
+are required. This foundation neither grants trading authority nor guarantees a loss
+cap against market gaps.
+
+Activation still requires owner-signed trading mandates, virtual-position and
+funding/fee allocation, qualified residual execution, funded default/recovery rules,
+live deposit/trade/withdrawal reconciliation, and isolated runtime/API integration.
+Do not use ledger `settleEpoch` inputs from public requests, enable shared trading
+through the existing per-user route, or advertise cross-user margin as live based
+only on these custody tests.
+
 Canonical cash-and-carry creation, quote pricing, owner authorization, strategy staging, exits,
 and the terminal use the same owner-account binding in per-user mode. The terminal never
 substitutes the operator account when the wallet is disconnected. Historical shared positions
