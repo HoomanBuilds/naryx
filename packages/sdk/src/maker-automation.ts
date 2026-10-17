@@ -5,6 +5,7 @@ import {
   prepareShardKillSwitch,
   prepareShardReprice,
   quoteReferenceState,
+  quoteReferenceStateHash,
   toHex,
   type PackageQuoteShardInput,
   type QuoteReferenceStateInput,
@@ -28,7 +29,7 @@ export interface QuoteAutomationPolicy {
 export type QuoteAutomationAction =
   | { readonly kind: 'HALTED' }
   | { readonly kind: 'RESERVED'; readonly filledSize: bigint; readonly reservedCapacity: bigint }
-  | { readonly kind: 'KILLED'; readonly reason: 'STALE_REFERENCE' | 'INVENTORY_LIMIT' | 'UNTRACKED_FILLS' | 'EXPIRED_QUOTES' | 'REFERENCE_CLOCK' }
+  | { readonly kind: 'KILLED'; readonly reason: 'STALE_REFERENCE' | 'INVENTORY_LIMIT' | 'UNTRACKED_FILLS' | 'EXPIRED_QUOTES' | 'REFERENCE_CLOCK' | 'REFERENCE_BINDING' }
   | { readonly kind: 'QUOTES_RENEWED'; readonly levelCount: number }
   | { readonly kind: 'REPRICED'; readonly referenceSequence: bigint }
   | { readonly kind: 'HEARTBEAT'; readonly heartbeatExpiry: bigint };
@@ -172,6 +173,9 @@ export function createQuoteAutomation(options: {
       // Reference: stale observations stop quoting; newer ones reprice every level at once.
       const reference = quoteReferenceState(await options.readReference());
       const now = options.now();
+      if (reference.environment !== shard.environment || reference.marketGroupId !== shard.marketGroupId
+        || reference.referenceSequence < shard.referenceSequence
+        || (reference.referenceSequence === shard.referenceSequence && toHex(quoteReferenceStateHash(reference)) !== toHex(packageQuoteShard(shard).referenceStateHash))) return kill('REFERENCE_BINDING');
       if (shard.quoteLevels.some((level) => level.validUntilUnit !== reference.observedAtUnit)) return kill('REFERENCE_CLOCK');
       if (reference.observedAtValue > now || now - reference.observedAtValue > policy.maxReferenceAge) return kill('STALE_REFERENCE');
       if (reference.referenceSequence > shard.referenceSequence) {

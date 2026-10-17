@@ -65,7 +65,7 @@ const initialShard = (): PackageQuoteShardInput => ({
   solverId: 'solver-a',
   templateId: 'cash-and-carry-v1',
   marketGroupId: 'sol-carry',
-  referenceStateHash: quoteReferenceStateHash(reference(1n, 990n)),
+  referenceStateHash: quoteReferenceStateHash(reference(1n, 995n)),
   referenceSequence: 1n,
   quoteLevels: [
     { levelId: 2n, direction: 'ASK', size: 10n, referenceOffset: 5n, maximumFee: 5n, settlementClass: 'BATCHED_IOC_WITH_RECOVERY', quoteMode: 'EXECUTION_COMMITMENT', validUntilUnit: 'EVM_UNIX_SECONDS', validUntilValue: 5_000n, reservationPolicy: 'RESERVE_ON_ACCEPT' },
@@ -125,6 +125,15 @@ describe('quote automation', () => {
     assert.deepEqual(await automation.tick(), [{ kind: 'KILLED', reason: 'UNTRACKED_FILLS' }]);
   });
 
+  test('a reference cannot change markets or mutate a signed sequence in place', async () => {
+    for (const observed of [{ ...reference(2n, 995n), marketGroupId: 'another-market' }, reference(1n, 996n)]) {
+      const market = venue(initialShard());
+      const automation = createQuoteAutomation({ client: market.client as never, shardId: 'cash-and-carry-v1.sol-carry', policy,
+        readReference: async () => observed, now: () => 1000n, signShard });
+      assert.deepEqual(await automation.tick(), [{ kind: 'KILLED', reason: 'REFERENCE_BINDING' }]);
+    }
+  });
+
   test('reprices to a newer reference, heartbeats when due, and signs every published state', async () => {
     const market = venue(initialShard());
     let now = 1_000n;
@@ -135,9 +144,9 @@ describe('quote automation', () => {
     assert.deepEqual(await automation.tick(), [{ kind: 'REPRICED', referenceSequence: 2n }]);
     assert.equal(toHex(packageQuoteShard(market.shard).referenceStateHash), toHex(quoteReferenceStateHash(observed)));
     now = 1_085n;
-    observed = reference(2n, 1_080n);
-    assert.deepEqual(await automation.tick(), [{ kind: 'HEARTBEAT', heartbeatExpiry: 1_205n }]);
-    assert.deepEqual(market.operations, ['replace', 'heartbeat']);
+    observed = reference(3n, 1_080n);
+    assert.deepEqual(await automation.tick(), [{ kind: 'REPRICED', referenceSequence: 3n }, { kind: 'HEARTBEAT', heartbeatExpiry: 1_205n }]);
+    assert.deepEqual(market.operations, ['replace', 'replace', 'heartbeat']);
     assert.ok(market.shard.signature.some((byte) => byte !== 0), 'published states are signed');
   });
 
