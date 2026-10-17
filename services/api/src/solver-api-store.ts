@@ -288,6 +288,22 @@ export class SqliteSolverApiStore {
     );
   }
 
+  shardAvailableSizes(input: PackageQuoteShardInput): ReadonlyMap<bigint, bigint> {
+    const shard = packageQuoteShard(input);
+    const rows = this.db.prepare('SELECT level_id, size FROM shard_fills WHERE solver_id = ? AND shard_id = ? AND shard_hash = ?')
+      .all(shard.solverId, shardIdOf(shard), packageQuoteShardHash(shard)) as { level_id: string; size: string }[];
+    const remaining = shard.inventoryCap - shard.reservedCapacity - rows.reduce((sum, row) => sum + BigInt(row.size), 0n);
+    const filled = new Map<bigint, bigint>();
+    for (const row of rows) {
+      const id = BigInt(row.level_id);
+      filled.set(id, (filled.get(id) ?? 0n) + BigInt(row.size));
+    }
+    return new Map(shard.quoteLevels.map((level) => {
+      const size = level.size - (filled.get(level.levelId) ?? 0n);
+      return [level.levelId, remaining <= 0n || size <= 0n ? 0n : size < remaining ? size : remaining];
+    }));
+  }
+
   /** Every current quote shard owned by one solver, ordered by its stable shard identity. */
   shardsForSolver(solverId: string): readonly { readonly shardId: string; readonly shard: PackageQuoteShard; readonly shardHashHex: string }[] {
     const rows = this.db

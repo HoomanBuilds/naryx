@@ -84,6 +84,7 @@ test("the controller settles offchain shard fills once, within each signed state
     };
     const first = shardFor();
     assert.ok(store.admitShard("solver-a", first).accepted);
+    assert.deepEqual([...store.shardAvailableSizes(first)], [[1n, 10n], [2n, 10n]]);
     const shardId = "cash-and-carry-v1.sol-carry";
     const gate = createOffchainShardSettlement({ store, registry, nowIn: (unit) => (unit === "EVM_UNIX_SECONDS" ? NOW_S : undefined) });
     const fill = (overrides: Record<string, unknown> = {}) => ({
@@ -101,6 +102,7 @@ test("the controller settles offchain shard fills once, within each signed state
 
     const settled = gate.settle("solver-a", shardId, fill());
     assert.ok(settled.settled && !settled.replayed);
+    assert.deepEqual([...store.shardAvailableSizes(first)], [[1n, 9n], [2n, 4n]]);
     assert.equal(settled.priceTicks, 1_005n, "the price is the committed reference plus the level offset");
     const replay = gate.settle("solver-a", shardId, fill());
     assert.ok(replay.settled && replay.replayed && replay.fillCommitmentHex === settled.fillCommitmentHex);
@@ -114,6 +116,9 @@ test("the controller settles offchain shard fills once, within each signed state
     );
     const bid = gate.settle("solver-a", shardId, fill({ orderHash: "65".repeat(32), levelId: 1n, takerSide: "SELL", size: 5n }));
     assert.ok(bid.settled && bid.priceTicks === 995n);
+    assert.deepEqual([...store.shardAvailableSizes(first)], [[1n, 0n], [2n, 0n]]);
+    assert.deepEqual([...store.shardAvailableSizes(shardFor({ shardSequence: 2n, reservedCapacity: 15n }))], [[1n, 0n], [2n, 0n]]);
+    assert.deepEqual([...store.shardAvailableSizes(shardFor({ shardSequence: 2n, reservedCapacity: 10n }))], [[1n, 5n], [2n, 5n]]);
     assert.deepEqual(gate.settle("solver-a", shardId, fill({ orderHash: "66".repeat(32), referenceState: { ...reference, referencePriceTicks: 900n } })), { settled: false, reason: "REFERENCE_CHANGED" });
     assert.equal(store.shardFills("solver-a", shardId).length, 3);
     const history = store.shardFills('solver-a', shardId);

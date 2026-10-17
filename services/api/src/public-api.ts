@@ -248,7 +248,7 @@ export type PublicExchangeStore = Pick<
 
 export type PublicRegistryStore = Pick<SqliteRegistryStore, "list" | "latest" | "byHash">;
 
-export type PublicSolverState = Pick<SqliteSolverApiStore, "shardsForMarket" | "capacityStatus">;
+export type PublicSolverState = Pick<SqliteSolverApiStore, "shardsForMarket" | "shardAvailableSizes" | "capacityStatus">;
 
 export function sealedAuctionAwardMatchesQuote(
   quote: Readonly<{
@@ -1464,10 +1464,12 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const quotes = requireSolverState()
         .shardsForMarket(classId)
         .filter(({ shard }) => shard.killSwitchState === "INACTIVE" && quotable(shard.solverId))
-        .flatMap(({ shard, shardHashHex }) =>
-          shard.quoteLevels.flatMap((level) => {
+        .flatMap(({ shard, shardHashHex }) => {
+          const availableSizes = requireSolverState().shardAvailableSizes(shard);
+          return shard.quoteLevels.flatMap((level) => {
             const now = nowIn(level.validUntilUnit);
-            if (now === undefined || now >= level.validUntilValue || now >= shard.heartbeatExpiry) return [];
+            const availableSize = availableSizes.get(level.levelId) ?? 0n;
+            if (now === undefined || now >= level.validUntilValue || now >= shard.heartbeatExpiry || availableSize <= 0n) return [];
             return [{
               solverId: shard.solverId,
               shardHash: shardHashHex,
@@ -1476,7 +1478,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
               referenceSequence: shard.referenceSequence,
               levelId: level.levelId,
               direction: level.direction,
-              size: level.size,
+              size: availableSize,
+              signedSize: level.size,
               referenceOffset: level.referenceOffset,
               maximumFee: level.maximumFee,
               quoteMode: level.quoteMode,
@@ -1485,8 +1488,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
               validUntilUnit: level.validUntilUnit,
               validUntilValue: level.validUntilValue,
             }];
-          }),
-        );
+          });
+        });
       return { packageMarketId: classId, quotes };
     }
     if ((match = /^\/v1\/solvers\/([^/]+)\/capacity$/.exec(path)) !== null) {

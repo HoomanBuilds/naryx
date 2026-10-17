@@ -295,6 +295,19 @@ test("shard operations enforce ownership, signatures, sequence, and the change e
   });
 });
 
+test('public shard quotes respect the signed inventory cap and hide exhausted states', async () => {
+  await withSolverApi(async (api) => {
+    for (const [sequence, reserved, expected] of [[1n, 98n, [2n, 2n]], [2n, 100n, []]] as const) {
+      assert.equal((await api.call('PUT', SHARD_PATH, { shard: api.shard({ shardSequence: sequence, reservedCapacity: reserved }) })).status, 200);
+      const response = await api.plain('GET', `/v1/markets/${CLASS}/quotes`);
+      assert.equal(response.status, 200);
+      const quotes = response.body.quotes as { size: bigint; signedSize: bigint }[];
+      assert.deepEqual(quotes.map((quote) => quote.size), expected);
+      assert.ok(quotes.every((quote) => quote.signedSize === 10n));
+    }
+  });
+});
+
 test("capacity evidence bounds reservations, and book quotes are derived and owner-cancellable", async () => {
   await withSolverApi(async (api) => {
     const scope = { domain: domainRef(DOMAIN_MANIFEST.domainId, 1, domainManifestHash(DOMAIN_MANIFEST)), asset: { assetId: "usdc", assetManifestHash: "33".repeat(32), decimals: 6 } };
