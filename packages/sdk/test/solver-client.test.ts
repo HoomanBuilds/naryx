@@ -78,6 +78,27 @@ describe('solver client', () => {
     await assert.rejects(reader([row]).getShardFills('cash-and-carry-v1.eth-carry'), /another shard/);
   });
 
+  test('maker fill history follows authenticated cursors and refuses overlapping pages', async () => {
+    const shardId = 'cash-and-carry-v1.sol-carry';
+    const row = (byte: string) => {
+      const fill = { shardHash: '51'.repeat(32), levelId: 2n, takerSide: 'BUY' as const, size: 6n, fee: 1n,
+        priceTicks: 1005n, orderHash: byte.repeat(32), quoteHash: '62'.repeat(32), routeHash: '63'.repeat(32) };
+      return { fillCommitment: toHex(shardFillCommitment(fill)), shardHash: fill.shardHash, fill, settledAtMs: 1 };
+    };
+    const first = row('91'), second = row('92');
+    const reader = (overlap: boolean) => new NaryxSolverClient({ baseUrl: 'https://api.example', solverId: 'solver-a', keyId: 'q-1', sign: signer,
+      fetch: async (url) => {
+        const before = new URL(String(url)).searchParams.get('before');
+        assert.ok(before === null || before === first.fillCommitment);
+        const value = before === null ? { shardId, fills: [first], nextCursor: first.fillCommitment }
+          : { shardId, fills: [overlap ? first : second] };
+        return { status: 200, headers: { get: () => 'application/json' }, text: async () => JSON.stringify(toProtocolJson(value)) };
+      },
+    });
+    assert.equal((await reader(false).getShardFills(shardId)).length, 2);
+    await assert.rejects(reader(true).getShardFills(shardId), /commitment/);
+  });
+
   test('eligible auction pages are validated before a solver acts on them', async () => {
     const definition = {
       version: 1,

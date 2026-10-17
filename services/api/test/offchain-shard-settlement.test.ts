@@ -116,6 +116,11 @@ test("the controller settles offchain shard fills once, within each signed state
     assert.ok(bid.settled && bid.priceTicks === 995n);
     assert.deepEqual(gate.settle("solver-a", shardId, fill({ orderHash: "66".repeat(32), referenceState: { ...reference, referencePriceTicks: 900n } })), { settled: false, reason: "REFERENCE_CHANGED" });
     assert.equal(store.shardFills("solver-a", shardId).length, 3);
+    const history = store.shardFills('solver-a', shardId);
+    const firstPage = store.shardFills('solver-a', shardId, 1);
+    const secondPage = store.shardFills('solver-a', shardId, 2, firstPage[0]!.fillCommitment);
+    assert.deepEqual([...firstPage, ...secondPage], history);
+    assert.throws(() => store.shardFills('another-solver', shardId, 2, firstPage[0]!.fillCommitment), /cursor/);
 
     // A new signed state has its own capacity, fills must bind it, and settled fills still replay.
     const second = shardFor({ shardSequence: 2n, reservedCapacity: 15n, inventoryCap: 30n });

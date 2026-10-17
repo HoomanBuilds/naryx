@@ -145,7 +145,7 @@ export {
   type NormalizedPosition,
   type StressResult,
 } from '@naryx/protocol-types';
-export { createQuoteAutomation, type QuoteAutomation, type QuoteAutomationAction, type QuoteAutomationPolicy } from './maker-automation.js';
+export { createQuoteAutomation, type QuoteAutomation, type QuoteAutomationAction, type QuoteAutomationPolicy, type QuoteAutomationCheckpoint } from './maker-automation.js';
 export {
   createImpliedLiquidityAutomation,
   type ImpliedLegBookSnapshot,

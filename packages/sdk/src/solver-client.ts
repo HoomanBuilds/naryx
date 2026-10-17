@@ -235,10 +235,16 @@ export class NaryxSolverClient {
    * is recomputed from its terms, so a maker reconciles inventory on fills it can check itself.
    */
   async getShardFills(shardId: string): Promise<readonly { readonly fillCommitment: string; readonly shardHash: string; readonly fill: ShardFillInput; readonly settledAtMs: number }[]> {
-    const body = (await this.#call('GET', `/v1/solver/quote-shards/${shardId}/fills`)) as { shardId?: unknown; fills?: unknown };
-    if (body.shardId !== shardId || !Array.isArray(body.fills)) throw new NaryxEvidenceError('shard fills are for another shard or malformed');
-    return Object.freeze(
-      body.fills.map((entry, index) => {
+    const fills: { fillCommitment: string; shardHash: string; fill: ShardFillInput; settledAtMs: number }[] = [];
+    const seen = new Set<string>();
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const body = (await this.#call('GET', `/v1/solver/quote-shards/${shardId}/fills${cursor === undefined ? '' : `?before=${cursor}`}`)) as {
+        shardId?: unknown; fills?: unknown; nextCursor?: unknown;
+      };
+      if (body.shardId !== shardId || !Array.isArray(body.fills) || body.fills.length > 100) throw new NaryxEvidenceError('shard fills are for another shard or malformed');
+      for (const [index, entry] of body.fills.entries()) {
         const row = entry as { fillCommitment?: unknown; shardHash?: unknown; fill?: unknown; settledAtMs?: unknown };
         let commitment: string;
         try {
@@ -248,12 +254,22 @@ export class NaryxSolverClient {
         }
         const fill = row.fill as ShardFillInput;
         const boundHash = typeof fill.shardHash === 'string' ? fill.shardHash.toLowerCase() : toHex(fill.shardHash);
-        if (row.fillCommitment !== commitment || row.shardHash !== boundHash || typeof row.settledAtMs !== 'number') {
+        if (row.fillCommitment !== commitment || row.shardHash !== boundHash || !Number.isSafeInteger(row.settledAtMs)
+          || (row.settledAtMs as number) < 0 || seen.has(commitment)) {
           throw new NaryxEvidenceError(`fills[${index}] does not match its commitment or bound shard`);
         }
-        return Object.freeze({ fillCommitment: commitment, shardHash: boundHash, fill, settledAtMs: row.settledAtMs });
-      }),
-    );
+        seen.add(commitment);
+        fills.push(Object.freeze({ fillCommitment: commitment, shardHash: boundHash, fill, settledAtMs: row.settledAtMs as number }));
+      }
+      if (body.nextCursor === undefined) cursor = undefined;
+      else {
+        if (typeof body.nextCursor !== 'string' || body.nextCursor !== fills.at(-1)?.fillCommitment
+          || cursors.has(body.nextCursor) || fills.length >= 100_000) throw new NaryxEvidenceError('shard fill pagination is invalid or exceeds its safety bound');
+        cursor = body.nextCursor;
+        cursors.add(cursor);
+      }
+    } while (cursor !== undefined);
+    return Object.freeze(fills);
   }
 
   putShard(shard: PackageQuoteShardInput) {

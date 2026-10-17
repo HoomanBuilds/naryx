@@ -318,7 +318,12 @@ export function createSolverApiHandler(options: SolverApiOptions) {
       const shardId = match[1] as string;
       if (!SHARD_ID.test(shardId)) throw new SolverRequestError(400, "INVALID_REQUEST", "Shard id is malformed.");
       if (method !== "GET") throw new SolverRequestError(405, "METHOD_NOT_ALLOWED", "Use GET for shard fills.");
-      return { shardId, fills: store.shardFills(solverId, shardId) };
+      const before = url.searchParams.get('before') ?? undefined;
+      if ([...url.searchParams.keys()].some((key) => key !== 'before') || url.searchParams.getAll('before').length > 1
+        || (before !== undefined && !/^[0-9a-f]{64}$/.test(before))) throw new SolverRequestError(400, 'INVALID_REQUEST', 'Fill cursor is malformed.');
+      const page = store.shardFills(solverId, shardId, 101, before);
+      const fills = page.slice(0, 100);
+      return { shardId, fills, ...(page.length > 100 ? { nextCursor: fills[99]!.fillCommitment } : {}) };
     }
     if ((match = /^\/v1\/solver\/quote-shards\/([^/]+)(?:\/(replace|cancel-all|heartbeat))?$/.exec(path)) !== null) {
       const shardId = match[1] as string;

@@ -28,7 +28,8 @@ export interface QuoteAutomationPolicy {
 export type QuoteAutomationAction =
   | { readonly kind: 'HALTED' }
   | { readonly kind: 'RESERVED'; readonly filledSize: bigint; readonly reservedCapacity: bigint }
-  | { readonly kind: 'KILLED'; readonly reason: 'STALE_REFERENCE' | 'INVENTORY_LIMIT' }
+  | { readonly kind: 'KILLED'; readonly reason: 'STALE_REFERENCE' | 'INVENTORY_LIMIT' | 'UNTRACKED_FILLS' | 'EXPIRED_QUOTES' | 'REFERENCE_CLOCK' }
+  | { readonly kind: 'QUOTES_RENEWED'; readonly levelCount: number }
   | { readonly kind: 'REPRICED'; readonly referenceSequence: bigint }
   | { readonly kind: 'HEARTBEAT'; readonly heartbeatExpiry: bigint };
 
@@ -42,6 +43,15 @@ export interface QuoteAutomation {
   tick(): Promise<readonly QuoteAutomationAction[]>;
 }
 
+export interface QuoteAutomationCheckpoint {
+  readonly version: 1;
+  readonly shardId: string;
+  readonly watchedHashes: readonly string[];
+  readonly accountedFills: readonly { readonly shardHash: string; readonly size: bigint }[];
+  readonly pending?: { readonly previousShardHash: string; readonly shard: PackageQuoteShardInput;
+    readonly foldedFills: readonly { readonly shardHash: string; readonly size: bigint }[] };
+}
+
 /**
  * Quote automation for one shard. It holds no key: every shard state is signed through `signShard`.
  * A shard whose kill switch is set is left alone; re-arming it is a deliberate human action.
@@ -53,14 +63,23 @@ export function createQuoteAutomation(options: {
   readonly readReference: () => Promise<QuoteReferenceStateInput>;
   readonly now: () => bigint;
   readonly signShard: (shardHash: Uint8Array) => Promise<Uint8Array>;
+  readonly checkpointStore?: { load(): Promise<QuoteAutomationCheckpoint | undefined>; save(checkpoint: QuoteAutomationCheckpoint): Promise<void> };
+  readonly refreshLevels?: (shard: PackageQuoteShardInput, reference: QuoteReferenceStateInput, now: bigint) => Promise<PackageQuoteShardInput['quoteLevels']>;
 }): QuoteAutomation {
   const { policy } = options;
-  if (policy.maxInventoryUtilizationBps <= 0 || policy.maxInventoryUtilizationBps > 10_000 || policy.heartbeatExtension <= policy.heartbeatLead || policy.maxReferenceAge <= 0n) {
+  if (!Number.isInteger(policy.maxInventoryUtilizationBps) || policy.maxInventoryUtilizationBps <= 0 || policy.maxInventoryUtilizationBps > 10_000
+    || policy.heartbeatLead < 0n || policy.heartbeatExtension <= policy.heartbeatLead || policy.maxReferenceAge <= 0n) {
     throw new TypeError('the policy needs a utilization limit in (0, 10000], an extension longer than its lead, and a positive reference age');
   }
   /** States this automation saw as current or published, and the fill size of each already folded into reserved capacity. */
   const watched = new Set<string>();
   const accounted = new Map<string, bigint>();
+  let pending: QuoteAutomationCheckpoint['pending'];
+  let loaded = false;
+  let ticking = false;
+  const save = async () => options.checkpointStore?.save({ version: 1, shardId: options.shardId,
+    watchedHashes: [...watched], accountedFills: [...accounted].map(([shardHash, size]) => ({ shardHash, size })),
+    ...(pending === undefined ? {} : { pending }) });
   const sign = async (unsigned: PackageQuoteShardInput): Promise<PackageQuoteShardInput> => {
     const hash = packageQuoteShardHash(unsigned);
     const signature = await options.signShard(hash);
@@ -69,17 +88,58 @@ export function createQuoteAutomation(options: {
     return { ...unsigned, signature };
   };
 
-  return {
-    async tick() {
+  const tick = async (): Promise<readonly QuoteAutomationAction[]> => {
+      if (!loaded) {
+        const checkpoint = await options.checkpointStore?.load();
+        if (checkpoint !== undefined) {
+          const validHash = (hash: string) => /^[0-9a-f]{64}$/.test(hash);
+          if (checkpoint.version !== 1 || checkpoint.shardId !== options.shardId
+            || !checkpoint.watchedHashes.every(validHash)
+            || new Set(checkpoint.watchedHashes).size !== checkpoint.watchedHashes.length
+            || new Set(checkpoint.accountedFills.map((fill) => fill.shardHash)).size !== checkpoint.accountedFills.length
+            || checkpoint.accountedFills.some((fill) => !validHash(fill.shardHash) || !checkpoint.watchedHashes.includes(fill.shardHash)
+              || typeof fill.size !== 'bigint' || fill.size < 0n || fill.size >= 1n << 128n)) throw new NaryxEvidenceError('maker checkpoint is invalid');
+          for (const hash of checkpoint.watchedHashes) watched.add(hash);
+          for (const fill of checkpoint.accountedFills) accounted.set(fill.shardHash, fill.size);
+          pending = checkpoint.pending;
+          if (pending !== undefined && (!validHash(pending.previousShardHash)
+            || !watched.has(toHex(packageQuoteShardHash(pending.shard)))
+            || pending.foldedFills.some((fill) => !watched.has(fill.shardHash) || typeof fill.size !== 'bigint'
+              || fill.size < (accounted.get(fill.shardHash) ?? 0n) || fill.size >= 1n << 128n))) throw new NaryxEvidenceError('maker pending checkpoint is invalid');
+        }
+        loaded = true;
+      }
       const served = (await options.client.getShard(options.shardId)) as { shard?: PackageQuoteShardInput; shardHash?: string };
       if (served.shard === undefined) throw new NaryxEvidenceError('the shard read carried no shard');
       let shard: PackageQuoteShardInput = packageQuoteShard(served.shard);
       if (served.shardHash !== toHex(packageQuoteShardHash(shard))) throw new NaryxEvidenceError('the served shard does not match its hash');
+      if (`${shard.templateId}.${shard.marketGroupId}` !== options.shardId) throw new NaryxEvidenceError('the served shard identity differs');
+      if (pending !== undefined) {
+        const next = packageQuoteShard(pending.shard);
+        if (`${next.templateId}.${next.marketGroupId}` !== options.shardId) throw new NaryxEvidenceError('the pending shard identity differs');
+        const nextHash = toHex(packageQuoteShardHash(next));
+        if (served.shardHash === pending.previousShardHash) await options.client.putShard(next);
+        else if (served.shardHash !== nextHash) throw new NaryxEvidenceError('maker state changed outside the pending update');
+        shard = next;
+        for (const fill of pending.foldedFills) accounted.set(fill.shardHash, fill.size);
+        pending = undefined;
+        await save();
+      }
       if (shard.killSwitchState === 'ACTIVE') return [{ kind: 'HALTED' }];
       const actions: QuoteAutomationAction[] = [];
-      const kill = async (reason: 'STALE_REFERENCE' | 'INVENTORY_LIMIT') => {
-        shard = await sign(prepareShardKillSwitch(shard, 'ACTIVE'));
-        await options.client.killSwitch(shard);
+      const publish = async (unsigned: PackageQuoteShardInput, method: 'putShard' | 'replaceShard' | 'heartbeat' | 'killSwitch', folded: readonly [string, bigint][] = []) => {
+        const next = await sign(unsigned);
+        pending = { previousShardHash: toHex(packageQuoteShardHash(shard)), shard: next,
+          foldedFills: folded.map(([shardHash, size]) => ({ shardHash, size })) };
+        await save();
+        await options.client[method](next);
+        shard = next;
+        for (const [hash, size] of folded) accounted.set(hash, size);
+        pending = undefined;
+        await save();
+      };
+      const kill = async (reason: Extract<QuoteAutomationAction, { kind: 'KILLED' }>['reason']) => {
+        await publish(prepareShardKillSwitch(shard, 'ACTIVE'), 'killSwitch');
         actions.push({ kind: 'KILLED', reason });
         return actions;
       };
@@ -89,6 +149,7 @@ export function createQuoteAutomation(options: {
       const currentHash = toHex(packageQuoteShardHash(shard));
       watched.add(currentHash);
       const fills: readonly { readonly shardHash: string; readonly fill: ShardFillInput }[] = await options.client.getShardFills(options.shardId);
+      if (fills.some((entry) => !watched.has(entry.shardHash))) return kill('UNTRACKED_FILLS');
       const totals = new Map<string, bigint>();
       for (const entry of fills) totals.set(entry.shardHash, (totals.get(entry.shardHash) ?? 0n) + entry.fill.size);
       const folded: [string, bigint][] = [];
@@ -103,9 +164,7 @@ export function createQuoteAutomation(options: {
       }
       if (filled > 0n) {
         const reservedCapacity = shard.reservedCapacity + filled > shard.inventoryCap ? shard.inventoryCap : shard.reservedCapacity + filled;
-        shard = await sign({ ...shard, reservedCapacity, shardSequence: shard.shardSequence + 1n, signature: new Uint8Array(0) });
-        await options.client.putShard(shard);
-        for (const [hash, total] of folded) accounted.set(hash, total);
+        await publish({ ...shard, reservedCapacity, shardSequence: shard.shardSequence + 1n, signature: new Uint8Array(0) }, 'putShard', folded);
         actions.push({ kind: 'RESERVED', filledSize: filled, reservedCapacity });
       }
       if (shard.inventoryCap === 0n || shard.reservedCapacity * 10_000n >= shard.inventoryCap * BigInt(policy.maxInventoryUtilizationBps)) return kill('INVENTORY_LIMIT');
@@ -113,20 +172,37 @@ export function createQuoteAutomation(options: {
       // Reference: stale observations stop quoting; newer ones reprice every level at once.
       const reference = quoteReferenceState(await options.readReference());
       const now = options.now();
+      if (shard.quoteLevels.some((level) => level.validUntilUnit !== reference.observedAtUnit)) return kill('REFERENCE_CLOCK');
       if (reference.observedAtValue > now || now - reference.observedAtValue > policy.maxReferenceAge) return kill('STALE_REFERENCE');
       if (reference.referenceSequence > shard.referenceSequence) {
-        shard = await sign(prepareShardReprice(shard, reference));
-        await options.client.replaceShard(shard);
+        await publish(prepareShardReprice(shard, reference), 'replaceShard');
         actions.push({ kind: 'REPRICED', referenceSequence: reference.referenceSequence });
+      }
+
+      if (shard.quoteLevels.some((level) => level.validUntilValue <= now + policy.heartbeatLead)) {
+        if (options.refreshLevels !== undefined) {
+          const quoteLevels = await options.refreshLevels(shard, reference, now);
+          if (quoteLevels.length === 0 || quoteLevels.some((level) => level.validUntilUnit !== reference.observedAtUnit
+            || level.validUntilValue <= now + policy.heartbeatLead)) return kill('EXPIRED_QUOTES');
+          await publish({ ...shard, quoteLevels, shardSequence: shard.shardSequence + 1n, signature: new Uint8Array(0) }, 'putShard');
+          actions.push({ kind: 'QUOTES_RENEWED', levelCount: quoteLevels.length });
+        } else if (shard.quoteLevels.some((level) => level.validUntilValue <= now)) return kill('EXPIRED_QUOTES');
       }
 
       if (shard.heartbeatExpiry <= now + policy.heartbeatLead) {
         const heartbeatExpiry = now + policy.heartbeatExtension;
-        shard = await sign(prepareShardHeartbeat(shard, heartbeatExpiry));
-        await options.client.heartbeat(shard);
+        await publish(prepareShardHeartbeat(shard, heartbeatExpiry), 'heartbeat');
         actions.push({ kind: 'HEARTBEAT', heartbeatExpiry });
       }
+      await save();
       return actions;
+  };
+  return {
+    async tick() {
+      if (ticking) throw new NaryxEvidenceError('maker automation tick is already running');
+      ticking = true;
+      try { return await tick(); }
+      finally { ticking = false; }
     },
   };
 }

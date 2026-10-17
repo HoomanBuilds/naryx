@@ -11,7 +11,7 @@ import {
   type QuoteReferenceStateInput,
   type ShardFillInput,
 } from '@naryx/protocol-types';
-import { createQuoteAutomation, type QuoteAutomationPolicy } from '../src/index.js';
+import { createQuoteAutomation, type QuoteAutomationPolicy, type QuoteAutomationCheckpoint } from '../src/index.js';
 
 const { privateKey } = generateKeyPairSync('ed25519');
 const signShard = async (hash: Uint8Array) => new Uint8Array(sign(null, hash, privateKey));
@@ -79,6 +79,52 @@ const initialShard = (): PackageQuoteShardInput => ({
 });
 
 describe('quote automation', () => {
+  test('a durable pending publication survives an ambiguous response and preserves late fills after restart', async () => {
+    const market = venue(initialShard());
+    const originalHash = toHex(packageQuoteShardHash(market.shard));
+    let checkpoint: QuoteAutomationCheckpoint | undefined;
+    let failResponse = true;
+    const client = { ...market.client, putShard: async (shard: PackageQuoteShardInput) => {
+      const response = await market.client.putShard(shard);
+      if (failResponse) { failResponse = false; throw new Error('response interrupted'); }
+      return response;
+    } };
+    const options = { client: client as never, shardId: 'cash-and-carry-v1.sol-carry', policy,
+      readReference: async () => reference(1n, 995n), now: () => 1000n, signShard,
+      checkpointStore: { load: async () => checkpoint, save: async (value: QuoteAutomationCheckpoint) => { checkpoint = structuredClone(value); } } };
+    market.fill(6n);
+    await assert.rejects(createQuoteAutomation(options).tick(), /interrupted/);
+    assert.ok(checkpoint?.pending);
+    assert.equal(market.shard.reservedCapacity, 6n);
+    const restarted = createQuoteAutomation(options);
+    assert.deepEqual(await restarted.tick(), []);
+    assert.equal(checkpoint?.pending, undefined);
+    market.fill(4n, originalHash);
+    assert.deepEqual(await restarted.tick(), [{ kind: 'RESERVED', filledSize: 4n, reservedCapacity: 10n }]);
+    assert.deepEqual(await restarted.tick(), []);
+  });
+
+  test('expired levels are renewed only by fresh maker quotes, never by a heartbeat', async () => {
+    const initial = { ...initialShard(), quoteLevels: initialShard().quoteLevels.map((level) => ({ ...level, validUntilValue: 1000n })) };
+    const market = venue(initial);
+    const options = { shardId: 'cash-and-carry-v1.sol-carry', policy, readReference: async () => reference(1n, 995n), now: () => 1000n, signShard };
+    assert.deepEqual(await createQuoteAutomation({ ...options, client: market.client as never }).tick(), [{ kind: 'KILLED', reason: 'EXPIRED_QUOTES' }]);
+    const renewed = venue(initial);
+    assert.deepEqual(await createQuoteAutomation({ ...options, client: renewed.client as never,
+      refreshLevels: async (shard) => shard.quoteLevels.map((level) => ({ ...level, validUntilValue: 1200n })),
+    }).tick(), [{ kind: 'QUOTES_RENEWED', levelCount: 1 }]);
+    assert.equal(renewed.shard.quoteLevels[0]!.validUntilValue, 1200n);
+    assert.deepEqual(renewed.operations, ['put']);
+  });
+
+  test('untracked historical fills fail closed instead of offering their inventory again', async () => {
+    const market = venue(initialShard());
+    market.fill(6n, 'ff'.repeat(32));
+    const automation = createQuoteAutomation({ client: market.client as never, shardId: 'cash-and-carry-v1.sol-carry', policy,
+      readReference: async () => reference(1n, 995n), now: () => 1000n, signShard });
+    assert.deepEqual(await automation.tick(), [{ kind: 'KILLED', reason: 'UNTRACKED_FILLS' }]);
+  });
+
   test('reprices to a newer reference, heartbeats when due, and signs every published state', async () => {
     const market = venue(initialShard());
     let now = 1_000n;

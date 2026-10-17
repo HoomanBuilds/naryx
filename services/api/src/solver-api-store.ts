@@ -255,10 +255,16 @@ export class SqliteSolverApiStore {
   }
 
   /** The fills settled against a solver's shard, newest first, so a maker can reconcile its inventory. */
-  shardFills(solverId: string, shardId: string, limit = 100): readonly { readonly fillCommitment: string; readonly shardHash: string; readonly fill: unknown; readonly settledAtMs: number }[] {
+  shardFills(solverId: string, shardId: string, limit = 100, before?: string): readonly { readonly fillCommitment: string; readonly shardHash: string; readonly fill: unknown; readonly settledAtMs: number }[] {
+    const cursor = before === undefined ? undefined : this.db.prepare('SELECT settled_at_ms FROM shard_fills WHERE solver_id = ? AND shard_id = ? AND fill_commitment = ?')
+      .get(solverId, shardId, Buffer.from(before, 'hex')) as { settled_at_ms: number } | undefined;
+    if (before !== undefined && cursor === undefined) throw new SolverApiStoreError('FILL_CURSOR_NOT_FOUND', 'The fill cursor does not belong to this solver shard.');
     const rows = this.db
-      .prepare("SELECT fill_commitment, shard_hash, fill_json, settled_at_ms FROM shard_fills WHERE solver_id = ? AND shard_id = ? ORDER BY settled_at_ms DESC, rowid DESC LIMIT ?")
-      .all(solverId, shardId, Math.min(Math.max(1, limit), 500)) as { fill_commitment: Uint8Array; shard_hash: Uint8Array; fill_json: string; settled_at_ms: number }[];
+      .prepare(`SELECT fill_commitment, shard_hash, fill_json, settled_at_ms FROM shard_fills WHERE solver_id = ? AND shard_id = ?
+        ${cursor === undefined ? '' : 'AND (settled_at_ms < ? OR (settled_at_ms = ? AND fill_commitment < ?))'}
+        ORDER BY settled_at_ms DESC, fill_commitment DESC LIMIT ?`)
+      .all(solverId, shardId, ...(cursor === undefined ? [] : [cursor.settled_at_ms, cursor.settled_at_ms, Buffer.from(before!, 'hex')]),
+        Math.min(Math.max(1, limit), 500)) as { fill_commitment: Uint8Array; shard_hash: Uint8Array; fill_json: string; settled_at_ms: number }[];
     return rows.map((row) => Object.freeze({ fillCommitment: toHex(row.fill_commitment), shardHash: toHex(row.shard_hash), fill: parseProtocolJson(row.fill_json), settledAtMs: row.settled_at_ms }));
   }
 
