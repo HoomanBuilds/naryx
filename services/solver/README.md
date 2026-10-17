@@ -118,6 +118,21 @@ Limitation: the coordinator requires the owner's EIP-712 signature over every re
 
 ## Hyperliquid SDK dependency
 
+`dist/testnet-netting-unwind.js --journal /absolute/external/unwind.json --plans
+<first-plan-hash>,<second-plan-hash>` preflights the controlled cross-batch residual cohort.
+It verifies both persisted clearing receipts, pins the testnet BTC catalogs and collateral identity,
+and requires exactly the cohort's 0.0002 BTC long and short with no unrelated venue positions.
+Only `--broadcast` submits the bounded, reduce-only IOC closes through the testnet agent.
+Each signed request and response is saved before advancing; an existing journal never resubmits.
+The resulting journal proves operator unwind, not final allocation to individual strategy owners.
+If the first close filled but the secondary venue has no oracle-valid taker liquidity, `--passive`
+uses a separate journal and can place one reduce-only recovery bid near the current oracle.
+`WAITING_LIQUIDITY` is not a completed unwind. Repeated inspection never resubmits it.
+
+New perpetual residual submissions also qualify actual entry and opposing exit depth before
+reserving a submission nonce. A missing oracle or insufficient exit depth blocks entry, not
+reconciliation of an existing attempt. HIP-3 contexts are read from their named DEX.
+
 `@nktkas/hyperliquid` is pinned at `0.33.3` for its maintained TypeScript order codec, L1 signing, and request transport. The release is MIT licensed, requires Node `>=22.12.0`, and has npm integrity `sha512-fvnEw/2ejN14ZZVXA+nFQ9YgfFNjCI1yLliYyUboC6hr3Gwd/RwC4Ox90K4e8tkKWqkVpOcLRQ30p0nTeK4NBQ==`. `npm audit --omit=dev` reports zero vulnerabilities. The service imports the SDK order function, signing abstraction, and exchange request transport; it does not implement signing or wire codecs.
 
 ## SQLite dependency
