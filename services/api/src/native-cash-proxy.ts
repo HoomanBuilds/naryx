@@ -25,8 +25,9 @@ export function createNativeCashProxy(origin: string, requestFetch: typeof fetch
     if (request.method === 'OPTIONS') { response.writeHead(204); response.end(); return true; }
     const quote = /^\/v1\/native-cash\/quotes\/[A-Za-z0-9._:-]{1,257}(\/settlement)?$/.exec(url.pathname);
     const trades = /^\/v1\/native-cash\/markets\/[A-Za-z0-9._:-]{1,257}\/trades$/.test(url.pathname);
+    const account = /^\/v1\/native-cash\/markets\/[A-Za-z0-9._:-]{1,257}\/account$/.test(url.pathname);
     if (url.search || !(request.method === 'GET' && (url.pathname === '/v1/native-cash/markets' || quote || trades)
-      || request.method === 'POST' && (url.pathname === '/v1/native-cash/quotes' || quote?.[1]))) {
+      || request.method === 'POST' && (url.pathname === '/v1/native-cash/quotes' || quote?.[1] || account))) {
       send(404, '{"error":"Unknown native cash route."}'); return true;
     }
     void (async () => {

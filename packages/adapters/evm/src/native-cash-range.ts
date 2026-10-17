@@ -23,7 +23,8 @@ export const NATIVE_CASH_HOUSE_ABI = parseAbi([
   'function account(bytes32) view returns((address owner,uint256 collateralQuoteAtoms,int256 cashBalanceQuoteAtoms,int128 positionAtoms,uint64 sequence))',
   'function executeMatch((bytes32 authorizationHash,bytes32 longAccountId,bytes32 shortAccountId,bytes32 feePayerAccountId,uint64 longSequence,uint64 shortSequence,uint128 quantityAtoms,uint128 priceTicks,uint16 maxFeeBps,uint64 expiry),bytes,bytes)',
 ]);
-const TOKEN_ABI = parseAbi(['function decimals() view returns(uint8)', 'function balanceOf(address) view returns(uint256)']);
+const TOKEN_ABI = parseAbi(['function decimals() view returns(uint8)', 'function balanceOf(address) view returns(uint256)',
+  'function allowance(address,address) view returns(uint256)']);
 const MATCH_TYPES = { NativeMatch: [
   { name: 'policyHash', type: 'bytes32' }, { name: 'authorizationHash', type: 'bytes32' },
   { name: 'longAccountId', type: 'bytes32' }, { name: 'shortAccountId', type: 'bytes32' },
@@ -83,6 +84,43 @@ export class EvmNativeCashRangeAdapter {
       collateralToken: requiredEvmAddress(input.collateralToken, 'collateral token'), collateralTokenCodeHash: hash32(input.collateralTokenCodeHash, 'token code hash'),
       makerOwner: requiredEvmAddress(input.makerOwner, 'maker owner') });
     this.#reads = reads;
+  }
+
+  async account(ownerInput: Address, logicalId: string) {
+    const binding = this.#binding;
+    const owner = requiredEvmAddress(ownerInput, 'account owner');
+    const accountId = protocolId(logicalId);
+    requireCondition(accountId !== binding.makerAccountId && owner !== binding.makerOwner, 'maker account is not a user account');
+    const chainId = Number(binding.domain.domainId.slice(7));
+    requireCondition(await this.#reads.chainId() === BigInt(chainId), 'RPC chain identity differs');
+    const block = await this.#reads.head();
+    for (const [address, hash] of [[binding.controller, binding.controllerCodeHash],
+      [binding.clearingHouse, binding.clearingHouseCodeHash], [binding.collateralToken, binding.collateralTokenCodeHash]] as const) {
+      requireCondition(keccak256(await this.#reads.code(address, block.number)) === hash, 'reviewed contract code differs');
+    }
+    const onchainAccountId = evmNativeClearingAccountId(`0x${toHex(binding.policy.policyHash)}`, accountId);
+    const read = (address: Address, abi: EvmContractRead['abi'], functionName: string, args?: readonly unknown[]) =>
+      this.#reads.read({ address, abi, functionName, ...(args === undefined ? {} : { args }) }, block.number);
+    const [value, walletBalanceAtoms, allowanceAtoms, decimals, policyHash, token, mark] = await Promise.all([
+      read(binding.clearingHouse, NATIVE_CASH_HOUSE_ABI, 'account', [onchainAccountId]),
+      read(binding.collateralToken, TOKEN_ABI, 'balanceOf', [owner]),
+      read(binding.collateralToken, TOKEN_ABI, 'allowance', [owner, binding.clearingHouse]),
+      read(binding.collateralToken, TOKEN_ABI, 'decimals'), read(binding.clearingHouse, NATIVE_CASH_HOUSE_ABI, 'policyHash'),
+      read(binding.clearingHouse, NATIVE_CASH_HOUSE_ABI, 'collateralToken'),
+      read(binding.clearingHouse, NATIVE_CASH_HOUSE_ABI, 'currentMark'),
+    ]);
+    const accountOwner = getAddress(String(structField(value, 0, 'owner')));
+    requireCondition(accountOwner === owner || accountOwner === '0x0000000000000000000000000000000000000000', 'account belongs to another owner');
+    requireCondition(policyHash === `0x${toHex(binding.policy.policyHash)}` && getAddress(String(token)) === binding.collateralToken
+      && decimals === binding.collateralAsset.decimals, 'account policy or collateral differs');
+    requireCondition(await this.#reads.chainId() === BigInt(chainId), 'RPC chain identity changed');
+    return Object.freeze({ version: 1, marketId: binding.marketId, owner, accountId, onchainAccountId, chainId,
+      clearingHouse: binding.clearingHouse, collateralToken: binding.collateralToken, decimals,
+      opened: accountOwner === owner, collateralQuoteAtoms: integer(structField(value, 1, 'collateralQuoteAtoms')),
+      cashBalanceQuoteAtoms: integer(structField(value, 2, 'cashBalanceQuoteAtoms')),
+      positionAtoms: integer(structField(value, 3, 'positionAtoms')), sequence: integer(structField(value, 4, 'sequence')),
+      walletBalanceAtoms: integer(walletBalanceAtoms), allowanceAtoms: integer(allowanceAtoms),
+      markPriceTicks: integer(structField(mark, 1, 'priceTicks')), markValidUntil: integer(structField(mark, 4, 'validUntil')), block });
   }
 
   async quote(input: Readonly<{

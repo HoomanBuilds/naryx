@@ -4,7 +4,7 @@ import { isAbsolute } from 'node:path';
 import { parseProtocolJson, stringifyProtocolJson } from '@naryx/protocol-types';
 import { EvmNativeCashRangeAdapter, NATIVE_CASH_RANGE_ABI, NATIVE_CASH_HOUSE_ABI, observeNativeCashMatch,
   type EvmNativeCashRangeBinding, type EvmNativeClearingTransitionReadPort } from '@naryx/adapter-evm';
-import { createPublicClient, http, keccak256, parseAbi, stringToHex, type Hex } from 'viem';
+import { createPublicClient, getAddress, http, keccak256, parseAbi, stringToHex, type Hex } from 'viem';
 import { loadEvmStrategySolverKey } from './evm-strategy-execution-authorization.js';
 import { NativeCashService, type NativeCashMarketPort, type NativeCashQuoteRequest } from './native-cash-service.js';
 import { NativeCashRegistration, type NativeCashRegistrationBinding } from './native-cash-registration.js';
@@ -25,7 +25,8 @@ export async function loadNativeCashTestnetRuntime(environment: NodeJS.ProcessEn
   const ports: NativeCashMarketPort[] = [];
   const registrations: NativeCashRegistrationBinding[] = [];
   let registration: NativeCashRegistration;
-  const markets: { marketId: string; binding: EvmNativeCashRangeBinding; inspect: () => Promise<unknown> }[] = [];
+  const markets: { marketId: string; binding: EvmNativeCashRangeBinding; inspect: () => Promise<unknown>;
+    account: (owner: string, accountId: string) => Promise<unknown> }[] = [];
   for (const entry of config.markets) {
     if (Object.keys(entry).sort().join(',') !== 'binding,makerKeyPath,rpcEnvironmentVariable'
       || !/^NARYX_[A-Z0-9_]+_RPC_URL$/.test(entry.rpcEnvironmentVariable)) throw new Error('Native cash market configuration differs.');
@@ -80,7 +81,7 @@ export async function loadNativeCashTestnetRuntime(environment: NodeJS.ProcessEn
         if (await reads.chainId() !== BigInt(quote.chainId)) throw new Error('Native cash chain changed before signing.');
         return signer.signTypedData(quote.typedData);
       }, observe: (quote, hash) => observeNativeCashMatch(binding, reads, quote, hash) });
-    markets.push({ marketId: binding.marketId, binding, inspect: async () => {
+    markets.push({ marketId: binding.marketId, binding, account: (owner, accountId) => adapter.account(getAddress(owner), accountId), inspect: async () => {
       if (await reads.chainId() !== BigInt(binding.domain.domainId.slice(7))) throw new Error('Native cash chain changed.');
       const block = await head();
       const [reference, paused] = await Promise.all([
@@ -130,7 +131,8 @@ export function createNativeCashTestnetHandler(runtime: Pick<Awaited<ReturnType<
         const result = quotePath[2] ? runtime.service.settlement(quotePath[1]!) : runtime.service.quote(quotePath[1]!);
         send(result === undefined ? 404 : 200, { version: 1, result: result ?? null }); return;
       }
-      if (request.method !== 'POST' || (url.pathname !== '/v1/native-cash/quotes' && !quotePath?.[2] && activation === null)) {
+      const accountPath = /^\/v1\/native-cash\/markets\/([A-Za-z0-9._:-]+)\/account$/.exec(url.pathname);
+      if (request.method !== 'POST' || (url.pathname !== '/v1/native-cash/quotes' && !quotePath?.[2] && activation === null && accountPath === null)) {
         send(404, { error: 'Native cash route not found.' }); return;
       }
       if (request.headers['content-type']?.split(';')[0]?.trim() !== 'application/json') throw new Error('JSON is required.');
@@ -142,6 +144,12 @@ export function createNativeCashTestnetHandler(runtime: Pick<Awaited<ReturnType<
       }
       const body = parseProtocolJson(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
       if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new Error('Request must be an object.');
+      if (accountPath !== null) {
+        if (Object.keys(body).sort().join(',') !== 'accountId,owner' || typeof body.owner !== 'string' || typeof body.accountId !== 'string') throw new Error('Account fields differ.');
+        const market = runtime.markets.find(market => market.marketId === accountPath[1]);
+        if (market === undefined) throw new Error('Native cash market is not activated.');
+        send(200, { version: 1, result: await market.account(body.owner, body.accountId) }); return;
+      }
       if (activation !== null) {
         if (runtime.registration === undefined) throw new Error('Registration controls are unavailable.');
         if (activation[2] === 'challenge') {

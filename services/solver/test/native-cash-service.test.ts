@@ -124,7 +124,9 @@ test('wrong maker signatures, invalid quantities and unverifiable receipts fail 
 
 test('native cash HTTP preserves tagged integer terms and refuses forwarded callers', async () => {
   const f = fixture(); const service = f.service();
-  const handler = createNativeCashTestnetHandler({ service, markets: [] });
+  const accountCalls: unknown[] = [];
+  const handler = createNativeCashTestnetHandler({ service, markets: [{ marketId: request.marketId, binding: {} as never,
+    inspect: async () => ({}), account: async (owner, accountId) => { accountCalls.push({ owner, accountId }); return { collateralQuoteAtoms: 42n }; } }] });
   const server = createServer((request, response) => { void handler(request, response); });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -138,6 +140,12 @@ test('native cash HTTP preserves tagged integer terms and refuses forwarded call
     const payload = parseProtocolJson(await response.text()) as { result: { quote: { match: { quantityAtoms: bigint } } } };
     assert.equal(payload.result.quote.match.quantityAtoms, 1n);
     assert.equal((await fetch(`${origin}/v1/native-cash/quotes/${request.requestId}`)).status, 200);
+    const account = await fetch(`${origin}/v1/native-cash/markets/${request.marketId}/account`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: stringifyProtocolJson({ owner, accountId: 'wallet-user' }) });
+    assert.equal(account.status, 200);
+    assert.deepEqual(parseProtocolJson(await account.text()), { version: 1, result: { collateralQuoteAtoms: 42n } });
+    assert.deepEqual(accountCalls, [{ owner, accountId: 'wallet-user' }]);
+    assert.equal((await fetch(`${origin}/v1/native-cash/markets/unknown/account`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: stringifyProtocolJson({ owner, accountId: 'wallet-user' }) })).status, 409);
     for (const headers of [{ Origin: 'https://example.com' }, { 'X-Forwarded-For': '127.0.0.1' }, { Forwarded: 'for=127.0.0.1' }]) {
       assert.equal((await fetch(`${origin}/v1/native-cash/markets`, { headers })).status, 403);
     }

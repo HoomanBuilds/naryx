@@ -64,6 +64,26 @@ test('native cash quotes bind exact owner sequences and fully funded contract st
   assert.equal(quote.match.shortAccountId, sell.match.longAccountId);
 });
 
+test('native account reads bind owner, policy, collateral and testnet identity without depending on live marks', async () => {
+  const f = fixture(); f.values.set('allowance', 100n);
+  const adapter = new EvmNativeCashRangeAdapter(binding, f.reads);
+  const account = await adapter.account(owner, 'range-trader');
+  assert.equal(account.opened, true);
+  assert.equal(account.allowanceAtoms, 100n);
+  assert.equal(account.onchainAccountId, evmNativeClearingAccountId(`0x${toHex(policy.policyHash)}`, 'range-trader'));
+  await assert.rejects(adapter.account(address('6'), 'range-trader'), /belongs to another owner/);
+  await assert.rejects(adapter.account(owner, binding.makerAccountId), /maker account/);
+  f.values.set('policyHash', `0x${'cc'.repeat(32)}`);
+  await assert.rejects(adapter.account(owner, 'range-trader'), /policy or collateral/);
+  f.setChain(1n);
+  await assert.rejects(adapter.account(owner, 'range-trader'), /RPC chain identity/);
+  const unopened = fixture(); unopened.values.set('allowance', 0n);
+  const original = unopened.reads.read;
+  unopened.reads.read = async (read, block) => read.functionName === 'account'
+    ? ['0x0000000000000000000000000000000000000000', 0n, 0n, 0n, 0n] : original(read, block);
+  assert.equal((await new EvmNativeCashRangeAdapter(binding, unopened.reads).account(owner, 'new-user')).opened, false);
+});
+
 test('unfunded, expired, stale, paused and changed cash market state refuse quotes', async () => {
   for (const [key, value] of [
     ['balanceOf', 1n], ['previewMark', [500_002n, 1n, 990n, 1600n]],

@@ -27,8 +27,11 @@ test('native cash proxy forwards bounded owner requests without forwarding brows
     assert.equal(calls.length, 2);
     assert.equal((await fetch(`${origin}/v1/native-cash/markets/cash-range/trades`)).status, 200);
     assert.equal(calls.length, 3);
+    assert.equal((await fetch(`${origin}/v1/native-cash/markets/cash-range/account`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"owner":"test","accountId":"test"}' })).status, 200);
+    assert.equal(calls.length, 4);
+    assert.equal((await fetch(`${origin}/v1/native-cash/markets/cash-range/account`)).status, 404);
     assert.equal((await fetch(`${origin}/v1/native-cash/markets/cash-range/trades`, { method: 'POST' })).status, 404);
-    assert.equal(calls.length, 3);
+    assert.equal(calls.length, 4);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
   assert.throws(() => createNativeCashProxy('https://untrusted.example'), /loopback/);
 });
