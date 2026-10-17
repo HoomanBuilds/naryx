@@ -11,6 +11,7 @@ Foundry workspace for the EVM side of Naryx. The same source tree implements two
 | Asynchronous package execution | `AsyncBondedPackageCoordinator`, `GmxV2IsolatedAccount`, `GmxV2ArbitrumAdapter`, `GmxV2ExitController`, `PerformanceBondVault` | Bind a GMX request to owner, solver, recovery bounds, callbacks, and final settlement evidence across transactions. |
 | Typed strategies | `NaryxMultiStrategyAccount`, `TypedStrategyAdapterRegistry`, and the typed spot, perp, option, lending, vault, and inventory adapters | Build reviewed multi-leg strategies from explicitly supported adapter classes. |
 | Native clearing | `NativePackageClearingHouse` | Isolated collateral, margin, position, fee, recovery-reserve, and default-auction accounting for qualified package series. |
+| Native cash range | `NativeCashRangeMarket` | A separate bounded cash-value package market. Deploys its own clearing house and derives marks from a pinned oracle, with full-range collateral requirements. |
 | Test dependencies | `src/conformance/` | Controlled test assets, price feeds, lending, option, vault, and perpetual markets. |
 
 `src/interfaces/` contains venue and adapter interfaces. `script/` contains reviewed deployment and activation scripts. A deployed interface or adapter factory does not imply that its underlying external venue or liquidity is active.
@@ -22,6 +23,10 @@ The [Base Sepolia release](../../deployments/evm/base-sepolia/release.json) is `
 The [Arbitrum Sepolia release](../../deployments/evm/arbitrum-sepolia/release.json) is `ACTIVE` for the first bonded GMX route. Its spot pool and USDC.SG use test liquidity; GMX requests and callbacks cross transaction boundaries. Neither release is evidence of organic flow or permission for mainnet writes.
 
 The Base multi-strategy release records a deployed and unpaused `NativePackageClearingHouse`. Deployment and unpause do not prove funded reserves, active market depth, or completed user trades.
+
+`NativeCashRangeMarket` is an additional, separately activated market class, not a reinterpretation of routed spot, perpetual or option trades. One package tracks a configured underlying quantity inside immutable lower and upper oracle-price bounds. Its mark is the bounded price distance converted to quote atoms, plus one quote atom to preserve the clearing house's positive mark lattice. It is a continuous cash-value spread, not an expiring option or ownership of external positions. Both initial and maintenance margin must cover the full configured range per package.
+
+The controller is the clearing house's immutable mark authority. Even the configured updater cannot select an arbitrary price: updates must match the oracle-derived value, respect the oracle freshness deadline, and advance the clearing sequence. Invalid, stale, future, incomplete or decimal-mismatched rounds fail closed. A configured sequencer feed enforces uptime and a recovery grace period; a missing feed requires explicit deployment configuration and does not establish mainnet readiness. Users retain the clearing house's own signed matching, delayed fees, collateral withdrawal, pause-preserving reducing exits, and default handling. The new market starts paused. Building the contract alone does not activate a funded maker or an executable public market.
 
 ## Local validation
 
