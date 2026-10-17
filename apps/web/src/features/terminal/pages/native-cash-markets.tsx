@@ -80,6 +80,8 @@ function CashMarket({ market, client, baseUrl }: { market: NativeCashMarket; cli
   const standingBook = useQuery({ queryKey: ["native-cash-book", baseUrl, market.marketId],
     enabled: market.binding.makerAuthorization !== undefined, queryFn: () => client.getNativeCashBook(market),
     retry: false, refetchInterval: 10_000, refetchIntervalInBackground: false });
+  const currentBook = !standingBook.isError && standingBook.data && standingBook.data.validUntil > BigInt(now)
+    && standingBook.data.block.timestamp >= BigInt(now - 30) ? standingBook.data : null;
   const account = accountQuery.data;
   const decimals = market.binding.policy.accountingAsset.decimals;
   const token = (value: bigint) => formatAtomicAmount(value, decimals, "test USDC");
@@ -96,10 +98,9 @@ function CashMarket({ market, client, baseUrl }: { market: NativeCashMarket; cli
   }, [queryClient, baseUrl, market.marketId]);
 
   useEffect(() => {
-    if (!signed) return;
     const timer = window.setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
     return () => window.clearInterval(timer);
-  }, [signed]);
+  }, []);
 
   const reconciliation = useQuery({ queryKey: ["native-cash-pending", baseUrl, market.marketId, owner, rawPending],
     enabled: journal.entries.length > 0 && !!owner, retry: false, refetchInterval: 15_000, refetchIntervalInBackground: false,
@@ -208,10 +209,10 @@ function CashMarket({ market, client, baseUrl }: { market: NativeCashMarket; cli
     <div className={cash.body}>
       <p className={cash.terms}>This is a bounded ETH-price cash market, not a spot/perp package. One unit tracks the controller&apos;s clamped 0.001 ETH exposure from $1,000 to $5,000, plus its minimum price tick. No ETH or external venue position is delivered.</p>
       {market.binding.makerAuthorization ? <div className={cash.review}><h4>Contract-backed standing liquidity</h4>
-        {standingBook.data ? <dl className={cash.metrics}>
-          <div><dt>Bid / available units</dt><dd>{token(standingBook.data.bidTicks)} / {standingBook.data.bidQuantity.toLocaleString("en-US")} units</dd></div>
-          <div><dt>Ask / available units</dt><dd>{token(standingBook.data.askTicks)} / {standingBook.data.askQuantity.toLocaleString("en-US")} units</dd></div>
-        </dl> : <p>{standingBook.isError ? "Standing book unavailable. Current state must qualify before execution." : "Reading funded maker inventory."}</p>}
+        {currentBook ? <dl className={cash.metrics}>
+          <div><dt>Bid / available units</dt><dd>{token(currentBook.bidTicks)} / {currentBook.bidQuantity.toLocaleString("en-US")} units</dd></div>
+          <div><dt>Ask / available units</dt><dd>{token(currentBook.askTicks)} / {currentBook.askQuantity.toLocaleString("en-US")} units</dd></div>
+        </dl> : <p>{standingBook.isPending ? "Reading funded maker inventory." : "Standing book unavailable. Current state must qualify before execution."}</p>}
         <p className={cash.terms}>Prices and capacity come from the maker contract. Exact terms, maker inventory and owner margin are rechecked at acceptance. This is not an exclusive inventory reservation.</p>
       </div> : null}
       {!owner ? <button className={styles.connect} onClick={() => modal.open("evm")}>Connect EVM wallet</button>
@@ -284,7 +285,7 @@ export function NativeCashMarkets() {
   const query = useQuery({ queryKey: ["native-cash-markets", baseUrl], enabled: !!client,
     queryFn: () => client!.getNativeCashMarkets(), retry: false, staleTime: 30_000 });
   return <section id="native-cash-markets" className={cash.section} aria-labelledby="native-cash-title">
-    <div><h2 id="native-cash-title">Funded cash markets</h2><p className={cash.terms}>Wallet-owned clearing accounts on Base and Arbitrum testnets. Separate from routed strategy books.</p></div>
+    <div><h2 id="native-cash-title">Funded cash markets</h2><p className={cash.terms}>Wallet-owned clearing accounts on Base and Arbitrum testnets. Separate from routed strategy books. Markets using the same clearing house share your account and collateral.</p></div>
     {!baseUrl ? <p>Configure the terminal API to load cash markets.</p> : query.isError ? <p role="alert">Cash markets could not load. <button className={styles.ghost} onClick={() => void query.refetch()}>Retry</button></p>
       : query.isPending ? <p>Loading registered cash markets.</p> : query.data?.length === 0 ? <p>No cash markets are registered.</p>
         : <div className={cash.grid}>{query.data?.map(market => <CashMarket key={market.marketId} market={market} client={client!} baseUrl={baseUrl} />)}</div>}
