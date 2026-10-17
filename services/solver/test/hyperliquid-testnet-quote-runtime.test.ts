@@ -302,6 +302,21 @@ function feeAtoms(fees: readonly { asset: { assetId: string }; atoms: bigint }[]
   return Object.fromEntries(fees.map((fee) => [fee.asset.assetId, fee.atoms]));
 }
 
+test('per-user source pricing reads the owner fee schedule and rejects a fixture settlement account', async () => {
+  const requests: string[] = [];
+  const runtime = createHyperliquidTestnetQuoteRuntime({
+    ...runtimeInput({ next: () => 1n }, fakeMarket({ requests })), accountMode: 'PER_USER',
+  });
+  const owner = `0x${'42'.repeat(20)}`;
+  const order = validatePackageOrderProfile({ ...orderInput(), owner, settlementAccount: owner });
+  await runtime.providers.candidates({ order, orderHash: packageOrderHash(order) });
+  assert.equal(requests.includes(`userFees:${owner}`), true);
+  assert.equal(requests.includes(`userFees:${tradingAccount}`), false);
+  const wrong = validatePackageOrderProfile({ ...orderInput(), owner, settlementAccount: tradingAccount });
+  await assert.rejects(Promise.resolve().then(() => runtime.providers.candidates({ order: wrong, orderHash: packageOrderHash(wrong) })),
+    /requires the signed owner account/);
+});
+
 test('prices an entry from live Testnet books and the account fee schedule, rounding against the trader', async () => {
   const requests: string[] = [];
   const { order, decision, terms, runtime } = await quoteFor(orderInput(), fakeMarket({ requests }));
@@ -478,7 +493,8 @@ test('loads a reviewed config whose identity hashes are hex strings and quotes t
   const dependencies = { nonceSource: { next: () => 41n }, market: fakeMarket(), currentTimeMs: () => 1_000n };
   try {
     writeFileSync(configPath, stringifyProtocolJson({ version: 2, market }, 'quote'));
-    const runtime = loadHyperliquidTestnetQuoteRuntime(env, dependencies)!;
+    const runtime = loadHyperliquidTestnetQuoteRuntime({ ...env,
+      NARYX_HYPERLIQUID_TESTNET_ACCOUNT_MODE: 'SHARED_TEST_FIXTURE' }, dependencies)!;
     const order = validatePackageOrderProfile(orderInput());
     const orderHash = packageOrderHash(order);
     const [candidate] = await runtime.providers.candidates({ order, orderHash });

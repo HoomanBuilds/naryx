@@ -66,6 +66,7 @@ export interface ActiveOrderContext {
   readonly requiredOwner?: string;
   readonly ownerPattern?: RegExp;
   readonly requiredSettlementAccount?: string;
+  readonly requireOwnerSettlementAccount?: boolean;
   readonly hyperliquidQuantityPolicy?: Exclude<QuantityPolicyClass, "EXACT_ATOMIC">;
   readonly hyperliquidMaxNetSpotShortfallAtoms?: bigint;
   readonly hyperliquidMaxNetSpotShortfallBps?: number;
@@ -301,6 +302,7 @@ function loadContext(
     throw new EntryOrderValidationError("EXCESS_SLIPPAGE", "Slippage exceeds the active context maximum.");
   }
   if ((context.requiredOwner !== undefined && request.owner !== context.requiredOwner)
+      || (context.requireOwnerSettlementAccount === true && request.owner !== request.settlementAccount)
       || (context.requiredSettlementAccount !== undefined
         && request.settlementAccount !== context.requiredSettlementAccount)) {
     throw new EntryOrderValidationError(

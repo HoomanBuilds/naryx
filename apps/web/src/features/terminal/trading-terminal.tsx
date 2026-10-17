@@ -757,14 +757,15 @@ function HyperliquidTestnetPanel({
         <span>{execution?.status ?? progress?.toUpperCase() ?? (attempt ? "SELECTED" : quote ? "QUOTE REVIEW" : order ? "ORDER CREATED" : context ? "READY" : "DISCOVERING")}</span>
       </div>
       <p className={styles.reviewNotice}>
-        Executed in Naryx&apos;s Hyperliquid testnet account on your behalf. Your wallet owns the package and signs its
-        authorization; the shared trading account below holds and settles it, one package at a time.
+        {context?.authorizationMode === "OWNER_SIGNED_PER_USER_ACCOUNT"
+          ? "Executed in your own funded Hyperliquid testnet account through your approved API wallet. Your wallet signs each package authorization."
+          : "Controlled test execution uses Naryx's shared Hyperliquid testnet account. This is not per-user venue custody."}
       </p>
       {hyperliquidLaneBlocked(flow?.progress) ? <p className={styles.reviewNotice}>{HYPERLIQUID_LANE_BLOCKED_COPY}</p> : null}
       {context ? (
         <div className={styles.reviewGrid}>
           <span>Owner (your wallet)</span><strong title={flow?.owner ?? undefined}>{flow?.owner ? compact(flow.owner, 10, 8) : "Not connected"}</strong>
-          <span>Trading account</span><strong title={context.tradingAccount}>{compact(context.tradingAccount, 10, 8)}</strong>
+          <span>Trading account</span><strong title={(context.tradingAccount ?? flow?.owner) ?? undefined}>{context.tradingAccount || flow?.owner ? compact((context.tradingAccount ?? flow?.owner)!, 10, 8) : "Connect your wallet"}</strong>
           <span>Context</span><strong title={context.contextId}>{context.contextId}</strong>
           <span>Domain</span><strong>{context.domain.domainId}</strong>
           <span>Manifest</span><strong title={context.domain.domainManifestHash}>v{context.domain.domainManifestVersion} / {compact(context.domain.domainManifestHash)}</strong>

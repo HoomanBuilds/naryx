@@ -145,7 +145,8 @@ function policyHash(sourceOrderHash: string, policy: string): string {
     .digest("hex");
 }
 
-function requireSourceOrder(order: PackageOrder, config: HyperliquidTestnetRuntimeConfig): void {
+function requireSourceOrder(order: PackageOrder, config: HyperliquidTestnetRuntimeConfig,
+  accountMode: 'PER_USER' | 'SHARED_TEST_FIXTURE'): void {
   const context = config.orderContext;
   if (context === undefined
     || order.environment !== "testnet"
@@ -173,7 +174,7 @@ function requireSourceOrder(order: PackageOrder, config: HyperliquidTestnetRunti
   }
   if (order.domain.domainManifestVersion !== config.domain.domainManifestVersion
     || !bytesEqual(order.domain.domainManifestHash, config.domain.domainManifestHash)
-    || order.settlementAccount !== context.tradingAccount
+    || order.settlementAccount !== (accountMode === 'PER_USER' ? order.owner : context.tradingAccount)
     || toHex(order.packageTemplateManifestHash) !== context.packageTemplateManifestHash) {
     throw new HyperliquidGeneralizedOrderError(
       "SOURCE_ORDER_MISMATCH",
@@ -187,8 +188,9 @@ function buildDocuments(
   sourceOrderHash: string,
   config: HyperliquidTestnetRuntimeConfig,
   profile: HyperliquidGeneralizedOrderProfile,
+  accountMode: 'PER_USER' | 'SHARED_TEST_FIXTURE',
 ): Readonly<{ order: StrategyPackageOrder; graph: PackageGraph }> {
-  requireSourceOrder(order, config);
+  requireSourceOrder(order, config, accountMode);
   const context = config.orderContext!;
   const base = context.baseAsset;
   const quote = context.quoteAsset;
@@ -355,6 +357,7 @@ function buildDocuments(
 
 export function createHyperliquidGeneralizedOrderPort(input: Readonly<{
   config: HyperliquidTestnetRuntimeConfig;
+  accountMode?: 'PER_USER' | 'SHARED_TEST_FIXTURE';
   profile: HyperliquidGeneralizedOrderProfile;
   orders: Pick<InternalOrderStore, "getCanonicalOrderByHash">;
   intents: Pick<ExecutionIntentStore, "getAttemptForOrder" | "getAuthorization">;
@@ -380,7 +383,8 @@ export function createHyperliquidGeneralizedOrderPort(input: Readonly<{
           "Review and select the canonical package quote before staging its typed strategy order.",
         );
       }
-      const documents = buildDocuments(source, sourceOrderHash, input.config, input.profile);
+      const documents = buildDocuments(source, sourceOrderHash, input.config, input.profile,
+        input.accountMode ?? 'SHARED_TEST_FIXTURE');
       const intake = input.intake.store(documents.order, documents.graph);
       if (intake.orderHashHex !== toHex(strategyPackageOrderHash(documents.order))
         || intake.graphHashHex !== toHex(packageGraphHash(documents.graph))) {

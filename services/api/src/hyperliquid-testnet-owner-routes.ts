@@ -576,16 +576,18 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
  */
 export function createHyperliquidTestnetExitOrderFactory(options: Readonly<{
   config: HyperliquidTestnetOrderContextConfig;
+  accountMode?: 'PER_USER' | 'SHARED_TEST_FIXTURE';
   /** Base atoms per spot size unit. */
   spotLotAtoms: bigint;
   contexts: ActiveOrderContextProvider;
   clock: InternalOrderClockPort;
   prices: HyperliquidTestnetPriceSource;
   ledger: HyperliquidTestnetOwnerLedger;
-  orders: Pick<InternalOrderStore, "createOrGet">;
+  orders: Pick<InternalOrderStore, "createOrGet"> & Partial<Pick<InternalOrderStore, "getCanonicalOrderByHash">>;
 }>) {
   const { config } = options;
   return async (request: Readonly<{ owner: string; slippageBps: number; idempotencyKey: string; entryAttemptId?: string }>) => {
+    const tradingAccount = options.accountMode === 'PER_USER' ? request.owner : config.tradingAccount;
     if (!HYPERLIQUID_TESTNET_OWNER_PATTERN.test(request.owner)) {
       throw new OwnerRouteError(400, "INVALID_OWNER", "Owner must be a lowercase nonzero 0x address.");
     }
@@ -605,6 +607,13 @@ export function createHyperliquidTestnetExitOrderFactory(options: Readonly<{
       throw new OwnerRouteError(404, "NO_OPEN_PACKAGE", request.entryAttemptId === undefined
         ? "This wallet has no open Hyperliquid testnet package."
         : "This wallet has no open Hyperliquid testnet package with that entry attempt.");
+    }
+    if (options.accountMode === 'PER_USER') {
+      const entry = options.orders.getCanonicalOrderByHash?.(open.entryOrderHash);
+      if (entry === undefined || entry.owner !== request.owner || entry.settlementAccount !== tradingAccount) {
+        throw new OwnerRouteError(409, "LEGACY_SHARED_POSITION",
+          "This package belongs to the historical shared venue account and cannot close your personal account.");
+      }
     }
     const snapshot = options.prices.latest();
     const context = options.contexts(config.contextId);
@@ -634,7 +643,7 @@ export function createHyperliquidTestnetExitOrderFactory(options: Readonly<{
     const requestPayload = canonicalBytes((writer) => {
       writer.writeString(config.contextId, "exitRequest.contextId");
       writer.writeString(request.owner, "exitRequest.owner");
-      writer.writeString(config.tradingAccount, "exitRequest.settlementAccount");
+      writer.writeString(tradingAccount, "exitRequest.settlementAccount");
       writer.writeString(open.entryReceiptHash!, "exitRequest.entryReceiptHash");
       writer.writeU256(open.perpQuantityAtoms!, "exitRequest.perpQuantityAtoms");
       writer.writeU256(open.spotQuantityAtoms!, "exitRequest.spotQuantityAtoms");
@@ -657,7 +666,7 @@ export function createHyperliquidTestnetExitOrderFactory(options: Readonly<{
       templateVersion: config.templateVersion,
       packageTemplateManifestHash: config.packageTemplateManifestHash,
       owner: request.owner,
-      settlementAccount: config.tradingAccount,
+      settlementAccount: tradingAccount,
       nonce: nonce === 0n ? 1n : nonce,
       expiryUnit: "HYPERLIQUID_UNIX_MILLISECONDS",
       expiryValue,
@@ -718,7 +727,7 @@ export function createHyperliquidTestnetExitOrderFactory(options: Readonly<{
       request: {
         contextId: config.contextId,
         owner: request.owner,
-        settlementAccount: config.tradingAccount,
+        settlementAccount: tradingAccount,
         sizeAtoms: open.perpQuantityAtoms,
         slippageBps: request.slippageBps,
         idempotencyKey: request.idempotencyKey,
@@ -790,6 +799,7 @@ function exactKeys(body: Record<string, unknown>, keys: readonly string[]): void
 
 export type HyperliquidTestnetOwnerRoutesOptions = Readonly<{
   tradingAccount: string;
+  accountMode?: 'PER_USER' | 'SHARED_TEST_FIXTURE';
   maxOpenPackagesPerOwner: number | null;
   /** Atom decimals of the package's base and quote assets, so the terminal can show sizes. */
   baseDecimals: number;
@@ -821,6 +831,10 @@ export function createHyperliquidTestnetOwnerRoutes(
         "Generalized strategies use the strategy package authorization endpoint.",
       );
     }
+    if (binding.order.settlementAccount !== (options.accountMode === 'PER_USER'
+      ? binding.order.owner : options.tradingAccount)) {
+      throw new OwnerRouteError(409, "SETTLEMENT_ACCOUNT_MISMATCH", "The signed order must bind the owner's trading account.");
+    }
     return binding.order;
   };
   const typedDataFor = (binding: AttemptBinding) => {
@@ -829,7 +843,7 @@ export function createHyperliquidTestnetOwnerRoutes(
       orderHash: binding.orderHash,
       action: order.action,
       owner: order.owner,
-      tradingAccount: options.tradingAccount,
+      tradingAccount: order.settlementAccount,
     });
   };
   const handlers: Readonly<Record<string, (request: IncomingMessage, url: URL) => Promise<unknown>>> = {
@@ -842,12 +856,13 @@ export function createHyperliquidTestnetOwnerRoutes(
       return {
         version: 1,
         owner,
-        tradingAccount: options.tradingAccount,
-        executionModel: "OMNIBUS_TESTNET_ACCOUNT",
+        tradingAccount: options.accountMode === 'PER_USER' ? owner : options.tradingAccount,
+        executionModel: options.accountMode === 'PER_USER' ? "PER_USER_TESTNET_ACCOUNT" : "OMNIBUS_TESTNET_ACCOUNT",
         maxOpenPackagesPerOwner: options.maxOpenPackagesPerOwner,
         baseDecimals: options.baseDecimals,
         quoteDecimals: options.quoteDecimals,
-        packages: options.ledger.packages(owner).map(packageView),
+        packages: options.ledger.packages(owner).filter((entry) => options.accountMode !== 'PER_USER'
+          || options.orders.getCanonicalOrderByHash(entry.entryOrderHash)?.settlementAccount === owner).map(packageView),
       };
     },
     [HYPERLIQUID_TESTNET_AUTHORIZATION_PATH]: async (request) => {
@@ -866,7 +881,7 @@ export function createHyperliquidTestnetOwnerRoutes(
       const signature = String(body.signature).toLowerCase();
       if (!await verifyHyperliquidTestnetAuthorization({
         orderHash: binding.orderHash, action: order.action,
-        owner: order.owner, tradingAccount: options.tradingAccount,
+        owner: order.owner, tradingAccount: order.settlementAccount,
       }, signature)) {
         throw new OwnerRouteError(400, "INVALID_SIGNATURE", "The signature is not the package owner's authorization.");
       }
@@ -894,7 +909,7 @@ export function createHyperliquidTestnetOwnerRoutes(
         created: created.created,
         order: created.record,
         package: packageView(created.package),
-        executionModel: "OMNIBUS_TESTNET_ACCOUNT",
+        executionModel: options.accountMode === 'PER_USER' ? "PER_USER_TESTNET_ACCOUNT" : "OMNIBUS_TESTNET_ACCOUNT",
       };
     },
     [HYPERLIQUID_TESTNET_ATTEMPT_STATUS_PATH]: async (request) => {

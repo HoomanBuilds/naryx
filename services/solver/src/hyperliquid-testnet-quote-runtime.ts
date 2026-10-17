@@ -106,6 +106,7 @@ export interface HyperliquidTestnetQuoteRuntimeInput {
   readonly maxBookAgeMs: number;
   readonly maxBookSpreadBps: number;
   readonly tradingAccount: `0x${string}`;
+  readonly accountMode?: 'PER_USER' | 'SHARED_TEST_FIXTURE';
   readonly market: HyperliquidTestnetQuoteMarketReadPort;
   readonly currentTimeMs: () => bigint;
   readonly nonceSource: AtomicQuoteNonceSource;
@@ -2083,6 +2084,13 @@ export function createHyperliquidTestnetQuoteRuntime(
 ): HyperliquidTestnetQuoteRuntime {
   if (!input.enabled) throw new Error('Hyperliquid Testnet quote runtime is disabled');
   validateConfiguration(input);
+  const accountInput = (order: PackageOrder): HyperliquidTestnetQuoteRuntimeInput => {
+    if (input.accountMode !== 'PER_USER') return input;
+    if (!/^0x(?!0{40}$)[0-9a-f]{40}$/.test(order.owner) || order.settlementAccount !== order.owner) {
+      throw new Error('per-user Hyperliquid pricing requires the signed owner account');
+    }
+    return { ...input, tradingAccount: order.owner as `0x${string}` };
+  };
   // Terms are taken from the same market snapshot that produced the selected candidate. A missing
   // or superseded snapshot fails closed instead of re-reading the market.
   const prepared = new Map<string, Awaited<ReturnType<typeof build>>>();
@@ -2098,7 +2106,7 @@ export function createHyperliquidTestnetQuoteRuntime(
     }
   };
   const candidates: InternalAtomicQuoteCandidateProvider = async ({ order, orderHash }) => {
-    const created = await declined(() => build(order, orderHash, input));
+    const created = await declined(() => build(order, orderHash, accountInput(order)));
     prepared.delete(key(orderHash));
     prepared.set(key(orderHash), created);
     while (prepared.size > MAX_PREPARED_QUOTES) prepared.delete(prepared.keys().next().value!);
@@ -2123,7 +2131,7 @@ export function createHyperliquidTestnetQuoteRuntime(
     return Object.freeze({ ...created.terms, quoteNonce });
   };
   const exit: HyperliquidTestnetExitQuoter = async ({ order, orderHash, signer }) => {
-    const built = await declined(() => buildHyperliquidTestnetExit(order, orderHash, input));
+    const built = await declined(() => buildHyperliquidTestnetExit(order, orderHash, accountInput(order)));
     const quoteNonce = input.nonceSource.next();
     if (quoteNonce <= 0n || quoteNonce > U256_MAX) throw new Error('quote nonce must be a nonzero u256');
     return signHyperliquidTestnetExitQuote({

@@ -185,6 +185,10 @@ function everyMinute(sweep: () => Promise<void>): void {
 // Where each lane's reference history legs come from, named as each lane composes its market source.
 const referenceSources: Partial<Record<DomainId, Readonly<{ spot: string; perp: string }>>> = {};
 const config = loadPrivateTerminalServerConfig();
+const hyperliquidAccountMode = process.env.NARYX_HYPERLIQUID_TESTNET_ACCOUNT_MODE ?? "PER_USER";
+if (hyperliquidAccountMode !== "PER_USER" && hyperliquidAccountMode !== "SHARED_TEST_FIXTURE") {
+  throw new Error("NARYX_HYPERLIQUID_TESTNET_ACCOUNT_MODE must be PER_USER or SHARED_TEST_FIXTURE");
+}
 const startup = loadPrivateTerminalStartupConfig(process.env, config);
 const reportRuntimeFailure = stderrRuntimeFailureReporter();
 const orderStore = new SqliteInternalOrderStore(startup.orderDbPath);
@@ -542,7 +546,7 @@ let terminalMarkets: TerminalMarketSources = {};
 if (hyperliquidConfig !== undefined) {
   try {
     const priceFeed = new HyperliquidTestnetPriceFeed(hyperliquidConfig);
-    hyperliquidOrderRuntime = createHyperliquidTestnetOrderRuntime(hyperliquidConfig, priceFeed);
+    hyperliquidOrderRuntime = createHyperliquidTestnetOrderRuntime(hyperliquidConfig, priceFeed, Date.now, hyperliquidAccountMode);
     terminalMarkets = { hyperliquid: createHyperliquidTestnetMarketSource(hyperliquidConfig, priceFeed) };
     referenceSources.hyperliquid = {
       spot: `Hyperliquid testnet l2Book mid, spot universe index ${hyperliquidConfig.market.spot.universeIndex}`,
@@ -611,8 +615,7 @@ if (hyperliquidRuntimeEnabled && hyperliquidExecutorClientEnabled) {
       }),
       tradingAccount: orderContext.tradingAccount,
       limits: hyperliquidConfig?.omnibus,
-      accountMode: process.env.NARYX_HYPERLIQUID_TESTNET_ACCOUNT_MODE === "SHARED_TEST_FIXTURE"
-        ? "SHARED_TEST_FIXTURE" : "PER_USER",
+      accountMode: hyperliquidAccountMode,
       quoteAsset: orderContext.quoteAsset,
       spotLotAtoms: hyperliquidTestnetSpotLotAtoms(hyperliquidConfig!),
     });
@@ -690,6 +693,7 @@ const hyperliquidOwnerRoutes = hyperliquidOwnerLedger === undefined || hyperliqu
   || hyperliquidExecutionRuntime === undefined
   ? undefined
   : createHyperliquidTestnetOwnerRoutes({
+    accountMode: hyperliquidAccountMode,
     tradingAccount: hyperliquidOrderContext.tradingAccount,
     maxOpenPackagesPerOwner: hyperliquidConfig?.omnibus?.maxOpenPackagesPerOwner ?? null,
     baseDecimals: hyperliquidOrderContext.baseAsset.decimals,
@@ -702,6 +706,7 @@ const hyperliquidOwnerRoutes = hyperliquidOwnerLedger === undefined || hyperliqu
     }),
     ...(hyperliquidOrderRuntime === undefined || hyperliquidPriceFeed === undefined ? {} : {
       createExitOrder: createHyperliquidTestnetExitOrderFactory({
+        accountMode: hyperliquidAccountMode,
         config: hyperliquidOrderContext,
         spotLotAtoms: hyperliquidTestnetSpotLotAtoms(hyperliquidConfig!),
         contexts: hyperliquidOrderRuntime.contexts,
@@ -1011,6 +1016,7 @@ try {
       throw new Error("Hyperliquid generalized order staging requires the testnet runtime and public strategy market.");
     }
     hyperliquidGeneralizedOrder = createHyperliquidGeneralizedOrderPort({
+      accountMode: hyperliquidAccountMode,
       config: hyperliquidConfig,
       profile,
       orders: orderStore,
@@ -1033,14 +1039,10 @@ if (hyperliquidNativeStrategyProfilePath !== undefined && hyperliquidNativeStrat
     hyperliquidNativeStrategyProfiles = loadHyperliquidNativeStrategyProfiles(
       absolutePath(hyperliquidNativeStrategyProfilePath, "NARYX_HYPERLIQUID_NATIVE_STRATEGY_ORDER_PROFILES"),
     );
-    const accountMode = process.env.NARYX_HYPERLIQUID_TESTNET_ACCOUNT_MODE ?? "PER_USER";
-    if (accountMode !== "PER_USER" && accountMode !== "SHARED_TEST_FIXTURE") {
-      throw new Error("NARYX_HYPERLIQUID_TESTNET_ACCOUNT_MODE must be PER_USER or SHARED_TEST_FIXTURE");
-    }
     hyperliquidNativeStrategyOrders = createHyperliquidNativeStrategyOrderPort({
       profiles: hyperliquidNativeStrategyProfiles,
       intake: publicMarket.strategyOrderIntake,
-      accountMode,
+      accountMode: hyperliquidAccountMode,
     });
   } catch (error) {
     hyperliquidNativeStrategyProfiles = [];

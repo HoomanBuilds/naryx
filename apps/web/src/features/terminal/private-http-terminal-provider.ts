@@ -613,7 +613,7 @@ export type LocalExecutionResult = Readonly<{
 
 export type HyperliquidTestnetContext = Readonly<{
   contextId: string;
-  tradingAccount: string;
+  tradingAccount: string | null;
   domain: Readonly<{
     domainId: typeof HYPERLIQUID_DOMAIN_ID;
     domainManifestVersion: number;
@@ -621,7 +621,7 @@ export type HyperliquidTestnetContext = Readonly<{
   }>;
   environment: "TESTNET";
   /** The user's wallet owns and signs each package; Naryx's one testnet account executes it. */
-  authorizationMode: "OWNER_SIGNED_OMNIBUS_ACCOUNT";
+  authorizationMode: "OWNER_SIGNED_OMNIBUS_ACCOUNT" | "OWNER_SIGNED_PER_USER_ACCOUNT";
   maxOpenPackagesPerOwner: number | null;
 }>;
 
@@ -2185,13 +2185,15 @@ function requireHyperliquidContext(value: unknown): HyperliquidTestnetContext {
     "Hyperliquid domain manifest version",
   );
   if (value.environment !== "TESTNET" ||
-      value.authorizationMode !== "OWNER_SIGNED_OMNIBUS_ACCOUNT" ||
+      (value.authorizationMode !== "OWNER_SIGNED_OMNIBUS_ACCOUNT"
+        && value.authorizationMode !== "OWNER_SIGNED_PER_USER_ACCOUNT") ||
       value.domain.domainId !== HYPERLIQUID_DOMAIN_ID || domainManifestVersion === 0 ||
       (value.maxOpenPackagesPerOwner !== null && !Number.isSafeInteger(value.maxOpenPackagesPerOwner))) {
     throw new Error("Hyperliquid Testnet context binding is invalid.");
   }
-  const tradingAccount = requireString(value.tradingAccount, "Hyperliquid trading account");
-  if (!/^0x[0-9a-f]{40}$/.test(tradingAccount)) {
+  const perUser = value.authorizationMode === "OWNER_SIGNED_PER_USER_ACCOUNT";
+  const tradingAccount = perUser ? null : requireString(value.tradingAccount, "Hyperliquid trading account");
+  if (perUser ? value.tradingAccount !== null : !/^0x[0-9a-f]{40}$/.test(tradingAccount!)) {
     throw new Error("Hyperliquid trading account is invalid.");
   }
   return Object.freeze({
@@ -2206,20 +2208,28 @@ function requireHyperliquidContext(value: unknown): HyperliquidTestnetContext {
       ),
     }),
     environment: "TESTNET",
-    authorizationMode: "OWNER_SIGNED_OMNIBUS_ACCOUNT",
+    authorizationMode: value.authorizationMode,
     maxOpenPackagesPerOwner: value.maxOpenPackagesPerOwner as number | null,
   });
 }
 
 const HYPERLIQUID_PACKAGE_STATES = new Set(["PENDING_ENTRY", "OPEN", "EXITING", "CLOSED", "UNRESOLVED"]);
 
+function hyperliquidTradingAccount(context: HyperliquidTestnetContext, owner: string): string {
+  return requireEvmAddress(context.authorizationMode === "OWNER_SIGNED_PER_USER_ACCOUNT"
+    ? owner : context.tradingAccount, "Hyperliquid trading account").toLowerCase();
+}
+
 function decimalPlaces(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 36 ? value : null;
 }
 
 function requireHyperliquidAccount(value: unknown, owner: string, context: HyperliquidTestnetContext): HyperliquidAccountStatus {
-  if (!isRecord(value) || value.owner !== owner || value.tradingAccount !== context.tradingAccount ||
-      value.executionModel !== "OMNIBUS_TESTNET_ACCOUNT" || !Array.isArray(value.packages)) {
+  const tradingAccount = hyperliquidTradingAccount(context, owner);
+  const model = context.authorizationMode === "OWNER_SIGNED_PER_USER_ACCOUNT"
+    ? "PER_USER_TESTNET_ACCOUNT" : "OMNIBUS_TESTNET_ACCOUNT";
+  if (!isRecord(value) || value.owner !== owner || value.tradingAccount !== tradingAccount ||
+      value.executionModel !== model || !Array.isArray(value.packages)) {
     throw new Error("Hyperliquid account response is invalid.");
   }
   const atoms = (entry: unknown) => entry === null || (typeof entry === "string" && /^(?:0|[1-9][0-9]{0,77})$/.test(entry));
@@ -2244,7 +2254,7 @@ function requireHyperliquidAccount(value: unknown, owner: string, context: Hyper
   });
   return Object.freeze({
     owner,
-    tradingAccount: context.tradingAccount,
+    tradingAccount,
     maxOpenPackagesPerOwner: context.maxOpenPackagesPerOwner,
     baseDecimals: decimalPlaces(value.baseDecimals),
     quoteDecimals: decimalPlaces(value.quoteDecimals),
@@ -2284,7 +2294,7 @@ function requireHyperliquidOrderCreateResponse(
       order.domainId !== HYPERLIQUID_DOMAIN_ID ||
       domainManifestVersion !== context.domain.domainManifestVersion ||
       order.domainManifestHashHex !== context.domain.domainManifestHash ||
-      order.owner !== owner || order.settlementAccount !== context.tradingAccount ||
+      order.owner !== owner || order.settlementAccount !== hyperliquidTradingAccount(context, owner) ||
       order.status !== "UNSIGNED_CREATED" || createdAtMs === 0) {
     throw new Error("Hyperliquid canonical order does not match the owner and trading account.");
   }
@@ -2303,7 +2313,7 @@ function requireHyperliquidOrderCreateResponse(
       domainManifestVersion,
       domainManifestHashHex: context.domain.domainManifestHash,
       owner,
-      settlementAccount: context.tradingAccount,
+      settlementAccount: hyperliquidTradingAccount(context, owner),
       nonceDecimal: requireCanonicalUnsigned(order.nonceDecimal, "Hyperliquid order nonce", true, MAX_UINT64_BIGINT),
       status: "UNSIGNED_CREATED",
       createdAtMs,
@@ -4492,7 +4502,7 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     const request = {
       contextId: requireProtocolId(context.contextId, "Hyperliquid context id"),
       owner: requireEvmAddress(owner, "Hyperliquid package owner").toLowerCase(),
-      settlementAccount: context.tradingAccount,
+      settlementAccount: hyperliquidTradingAccount(context, owner),
       size: requireString(input.size, "Hyperliquid order size"),
       slippageBps: requireInteger(input.slippageBps, "Hyperliquid order slippage"),
       idempotencyKey: requireObservationIdempotencyKey(input.idempotencyKey),
@@ -4563,7 +4573,8 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
     });
     if (!response.ok) throw await serviceFailure(response, "Hyperliquid exit order creation");
     const body = await response.json() as unknown;
-    if (!isRecord(body) || body.executionModel !== "OMNIBUS_TESTNET_ACCOUNT") {
+    if (!isRecord(body) || body.executionModel !== (context.authorizationMode === "OWNER_SIGNED_PER_USER_ACCOUNT"
+      ? "PER_USER_TESTNET_ACCOUNT" : "OMNIBUS_TESTNET_ACCOUNT")) {
       throw new Error("Hyperliquid exit order response is invalid.");
     }
     if (input.entryAttemptId !== undefined &&

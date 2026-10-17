@@ -28,20 +28,16 @@ export type HyperliquidTestnetOrderRuntime = Readonly<{
   terminalContext: HyperliquidTestnetTerminalContext;
 }>;
 
-/**
- * Every package is owned by the wallet that signs its authorization and settles in Naryx's single
- * funded Testnet trading account, which executes it on the owner's behalf.
- */
 export type HyperliquidTestnetTerminalContext = Readonly<{
   contextId: string;
-  tradingAccount: string;
+  tradingAccount: string | null;
   domain: Readonly<{
     domainId: string;
     domainManifestVersion: number;
     domainManifestHash: string;
   }>;
   environment: "TESTNET";
-  authorizationMode: "OWNER_SIGNED_OMNIBUS_ACCOUNT";
+  authorizationMode: "OWNER_SIGNED_OMNIBUS_ACCOUNT" | "OWNER_SIGNED_PER_USER_ACCOUNT";
   maxOpenPackagesPerOwner: number | null;
 }>;
 
@@ -217,6 +213,7 @@ export function createHyperliquidTestnetOrderRuntime(
   config: HyperliquidTestnetRuntimeConfig,
   priceFeed: HyperliquidTestnetPriceSource,
   currentTimeMs: () => number = Date.now,
+  accountMode: 'PER_USER' | 'SHARED_TEST_FIXTURE' = 'SHARED_TEST_FIXTURE',
 ): HyperliquidTestnetOrderRuntime {
   const order = config.orderContext;
   if (order === undefined) throw new Error("Hyperliquid Testnet order context is missing.");
@@ -281,7 +278,9 @@ export function createHyperliquidTestnetOrderRuntime(
       minWalletQuoteBalanceDeltaAtoms: order.minWalletQuoteBalanceDeltaAtoms,
       maxResidualBaseQuantityAtoms: order.maxResidualBaseQuantityAtoms,
       ownerPattern: HYPERLIQUID_TESTNET_OWNER_PATTERN,
-      requiredSettlementAccount: order.tradingAccount,
+      ...(accountMode === 'PER_USER'
+        ? { requireOwnerSettlementAccount: true }
+        : { requiredSettlementAccount: order.tradingAccount }),
       hyperliquidQuantityPolicy: "BOUNDED_NET",
       hyperliquidMaxNetSpotShortfallAtoms: order.maxNetSpotShortfallAtoms,
       hyperliquidMaxNetSpotShortfallBps: prices.maxNetSpotShortfallBps,
@@ -322,14 +321,15 @@ export function createHyperliquidTestnetOrderRuntime(
   });
   const terminalContext: HyperliquidTestnetTerminalContext = Object.freeze({
     contextId: order.contextId,
-    tradingAccount: order.tradingAccount,
+    tradingAccount: accountMode === 'PER_USER' ? null : order.tradingAccount,
     domain: Object.freeze({
       domainId: config.domain.domainId,
       domainManifestVersion: config.domain.domainManifestVersion,
       domainManifestHash: Buffer.from(config.domain.domainManifestHash).toString("hex"),
     }),
     environment: "TESTNET",
-    authorizationMode: "OWNER_SIGNED_OMNIBUS_ACCOUNT",
+    authorizationMode: accountMode === 'PER_USER'
+      ? "OWNER_SIGNED_PER_USER_ACCOUNT" : "OWNER_SIGNED_OMNIBUS_ACCOUNT",
     maxOpenPackagesPerOwner: config.omnibus?.maxOpenPackagesPerOwner ?? null,
   });
   // The solver sweeps the spot asks up to the order's spot cap per unit (the ask plus the trader's

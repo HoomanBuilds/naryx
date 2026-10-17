@@ -213,6 +213,41 @@ const orderRequest = (size: string, idempotencyKey: string) => ({
   idempotencyKey,
 });
 
+test("a historical shared package cannot close positions in a personal account", async () => {
+  const owner = `0x${'22'.repeat(20)}`;
+  const createExit = createHyperliquidTestnetExitOrderFactory({
+    config: config().orderContext!, accountMode: 'PER_USER', spotLotAtoms: 1n,
+    contexts: () => { throw new Error('must reject before quoting'); },
+    clock: {} as never, prices: {} as never,
+    ledger: { openPackage: () => ({ entryOrderHash: '12'.repeat(32), perpQuantityAtoms: 1n,
+      spotQuantityAtoms: 1n, entryNotionalAtoms: 1n, entryReceiptHash: '13'.repeat(32) }) } as never,
+    orders: { getCanonicalOrderByHash: () => ({ owner, settlementAccount: ACCOUNT }) as never,
+      createOrGet: () => { throw new Error('must not create an exit'); } },
+  });
+  await assert.rejects(createExit({ owner, slippageBps: 10, idempotencyKey: 'per-user-exit-0001' }),
+    /historical shared venue account/);
+});
+
+test("per-user contexts bind each canonical order to its owner rather than the fixture account", async () => {
+  const market = fakeMarket();
+  const feed = priceFeed(market);
+  assert.equal(await feed.refresh(), true);
+  const runtime = createHyperliquidTestnetOrderRuntime(config(), feed, () => market.now, 'PER_USER');
+  assert.equal(runtime.terminalContext.tradingAccount, null);
+  assert.equal(runtime.terminalContext.authorizationMode, 'OWNER_SIGNED_PER_USER_ACCOUNT');
+  const owner = `0x${'22'.repeat(20)}`;
+  await withOrders(async (orders) => {
+    const coordinator = new InternalOrderCoordinator({ contexts: runtime.contexts, clock: runtime.clock, store: orders });
+    const request = { ...orderRequest("1.00001", "per-user-order-0001"), owner, settlementAccount: owner };
+    const created = await coordinator.createOrder(request);
+    const stored = orders.getCanonicalOrderByHash(created.record.orderHashHex)!;
+    assert.equal(stored.owner, owner);
+    assert.equal(stored.settlementAccount, owner);
+    await assert.rejects(coordinator.createOrder({ ...request, settlementAccount: ACCOUNT,
+      idempotencyKey: "per-user-order-0002" }), /ACCOUNT_MISMATCH|settlement account/);
+  });
+});
+
 test("Hyperliquid Testnet context prices orders from the live snapshot for any owner wallet in the trading account", async () => {
   const market = fakeMarket();
   const feed = priceFeed(market);

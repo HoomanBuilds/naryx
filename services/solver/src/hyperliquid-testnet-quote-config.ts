@@ -255,6 +255,7 @@ export function loadHyperliquidTestnetQuoteRuntime(
     >),
     enabled: true,
     tradingAccount: tradingAccount as `0x${string}`,
+    accountMode: hyperliquidTestnetAccountMode(env),
     market: dependencies.market ?? new HyperliquidSdkTestnetMarketReadClient(),
     currentTimeMs: dependencies.currentTimeMs ?? (() => BigInt(Date.now())),
     nonceSource: dependencies.nonceSource,

@@ -94,11 +94,15 @@ netting execution is refused in per-user mode: cancelling obligations between di
 cannot settle their independent HyperCore accounts. It requires a separately qualified funded
 clearing or novation mechanism. Historical shared-account evidence is not per-user settlement.
 
-This account-isolation slice does not implement self-service API-wallet enrollment, migrate
-historical shared positions, or replace the legacy cash-and-carry terminal's omnibus account
-setup. Those paths must be migrated before claiming general customer self-custody support.
-Do not activate the per-user runtime against customer traffic before owner approval, funding,
-the matching terminal workflow, and a real owner-account execution have been verified.
+Canonical cash-and-carry creation, quote pricing, owner authorization, strategy staging, exits,
+and the terminal use the same owner-account binding in per-user mode. The terminal never
+substitutes the operator account when the wallet is disconnected. Historical shared positions
+are not silently reassigned to a new venue account.
+
+Self-service API-wallet enrollment and historical shared-position migration are not implemented.
+Accounts must be provisioned explicitly in the external registry. Before enabling a registered
+account, verify its owner approval, funding, and a real owner-account execution. An unregistered
+owner remains unable to submit through the executor.
 
 The generalized strategy quote lane reuses the same reviewed market config and requires exactly one
 matching generalized preparation manifest. It supports `cash-and-carry-v1`,
