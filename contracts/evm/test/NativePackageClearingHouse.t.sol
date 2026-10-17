@@ -131,6 +131,60 @@ contract NativePackageClearingHouseTest is Test {
         assertEq(clearing.accountLock(BACKSTOP_ACCOUNT), bytes32(0));
     }
 
+    function testEntryPausePreservesOwnerSignedReductionAndFullClose() public {
+        NativePackageClearingHouse.NativeMatch memory opening = _match(keccak256("paused-open"));
+        opening.quantityAtoms = 2;
+        bytes32 digest = clearing.matchDigest(opening);
+        clearing.executeMatch(opening, _sign(LONG_KEY, digest), _sign(SHORT_KEY, digest));
+        clearing.setEntryPaused(true);
+        NativePackageClearingHouse.NativeMatch memory closing = _match(keccak256("paused-reduce"));
+        closing.longAccountId = SHORT_ACCOUNT;
+        closing.shortAccountId = LONG_ACCOUNT;
+        closing.feePayerAccountId = SHORT_ACCOUNT;
+        closing.longSequence = clearing.account(SHORT_ACCOUNT).sequence;
+        closing.shortSequence = clearing.account(LONG_ACCOUNT).sequence;
+        digest = clearing.matchDigest(closing);
+        clearing.executeMatch(closing, _sign(SHORT_KEY, digest), _sign(LONG_KEY, digest));
+        assertEq(clearing.openInterestAtoms(), 1);
+        closing.authorizationHash = keccak256("paused-close");
+        closing.longSequence += 1;
+        closing.shortSequence += 1;
+        digest = clearing.matchDigest(closing);
+        clearing.executeMatch(closing, _sign(SHORT_KEY, digest), _sign(LONG_KEY, digest));
+        assertEq(clearing.openInterestAtoms(), 0);
+        assertEq(clearing.account(LONG_ACCOUNT).positionAtoms, 0);
+        assertEq(clearing.account(SHORT_ACCOUNT).positionAtoms, 0);
+        vm.prank(vm.addr(LONG_KEY));
+        clearing.withdraw(LONG_ACCOUNT, 1_000_000);
+        assertEq(token.balanceOf(vm.addr(LONG_KEY)), 1_000_000);
+    }
+
+    function testEntryPauseRejectsNewExposureFlipsAndUnsignedCloses() public {
+        NativePackageClearingHouse.NativeMatch memory match_ = _match(keccak256("pause-entry"));
+        bytes32 digest = clearing.matchDigest(match_);
+        clearing.setEntryPaused(true);
+        vm.expectRevert(NativePackageClearingHouse.EntryPaused.selector);
+        clearing.executeMatch(match_, _sign(LONG_KEY, digest), _sign(SHORT_KEY, digest));
+        clearing.setEntryPaused(false);
+        clearing.executeMatch(match_, _sign(LONG_KEY, digest), _sign(SHORT_KEY, digest));
+        clearing.setEntryPaused(true);
+        NativePackageClearingHouse.NativeMatch memory closing = _match(keccak256("pause-flip"));
+        closing.longAccountId = SHORT_ACCOUNT;
+        closing.shortAccountId = LONG_ACCOUNT;
+        closing.feePayerAccountId = SHORT_ACCOUNT;
+        closing.longSequence = clearing.account(SHORT_ACCOUNT).sequence;
+        closing.shortSequence = clearing.account(LONG_ACCOUNT).sequence;
+        closing.quantityAtoms = 2;
+        digest = clearing.matchDigest(closing);
+        vm.expectRevert(NativePackageClearingHouse.EntryPaused.selector);
+        clearing.executeMatch(closing, _sign(SHORT_KEY, digest), _sign(LONG_KEY, digest));
+        closing.quantityAtoms = 1;
+        digest = clearing.matchDigest(closing);
+        vm.expectRevert(NativePackageClearingHouse.InvalidSignature.selector);
+        clearing.executeMatch(closing, _sign(LONG_KEY, digest), _sign(SHORT_KEY, digest));
+        assertEq(clearing.openInterestAtoms(), 1);
+    }
+
     function testExpiredAuctionCanBeUnlockedWithoutSettlement() public {
         vm.prank(vm.addr(LONG_KEY));
         clearing.withdraw(LONG_ACCOUNT, 975_000);

@@ -338,7 +338,6 @@ contract NativePackageClearingHouse is ReentrancyGuard {
         private
         view
     {
-        if (entryPaused) revert EntryPaused();
         _requireLiveMark();
         if (consumedAuthorization[match_.authorizationHash]) revert Replay();
         if (
@@ -353,6 +352,13 @@ contract NativePackageClearingHouse is ReentrancyGuard {
         _requireUnlocked(match_.shortAccountId);
         Account storage long = _accounts[match_.longAccountId];
         Account storage short = _accounts[match_.shortAccountId];
+        if (
+            entryPaused
+                && (long.positionAtoms >= 0
+                    || short.positionAtoms <= 0
+                    || match_.quantityAtoms > _abs(long.positionAtoms)
+                    || match_.quantityAtoms > _abs(short.positionAtoms))
+        ) revert EntryPaused();
         if (
             long.owner == address(0) || short.owner == address(0) || long.owner == short.owner
                 || long.sequence != match_.longSequence || short.sequence != match_.shortSequence
