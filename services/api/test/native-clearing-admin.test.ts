@@ -130,7 +130,7 @@ test('contract observations require stored exchange consent and cannot supply th
     settlementAuthorization: (id: Uint8Array | string) => authorized.get(typeof id === 'string' ? id : toHex(id)),
   } as unknown as NativeClearingAdminOptions['exchange'];
   const options = { clearing: {} as SqliteNativeClearingStore, exchange,
-    observe: async (kind: 'MATCH' | 'DEFAULT', body: Record<string, unknown>) => { calls.push({ kind, body }); return { recorded: true }; },
+    observe: async (kind: 'MATCH' | 'DEFAULT' | 'NORMALIZE', body: Record<string, unknown>) => { calls.push({ kind, body }); return { recorded: true }; },
   };
   const server = await serve(options);
   try {

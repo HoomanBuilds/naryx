@@ -27,7 +27,8 @@ import { NativeClearingStoreError, nativeClearingBackingSnapshot, type NativeCle
 type Clearing = Pick<SqliteNativeClearingStore, 'domain' | 'accounts' | 'account' | 'latestMark' | 'backingSnapshot'>
   & Partial<Pick<SqliteNativeClearingStore, 'contractTransition' | 'recordFinalizedTransition' | 'markByHash'>>;
 type Verifier = Pick<EvmNativeClearingBackingVerifier, 'verify'>;
-type TransitionVerifier = Pick<EvmNativeClearingTransitionVerifier, 'executionMarkHash' | 'match' | 'recover'>;
+type TransitionVerifier = Pick<EvmNativeClearingTransitionVerifier, 'executionMarkHash' | 'match' | 'recover'>
+  & Partial<Pick<EvmNativeClearingTransitionVerifier, 'normalize'>>;
 
 export class NativeClearingBackingService {
   readonly #clearing: Clearing;
@@ -59,7 +60,7 @@ export class NativeClearingBackingService {
     return this.#verify(domain.policy, domain.state, this.#clearing.accounts(clearingDomainId));
   }
 
-  async observe(kind: 'MATCH' | 'DEFAULT', body: Record<string, unknown>) {
+  async observe(kind: 'MATCH' | 'DEFAULT' | 'NORMALIZE', body: Record<string, unknown>) {
     if (typeof body.clearingDomainId !== 'string' || typeof body.transactionHash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(body.transactionHash)) {
       throw new NativeClearingStoreError('INVALID_INPUT', 'Clearing domain and transaction hash are required.');
     }
@@ -76,12 +77,20 @@ export class NativeClearingBackingService {
           currentExpiryUnit: 'EVM_UNIX_SECONDS', currentExpiryValue: existing.proof.executedAtMs / 1_000n,
         });
         if (!bytesEqual(authorization.authorizationHash, existing.authorizationHash)) throw new NativeClearingStoreError('SETTLEMENT_CONFLICT', 'Clearing transaction belongs to another match authorization.');
+      } else if (existing.kind === 'NORMALIZE') {
+        if (body.accountId !== existing.receipt.accountId) throw new NativeClearingStoreError('SETTLEMENT_CONFLICT', 'Clearing transaction belongs to another account.');
       } else if (body.auctionId !== existing.receipt.resolutionId) {
         throw new NativeClearingStoreError('SETTLEMENT_CONFLICT', 'Clearing transaction belongs to another recovery auction.');
       }
       return existing;
     }
     const before = this.#clearing.backingSnapshot(body.clearingDomainId);
+    if (kind === 'NORMALIZE') {
+      if (typeof body.accountId !== 'string' || verifier.normalize === undefined) throw new NativeClearingStoreError('INVALID_INPUT', 'A supported normalization account is required.');
+      const transition = await verifier.normalize({ policy: domain.policy, state: domain.state,
+        accounts: this.#clearing.accounts(body.clearingDomainId), accountId: body.accountId, transactionHash: body.transactionHash as Hex });
+      return this.#clearing.recordFinalizedTransition(body.clearingDomainId, before, transition);
+    }
     let mark;
     try {
       const observationHash = await verifier.executionMarkHash(body.transactionHash as Hex);
@@ -213,6 +222,7 @@ export function loadNativeClearingBacking(
         code: async (address, blockNumber) => await client.getCode({ address, blockNumber }) ?? '0x',
         read: async (read, blockNumber) => client.readContract({ ...read, blockNumber }),
         receipt: (transactionHash) => client.getTransactionReceipt({ hash: transactionHash }),
+        transaction: (transactionHash) => client.getTransaction({ hash: transactionHash }),
         timestamp: async (blockNumber) => (await client.getBlock({ blockNumber })).timestamp,
         clearingLogs: (blockNumber) => client.getLogs({ address: entry.binding.clearingHouse, fromBlock: blockNumber, toBlock: blockNumber }),
       };

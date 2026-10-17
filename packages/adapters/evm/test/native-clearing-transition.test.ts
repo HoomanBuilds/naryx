@@ -4,9 +4,9 @@ import {
   applyNativeClearingMatch, assetRef, domainRef, nativeClearingAccount, nativeClearingDomainState, nativeClearingExecutionId,
   nativeClearingMarkObservation, nativeClearingMatchAuthorization, nativeClearingPolicy, packageAllocation, packageAllocationHash,
   packageMatchingPolicy, packageMatchingPolicyHash, packageSettlementCommitment, packageSettlementCommitmentHash,
-  packageSettlementHandoff, resolveNativeClearingDefault, toHex, versionedManifestRef, protocolId, commitmentHash,
+  packageSettlementHandoff, resolveNativeClearingDefault, normalizeNativeClearingAccount, toHex, versionedManifestRef, protocolId, commitmentHash,
 } from '@naryx/protocol-types';
-import { encodeAbiParameters, encodeEventTopics, keccak256, parseAbi, type Hex, type TransactionReceipt } from 'viem';
+import { encodeAbiParameters, encodeEventTopics, encodeFunctionData, keccak256, parseAbi, type Hex, type TransactionReceipt } from 'viem';
 import { evmNativeClearingAccountId } from '../src/native-clearing-backing.js';
 import { EvmNativeClearingTransitionVerifier, evmNativeClearingAuctionId, type EvmNativeClearingTransitionReadPort } from '../src/native-clearing-transition.js';
 
@@ -133,4 +133,41 @@ test('native default reconciliation preserves exact reserve loss, residual defic
   assert.equal(result.accounts[0]!.positionAtoms, 0n);
   assert.equal(result.accounts[1]!.positionAtoms, 10n);
   await assert.rejects(verifier.recover({ ...input, auctionId: 'wrong-auction' }));
+});
+
+test('flat normalization verifies the owner calldata and exact pre/post state without inventing an event', async () => {
+  const { binding, reads, input } = fixture();
+  const { accountHash, ...source } = input.accounts[0]!;
+  const before = nativeClearingAccount({ ...source, cashBalanceQuoteAtoms: 500n }, input.policy);
+  const after = normalizeNativeClearingAccount(before, input.policy);
+  const accounts = [before, input.accounts[1]!];
+  const data = encodeFunctionData({ abi: parseAbi(['function normalizeFlatAccount(bytes32)']), functionName: 'normalizeFlatAccount',
+    args: [evmNativeClearingAccountId(`0x${toHex(input.policy.policyHash)}`, before.accountId)] });
+  const transaction = { hash: tx, from: before.ownerId, to: house, input: data, value: 0n, blockNumber: 42n, blockHash };
+  const port: EvmNativeClearingTransitionReadPort = { ...reads,
+    transaction: async () => transaction,
+    receipt: async () => ({ transactionHash: tx, status: 'success', blockNumber: 42n, blockHash, logs: [] }),
+    clearingLogs: async () => [],
+    read: async (request, block) => {
+      if (request.functionName === 'openInterestAtoms') return input.state.openInterestAtoms;
+      if (request.functionName === 'account') {
+        const selected = accounts.find((account) => request.args?.[0] === evmNativeClearingAccountId(`0x${toHex(input.policy.policyHash)}`, account.accountId))!;
+        const result = selected.accountId === before.accountId && block === 42n ? after : selected;
+        return { ...result, owner: result.ownerId };
+      }
+      return reads.read(request, block);
+    },
+  };
+  const command = { ...input, accounts, accountId: before.accountId };
+  const result = await new EvmNativeClearingTransitionVerifier(binding, port).normalize(command);
+  assert.equal(result.accounts[0]!.collateralQuoteAtoms, before.collateralQuoteAtoms + 500n);
+  assert.equal(result.accounts[0]!.cashBalanceQuoteAtoms, 0n);
+  assert.equal(result.state.sequence, input.state.sequence);
+  assert.equal(result.proof.logIndex, null);
+  assert.equal(result.proof.evidenceKind, 'CALL_AND_STATE');
+  for (const variant of [
+    { transaction: async () => ({ ...transaction, from: shortOwner }) },
+    { transaction: async () => ({ ...transaction, input: '0x' as Hex }) },
+    { finalizedBlock: async () => ({ number: 41n, hash: blockHash }) },
+  ]) await assert.rejects(new EvmNativeClearingTransitionVerifier(binding, { ...port, ...variant }).normalize(command));
 });

@@ -698,6 +698,7 @@ export {
   type NativeClearingDefaultResolution,
   type NativeClearingDefaultResult,
 } from './native-package-clearing.js';
+export { normalizeNativeClearingAccount } from './native-package-clearing.js';
 
 export {
   NATIVE_CLEARING_MATCH_AUTHORIZATION_VERSION,

@@ -26,7 +26,7 @@ import type { SqlitePackageExchangeStore } from './package-exchange-store.js';
 
 export interface NativeClearingAdminOptions {
   readonly verifyBacking?: (path: string, body: Record<string, unknown>) => Promise<NativeClearingBackingCheck | void>;
-  readonly observe?: (kind: 'MATCH' | 'DEFAULT', body: Record<string, unknown>) => Promise<unknown>;
+  readonly observe?: (kind: 'MATCH' | 'DEFAULT' | 'NORMALIZE', body: Record<string, unknown>) => Promise<unknown>;
   readonly clearing: Pick<
     SqliteNativeClearingStore,
     'registerDomain' | 'openAccount' | 'adjustReserve' | 'recordMark' | 'adjustAuthorizedCollateral'
@@ -105,6 +105,7 @@ export function createNativeClearingAdminHandler(
       ['/internal/native-clearing/auction-settlements', ['auctionId', 'expectedStateHash']],
       ['/internal/native-clearing/match-observations', ['clearingDomainId', 'transactionHash', 'authorization']],
       ['/internal/native-clearing/recovery-observations', ['clearingDomainId', 'transactionHash', 'auctionId']],
+      ['/internal/native-clearing/normalization-observations', ['clearingDomainId', 'transactionHash', 'accountId']],
     ]).get(url.pathname);
     if (action === undefined) return false;
     if (!internalCaller(request)) {
@@ -131,7 +132,7 @@ export function createNativeClearingAdminHandler(
             requireExchangeBinding(options.exchange, authorization as unknown as MatchAuthorizationInput);
             return options.observe('MATCH', body);
           }
-          return options.observe('DEFAULT', body);
+          return options.observe(url.pathname.endsWith('/normalization-observations') ? 'NORMALIZE' : 'DEFAULT', body);
         }
         const verified = await options.verifyBacking?.(url.pathname, body);
         const backing = verified === undefined ? undefined : verified;

@@ -411,6 +411,20 @@ export function nativeClearingAccount(
   return Object.freeze({ ...payload, accountHash });
 }
 
+export function normalizeNativeClearingAccount(
+  accountInput: NativeClearingAccountInput | NativeClearingAccount,
+  policyInput: NativeClearingPolicyInput | NativeClearingPolicy,
+): NativeClearingAccount {
+  const policy = nativeClearingPolicy(policyInput);
+  const account = nativeClearingAccount(accountInput, policy);
+  if (account.positionAtoms !== 0n) throw new MalformedInputError('normalizeNativeClearingAccount.positionAtoms', 'account must be flat');
+  const equity = checkedSigned(account.collateralQuoteAtoms + account.cashBalanceQuoteAtoms, I256_BITS, 'normalizeNativeClearingAccount.equity');
+  if (equity < 0n) throw new MalformedInputError('normalizeNativeClearingAccount.equity', 'negative equity cannot become collateral');
+  return nativeClearingAccount({ version: account.version, policyHash: account.policyHash,
+    accountId: account.accountId, ownerId: account.ownerId, collateralQuoteAtoms: equity,
+    cashBalanceQuoteAtoms: 0n, positionAtoms: 0n, sequence: account.sequence + 1n }, policy);
+}
+
 function quoteValue(policy: NativeClearingPolicy, positionAtoms: bigint, priceTicks: bigint, context: string): bigint {
   if (positionAtoms % policy.packageQuantityIncrementAtoms !== 0n) {
     throw new MalformedInputError(context, 'position is off the package quantity lattice');

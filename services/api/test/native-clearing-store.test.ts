@@ -6,6 +6,7 @@ import test from 'node:test';
 import Database from 'better-sqlite3';
 import {
   nativeClearingAccount,
+  normalizeNativeClearingAccount,
   applyNativeClearingMatch,
   domainRef,
   nativeClearingExecutionId,
@@ -14,6 +15,7 @@ import {
   nativeClearingDefaultBid,
   nativeClearingMarkObservation,
   packageSettlementCommitment,
+  protocolId,
   toHex,
 } from '@naryx/protocol-types';
 import {
@@ -30,6 +32,36 @@ import {
   takerSigner,
 } from './native-clearing-fixtures.js';
 import type { EvmNativeClearingTransition } from '@naryx/adapter-evm';
+
+test('normalization journals one account sequence without changing domain exposure or reserve', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-clearing-normalize-'));
+  const store = new SqliteNativeClearingStore(join(directory, 'clearing.db'), () => 10_000);
+  try {
+    const { policy, state } = fixture();
+    store.registerDomain(policy, state);
+    await recordMark(store, 1000n, 1n);
+    const before = await open(store, 'account-taker', takerSigner, 5000n);
+    const after = normalizeNativeClearingAccount(before, policy);
+    const transactionHash = `0x${'88'.repeat(32)}` as const;
+    const transition: EvmNativeClearingTransition = { kind: 'NORMALIZE', state, accounts: [after],
+      receipt: { policyHash: policy.policyHash, accountId: before.accountId, previousDomainStateHash: state.stateHash,
+        previousAccountHash: before.accountHash, resultingAccountHash: after.accountHash, receiptHash: after.accountHash },
+      proof: { evidenceGrade: 'FINALIZED_CONTRACT_STATE', scope: 'REGISTERED_ACCOUNTS', domain: domainRef('eip155:84532', 1, '11'.repeat(32)),
+        clearingHouse: '0x1111111111111111111111111111111111111111', collateralToken: '0x2222222222222222222222222222222222222222',
+        blockNumber: 100n, blockHash: `0x${'55'.repeat(32)}`, tokenBalanceAtoms: 5300n, verifiedCollateralAndReserveAtoms: 5300n,
+        verifiedAccountCount: 1, entryPaused: true, transactionHash, logIndex: null, evidenceKind: 'CALL_AND_STATE', executedAtMs: 10_000n } };
+    const snapshot = store.backingSnapshot(policy.clearingDomainId);
+    assert.throws(() => store.recordFinalizedTransition(policy.clearingDomainId, snapshot, { ...transition,
+      receipt: { ...transition.receipt, accountId: protocolId('another-account') } }), { code: 'BACKING_STATE_MISMATCH' });
+    assert.equal(store.account(before.accountId)!.sequence, before.sequence);
+    store.recordFinalizedTransition(policy.clearingDomainId, snapshot, transition);
+    assert.equal(store.account(before.accountId)!.sequence, before.sequence + 1n);
+    assert.deepEqual(store.domain(policy.clearingDomainId)!.state, state);
+    assert.deepEqual(store.contractTransition(transactionHash), transition);
+    assert.equal(store.backingReceipts(policy.clearingDomainId).at(-1)!.action, 'normalizations');
+    assert.throws(() => store.recordFinalizedTransition(policy.clearingDomainId, snapshot, transition), { code: 'STALE_BACKING' });
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
 
 test('finalized contract transitions commit balances, replay protection, events and backing evidence together', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'naryx-clearing-transition-'));

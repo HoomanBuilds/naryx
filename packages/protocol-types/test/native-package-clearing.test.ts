@@ -9,6 +9,7 @@ import {
   nativeClearingAccountHealth,
   nativeClearingDomainState,
   nativeClearingPolicy,
+  normalizeNativeClearingAccount,
   resolveNativeClearingDefault,
   versionedManifestRef,
   type NativeClearingAccount,
@@ -59,6 +60,21 @@ function account(
     sequence: 0n,
   }, policyInput());
 }
+
+test('flat normalization conserves equity and rejects open, insolvent and exhausted-sequence accounts', () => {
+  const policy = nativeClearingPolicy(policyInput());
+  const before = account(1, policy.policyHash, 1000n, 500n);
+  const after = normalizeNativeClearingAccount(before, policy);
+  assert.equal(after.collateralQuoteAtoms, 1500n);
+  assert.equal(after.cashBalanceQuoteAtoms, 0n);
+  assert.equal(after.sequence, before.sequence + 1n);
+  assert.equal(normalizeNativeClearingAccount(account(1, policy.policyHash, 1000n, -1000n), policy).collateralQuoteAtoms, 0n);
+  assert.throws(() => normalizeNativeClearingAccount(account(1, policy.policyHash, 1000n, 0n, 10n), policy), /flat/);
+  assert.throws(() => normalizeNativeClearingAccount(account(1, policy.policyHash, 1000n, -1001n), policy), /negative/);
+  const { accountHash, ...input } = before;
+  assert.throws(() => normalizeNativeClearingAccount({ ...input, sequence: (1n << 64n) - 1n }, policy));
+  assert.throws(() => normalizeNativeClearingAccount({ ...input, collateralQuoteAtoms: (1n << 255n) - 1n, cashBalanceQuoteAtoms: 1n }, policy));
+});
 
 test('native clearing policy binds one isolated series and rejects unsafe margin ordering', () => {
   const policy = nativeClearingPolicy(policyInput());

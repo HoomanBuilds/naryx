@@ -7,6 +7,7 @@ import {
   nativeClearingMatchAuthorization,
   nativeClearingMarkObservation,
   nativeClearingPolicy,
+  normalizeNativeClearingAccount,
   protocolId,
   resolveNativeClearingDefault,
   toHex,
@@ -16,7 +17,7 @@ import {
   type NativeClearingMatchAuthorizationInput,
   type NativeClearingPolicy,
 } from '@naryx/protocol-types';
-import { decodeEventLog, encodeAbiParameters, keccak256, parseAbi, type Hex, type Log, type TransactionReceipt } from 'viem';
+import { decodeEventLog, encodeAbiParameters, encodeFunctionData, keccak256, parseAbi, type Hex, type Log, type TransactionReceipt } from 'viem';
 import { EvmNativeClearingBackingVerifier, evmNativeClearingAccountId, type EvmNativeClearingBackingReadPort, type EvmNativeClearingBinding } from './native-clearing-backing.js';
 import { hash32, requiredEvmAddress, structField } from './readPort.js';
 
@@ -25,6 +26,7 @@ const ABI = parseAbi([
   'event DefaultAuctionSettled(bytes32 indexed auctionId,bytes32 indexed defaultedAccountId,bytes32 indexed backstopAccountId,uint256 reserveConsumed,uint256 uncoveredDeficit)',
   'function currentMark() view returns(bytes32 observationHash,uint128 priceTicks,uint64 sourceSequence,uint64 observedAt,uint64 validUntil)',
   'function consumedAuthorization(bytes32) view returns(bool)',
+  'function normalizeFlatAccount(bytes32)',
   'function auction(bytes32) view returns((bytes32 defaultedAccountId,bytes32 defaultedAccountHash,bytes32 markObservationHash,int128 positionAtoms,uint128 markPriceTicks,uint128 minimumPriceTicks,uint128 maximumPriceTicks,uint64 markValidUntil,uint64 closeAt,bytes32 bestBackstopAccountId,bytes32 bestBackstopAccountHash,uint128 bestPriceTicks,uint64 bestBidValidUntil,bool settled))',
 ]);
 
@@ -32,6 +34,8 @@ export interface EvmNativeClearingTransitionReadPort extends EvmNativeClearingBa
   receipt(transactionHash: Hex): Promise<Pick<TransactionReceipt, 'transactionHash' | 'status' | 'blockNumber' | 'blockHash' | 'logs'>>;
   timestamp(blockNumber: bigint): Promise<bigint>;
   clearingLogs(blockNumber: bigint): Promise<readonly Log[]>;
+  transaction?(transactionHash: Hex): Promise<{ readonly hash: Hex; readonly from: string; readonly to: string | null;
+    readonly input: Hex; readonly value: bigint; readonly blockNumber: bigint | null; readonly blockHash: Hex | null }>;
 }
 
 export function evmNativeClearingAuctionId(policyHash: Hex, auctionId: string): Hex {
@@ -73,6 +77,42 @@ export class EvmNativeClearingTransitionVerifier {
     }
     const mark = await this.#reads.read({ address: this.#binding.clearingHouse, abi: ABI, functionName: 'currentMark' }, receipt.blockNumber);
     return hash32(structField(mark, 0, 'observationHash'), 'execution mark hash');
+  }
+
+  async normalize(input: Omit<EvmNativeClearingTransitionInput, 'mark'> & { readonly accountId: string }) {
+    hash32(input.transactionHash, 'clearing transaction hash');
+    if (this.#reads.transaction === undefined) throw new Error('Clearing transaction reads are unavailable.');
+    if (await this.#reads.chainId() !== BigInt(this.#binding.domain.domainId.slice(7))) throw new Error('Clearing transaction chain differs.');
+    const receipt = await this.#reads.receipt(input.transactionHash);
+    const transaction = await this.#reads.transaction(input.transactionHash);
+    const before = input.accounts.find((account) => account.accountId === input.accountId);
+    if (before === undefined || receipt.status !== 'success' || receipt.blockNumber <= 1n
+      || receipt.transactionHash.toLowerCase() !== input.transactionHash.toLowerCase()
+      || transaction.hash.toLowerCase() !== input.transactionHash.toLowerCase()
+      || transaction.to?.toLowerCase() !== this.#binding.clearingHouse.toLowerCase()
+      || transaction.from.toLowerCase() !== before.ownerId.toLowerCase() || transaction.value !== 0n
+      || transaction.blockNumber !== receipt.blockNumber || transaction.blockHash !== receipt.blockHash
+      || transaction.input !== encodeFunctionData({ abi: ABI, functionName: 'normalizeFlatAccount',
+        args: [evmNativeClearingAccountId(`0x${toHex(input.policy.policyHash)}`, input.accountId)] })) {
+      throw new Error('Clearing normalization is not the registered owner call.');
+    }
+    const finalized = await this.#reads.finalizedBlock();
+    if (receipt.blockNumber > finalized.number || await this.#reads.blockHash(receipt.blockNumber) !== receipt.blockHash
+      || (await this.#reads.clearingLogs(receipt.blockNumber)).some((log) => log.address.toLowerCase() === this.#binding.clearingHouse.toLowerCase())) {
+      throw new Error('Clearing normalization is not an isolated finalized call.');
+    }
+    await this.#backing.verify(input.policy, input.state, input.accounts, {
+      number: receipt.blockNumber - 1n, hash: await this.#reads.blockHash(receipt.blockNumber - 1n),
+    });
+    const next = normalizeNativeClearingAccount(before, input.policy);
+    const accounts = input.accounts.map((account) => account.accountId === before.accountId ? next : account);
+    const proof = await this.#backing.verify(input.policy, input.state, accounts, { number: receipt.blockNumber, hash: receipt.blockHash });
+    return { kind: 'NORMALIZE' as const, state: input.state, accounts,
+      receipt: { policyHash: input.policy.policyHash, accountId: before.accountId,
+        previousDomainStateHash: input.state.stateHash, previousAccountHash: before.accountHash,
+        resultingAccountHash: next.accountHash, receiptHash: next.accountHash },
+      proof: { ...proof, transactionHash: input.transactionHash, logIndex: null, evidenceKind: 'CALL_AND_STATE' as const,
+        executedAtMs: await this.#reads.timestamp(receipt.blockNumber) * 1000n } };
   }
 
   async #context(input: EvmNativeClearingTransitionInput) {
@@ -176,4 +216,4 @@ export class EvmNativeClearingTransitionVerifier {
   }
 }
 
-export type EvmNativeClearingTransition = Awaited<ReturnType<EvmNativeClearingTransitionVerifier['match'] | EvmNativeClearingTransitionVerifier['recover']>>;
+export type EvmNativeClearingTransition = Awaited<ReturnType<EvmNativeClearingTransitionVerifier['match'] | EvmNativeClearingTransitionVerifier['recover'] | EvmNativeClearingTransitionVerifier['normalize']>>;

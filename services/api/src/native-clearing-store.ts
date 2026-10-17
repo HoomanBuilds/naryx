@@ -716,11 +716,11 @@ export class SqliteNativeClearingStore {
     const { policy } = this.#requiredDomain(clearingDomainId);
     const afterSnapshot = nativeClearingBackingSnapshot({ policy, state: transition.state }, transition.accounts, this.latestMark(clearingDomainId));
     return this.#backedTransaction({ clearingDomainId, beforeSnapshot, afterSnapshot,
-      action: transition.kind === 'MATCH' ? 'matches' : 'recoveries', proof: transition.proof }, () => {
+      action: transition.kind === 'MATCH' ? 'matches' : transition.kind === 'NORMALIZE' ? 'normalizations' : 'recoveries', proof: transition.proof }, () => {
       const { state } = this.#requiredDomain(clearingDomainId);
       const accounts = this.accounts(clearingDomainId);
       if (!bytesEqual(policy.policyHash, transition.receipt.policyHash)
-        || transition.state.sequence !== state.sequence + 1n
+        || transition.state.sequence !== state.sequence + (transition.kind === 'NORMALIZE' ? 0n : 1n)
         || !bytesEqual(state.stateHash, transition.receipt.previousDomainStateHash)
         || accounts.length !== transition.accounts.length || new Set(transition.accounts.map((account) => account.accountId)).size !== accounts.length) {
         throw new NativeClearingStoreError('BACKING_STATE_MISMATCH', 'Clearing transition does not extend the durable ledger.');
@@ -733,14 +733,20 @@ export class SqliteNativeClearingStore {
         }
         return !bytesEqual(next.accountHash, account.accountHash);
       });
-      if (changed.length !== 2) throw new NativeClearingStoreError('BACKING_STATE_MISMATCH', 'Clearing transition must change exactly two accounts.');
+      if (changed.length !== (transition.kind === 'NORMALIZE' ? 1 : 2)) throw new NativeClearingStoreError('BACKING_STATE_MISMATCH', 'Clearing transition changes an unexpected number of accounts.');
       for (const account of changed) {
         const next = transition.accounts.find((candidate) => candidate.accountId === account.accountId)!;
         if (next.sequence !== account.sequence + 1n) throw new NativeClearingStoreError('BACKING_STATE_MISMATCH', 'Clearing transition account sequence differs.');
         this.#updateAccount(account, nativeClearingAccount(next, policy));
       }
-      this.#updateState(state, nativeClearingDomainState(transition.state, policy));
-      const receiptHash = transition.kind === 'MATCH' ? transition.receipt.receiptHash : transition.receipt.resolutionHash;
+      if (transition.kind === 'NORMALIZE') {
+        if (!bytesEqual(transition.state.stateHash, state.stateHash)
+          || changed[0]!.accountId !== transition.receipt.accountId
+          || !bytesEqual(changed[0]!.accountHash, transition.receipt.previousAccountHash)) {
+          throw new NativeClearingStoreError('BACKING_STATE_MISMATCH', 'Normalization changes clearing state or account identity.');
+        }
+      } else this.#updateState(state, nativeClearingDomainState(transition.state, policy));
+      const receiptHash = transition.kind === 'DEFAULT' ? transition.receipt.resolutionHash : transition.receipt.receiptHash;
       if (transition.kind === 'MATCH') {
         if (this.#db.prepare('SELECT 1 FROM native_clearing_match_settlements WHERE authorization_hash = ?').get(transition.authorizationHash) !== undefined) {
           throw new NativeClearingStoreError('SETTLEMENT_CONFLICT', 'Clearing match authorization was already reconciled.');
@@ -748,8 +754,9 @@ export class SqliteNativeClearingStore {
         this.#db.prepare('INSERT INTO native_clearing_match_settlements VALUES (?, ?, ?, ?)')
           .run(transition.authorizationHash, policy.policyHash, receiptHash, clock(this.#clock()));
       }
-      this.#event(transition.kind, receiptHash, policy, transition.state.sequence, {
-        transactionHash: transition.proof.transactionHash, markObservationHash: transition.markObservationHash, receipt: transition.receipt,
+      this.#event(transition.kind === 'NORMALIZE' ? 'COLLATERAL' : transition.kind, receiptHash, policy, transition.state.sequence, {
+        transactionHash: transition.proof.transactionHash,
+        ...(transition.kind === 'NORMALIZE' ? { operation: 'NORMALIZE' } : { markObservationHash: transition.markObservationHash }), receipt: transition.receipt,
         ...(transition.kind === 'MATCH' ? { authorizationHash: transition.authorizationHash } : {}),
       });
       this.#db.prepare('INSERT INTO native_clearing_contract_transitions VALUES (?, ?, ?, ?)')
