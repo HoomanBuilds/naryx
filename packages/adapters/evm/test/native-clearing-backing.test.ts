@@ -79,3 +79,13 @@ test('clearing backing rejects wrong networks, code, policy, funding and reorg e
   for (const variant of variants) await assert.rejects(new EvmNativeClearingBackingVerifier(binding, reads(variant)).verify(policy, state, [account]));
   await assert.rejects(new EvmNativeClearingBackingVerifier(binding, reads()).verify(policy, state, [account, account]), /unique accounts/);
 });
+
+test('cash-settled gains still require token backing before conversion to collateral', async () => {
+  const { accountHash, ...source } = account;
+  const profitable = nativeClearingAccount({ ...source, cashBalanceQuoteAtoms: 5n }, policy);
+  const original = reads();
+  const port = (balance: bigint) => reads({ read: async (request, block) => request.functionName === 'account'
+    ? { ...profitable, owner } : request.functionName === 'balanceOf' ? balance : original.read(request, block) });
+  await assert.rejects(new EvmNativeClearingBackingVerifier(binding, port(19n)).verify(policy, state, [profitable]), /net cash liabilities/);
+  assert.equal((await new EvmNativeClearingBackingVerifier(binding, port(20n)).verify(policy, state, [profitable])).tokenBalanceAtoms, 20n);
+});

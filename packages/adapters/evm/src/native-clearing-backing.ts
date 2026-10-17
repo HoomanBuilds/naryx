@@ -147,7 +147,8 @@ export class EvmNativeClearingBackingVerifier {
     if (typeof balance !== 'bigint' || balance < 0n || typeof fees !== 'bigint' || fees < 0n
       || decimals !== policy.accountingAsset.decimals || typeof entryPaused !== 'boolean') throw new Error('Native clearing token backing is invalid.');
     const required = accounts.reduce((sum, account) => sum + account.collateralQuoteAtoms, state.recoveryReserveQuoteAtoms + fees);
-    if (balance < required) throw new Error('Native clearing token balance is below the verified collateral and reserves.');
+    const netCash = accounts.reduce((sum, account) => sum + account.cashBalanceQuoteAtoms, 0n);
+    if (balance < required + (netCash > 0n ? netCash : 0n)) throw new Error('Native clearing token balance is below collateral, reserves and net cash liabilities.');
     if (await this.#reads.chainId() !== chainId || await this.#reads.blockHash(block.number) !== block.hash) {
       throw new Error('Native clearing backing chain or finalized block changed during verification.');
     }
