@@ -25,6 +25,16 @@ export function reserveTestnetBudget(reserved, gas, maxFeePerGas, value = 0n) {
   return next;
 }
 
+export function finalizedTransactionEvidence(transaction, receipt, block, finalizedNumber) {
+  assert.equal(receipt.transactionHash.toLowerCase(), transaction.hash.toLowerCase(), 'Receipt transaction differs');
+  assert.equal(receipt.status, 'success', 'Recorded transaction reverted');
+  assert.ok(receipt.blockNumber > 0n && receipt.blockNumber <= finalizedNumber, 'Recorded transaction is not finalized');
+  assert.equal(block.number, receipt.blockNumber);
+  assert.equal(block.hash, receipt.blockHash, 'Receipt block is not canonical');
+  assert.ok(/^0x[0-9a-fA-F]{64}$/.test(block.hash) && block.hash !== `0x${'00'.repeat(32)}`, 'Finalized block hash is invalid');
+  return { number: receipt.blockNumber, hash: receipt.blockHash };
+}
+
 export function buildClearingPolicy(profile, matching, authority) {
   const matchingPolicy = packageMatchingPolicy(matching);
   assert.equal(profile.chainId === 84532 || profile.chainId === 421614, true, 'Sepolia only');
@@ -197,6 +207,17 @@ async function main() {
     const finalized = await client.getBlock({ blockTag: 'finalized' });
     const required = record.transactions['publish-mark'].blockNumber;
     assert.ok(finalized.number >= required, `Waiting for chain finality: ${finalized.number}/${required}`);
+    for (const transaction of Object.values(record.transactions)) {
+      const receipt = await client.getTransactionReceipt({ hash: transaction.hash });
+      const block = await client.getBlock({ blockNumber: receipt.blockNumber });
+      const evidence = finalizedTransactionEvidence(transaction, receipt, block, finalized.number);
+      if (transaction.blockNumber !== evidence.number || transaction.blockHash !== evidence.hash) {
+        transaction.provisionalReceipt ??= { number: transaction.blockNumber, hash: transaction.blockHash };
+        transaction.blockNumber = evidence.number;
+        transaction.blockHash = evidence.hash;
+      }
+    }
+    save();
     const request = async (path, body) => {
       const response = await fetch(new URL(path, origin), body === undefined ? {} : { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: stringifyProtocolJson(body) });

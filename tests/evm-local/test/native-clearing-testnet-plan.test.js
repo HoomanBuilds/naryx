@@ -1,7 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { assetRef, parseProtocolJson, stringifyProtocolJson, toHex } from '@naryx/protocol-types';
-import { buildClearingPolicy, reserveTestnetBudget } from '../src/run-native-clearing-testnet.mjs';
+import { buildClearingPolicy, reserveTestnetBudget, finalizedTransactionEvidence } from '../src/run-native-clearing-testnet.mjs';
+
+test('finalized evidence replaces provisional hashes only with the canonical successful receipt', () => {
+  const hash = `0x${'11'.repeat(32)}`;
+  const blockHash = `0x${'22'.repeat(32)}`;
+  const transaction = { hash, blockNumber: 40n, blockHash: `0x${'00'.repeat(32)}` };
+  const receipt = { transactionHash: hash, status: 'success', blockNumber: 42n, blockHash };
+  const block = { number: 42n, hash: blockHash };
+  assert.deepEqual(finalizedTransactionEvidence(transaction, receipt, block, 42n), { number: 42n, hash: blockHash });
+  assert.throws(() => finalizedTransactionEvidence(transaction, receipt, block, 41n), /not finalized/);
+  assert.throws(() => finalizedTransactionEvidence(transaction, { ...receipt, transactionHash: blockHash }, block, 42n), /differs/);
+  assert.throws(() => finalizedTransactionEvidence(transaction, { ...receipt, status: 'reverted' }, block, 42n), /reverted/);
+  assert.throws(() => finalizedTransactionEvidence(transaction, receipt, { ...block, hash }, 42n), /not canonical/);
+});
 
 test('the per-network cap includes ETH transfers and worst-case gas without rounding', () => {
   const maximum = 10_000_000_000_000_000n;
