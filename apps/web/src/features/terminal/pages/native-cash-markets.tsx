@@ -4,7 +4,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { NaryxApiError, NaryxClient, nativeCashAccountTransaction, nativeCashMatchTransaction, nativeCashWalletAccountId,
-  type NativeCashMarket, type NativeCashSignedQuote, type NativeCashTransaction } from "@naryx/sdk";
+  readNativeCashPending, updateNativeCashPending, NATIVE_CASH_PENDING_LIMIT,
+  type NativeCashMarket, type NativeCashSignedQuote, type NativeCashTransaction, type NativeCashPendingTransaction } from "@naryx/sdk";
 import { BaseError, UserRejectedRequestError, InsufficientFundsError, parseUnits, type Hex } from "viem";
 import { useConfig } from "wagmi";
 import { getConnection, getPublicClient } from "wagmi/actions";
@@ -17,7 +18,6 @@ import { useTerminal } from "../shell/terminal-context";
 import styles from "./pages.module.css";
 import cash from "./native-cash.module.css";
 
-type Pending = Readonly<{ transactionHash: Hex; requestId: string | null; action: string }>;
 const EVENT = "naryx-native-cash-pending";
 const pendingMemory = new Map<string, string>();
 function subscribe(listener: () => void) {
@@ -28,17 +28,12 @@ function readPending(key: string) {
   try { return window.localStorage.getItem(key) ?? pendingMemory.get(key) ?? null; }
   catch { return pendingMemory.get(key) ?? null; }
 }
-function writePending(key: string, value: Pending | null) {
-  if (value === null) pendingMemory.delete(key); else pendingMemory.set(key, JSON.stringify(value));
-  try { if (value === null) window.localStorage.removeItem(key); else window.localStorage.setItem(key, JSON.stringify(value)); } catch { /* Memory retains pending transactions when storage is unavailable. */ }
+function writePending(key: string, value: readonly NativeCashPendingTransaction[]) {
+  const encoded = value.length === 0 ? null : JSON.stringify(value);
+  if (readPending(key) === encoded) return;
+  if (encoded === null) pendingMemory.delete(key); else pendingMemory.set(key, encoded);
+  try { if (encoded === null) window.localStorage.removeItem(key); else window.localStorage.setItem(key, encoded); } catch { /* Memory retains pending transactions when storage is unavailable. */ }
   window.dispatchEvent(new Event(EVENT));
-}
-function parsePending(value: string | null): Pending | null {
-  try {
-    const p = JSON.parse(value ?? "null") as Pending | null;
-    return p && /^0x[0-9a-f]{64}$/i.test(p.transactionHash) && typeof p.action === "string"
-      && (p.requestId === null || /^[A-Za-z0-9._:-]{1,128}$/.test(p.requestId)) ? p : null;
-  } catch { return null; }
 }
 function failure(error: unknown) {
   if (error instanceof Error && /cancelled|canceled/i.test(error.message)) return "Cancelled in your wallet. Nothing else was sent.";
@@ -65,7 +60,11 @@ function CashMarket({ market, client, baseUrl }: { market: NativeCashMarket; cli
   const accountId = owner ? nativeCashWalletAccountId(owner) : null;
   const storageKey = `naryx.cash.${baseUrl}.${market.binding.clearingHouse}.${owner?.toLowerCase() ?? "disconnected"}`;
   const rawPending = useSyncExternalStore(subscribe, () => readPending(storageKey), () => null);
-  const pending = useMemo(() => parsePending(rawPending), [rawPending]);
+  const journal = useMemo(() => {
+    try { return { entries: readNativeCashPending(rawPending), invalid: false }; }
+    catch { return { entries: [], invalid: true }; }
+  }, [rawPending]);
+  const pending = journal.invalid || journal.entries.some(item => item.phase === "SUBMITTED");
   const [amount, setAmount] = useState("10");
   const [quantity, setQuantity] = useState("1");
   const [busy, setBusy] = useState<string | null>(null);
@@ -100,29 +99,44 @@ function CashMarket({ market, client, baseUrl }: { market: NativeCashMarket; cli
   }, [signed]);
 
   const reconciliation = useQuery({ queryKey: ["native-cash-pending", baseUrl, market.marketId, owner, rawPending],
-    enabled: !!pending && !!owner, retry: false, refetchInterval: 30_000, refetchIntervalInBackground: false,
+    enabled: journal.entries.length > 0 && !!owner, retry: false, refetchInterval: 15_000, refetchIntervalInBackground: false,
     queryFn: async () => {
       const rpc = getPublicClient(config, { chainId: network.id });
-      if (!rpc || !pending) throw new Error("Unavailable.");
-      const receipt = await rpc.getTransactionReceipt({ hash: pending.transactionHash });
-      if (receipt.status === "reverted") return "reverted" as const;
-      if (pending.requestId) {
-        const settled = await client.observeNativeCashSettlement(market, pending.requestId, pending.transactionHash);
-        if (settled.owner.toLowerCase() !== owner!.toLowerCase()) throw new Error("Settlement owner differs.");
-      }
-      return "confirmed" as const;
+      if (!rpc) throw new Error("Unavailable.");
+      return Promise.all(journal.entries.map(async item => {
+        try {
+          const receipt = await rpc.getTransactionReceipt({ hash: item.transactionHash });
+          if (receipt.status === "reverted") return { item, state: "reverted" as const };
+          if (item.requestId) {
+            try {
+              const settled = await client.observeNativeCashSettlement(market, item.requestId, item.transactionHash);
+              if (settled.owner.toLowerCase() !== owner!.toLowerCase()) throw new Error("Settlement owner differs.");
+            } catch { return { item, state: "included" as const }; }
+          }
+          return { item, state: "confirmed" as const };
+        } catch { return { item, state: "unavailable" as const }; }
+      }));
     } });
   useEffect(() => {
-    if (!pending || !reconciliation.data) return;
+    if (!reconciliation.data?.some(result => result.state === "confirmed" || result.state === "reverted"
+      || result.state === "included" && result.item.phase === "SUBMITTED")) return;
     let cancelled = false;
     void refresh().then(() => {
-      if (cancelled || readPending(storageKey) !== rawPending) return;
-      writePending(storageKey, null);
-      notify(reconciliation.data === "confirmed" ? "ok" : "bad", reconciliation.data === "confirmed"
-        ? `${pending.action} confirmed and recorded.` : "Transaction reverted. No cash position was changed.");
-    });
+      if (cancelled) return;
+      let queue = readNativeCashPending(readPending(storageKey));
+      for (const result of reconciliation.data!) {
+        if (!queue.some(item => item.transactionHash === result.item.transactionHash)) continue;
+        if (result.state === "included") queue = updateNativeCashPending(queue, { ...result.item, phase: "INCLUDED" });
+        if (result.state === "confirmed" || result.state === "reverted") {
+          queue = queue.filter(item => item.transactionHash !== result.item.transactionHash);
+          notify(result.state === "confirmed" ? "ok" : "bad", result.state === "confirmed"
+            ? `${result.item.action} confirmed and recorded.` : "Transaction reverted. No cash position was changed.");
+        }
+      }
+      writePending(storageKey, queue);
+    }).catch(() => notify("bad", "Cash account refresh failed. Your pending transaction journal has been preserved."));
     return () => { cancelled = true; };
-  }, [pending, rawPending, reconciliation.data, storageKey, refresh, notify]);
+  }, [reconciliation.data, storageKey, refresh, notify]);
 
   function requireOwner() {
     const connection = getConnection(config);
@@ -132,6 +146,7 @@ function CashMarket({ market, client, baseUrl }: { market: NativeCashMarket; cli
   }
   async function send(transaction: NativeCashTransaction, action: string, requestId: string | null = null) {
     requireOwner();
+    if (readNativeCashPending(readPending(storageKey)).length >= NATIVE_CASH_PENDING_LIMIT) throw new Error("Pending journal is full.");
     const rpc = getPublicClient(config, { chainId: network.id });
     if (!rpc || await rpc.getChainId() !== network.id) throw new Error("Network differs.");
     setBusy("Checking transaction");
@@ -139,9 +154,10 @@ function CashMarket({ market, client, baseUrl }: { market: NativeCashMarket; cli
     requireOwner();
     setBusy("Confirm transaction in wallet");
     const transactionHash = await wallet.sendTransaction(domain, transaction) as Hex;
-    writePending(storageKey, { transactionHash, requestId, action });
+    writePending(storageKey, updateNativeCashPending(readNativeCashPending(readPending(storageKey)),
+      { transactionHash, requestId, action, phase: "SUBMITTED" }));
     setSigned(null);
-    setMessage(requestId ? "Transaction sent. Finality and database recording can take up to 20 minutes. Do not resubmit." : "Transaction sent. Waiting for confirmation.");
+    setMessage(requestId ? "Transaction sent. Controls unlock after inclusion and account refresh; finalized evidence is recorded separately. Do not resubmit this trade." : "Transaction sent. Waiting for confirmation.");
   }
   async function act(action: "open" | "approve" | "deposit" | "normalize" | "withdraw") {
     if (lock.current || pending || !account || !owner) return;
@@ -231,8 +247,9 @@ function CashMarket({ market, client, baseUrl }: { market: NativeCashMarket; cli
         <button className={styles.ghost} disabled={!!busy} onClick={() => setSigned(null)}>Dismiss quote</button>
       </div> : null}
       {busy ? <p role="status">{busy}</p> : null}
-      {pending ? <div role="status"><p>{pending.requestId ? "Trade submitted. Waiting for finalized evidence and database recording." : "Wallet transaction submitted. Waiting for confirmation."} Do not submit again.</p>
-        <a href={`${explorer}/tx/${pending.transactionHash}`} target="_blank" rel="noreferrer">View transaction</a>{" "}
+      {journal.invalid ? <p role="alert">The stored transaction journal needs recovery. Preserve browser storage and inspect your wallet history before proceeding.</p> : null}
+      {journal.entries.length > 0 ? <div role="status"><p>{pending ? "Waiting for transaction inclusion. Do not submit again." : "Transactions included. Trading is available while finalized receipts reconcile in the background."}</p>
+        {journal.entries.map(item => <p key={item.transactionHash}><a href={`${explorer}/tx/${item.transactionHash}`} target="_blank" rel="noreferrer">{item.action}: {shortAddress(item.transactionHash)}</a> - {item.phase === "INCLUDED" ? "Included, awaiting finalized evidence" : "Submitted"}</p>)}
         <button className={styles.ghost} disabled={reconciliation.isFetching} onClick={() => void reconciliation.refetch()}>Check confirmation</button>
       </div> : null}
       {message ? <p role="status">{message}</p> : null}
