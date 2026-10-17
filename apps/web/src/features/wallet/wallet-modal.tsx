@@ -267,7 +267,7 @@ function EvmSection({ highlighted }: { highlighted: boolean }) {
         </ul>
       )}
       <p className={styles.sectionNote}>
-        One EVM account covers all three. Hyperliquid accounts are EVM addresses; its testnet packages are owned and signed by your wallet and executed in Naryx&apos;s shared testnet account on your behalf.
+        One EVM wallet covers all three. Your wallet signs each package. Hyperliquid requires account enrollment; review its active trading account and API-wallet authority before authorizing a trade.
       </p>
       {evm.error ? <p className={styles.error} role="alert">{evm.error}</p> : null}
     </section>

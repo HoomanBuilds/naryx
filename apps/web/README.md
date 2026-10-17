@@ -25,6 +25,14 @@ The terminal supports Solana Devnet, Base Sepolia, Arbitrum Sepolia, and Hyperli
 
 The account and asset identifiers used for signing remain exact. The dense trading header and market table use short human-readable labels where the identity is known; the underlying identifier remains available for inspection.
 
+### Funded cash markets
+
+Markets and Portfolio also expose a separate funded cash-market panel. A connected EVM wallet can open its own clearing account, approve an exact test-USDC amount, deposit, request a buy/sell or full-exit quote, sign the match, and submit it on the selected Sepolia network. After closing, realized cash can be normalized into collateral before a flat-account withdrawal. Each funding or withdrawal action is capped at 100 test USDC. The panel simulates transactions before wallet submission and rechecks wallet identity and network.
+
+Submitted transaction hashes are stored locally per API, house, and wallet. Actions remain blocked while confirmation or finalized receipt reconciliation is pending, including after a refresh. The panel automatically retries observation, never execution. Finality may take up to 20 minutes. Its trade history includes controlled owner-signed verification transactions and does not claim organic volume.
+
+The initial ETH cash-range markets are bounded, fully collateralized cash instruments. They do not create routed spot/perpetual positions, options, cross-chain atomicity, or public package-book depth.
+
 ## Data and trust boundaries
 
 `src/features/terminal/shell/` owns the shared header, selected domain, service health, wallet context, and transaction watch. `pages/` owns the six terminal views. `pro/` owns the chart, depth, ticket-side widgets, and market bar. `private-http-terminal-provider.ts` talks to the private terminal API; `public-market-feed.ts` uses the public v1 API and stream.

@@ -1,0 +1,21 @@
+.section, .body { display: grid; gap: 16px; min-width: 0; }
+.section { scroll-margin-top: 80px; }
+.section h2 { font-size: 16px; font-weight: 600; }
+.section h3, .section h4 { font-size: 13px; font-weight: 600; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.body { padding: 16px; }
+.terms { color: var(--text-dim); font-size: 12px; line-height: 1.6; }
+.terms a, .body a { color: var(--text-primary); text-underline-offset: 3px; }
+.marketName { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.metrics div { min-width: 0; }
+.metrics dt { color: var(--text-dim); font-size: 11px; margin-bottom: 4px; }
+.metrics dd { font-size: 13px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.controls { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+.controls label { display: grid; gap: 8px; color: var(--text-dim); font-size: 11px; }
+.input { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line-strong); padding: 8px 12px; border-radius: 6px; }
+.input input { width: 88px; min-width: 0; background: transparent; border: 0; color: var(--text-primary); font-size: 14px; text-align: right; font-variant-numeric: tabular-nums; }
+.input input:focus-visible { outline: 1px solid var(--yellow); outline-offset: 4px; }
+.review, .tape { display: grid; gap: 12px; border-top: 1px solid var(--line-soft); padding-top: 16px; min-width: 0; }
+.body p[role], .body div[role] { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+@media (max-width: 1100px) { .grid { grid-template-columns: minmax(0, 1fr); } }

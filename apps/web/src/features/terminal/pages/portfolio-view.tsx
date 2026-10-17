@@ -16,6 +16,7 @@ import { formatAtomicAmount, formatScaledInteger } from "../format";
 import { TransactionLink } from "../transaction-status";
 import { usePortfolioIntelligence, type ObservationStatus } from "./use-portfolio-intelligence";
 import { NativeClearingCard, RiskDomainsCard, useNativeClearing } from "./clearing-and-risk";
+import { NativeCashMarkets } from "./native-cash-markets";
 import { StrategyPositionsTable, useStrategyPositions } from "./strategy-positions";
 import { PortfolioScenarioLab } from "./portfolio-scenario-lab";
 import { StrategyEntryManager, StrategyLifecycleManager } from "./strategy-lifecycle-manager";
@@ -56,10 +57,10 @@ const ACCOUNT_TERMS: Readonly<Record<DomainId, readonly (readonly [string, strin
   hyperliquid: [
     ["Account mode", "Standard only; unified, default, and portfolio-margin accounts are refused"],
     ["Ledgers", "Spot and perpetual USDC are funded separately"],
-    ["Executor", "Trade-only API wallet on Naryx's shared testnet account, executing for your wallet; not trustless"],
+    ["Executor", "Enrolled trade-only API wallet; review the active execution account before authorizing trades"],
     ["Recovery", "Bounded by the signed price, deadline, loss, fee, and residual policy"],
     ["Venue", "Hyperliquid testnet spot and perpetuals (HyperCore)"],
-    ["Quote asset", "Hyperliquid testnet USDC held by the service's testnet account"],
+    ["Quote asset", "Hyperliquid testnet USDC in the active trading account, with separate spot and perpetual ledgers"],
   ],
 };
 
@@ -167,8 +168,7 @@ export function PortfolioView() {
     hyperliquid: useHyperliquidBalance(evmAddress),
   };
   const accountFor = (domain: DomainId) => (DOMAIN_META[domain].wallet === "solana" ? solanaAddress : evmAddress);
-  // Hyperliquid packages run in the Naryx shared testnet account, so the wallet's own Hyperliquid
-  // balance funds nothing here and stays out of the total.
+  // HyperCore spot and perpetual ledgers stay separate from the wallet-token total.
   const usdcTotal = sumUsdc([
     balances.solana.usdc,
     balances.base.usdc,
@@ -222,7 +222,7 @@ export function PortfolioView() {
       <section className={styles.card} aria-labelledby="balances-title">
         <div className={styles.cardHead}>
           <h2 id="balances-title">Balances</h2>
-          <p>One row per execution domain. Test USDC is free: each claim adds {TEST_USDC_GRANT}. Gas comes from each network&apos;s faucet. Hyperliquid packages execute in the Naryx shared testnet account; no funding needed. Its row shows your own Hyperliquid testnet balance for reference only and is not counted in the total.</p>
+          <p>One row per execution domain. Test USDC is free: each claim adds {TEST_USDC_GRANT}. Gas comes from each network&apos;s faucet. Hyperliquid shows your own spot and perpetual balances separately and is excluded from the wallet-token total. Fund the trading account shown during enrollment before placing a trade.</p>
         </div>
         <div className={styles.scroll}>
           <table className={styles.table}>
@@ -270,7 +270,7 @@ export function PortfolioView() {
                           ? <span title="Spot balance / perpetual account equity">{balance.usdc?.value ?? "0"} <span className={styles.dim}>spot</span> / {balance.perpEquity.value} <span className={styles.dim}>perp</span></span>
                           : amountText(balance.usdc, balance, account !== null, true)}
                       </span>
-                      {domain === "hyperliquid" && account ? <small className={styles.cellDetail}>Yours, not used by Naryx</small> : null}
+                      {domain === "hyperliquid" && account ? <small className={styles.cellDetail}>Separate spot and perpetual ledgers</small> : null}
                     </td>
                     <td>
                       <span className={live ? styles.pillOk : styles.pill}>
@@ -518,6 +518,7 @@ export function PortfolioView() {
 
       <RiskDomainsCard baseUrl={publicApiBaseUrl} ids={riskDomainIds} clearingDomains={clearing.domains} />
 
+      <NativeCashMarkets />
       <NativeClearingCard state={clearing} connected={connectedCount > 0} />
 
       <Suspense fallback={null}>

@@ -15,6 +15,7 @@ import { PaperTradingLab } from "./paper-trading-lab";
 import { RegistryBrowser } from "./registry-browser";
 import { StrategyComparison } from "./strategy-comparison";
 import { StrategyGraphStudio } from "./strategy-graph-studio";
+import { NativeCashMarkets } from "./native-cash-markets";
 import styles from "./pages.module.css";
 
 const WATCHLIST_KEY = "naryx.terminal.market-watchlist.v1";
@@ -159,6 +160,8 @@ export function MarketsView() {
       </section>
 
       <OnchainStandingBook baseUrl={privateApiBaseUrl} />
+
+      <NativeCashMarkets />
 
       <section className={styles.card} aria-labelledby="opportunity-scanner-title">
         <div className={styles.cardHead}>
