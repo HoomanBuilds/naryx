@@ -131,6 +131,7 @@ export interface CreatedHyperliquidNativeStrategyOrder {
 }
 
 export interface HyperliquidNativeStrategyOrderPort {
+  readonly accountMode: 'PER_USER' | 'SHARED_TEST_FIXTURE';
   profiles(): readonly HyperliquidNativeStrategyProfile[];
   create(request: unknown): CreatedHyperliquidNativeStrategyOrder;
 }
@@ -489,6 +490,7 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
   if (profiles.size !== input.profiles.length) fail("INVALID_CONFIGURATION", "Native strategy profile IDs repeat.");
   const currentTimeMs = input.currentTimeMs ?? Date.now;
   return Object.freeze({
+    accountMode: input.accountMode ?? 'PER_USER',
     profiles: () => Object.freeze([...profiles.values()]),
     create(requestValue: unknown): CreatedHyperliquidNativeStrategyOrder {
       if (typeof requestValue !== "object" || requestValue === null || Array.isArray(requestValue)) {

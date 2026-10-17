@@ -323,6 +323,7 @@ type NativeStrategyMarketProfile = Readonly<{
 }>;
 
 type NativeStrategyProfile = Readonly<{
+  accountMode: 'PER_USER' | 'SHARED_TEST_FIXTURE';
   profileId: string;
   displayName: string;
   templateId: string;
@@ -1734,6 +1735,10 @@ function parseSettlementBoundQuote(
 function parseNativeStrategyProfiles(payload: unknown): readonly NativeStrategyProfile[] {
   const root = record(payload, "Native strategy profiles");
   if (root.version !== 1) throw new Error("Native strategy profile version is unsupported.");
+  const accountMode = root.accountMode ?? 'SHARED_TEST_FIXTURE';
+  if (accountMode !== 'PER_USER' && accountMode !== 'SHARED_TEST_FIXTURE') {
+    throw new Error("Native strategy profile account mode is unsupported.");
+  }
   return list(root.profiles, "Native strategy profiles").map((candidate, index): NativeStrategyProfile => {
     const profile = record(candidate, `Native strategy profile ${index}`);
     const baseAsset = record(profile.baseAsset, `Native strategy profile ${index} base asset`);
@@ -1757,6 +1762,7 @@ function parseNativeStrategyProfiles(payload: unknown): readonly NativeStrategyP
     });
     if (markets.length === 0) throw new Error(`Native strategy profile ${index} has no markets.`);
     return Object.freeze({
+      accountMode,
       profileId: text(profile.profileId, `Native strategy profile ${index} id`),
       displayName: text(profile.displayName, `Native strategy profile ${index} display name`),
       templateId: text(profile.templateId, `Native strategy profile ${index} template`),
@@ -3565,7 +3571,8 @@ export function GeneralizedStrategyPreparationPanel({
     (position.status === "OPEN" || (lifecycleAction === "EMERGENCY_UNWIND" && position.status === "UNRESOLVED"))
     && position.owner === strategyOwner
     && selectedNativeProfile !== null
-    && position.settlementAccount === selectedNativeProfile.settlementAccount
+    && position.settlementAccount === (selectedNativeProfile.accountMode === 'PER_USER'
+      ? strategyOwner : selectedNativeProfile.settlementAccount)
     && (lifecycleAction === "MIGRATE"
       ? migrationSource !== null && position.legs.length === 1
         && position.legs[0]?.underlyingId === selectedNativeProfile.baseAsset.assetId
@@ -5731,7 +5738,8 @@ export function GeneralizedStrategyPreparationPanel({
                   ? `Graph ${compact(createdNativeOrder.graphHash)} is stored for solver quoting.`
                   : strategyOwner === null
                     ? "Connect the EVM wallet that will own this package."
-                    : `Settlement uses ${selectedNativeProfile.settlementAccount} on HyperCore Testnet.`}
+                    : `Settlement uses ${selectedNativeProfile.accountMode === 'PER_USER'
+                      ? strategyOwner : selectedNativeProfile.settlementAccount} on HyperCore Testnet.`}
               </p>
             </>
           ) : (

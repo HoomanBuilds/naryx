@@ -949,6 +949,7 @@ export function createPrivateTerminalRequestHandler(
       }
       sendJson(response, 200, {
         version: 1,
+        accountMode: hyperliquidNativeStrategyOrders.accountMode,
         profiles: hyperliquidNativeStrategyOrders.profiles().map((profile) => ({
           profileId: profile.profileId,
           displayName: profile.displayName,
