@@ -14,6 +14,7 @@ import {
   nettingAllocationSettlementEvidence,
   nettingExternalExecutionEvidence,
   nettingExternalExecutionIntent,
+  nettingExternalExecutionIntentHash,
   packageMatchingPolicy,
   packageMatchingPolicyHash,
   packageSettlementCommitmentHash,
@@ -505,6 +506,19 @@ test("cross-batch clearing durably settles source batches without direct double 
       maximumExpirySpread: 10n,
     };
     assert.equal(store.pendingCrossBatchSourceIntents(clearingPolicy).length, 3);
+    const unixSources = prepared.map(({ intent }) => {
+      const source = { ...intent, validUntilUnit: "HYPERLIQUID_UNIX_MILLISECONDS" as const, validUntilValue: 2_000n };
+      return { ...source, intentHash: nettingExternalExecutionIntentHash(source) };
+    });
+    const unixPort = {
+      pendingCrossBatchClearing: () => undefined,
+      pendingCrossBatchSourceIntents: () => unixSources,
+      recordPreparedCrossBatchClearing: (): never => { throw new Error("selected live sources"); },
+    };
+    const unixPolicy = { ...clearingPolicy, expiryUnit: "HYPERLIQUID_UNIX_MILLISECONDS" as const };
+    assert.throws(() => prepareNextAuthoritativeCrossBatchClearing(unixPort, unixPolicy, 1_999), /selected live sources/);
+    assert.equal(prepareNextAuthoritativeCrossBatchClearing(unixPort, unixPolicy, 2_000).status, "IDLE");
+    assert.throws(() => prepareNextAuthoritativeCrossBatchClearing(store, clearingPolicy, -1));
     const next = prepareNextAuthoritativeCrossBatchClearing(store, clearingPolicy);
     assert.equal(next.status, "PREPARED");
     if (next.status !== "PREPARED") throw new Error("cross-batch clearing was not prepared");

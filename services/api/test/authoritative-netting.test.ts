@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
 import bs58 from "bs58";
+import { nettingUnixWindowExpired } from '../src/authoritative-netting.js';
 import {
   adapterRef,
   assetRef,
@@ -33,6 +34,15 @@ import {
 } from "../src/index.js";
 
 const id = (n: number): string => n.toString(16).padStart(64, "0");
+
+test('background netting excludes expired Unix windows without treating wall time as a Solana slot', () => {
+  assert.equal(nettingUnixWindowExpired({ expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS', packageExpiryValue: 1000n }, 999), false);
+  assert.equal(nettingUnixWindowExpired({ expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS', packageExpiryValue: 1000n }, 1000), true);
+  assert.equal(nettingUnixWindowExpired({ expiryUnit: 'EVM_UNIX_SECONDS', packageExpiryValue: 1n }, 999), false);
+  assert.equal(nettingUnixWindowExpired({ expiryUnit: 'EVM_UNIX_SECONDS', packageExpiryValue: 1n }, 1000), true);
+  assert.equal(nettingUnixWindowExpired({ expiryUnit: 'SOLANA_SLOT', packageExpiryValue: 1n }, 1000), false);
+  assert.throws(() => nettingUnixWindowExpired({ expiryUnit: 'EVM_UNIX_SECONDS', packageExpiryValue: 1n }, -1));
+});
 const executionClassHash = id(10);
 const sol = assetRef("sol", id(11), 9);
 const usdc = assetRef("usdc", id(12), 6);

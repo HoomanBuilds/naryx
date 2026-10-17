@@ -14,6 +14,7 @@ import {
   packageSettlementCommitmentHash,
   toHex,
   type NettingObligationInput,
+  type PackageGraphInput,
   type NettingPolicyManifestInput,
   type AssetRef,
 } from "@naryx/protocol-types";
@@ -84,6 +85,7 @@ function candidateGraph(
   strategies: AuthoritativeNettingStrategyPort,
   policy: ReturnType<typeof nettingPolicyManifest>,
   policyHash: Uint8Array,
+  nowMs: number,
 ): ReturnType<typeof packageGraph> | undefined {
   const stored = strategies.order(candidate.strategyOrderHashHex);
   if (stored === undefined) return undefined;
@@ -102,7 +104,15 @@ function candidateGraph(
     || graph.settlementClass !== policy.settlementClass
     || !bytesEqual(graph.policyHashes.netting, policyHash)
   ) return undefined;
+  if (nettingUnixWindowExpired(graph, nowMs)) return undefined;
   return graph;
+}
+
+export function nettingUnixWindowExpired(graph: Pick<PackageGraphInput, 'expiryUnit' | 'packageExpiryValue'>, nowMs: number): boolean {
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) fail('INVALID_CLOCK', 'Netting batch clock is invalid.');
+  if (graph.expiryUnit === 'HYPERLIQUID_UNIX_MILLISECONDS') return graph.packageExpiryValue <= BigInt(nowMs);
+  if (graph.expiryUnit === 'EVM_UNIX_SECONDS') return graph.packageExpiryValue <= BigInt(nowMs) / 1000n;
+  return false;
 }
 
 /**
@@ -125,7 +135,7 @@ export async function prepareNextAuthoritativeNettingBatch(
   let earliestAuthorization: number | undefined;
 
   for (const candidate of exchange.authorizedNettingCandidates(policy.executionClassId)) {
-    const graph = candidateGraph(candidate, strategies, policy, policyHash);
+    const graph = candidateGraph(candidate, strategies, policy, policyHash, nowMs);
     if (graph === undefined) continue;
     const progress = exchange.settlementProgress(candidate.packageOrderIdHex);
     if (progress?.readiness.status !== "READY_FOR_OWNER_AUTHORIZATION" || progress.obligations.length === 0) {

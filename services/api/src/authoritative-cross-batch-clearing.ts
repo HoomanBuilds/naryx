@@ -128,11 +128,18 @@ function selectSources(
 export function prepareNextAuthoritativeCrossBatchClearing(
   exchange: AuthoritativeCrossBatchClearingPort,
   policyInput: CrossBatchClearingPolicyInput,
+  nowMs = Date.now(),
 ): PrepareNextAuthoritativeCrossBatchClearingResult {
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw new Error('Cross-batch clock is invalid.');
   const policy = crossBatchClearingPolicy(policyInput);
   const pending = exchange.pendingCrossBatchClearing(policy);
   if (pending !== undefined) return Object.freeze({ status: 'PREPARED', clearing: pending, replayed: true });
-  const candidates = exchange.pendingCrossBatchSourceIntents(policy, MAX_DISCOVERY_CANDIDATES);
+  const candidates = exchange.pendingCrossBatchSourceIntents(policy, MAX_DISCOVERY_CANDIDATES)
+    .filter((intent) => intent.validUntilUnit === 'HYPERLIQUID_UNIX_MILLISECONDS'
+      ? intent.validUntilValue > BigInt(nowMs)
+      : intent.validUntilUnit === 'EVM_UNIX_SECONDS'
+        ? intent.validUntilValue > BigInt(nowMs) / 1000n
+        : true);
   const selected = selectSources(candidates, policy);
   if (selected === undefined) return Object.freeze({ status: 'IDLE' });
   const prepared = exchange.recordPreparedCrossBatchClearing({
