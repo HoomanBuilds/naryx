@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createServer } from 'node:http';
 import { domainRef, parseProtocolJson, stringifyProtocolJson } from '@naryx/protocol-types';
+import { NativeCashAwaitingFinality } from '@naryx/adapter-evm';
 import { hashTypedData, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { NativeCashService, type NativeCashMarketPort } from '../src/native-cash-service.js';
@@ -76,6 +77,39 @@ test('durable maker leases refuse concurrent quotes until expiry across separate
     await b.requestQuote({ ...request, requestId: 'request-2' });
     assert.equal(f.counts().signCount, 2);
   } finally { a.close(); b.close(); rmSync(f.dir, { recursive: true }); }
+});
+
+test('verified included cash trades reconcile after restart without the browser or new signatures', async () => {
+  const f = fixture(); let service = f.service();
+  const observe = f.port.observe;
+  try {
+    await service.requestQuote(request);
+    f.port.observe = async (quote, tx) => { throw new NativeCashAwaitingFinality(tx, quote.digest); };
+    await assert.rejects(service.observe(request.requestId, hash), NativeCashAwaitingFinality);
+    service.close(); service = f.service();
+    assert.deepEqual(await service.reconcilePending(), { checked: 1, finalized: 0 });
+    f.port.observe = async () => { throw new Error('Reorg or unavailable RPC'); };
+    assert.deepEqual(await service.reconcilePending(), { checked: 1, finalized: 0 });
+    assert.equal(service.trades(request.marketId).length, 0);
+    f.port.observe = observe;
+    assert.deepEqual(await service.reconcilePending(), { checked: 1, finalized: 1 });
+    assert.deepEqual(await service.reconcilePending(), { checked: 0, finalized: 0 });
+    assert.equal(service.trades(request.marketId).length, 1);
+    assert.equal(f.counts().signCount, 1);
+  } finally { service.close(); rmSync(f.dir, { recursive: true }); }
+});
+
+test('unknown, unverified and mismatched cash observations cannot acquire finality queue capacity', async () => {
+  const f = fixture(); const service = f.service();
+  try {
+    await assert.rejects(service.observe('unknown', hash), /not found/);
+    await service.requestQuote(request);
+    for (const failure of [new Error('Receipt unavailable'), new NativeCashAwaitingFinality(hash, `0x${'ff'.repeat(32)}`)]) {
+      f.port.observe = async () => { throw failure; };
+      await assert.rejects(service.observe(request.requestId, hash));
+      assert.deepEqual(await service.reconcilePending(), { checked: 0, finalized: 0 });
+    }
+  } finally { service.close(); rmSync(f.dir, { recursive: true }); }
 });
 
 test('interrupted signing never retries a signature and holds a conservative lease', async () => {

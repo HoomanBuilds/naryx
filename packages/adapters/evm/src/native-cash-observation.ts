@@ -9,6 +9,17 @@ const EVENTS = parseAbi([
   'event PackageMatched(bytes32 indexed authorizationHash,bytes32 indexed longAccountId,bytes32 indexed shortAccountId,uint128 quantityAtoms,uint128 priceTicks,uint256 feeAtoms)',
 ]);
 
+export class NativeCashAwaitingFinality extends Error {
+  readonly transactionHash: Hex;
+  readonly quoteDigest: Hex;
+  constructor(transactionHash: Hex, quoteDigest: Hex) {
+    super('Native cash match is verified as included and is awaiting finality.');
+    this.name = 'NativeCashAwaitingFinality';
+    this.transactionHash = transactionHash;
+    this.quoteDigest = quoteDigest;
+  }
+}
+
 export async function observeNativeCashMatch(binding: EvmNativeCashRangeBinding,
   reads: EvmNativeClearingTransitionReadPort, quote: EvmNativeCashRangeQuote, transactionHash: Hex) {
   if (binding.kind !== 'EVM_NATIVE_CASH_RANGE_V1' || binding.policy.environment !== 'testnet'
@@ -34,7 +45,7 @@ export async function observeNativeCashMatch(binding: EvmNativeCashRangeBinding,
   const receipt = await reads.receipt(transactionHash);
   const finalized = await reads.finalizedBlock();
   if (receipt.status !== 'success' || receipt.transactionHash.toLowerCase() !== transactionHash.toLowerCase()
-    || receipt.blockNumber < quote.observedBlock.number || receipt.blockNumber > finalized.number
+    || receipt.blockNumber < quote.observedBlock.number
     || /^0x0{64}$/.test(receipt.blockHash) || await reads.blockHash(receipt.blockNumber) !== receipt.blockHash) {
     throw new Error('Native cash settlement is not successful, canonical and finalized.');
   }
@@ -76,6 +87,7 @@ export async function observeNativeCashMatch(binding: EvmNativeCashRangeBinding,
   if (await reads.chainId() !== BigInt(quote.chainId) || await reads.blockHash(receipt.blockNumber) !== receipt.blockHash) {
     throw new Error('Native cash settlement chain changed during verification.');
   }
+  if (receipt.blockNumber > finalized.number) throw new NativeCashAwaitingFinality(transactionHash, quote.digest);
   return Object.freeze({ version: 1, kind: 'NATIVE_CASH_RANGE_MATCH' as const, environment: 'testnet' as const,
     evidenceGrade: 'FINALIZED_CONTRACT_RECEIPT' as const, marketId: binding.marketId, domain: binding.domain,
     clearingHouse: binding.clearingHouse, owner: quote.owner, makerOwner: quote.makerOwner, quoteDigest: quote.digest,

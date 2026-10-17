@@ -4,7 +4,7 @@ import { assetRef, domainRef, nativeClearingPolicy, toHex, versionedManifestRef 
 import { encodeAbiParameters, encodeEventTopics, encodeFunctionData, getAddress, hashTypedData, keccak256, parseAbi, type Address, type Hex, type TransactionReceipt } from 'viem';
 import { EvmNativeCashRangeAdapter, type EvmNativeCashRangeBinding, type EvmNativeCashRangeReadPort } from '../src/native-cash-range.js';
 import { NATIVE_CASH_HOUSE_ABI, nativeCashContractAuthorization } from '../src/native-cash-range.js';
-import { observeNativeCashMatch } from '../src/native-cash-observation.js';
+import { observeNativeCashMatch, NativeCashAwaitingFinality } from '../src/native-cash-observation.js';
 import type { EvmNativeClearingTransitionReadPort } from '../src/native-clearing-transition.js';
 import { evmNativeClearingAccountId } from '../src/native-clearing-backing.js';
 
@@ -153,6 +153,12 @@ test('cash settlement records only exact finalized owner matches and rejects rep
   assert.equal(receipt.evidenceGrade, 'FINALIZED_CONTRACT_RECEIPT');
   assert.equal(receipt.authorizationHash, quote.match.authorizationHash);
   assert.equal(receipt.quantityAtoms, 1n);
+  const unfinalized = { ...reads, finalizedBlock: async () => ({ number: 11n, hash: `0x${hash}` as Hex }) };
+  await assert.rejects(observeNativeCashMatch(binding, unfinalized, quote, tx), error =>
+    error instanceof NativeCashAwaitingFinality && error.transactionHash === tx && error.quoteDigest === quote.digest);
+  await assert.rejects(observeNativeCashMatch(binding, { ...unfinalized,
+    transaction: async () => ({ ...transaction, to: token }) }, quote, tx), error =>
+    error instanceof Error && !(error instanceof NativeCashAwaitingFinality));
   for (const variant of [
     { finalizedBlock: async () => ({ number: 11n, hash: `0x${hash}` as Hex }) },
     { blockHash: async () => `0x${'99'.repeat(32)}` as Hex },

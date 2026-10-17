@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { parseProtocolJson, protocolId, stringifyProtocolJson } from '@naryx/protocol-types';
 import type { EvmNativeCashRangeQuote, observeNativeCashMatch } from '@naryx/adapter-evm';
+import { NativeCashAwaitingFinality } from '@naryx/adapter-evm';
 import { getAddress, recoverTypedDataAddress, type Address, type Hex } from 'viem';
 
 export interface NativeCashMarketPort {
@@ -46,6 +47,10 @@ CREATE TABLE IF NOT EXISTS native_cash_quote_leases (
 CREATE TABLE IF NOT EXISTS native_cash_settlements (
   request_id TEXT PRIMARY KEY REFERENCES native_cash_quotes(request_id),
   transaction_hash TEXT NOT NULL UNIQUE, receipt_json TEXT NOT NULL, recorded_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS native_cash_pending_observations (
+  request_id TEXT PRIMARY KEY REFERENCES native_cash_quotes(request_id),
+  transaction_hash TEXT NOT NULL UNIQUE, last_attempt_ms INTEGER NOT NULL
 ) STRICT;
 CREATE TRIGGER IF NOT EXISTS native_cash_receipts_no_update BEFORE UPDATE ON native_cash_settlements
   BEGIN SELECT RAISE(ABORT,'native cash receipts are immutable'); END;
@@ -189,6 +194,18 @@ export class NativeCashService {
     return rows.map(row => parseProtocolJson(row.receipt_json) as Awaited<ReturnType<typeof observeNativeCashMatch>>);
   }
 
+  async reconcilePending() {
+    const rows = this.#db.prepare(`SELECT request_id,transaction_hash FROM native_cash_pending_observations
+      ORDER BY last_attempt_ms,request_id LIMIT 8`).all() as { request_id: string; transaction_hash: Hex }[];
+    let finalized = 0;
+    for (const row of rows) {
+      this.#db.prepare('UPDATE native_cash_pending_observations SET last_attempt_ms=? WHERE request_id=?')
+        .run(this.#now(), row.request_id);
+      try { await this.observe(row.request_id, row.transaction_hash); finalized++; } catch {}
+    }
+    return { checked: rows.length, finalized };
+  }
+
   async observe(requestId: string, transactionHash: Hex) {
     if (!/^0x[0-9a-f]{64}$/i.test(transactionHash)) throw new Error('Native cash transaction hash is invalid.');
     const previous = this.settlement(requestId);
@@ -198,7 +215,24 @@ export class NativeCashService {
     }
     const signed = this.quote(requestId);
     if (signed === undefined) throw new Error('Native cash signed quote was not found.');
-    const receipt = await this.#markets.get(signed.quote.marketId)!.observe(signed.quote, transactionHash);
+    let receipt: Awaited<ReturnType<typeof observeNativeCashMatch>>;
+    try { receipt = await this.#markets.get(signed.quote.marketId)!.observe(signed.quote, transactionHash); }
+    catch (error) {
+      if (error instanceof NativeCashAwaitingFinality && error.quoteDigest === signed.quote.digest
+        && error.transactionHash.toLowerCase() === transactionHash.toLowerCase()) {
+        this.#db.transaction(() => {
+          const existing = this.#db.prepare('SELECT transaction_hash FROM native_cash_pending_observations WHERE request_id=?')
+            .get(requestId) as { transaction_hash: string } | undefined;
+          if (existing && existing.transaction_hash !== transactionHash.toLowerCase()) throw new Error('Native cash pending observation conflicts.');
+          if (existing || this.settlement(requestId)) return;
+          const { count } = this.#db.prepare('SELECT count(*) AS count FROM native_cash_pending_observations').get() as { count: number };
+          if (count >= 256) throw new Error('Native cash finality queue is full; retry observation.');
+          this.#db.prepare('INSERT INTO native_cash_pending_observations VALUES(?,?,?)')
+            .run(requestId, transactionHash.toLowerCase(), this.#now());
+        }).immediate();
+      }
+      throw error;
+    }
     if (receipt.transactionHash.toLowerCase() !== transactionHash.toLowerCase() || receipt.quoteDigest !== signed.quote.digest
       || receipt.marketId !== signed.quote.marketId || receipt.owner !== signed.quote.owner
       || receipt.makerOwner !== signed.quote.makerOwner || receipt.authorizationHash !== signed.quote.match.authorizationHash
@@ -214,6 +248,7 @@ export class NativeCashService {
       }
       this.#db.prepare('INSERT INTO native_cash_settlements VALUES(?,?,?,?)')
         .run(requestId, transactionHash.toLowerCase(), stringifyProtocolJson(receipt), this.#now());
+      this.#db.prepare('DELETE FROM native_cash_pending_observations WHERE request_id=?').run(requestId);
       return receipt;
     }).immediate();
   }
