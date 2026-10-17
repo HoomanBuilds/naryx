@@ -87,8 +87,13 @@ export class NativeClearingBackingService {
     const before = this.#clearing.backingSnapshot(body.clearingDomainId);
     if (kind === 'NORMALIZE') {
       if (typeof body.accountId !== 'string' || verifier.normalize === undefined) throw new NativeClearingStoreError('INVALID_INPUT', 'A supported normalization account is required.');
-      const transition = await verifier.normalize({ policy: domain.policy, state: domain.state,
-        accounts: this.#clearing.accounts(body.clearingDomainId), accountId: body.accountId, transactionHash: body.transactionHash as Hex });
+      let transition;
+      try {
+        transition = await verifier.normalize({ policy: domain.policy, state: domain.state,
+          accounts: this.#clearing.accounts(body.clearingDomainId), accountId: body.accountId, transactionHash: body.transactionHash as Hex });
+      } catch {
+        throw new NativeClearingStoreError('BACKING_UNVERIFIED', 'Finalized owner call and clearing normalization state could not be verified.');
+      }
       return this.#clearing.recordFinalizedTransition(body.clearingDomainId, before, transition);
     }
     let mark;
@@ -206,7 +211,7 @@ export function loadNativeClearingBacking(
         || verifiers.has(entry.clearingDomainId)) throw new Error('Native clearing backing binding is invalid or repeated.');
       const rpc = environment[entry.rpcEnvironmentVariable];
       if (!rpc) throw new Error('Native clearing backing RPC is not configured.');
-      const client = createPublicClient({ transport: http(rpc, { timeout: 10_000, retryCount: 0 }) });
+      const client = createPublicClient({ transport: http(rpc, { timeout: 10_000, retryCount: 2, retryDelay: 500 }) });
       const reads: EvmNativeClearingTransitionReadPort = {
         chainId: async () => BigInt(await client.getChainId()),
         finalizedBlock: async () => {

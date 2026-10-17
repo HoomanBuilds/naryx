@@ -71,10 +71,17 @@ test('finality reconciliation selects the transaction mark instead of a newer li
     executionMarkHash: async () => `0x${toHex(mark.observationHash)}` as const,
     match: async (input) => { assert.equal(input.mark.sourceSequence, 1n); selected = true; throw new Error('Boundary inspected'); },
     recover: async () => { throw new Error('Wrong operation'); },
+    normalize: async () => { throw new Error('private RPC details'); },
   }]]));
   await assert.rejects(service.observe('MATCH', { clearingDomainId: policy.clearingDomainId,
     transactionHash: `0x${'77'.repeat(32)}`, authorization: {} }), { code: 'BACKING_UNVERIFIED' });
   assert.equal(selected, true);
+  await assert.rejects(service.observe('NORMALIZE', { clearingDomainId: policy.clearingDomainId,
+    transactionHash: `0x${'77'.repeat(32)}`, accountId: 'test-account' }), (error: unknown) => {
+    assert.equal((error as { code: string }).code, 'BACKING_UNVERIFIED');
+    assert.equal((error as Error).message.includes('private RPC'), false);
+    return true;
+  });
 });
 
 test('verified funding commits its backing receipt atomically and rejects stale cross-process proofs', async () => {

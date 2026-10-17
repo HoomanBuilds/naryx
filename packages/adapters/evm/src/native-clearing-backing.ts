@@ -122,12 +122,12 @@ export class EvmNativeClearingBackingVerifier {
       ['feeBps', 0],
     ];
     if (policy.markMaximumStalenessMs % 1_000n !== 0n) throw new Error('Native clearing mark age is not representable in contract seconds.');
-    await Promise.all(expected.map(async ([name, value]) => {
+    for (const [name, value] of expected) {
       const observed = await read(name);
       if (typeof value === 'string' && typeof observed === 'string' ? value.toLowerCase() !== observed.toLowerCase() : observed !== value) {
         throw new Error(`Native clearing backing differs at ${name}.`);
       }
-    }));
+    }
     for (const account of accounts) {
       if (!bytesEqual(account.policyHash, policy.policyHash)) throw new Error('Native clearing account policy differs.');
       const observed = await read('account', [evmNativeClearingAccountId(policyHash, account.accountId)]);

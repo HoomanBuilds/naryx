@@ -121,7 +121,9 @@ export async function runClearingLifecycle({ record, save, client, wallet, send,
         clearingDomainId: policy.clearingDomainId, transactionHash: transaction.hash,
         ...(stage === 'recovery' ? { auctionId: flow.auctionId } : { authorization: flow.packages[stage].authorization }),
       });
-      flow.observations.push({ stage, transactionHash: transaction.hash, receipt: result.receipt });
+      if (!flow.observations.some((item) => item.transactionHash === transaction.hash)) {
+        flow.observations.push({ stage, transactionHash: transaction.hash, receipt: result.receipt });
+      }
       save();
     }
     if (flow.cashoutAtMs) {
