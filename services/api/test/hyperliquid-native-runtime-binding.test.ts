@@ -27,4 +27,11 @@ test("native runtime metadata uses the exact reviewed strategy profile, not the 
     assert.throws(() => bindNativeHyperliquidStrategyRuntime(runtime,
       { order: { ...profile, ...change } } as unknown as typeof admission, profiles), /No reviewed native runtime profile/);
   }
+  const anotherOwner = `0x${'22'.repeat(20)}`;
+  const personal = { order: { ...profile, owner: anotherOwner, settlementAccount: anotherOwner } } as unknown as typeof admission;
+  assert.equal(bindNativeHyperliquidStrategyRuntime(runtime, personal, profiles, 'PER_USER').seriesManifestHash, '06'.repeat(32));
+  assert.throws(() => bindNativeHyperliquidStrategyRuntime(runtime,
+    { order: { ...personal.order, settlementAccount: profile.settlementAccount } } as typeof admission, profiles, 'PER_USER'), /signed owner account/);
+  assert.throws(() => bindNativeHyperliquidStrategyRuntime(runtime,
+    { order: { ...personal.order, seriesVersion: 2 } } as typeof admission, profiles, 'PER_USER'), /No reviewed native runtime profile/);
 });

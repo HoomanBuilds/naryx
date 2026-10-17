@@ -231,8 +231,11 @@ export function bindNativeHyperliquidStrategyRuntime(
   runtime: NativeHyperliquidStrategyRuntime,
   admission: StoredStrategyPackageAdmission,
   profiles: ReturnType<HyperliquidNativeStrategyOrderPort["profiles"]>,
+  accountMode: 'PER_USER' | 'SHARED_TEST_FIXTURE' = 'SHARED_TEST_FIXTURE',
 ): NativeHyperliquidStrategyRuntime {
   const order = admission.order;
+  if (accountMode === 'PER_USER' && (!/^0x(?!0{40}$)[0-9a-f]{40}$/.test(order.owner)
+    || order.settlementAccount !== order.owner)) throw new Error('Native strategy settlement must match its signed owner account.');
   const boundedRuntime = { ...runtime, bounds: { ...runtime.bounds,
     maxEvidenceAgeMs: Math.min(runtime.bounds.maxEvidenceAgeMs, 300_000) } };
   if (Buffer.from(order.seriesManifestHash).toString("hex") === runtime.seriesManifestHash
@@ -243,7 +246,7 @@ export function bindNativeHyperliquidStrategyRuntime(
     && candidate.executionClassId === order.executionClassId && candidate.executionClassVersion === order.executionClassVersion
     && bytesEqual(candidate.executionClassManifestHash, order.executionClassManifestHash)
     && bytesEqual(candidate.packageTemplateManifestHash, order.packageTemplateManifestHash)
-    && candidate.settlementAccount === order.settlementAccount);
+    && (accountMode === 'PER_USER' || candidate.settlementAccount === order.settlementAccount));
   if (profile === undefined) throw new Error("No reviewed native runtime profile matches the admitted strategy.");
   return { ...boundedRuntime, domain: profile.domain, baseAsset: profile.baseAsset, quoteAsset: profile.quoteAsset,
     seriesManifestHash: Buffer.from(profile.seriesManifestHash).toString("hex"),
@@ -728,7 +731,7 @@ export function createPrivateTerminalRequestHandler(
           const admission = generalizedStrategyExecutions.admissionByQuote?.(nativeAttempt.quoteHashHex);
           const runtime = admission === undefined ? nativeHyperliquidStrategyRuntime
             : bindNativeHyperliquidStrategyRuntime(nativeHyperliquidStrategyRuntime, admission,
-              hyperliquidNativeStrategyOrders?.profiles() ?? []);
+              hyperliquidNativeStrategyOrders?.profiles() ?? [], hyperliquidNativeStrategyOrders?.accountMode ?? 'PER_USER');
           sendJson(response, 200, {
             version: 2,
             attempt: nativeAttempt,
