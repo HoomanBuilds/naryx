@@ -1,12 +1,12 @@
 import { lstatSync, readFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
-import { setTimeout } from 'node:timers/promises';
 import { parseProtocolJson, stringifyProtocolJson } from '@naryx/protocol-types';
 import { NATIVE_CASH_RANGE_ABI, NATIVE_CASH_HOUSE_ABI, type EvmNativeCashRangeBinding } from '@naryx/adapter-evm';
 import { createPublicClient, createWalletClient, encodeFunctionData, http, keccak256, parseAbi, stringToHex, type Chain, type Hex } from 'viem';
 import { baseSepolia, arbitrumSepolia } from 'viem/chains';
 import { loadEvmStrategySolverKey } from './evm-strategy-execution-authorization.js';
 import { NATIVE_CASH_MARK_GAS_CAP_WEI, NativeCashMarkJournal } from './native-cash-mark-journal.js';
+import { runNativeCashMarkWorker } from './native-cash-mark-worker.js';
 
 if (process.env.NARYX_NATIVE_CASH_MARK_ENABLED !== 'true') throw new Error('Native cash mark writes are disabled.');
 const path = process.env.NARYX_NATIVE_CASH_MARK_CONFIG;
@@ -42,11 +42,10 @@ const journal = new NativeCashMarkJournal(journalPath, markets.map(m => ({ chain
 const controller = new AbortController();
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => controller.abort());
 try {
-  while (!controller.signal.aborted) {
-    for (const market of markets) {
-      const { client, wallet, chain, entry } = market;
-      const { binding } = entry;
-      try {
+  const results = await Promise.allSettled(markets.map(market => {
+    const { client, wallet, chain, entry } = market;
+    const { binding } = entry;
+    return runNativeCashMarkWorker({ signal: controller.signal, tick: async () => {
         if (await client.getChainId() !== chain.id) throw new Error('Native cash mark chain changed.');
         if (keccak256(await client.getCode({ address: binding.controller }) ?? '0x') !== binding.controllerCodeHash
           || keccak256(await client.getCode({ address: binding.clearingHouse }) ?? '0x') !== binding.clearingHouseCodeHash) throw new Error('Native cash mark code changed.');
@@ -55,7 +54,7 @@ try {
           const [price, round, updatedAt, until] = await client.readContract({ address: binding.controller, abi: NATIVE_CASH_RANGE_ABI, functionName: 'previewMark' });
           const mark = await client.readContract({ address: binding.clearingHouse, abi: NATIVE_CASH_HOUSE_ABI, functionName: 'currentMark' });
           const now = (await client.getBlock()).timestamp;
-          if (mark[1] === price && mark[4] > now + 120n) continue;
+          if (mark[1] === price && mark[4] > now + 120n) return;
           if (until <= now + 120n) throw new Error('Native cash oracle has insufficient remaining validity.');
           const sequence = mark[2] + 1n;
           const hash = keccak256(stringToHex(stringifyProtocolJson({ controller: binding.controller,
@@ -76,20 +75,20 @@ try {
           if (await client.getChainId() !== chain.id) throw new Error('Native cash chain changed before broadcast.');
           try { await client.sendRawTransaction({ serializedTransaction: pending.raw as Hex }); }
           catch (error) { if (!/already known|nonce too low/i.test((error as { shortMessage?: string }).shortMessage ?? '')) throw error; }
-          continue;
+          return;
         }
         const head = await client.getBlockNumber();
-        if (head < receipt.blockNumber + 2n || /^0x0{64}$/.test(receipt.blockHash)) continue;
+        if (head < receipt.blockNumber + 2n || /^0x0{64}$/.test(receipt.blockHash)) return;
         const block = await client.getBlock({ blockNumber: receipt.blockNumber });
         if (block.hash !== receipt.blockHash) throw new Error('Native cash mark receipt is not canonical.');
         journal.resolve(pending.hash, receipt.status === 'success');
         process.stdout.write(JSON.stringify({ marketId: binding.marketId, transactionHash: pending.hash,
           status: receipt.status, reservedWei: journal.reserved(chain.id).toString() }) + '\n');
-      } catch (error) {
+      }, failed: error => {
         const reason = error instanceof Error && /budget.*exhausted|insufficient remaining validity/.test(error.message) ? error.message : 'Mark refresh failed closed; existing marks retain their original expiry.';
         process.stderr.write(JSON.stringify({ marketId: binding.marketId, reason }) + '\n');
-      }
-    }
-    await setTimeout(5_000, undefined, { signal: controller.signal }).catch(() => {});
-  }
+      } });
+  }));
+  const failure = results.find(result => result.status === 'rejected');
+  if (failure?.status === 'rejected') throw failure.reason;
 } finally { journal.close(); }
