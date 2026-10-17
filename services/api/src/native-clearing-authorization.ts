@@ -1,6 +1,6 @@
 import bs58 from 'bs58';
-import { isEvmStrategyActor, type CommitmentHash } from '@naryx/protocol-types';
-import { verifyMessage, type Hex } from 'viem';
+import type { CommitmentHash } from '@naryx/protocol-types';
+import { isAddress, verifyMessage, zeroAddress, type Hex } from 'viem';
 import { verifyEd25519 } from './ed25519.js';
 
 const EVM_SIGNATURE = /^0x[0-9a-fA-F]{130}$/;
@@ -27,7 +27,8 @@ export async function verifyNativeClearingControlSignature(
       return false;
     }
   }
-  if (!isEvmStrategyActor(signerId) || !EVM_SIGNATURE.test(authorization.signature)) return false;
+  if (!isAddress(signerId, { strict: true }) || signerId.toLowerCase() === zeroAddress
+    || !EVM_SIGNATURE.test(authorization.signature)) return false;
   try {
     return await verifyMessage({
       address: signerId as Hex,
