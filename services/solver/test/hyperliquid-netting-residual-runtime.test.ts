@@ -267,6 +267,9 @@ test('executes one durable residual and resumes evidence without rebroadcast', a
   );
   const executionInput = { intent, idempotencyKey: toHex(intent.intentHash) };
 
+  assert.equal(await runtime.observe(executionInput), undefined);
+  assert.equal(transport.requests.length, 0);
+
   await assert.rejects(runtime.execute(executionInput), /exit liquidity unavailable/);
   assert.equal(transport.requests.length, 0);
   rejectQualification = false;
@@ -276,8 +279,17 @@ test('executes one durable residual and resumes evidence without rebroadcast', a
   assert.equal(first.outcome, 'EXACT_FILLED');
   assert.equal(first.filledSignedQuantityAtoms, 100n);
   assert.equal(transport.requests.length, 1);
+  assert.equal((await runtime.observe(executionInput))?.outcome, 'EXACT_FILLED');
+  assert.equal(transport.requests.length, 1);
+  await assert.rejects(runtime.observe({ ...executionInput, idempotencyKey: id(99) }), /observation differs/);
+  assert.equal(runtime.cancelUnsubmitted(executionInput), false);
+  const cancelledInput = { intent: sellIntent, idempotencyKey: toHex(sellIntent.intentHash) };
+  assert.equal(runtime.cancelUnsubmitted(cancelledInput), true);
+  assert.equal(runtime.cancelUnsubmitted(cancelledInput), true);
+  await assert.rejects(runtime.execute(cancelledInput), /JOURNAL_REJECTED/);
+  assert.equal(transport.requests.length, 1);
 
-  nowMs += 1;
+  nowMs += 3;
   const pooled = await runtime.execute({
     intent: crossBatchIntent,
     idempotencyKey: toHex(crossBatchIntent.intentHash),
@@ -298,7 +310,7 @@ test('executes one durable residual and resumes evidence without rebroadcast', a
   assert.equal(resumed.outcome, 'EXACT_FILLED');
   assert.equal(resumed.filledSignedQuantityAtoms, first.filledSignedQuantityAtoms);
   assert.equal(resumed.submittedAtValue, first.submittedAtValue);
-  assert.equal(qualificationCalls, 3);
+  assert.equal(qualificationCalls, 4);
   // The window closes at a read deadline a quarter of the evidence age bound after the clock.
   assert.equal(resumed.observedAtValue, intent.validUntilValue + 1n + 250n);
   assert.equal(transport.requests.length, 2);

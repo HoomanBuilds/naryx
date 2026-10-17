@@ -505,6 +505,7 @@ implements HyperliquidNettingResidualDurableJournalPort {
     this.#requireOpen();
     const normalized = normalizedPrepare(input);
     const transaction = this.#database.transaction(() => {
+      requireCondition(!this.#cancelled(normalized.attemptId), 'residual was cancelled before submission');
       const existing = this.#attemptRow(normalized.attemptId);
       if (existing !== undefined) {
         requireCondition(decodeRow(existing).record.recordHash === normalized.recordHash,
@@ -549,7 +550,8 @@ implements HyperliquidNettingResidualDurableJournalPort {
     nowMs: bigint;
   }>): Promise<HyperliquidNettingResidualJournalReceipt> {
     return this.#transition(identifier(input.attemptId, 'attemptId'), input.expectedVersion,
-      'SUBMITTED_UNKNOWN', ['DURABLE_RECORD_CONFIRMED'], { timestamp: input.nowMs });
+      'SUBMITTED_UNKNOWN', ['DURABLE_RECORD_CONFIRMED'], { timestamp: input.nowMs,
+        validate: record => requireCondition(!this.#cancelled(record.attemptId), 'residual was cancelled before submission') });
   }
 
   acknowledge(input: Readonly<{
@@ -588,6 +590,21 @@ implements HyperliquidNettingResidualDurableJournalPort {
     return row === undefined ? null : this.#receipt(row);
   }
 
+  cancelUnsubmitted(attemptId: string): boolean {
+    this.#requireOpen();
+    identifier(attemptId, 'attemptId');
+    return this.#database.transaction(() => {
+      const existing = this.#attemptRow(attemptId);
+      if (existing !== undefined && existing.status !== 'PREPARED' && existing.status !== 'DURABLE_RECORD_CONFIRMED') return false;
+      this.#database.prepare('INSERT OR IGNORE INTO hyperliquid_netting_residual_cancellations VALUES (?)').run(attemptId);
+      return true;
+    }).immediate();
+  }
+
+  #cancelled(attemptId: string): boolean {
+    return this.#database.prepare('SELECT 1 FROM hyperliquid_netting_residual_cancellations WHERE attempt_id = ?').get(attemptId) !== undefined;
+  }
+
   async listUnresolvedSubmissions(): Promise<readonly HyperliquidNettingResidualJournalReceipt[]> {
     this.#requireOpen();
     const rows = this.#database.prepare<[], AttemptRow>(`
@@ -612,6 +629,7 @@ implements HyperliquidNettingResidualDurableJournalPort {
     requireCondition(baseTables?.count === 2,
       'base Hyperliquid journal must initialize the shared signer and nonce fences first');
     this.#database.exec(`
+      CREATE TABLE IF NOT EXISTS hyperliquid_netting_residual_cancellations (attempt_id TEXT PRIMARY KEY) STRICT;
       CREATE TABLE IF NOT EXISTS hyperliquid_netting_residual_journal_metadata (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         schema_version INTEGER NOT NULL,

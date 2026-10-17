@@ -30,7 +30,7 @@ import type {
   HyperliquidNettingResidualSubmissionResult,
   HyperliquidNettingResidualTestnetSubmissionService,
 } from './hyperliquid-netting-residual-testnet-submission.js';
-import type { HyperliquidSubmissionAccount } from './index.js';
+import { HYPERLIQUID_RECONCILIATION_COLLECTOR, type HyperliquidSubmissionAccount } from './index.js';
 import type { HyperliquidTrustedTimePort } from './hyperliquid-trusted-time.js';
 
 const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
@@ -76,6 +76,7 @@ export interface HyperliquidNettingResidualRuntimeEvidencePort {
 export interface HyperliquidNettingResidualRuntimeJournalPort
 extends HyperliquidNettingResidualDurableJournalPort {
   readAttempt(attemptId: string): Promise<HyperliquidNettingResidualJournalReceipt | null>;
+  cancelUnsubmitted(attemptId: string): boolean;
 }
 
 export interface HyperliquidNettingResidualRuntimeOptions {
@@ -211,6 +212,60 @@ export class HyperliquidNettingResidualTestnetRuntime {
     });
     this.#clock = options.clock ?? Date.now;
     this.#trustedTime = options.trustedTime;
+  }
+
+  async observe(input: Readonly<{ intent: NettingExternalExecutionIntent; idempotencyKey: string }>):
+  Promise<NettingExternalExecutionEvidence | undefined> {
+    const key = toHex(input.intent.intentHash);
+    if (input.idempotencyKey !== key || toHex(nettingExternalExecutionIntentHash(input.intent)) !== key) {
+      throw new HyperliquidNettingResidualRuntimeError('IDEMPOTENCY_MISMATCH', 'observation differs from the intent');
+    }
+    if (input.intent.domain.domainId !== 'hypercore:testnet'
+      || input.intent.validUntilUnit !== 'HYPERLIQUID_UNIX_MILLISECONDS') {
+      throw new HyperliquidNettingResidualRuntimeError('UNSUPPORTED_DOMAIN', 'only testnet residuals can be observed');
+    }
+    const lane = this.#resolver.resolve(input.intent);
+    const plan = compileHyperliquidNettingResidualPlan({ intent: input.intent, instrument: lane.instrument, binding: lane.marketBinding });
+    let persisted = await this.#journal.readAttempt(attemptId(input.intent));
+    if (persisted === null) return undefined;
+    const record = persisted.record;
+    if (toHex(record.intentHash) !== key || record.clientOrderId !== plan.clientOrderId.toLowerCase()
+      || record.account.masterAccount !== this.#options.account.masterAccount
+      || record.account.tradingAccount !== this.#options.account.tradingAccount
+      || record.account.accountKind !== this.#options.account.accountKind
+      || record.agentWallet !== this.#options.agentWallet) {
+      throw new HyperliquidNettingResidualRuntimeError('JOURNAL_STATE_INVALID', 'observation account or intent differs');
+    }
+    if (record.status === 'PREPARED' || record.status === 'DURABLE_RECORD_CONFIRMED') return undefined;
+    if (record.status !== 'RECONCILING') {
+      persisted = await this.#journal.beginReconciliation({ expectedVersion: persisted.journalVersion, attemptId: record.attemptId });
+    }
+    const current = persisted.record;
+    if (current.durableRevision === null || current.status !== 'RECONCILING') {
+      throw new HyperliquidNettingResidualRuntimeError('JOURNAL_STATE_INVALID', 'observation needs durable submission evidence');
+    }
+    const collected = await this.#evidence.collect({
+      handoff: {
+        collector: HYPERLIQUID_RECONCILIATION_COLLECTOR,
+        attemptId: current.attemptId, account: current.account, actionHash: current.actionHash,
+        actionCommitmentScheme: current.actionCommitmentScheme, requestCommitment: current.recordHash,
+        durableRevision: current.durableRevision, clientOrderId: current.clientOrderId,
+        intentHash: current.intentHash, instrumentHash: current.instrumentHash,
+      },
+      binding: lane.evidenceBinding, plan, window: evidenceWindow(persisted, checkedNow(this.#clock), this.#options),
+    });
+    if (collected.status !== 'COMPLETE') return undefined;
+    return hyperliquidNettingResidualEvidence({ intent: input.intent, plan, observation: collected.observation });
+  }
+
+  cancelUnsubmitted(input: Readonly<{ intent: NettingExternalExecutionIntent; idempotencyKey: string }>): boolean {
+    const key = toHex(input.intent.intentHash);
+    if (input.idempotencyKey !== key || toHex(nettingExternalExecutionIntentHash(input.intent)) !== key
+      || input.intent.domain.domainId !== 'hypercore:testnet') {
+      throw new HyperliquidNettingResidualRuntimeError('IDEMPOTENCY_MISMATCH', 'cancellation differs from the testnet intent');
+    }
+    this.#resolver.resolve(input.intent);
+    return this.#journal.cancelUnsubmitted(attemptId(input.intent));
   }
 
   async execute(input: Readonly<{
