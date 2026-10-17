@@ -226,14 +226,14 @@ async function main() {
       let account = (await request(`/v1/native-clearing/accounts/${accountId}`))?.account;
       if (!account) {
         account = nativeClearingAccount({ version: 1, policyHash: policy.policyHash, accountId,
-          ownerId: actors[role], collateralQuoteAtoms: 0n, cashBalanceQuoteAtoms: 0n, positionAtoms: 0n, sequence: 0n }, policy);
+          ownerId: actors[role].toLowerCase(), collateralQuoteAtoms: 0n, cashBalanceQuoteAtoms: 0n, positionAtoms: 0n, sequence: 0n }, policy);
         await request('/internal/native-clearing/accounts', { clearingDomainId: policy.clearingDomainId, account,
           evidenceBlock: evidenceBlock(`open-${role}`) });
       }
       if (account.collateralQuoteAtoms === record.funding[role] && account.sequence === 1n) continue;
       assert.equal(account.sequence, 0n, 'Unexpected existing clearing activity');
       const authorization = nativeClearingCollateralAuthorization({ version: 1, policyHash: policy.policyHash,
-        accountId, ownerId: actors[role], expectedAccountHash: account.accountHash, expectedAccountSequence: account.sequence,
+        accountId, ownerId: account.ownerId, expectedAccountHash: account.accountHash, expectedAccountSequence: account.sequence,
         collateralDeltaQuoteAtoms: record.funding[role], validUntilUnit: 'EVM_UNIX_SECONDS',
         validUntilValue: BigInt(Math.floor(Date.now() / 1000)) + 3600n });
       await request('/internal/native-clearing/collateral', { authorization, ownerSignature: {
