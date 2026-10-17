@@ -123,7 +123,7 @@ export function authorization(
     environment: matchingPolicy.environment,
     executionClassId: matchingPolicy.executionClassId,
     packageOrderId: allocation.fills[0]!.makerEntryId,
-    strategyOrderHash: id(20),
+    strategyOrderHash: id(22),
     graphHash: id(21),
     participantId: participantMaker,
     settlementAccount: accountMaker,

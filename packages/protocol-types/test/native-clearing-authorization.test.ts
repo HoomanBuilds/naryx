@@ -103,7 +103,7 @@ function fixture(source: PackageLiquiditySource = 'DIRECT') {
     environment: matchingPolicy.environment,
     executionClassId: matchingPolicy.executionClassId,
     packageOrderId: allocation.fills[0]!.makerEntryId,
-    strategyOrderHash: id(20),
+    strategyOrderHash: id(22),
     graphHash: id(21),
     participantId: 'maker',
     settlementAccount: 'account-maker',
@@ -130,6 +130,7 @@ function fixture(source: PackageLiquiditySource = 'DIRECT') {
 
 test('native clearing authorization derives exact clearing sides from verified package evidence', () => {
   const value = fixture();
+  assert.notDeepEqual(value.taker.strategyOrderHash, value.maker.strategyOrderHash);
   const authorization = nativeClearingMatchAuthorization({
     ...value,
     takerSettlementCommitment: value.taker,
@@ -157,6 +158,11 @@ test('native clearing authorization rejects implied fills, mismatched commitment
   }), /requires a direct package fill/);
 
   const direct = fixture();
+  const otherGraph = packageSettlementCommitment({ ...direct.maker, graphHash: id(98) });
+  const otherGraphHandoff = packageSettlementHandoff({ ...direct.handoff, fills: [{ ...direct.handoff.fills[0]!, makerSettlementCommitmentHash: packageSettlementCommitmentHash(otherGraph) }] });
+  assert.throws(() => nativeClearingMatchAuthorization({ ...direct, handoff: otherGraphHandoff,
+    takerSettlementCommitment: direct.taker, makerSettlementCommitment: otherGraph, fillSequence: 1n,
+    currentExpiryUnit: 'SOLANA_SLOT', currentExpiryValue: 50n }), /different package economics/);
   const wrongMaker = packageSettlementCommitment({
     ...direct.maker,
     packageOrderId: id(99),

@@ -157,7 +157,6 @@ export function nativeClearingMatchAuthorization(
   }
   if (taker.environment !== policy.environment || maker.environment !== policy.environment
     || taker.executionClassId !== policy.executionClassId || maker.executionClassId !== policy.executionClassId
-    || !equalHash(taker.strategyOrderHash, maker.strategyOrderHash)
     || !equalHash(taker.graphHash, maker.graphHash)) {
     throw new MalformedInputError('nativeClearingMatchAuthorization.commitments', 'settlement commitments describe different package economics');
   }
