@@ -159,6 +159,15 @@ export class NativeCashService {
     return row === undefined ? undefined : parseProtocolJson(row.receipt_json) as Awaited<ReturnType<typeof observeNativeCashMatch>>;
   }
 
+  trades(marketId: string) {
+    if (!this.#markets.has(marketId)) throw new Error('Native cash market is not activated.');
+    const rows = this.#db.prepare(`SELECT settlements.receipt_json FROM native_cash_settlements settlements
+      JOIN native_cash_quotes quotes ON quotes.request_id=settlements.request_id
+      WHERE quotes.market_id=? ORDER BY settlements.recorded_at_ms DESC,settlements.request_id LIMIT 100`)
+      .all(marketId) as { receipt_json: string }[];
+    return rows.map(row => parseProtocolJson(row.receipt_json) as Awaited<ReturnType<typeof observeNativeCashMatch>>);
+  }
+
   async observe(requestId: string, transactionHash: Hex) {
     if (!/^0x[0-9a-f]{64}$/i.test(transactionHash)) throw new Error('Native cash transaction hash is invalid.');
     const previous = this.settlement(requestId);

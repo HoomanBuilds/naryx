@@ -56,8 +56,11 @@ test('signed cash quotes and verified settlements survive restart without resign
     assert.deepEqual(await service.requestQuote(request), signed);
     await assert.rejects(service.requestQuote({ ...request, quantityAtoms: 2n }), /different terms/);
     const receipt = await service.observe(request.requestId, hash);
+    assert.deepEqual(service.trades(request.marketId), [receipt]);
     service.close(); service = f.service();
     assert.deepEqual(await service.observe(request.requestId, hash), receipt);
+    assert.equal(service.trades(request.marketId).length, 1);
+    assert.throws(() => service.trades('unknown'), /not activated/);
     assert.deepEqual(f.counts(), { signCount: 1, observations: 1 });
     await assert.rejects(service.observe(request.requestId, `0x${'ff'.repeat(32)}`), /different transaction/);
   } finally { service.close(); rmSync(f.dir, { recursive: true }); }
@@ -111,6 +114,9 @@ test('native cash HTTP preserves tagged integer terms and refuses forwarded call
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   try {
+    const trades = await fetch(`${origin}/v1/native-cash/markets/${request.marketId}/trades`);
+    assert.equal(trades.status, 200);
+    assert.deepEqual((await trades.json() as { trades: unknown[] }).trades, []);
     const response = await fetch(`${origin}/v1/native-cash/quotes`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: stringifyProtocolJson(request) });
     assert.equal(response.status, 200);

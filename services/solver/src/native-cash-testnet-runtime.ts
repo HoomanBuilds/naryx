@@ -121,6 +121,10 @@ export function createNativeCashTestnetHandler(runtime: Pick<Awaited<ReturnType<
         send(200, { version: 1, markets }); return;
       }
       const quotePath = /^\/v1\/native-cash\/quotes\/([A-Za-z0-9._:-]+)(\/settlement)?$/.exec(url.pathname);
+      const tradesPath = /^\/v1\/native-cash\/markets\/([A-Za-z0-9._:-]+)\/trades$/.exec(url.pathname);
+      if (request.method === 'GET' && tradesPath !== null) {
+        send(200, { version: 1, activityClass: 'OWNER_SIGNED_TESTNET_EXECUTION', trades: runtime.service.trades(tradesPath[1]!) }); return;
+      }
       const activation = /^\/internal\/native-cash\/registrations\/([A-Za-z0-9._:-]+)\/(challenge|authorize)$/.exec(url.pathname);
       if (request.method === 'GET' && quotePath !== null) {
         const result = quotePath[2] ? runtime.service.settlement(quotePath[1]!) : runtime.service.quote(quotePath[1]!);
@@ -159,7 +163,10 @@ export function createNativeCashTestnetHandler(runtime: Pick<Awaited<ReturnType<
       send(200, { version: 1, result: signed, execution: { to: signed.quote.clearingHouse, chainId: signed.quote.chainId,
         value: 0n, functionName: 'executeMatch', ownerSignatureRequired: true,
         prepareCalldata: 'Sign the returned typedData, then pass the match and both owner signatures to executeMatch.' } });
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Native cash quote refused:')) {
+        process.stderr.write(JSON.stringify({ event: 'NATIVE_CASH_QUALIFICATION_REFUSED', reason: error.message }) + '\n');
+      }
       send(409, { error: 'Native cash request could not be qualified. Check funding, market state, expiry and finality.' });
     }
   };
