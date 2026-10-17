@@ -75,14 +75,16 @@ async function main() {
   const source = { chainId: BigInt(chain.id), ...nativeCashSource(chain.id), sequencerFeed: zeroAddress, markUpdater: actors.mark,
     lowerBound: 1000n * 10n ** 8n, upperBound: 5000n * 10n ** 8n, underlyingAtomsPerPackage: 10n ** 15n,
     sequencerGracePeriodSeconds: 0n, oracleDecimals: 8, underlyingDecimals: 18, allowMissingSequencer: true };
-  const [description, decimals, round, block, collateralCode] = await Promise.all([
-    client.readContract({ address: source.oracle, abi: sourceAbi, functionName: 'description' }),
-    client.readContract({ address: source.oracle, abi: sourceAbi, functionName: 'decimals' }),
-    client.readContract({ address: source.oracle, abi: sourceAbi, functionName: 'latestRoundData' }),
-    client.getBlock(), client.getCode({ address: collateralToken }),
-  ]);
-  assert.equal(description, 'ETH / USD'); assert.equal(decimals, 8);
-  assert.ok(round[1] > 0n && round[3] <= block.timestamp && block.timestamp - round[3] < source.maximumOracleAgeSeconds, 'Source is stale');
+  const collateralCode = await client.getCode({ address: collateralToken });
+  if (values.step !== 'observe' && values.step !== 'pause') {
+    const [description, decimals, round, block] = await Promise.all([
+      client.readContract({ address: source.oracle, abi: sourceAbi, functionName: 'description' }),
+      client.readContract({ address: source.oracle, abi: sourceAbi, functionName: 'decimals' }),
+      client.readContract({ address: source.oracle, abi: sourceAbi, functionName: 'latestRoundData' }), client.getBlock(),
+    ]);
+    assert.equal(description, 'ETH / USD'); assert.equal(decimals, 8);
+    assert.ok(round[1] > 0n && round[3] <= block.timestamp && block.timestamp - round[3] < source.maximumOracleAgeSeconds, 'Source is stale');
+  }
   assert.ok(collateralCode && collateralCode !== '0x');
   assert.equal(await client.readContract({ address: collateralToken, abi: tokenAbi, functionName: 'decimals' }), 6);
   let record;
