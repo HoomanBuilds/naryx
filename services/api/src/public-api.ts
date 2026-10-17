@@ -338,7 +338,7 @@ export interface PublicApiOptions {
   /** Native package clearing state and evidence; mutation remains on the loopback control boundary. */
   readonly nativeClearing?: Pick<
     SqliteNativeClearingStore,
-    'domains' | 'domain' | 'accounts' | 'account' | 'latestMark' | 'defaultAuction' | 'events'
+    'domains' | 'domain' | 'accounts' | 'account' | 'latestMark' | 'defaultAuction' | 'events' | 'backingReceipts'
   >;
   readonly nativeClearingBacking?: (clearingDomainId: string) => Promise<unknown>;
   /** Durable advanced-order registration and progress; execution remains on the loopback controller. */
@@ -909,20 +909,23 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const clearingDomainId = id(match[1], 'Native clearing domain id');
       return options.nativeClearingBacking(clearingDomainId).then((backing) => ({ version: 1, clearingDomainId, backing }));
     }
-    if ((match = /^\/v1\/native-clearing\/domains\/([^/]+)(\/accounts|\/events|\/mark)?$/.exec(path)) !== null) {
+    if ((match = /^\/v1\/native-clearing\/domains\/([^/]+)(\/accounts|\/events|\/mark|\/backing-receipts)?$/.exec(path)) !== null) {
       const clearingDomainId = id(match[1], 'Native clearing domain id');
       const clearing = requireNativeClearing();
-      if (match[2] === '/events') {
+      if (match[2] === '/events' || match[2] === '/backing-receipts') {
         onlyParams(url, ['after', 'limit']);
         const rawAfter = url.searchParams.get('after') ?? '0';
         const rawLimit = url.searchParams.get('limit') ?? '100';
         if (!/^\d{1,15}$/.test(rawAfter) || !/^(?:[1-9]|[1-9]\d|[1-4]\d{2}|500)$/.test(rawLimit)) {
           throw new RequestError(400, 'INVALID_REQUEST', 'after must be nonnegative and limit must be between 1 and 500.');
         }
+        const records = match[2] === '/events'
+          ? { events: clearing.events(clearingDomainId, Number(rawAfter), Number(rawLimit)) }
+          : { receipts: clearing.backingReceipts(clearingDomainId, Number(rawAfter), Number(rawLimit)) };
         return {
           version: 1,
           clearingDomainId,
-          events: clearing.events(clearingDomainId, Number(rawAfter), Number(rawLimit)),
+          ...records,
         };
       }
       onlyParams(url, []);

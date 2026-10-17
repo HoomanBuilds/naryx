@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import type { EvmNativeClearingBackingVerifier } from '@naryx/adapter-evm';
 import {
   adjustNativeClearingCollateral,
   adjustNativeClearingRecoveryReserve,
@@ -131,7 +132,46 @@ CREATE TRIGGER IF NOT EXISTS reject_native_clearing_event_update
 CREATE TRIGGER IF NOT EXISTS reject_native_clearing_event_delete
   BEFORE DELETE ON native_clearing_events
   BEGIN SELECT RAISE(ABORT, 'native clearing events are durable'); END;
+CREATE TABLE IF NOT EXISTS native_clearing_backing_receipts (
+  receipt_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  policy_hash BLOB NOT NULL REFERENCES native_clearing_policies(policy_hash),
+  action TEXT NOT NULL,
+  before_snapshot TEXT NOT NULL,
+  after_snapshot TEXT NOT NULL,
+  proof_json TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS native_clearing_backing_receipts_by_policy
+  ON native_clearing_backing_receipts (policy_hash, receipt_sequence);
+CREATE TRIGGER IF NOT EXISTS reject_native_clearing_backing_receipt_update
+  BEFORE UPDATE ON native_clearing_backing_receipts
+  BEGIN SELECT RAISE(ABORT, 'native clearing backing receipts are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS reject_native_clearing_backing_receipt_delete
+  BEFORE DELETE ON native_clearing_backing_receipts
+  BEGIN SELECT RAISE(ABORT, 'native clearing backing receipts are durable'); END;
 `;
+
+export interface NativeClearingBackingCheck {
+  readonly clearingDomainId: string;
+  readonly action: string;
+  readonly beforeSnapshot: string;
+  readonly afterSnapshot: string;
+  readonly proof: Awaited<ReturnType<EvmNativeClearingBackingVerifier['verify']>>;
+}
+
+export function nativeClearingBackingSnapshot(
+  domain: Readonly<{ policy: NativeClearingPolicy; state: NativeClearingDomainState }> | undefined,
+  accounts: readonly NativeClearingAccount[],
+  mark: NativeClearingMarkObservation | undefined,
+): string {
+  return json(domain === undefined ? null : {
+    policyHash: domain.policy.policyHash,
+    stateHash: domain.state.stateHash,
+    accounts: [...accounts].sort((a, b) => a.accountId < b.accountId ? -1 : a.accountId > b.accountId ? 1 : 0)
+      .map((account) => ({ accountId: account.accountId, accountHash: account.accountHash })),
+    markHash: mark?.observationHash ?? null,
+  }, 'native clearing backing snapshot');
+}
 
 type PolicyRow = { policy_hash: unknown; clearing_domain_id: unknown; policy_json: unknown };
 type DomainRow = { policy_hash: unknown; state_hash: unknown; state_json: unknown };
@@ -219,13 +259,15 @@ export class SqliteNativeClearingStore {
   registerDomain(
     policyInput: NativeClearingPolicyInput | NativeClearingPolicy,
     stateInput: NativeClearingDomainStateInput | NativeClearingDomainState,
+    backing?: NativeClearingBackingCheck,
   ): Readonly<{ policy: NativeClearingPolicy; state: NativeClearingDomainState }> {
     const policy = nativeClearingPolicy(policyInput);
     const state = nativeClearingDomainState(stateInput, policy);
     if (state.openInterestAtoms !== 0n || state.sequence !== 0n) {
       throw new NativeClearingStoreError('INVALID_GENESIS', 'A new clearing domain must begin with zero open interest and sequence zero.');
     }
-    return this.#db.transaction(() => {
+    return this.#backedTransaction(backing, () => {
+      this.#requireBacking(backing, policy, 'domains');
       const existing = this.domain(policy.clearingDomainId);
       if (existing !== undefined) {
         if (!bytesEqual(existing.policy.policyHash, policy.policyHash)
@@ -239,7 +281,7 @@ export class SqliteNativeClearingStore {
       this.#db.prepare(`INSERT INTO native_clearing_domains VALUES (?, ?, ?)`)
         .run(policy.policyHash, state.stateHash, json(state, 'native clearing domain state'));
       return Object.freeze({ policy, state });
-    }).immediate();
+    });
   }
 
   domain(clearingDomainId: string): Readonly<{ policy: NativeClearingPolicy; state: NativeClearingDomainState }> | undefined {
@@ -260,9 +302,10 @@ export class SqliteNativeClearingStore {
     }));
   }
 
-  openAccount(clearingDomainId: string, input: NativeClearingAccountInput | NativeClearingAccount): NativeClearingAccount {
-    return this.#db.transaction(() => {
+  openAccount(clearingDomainId: string, input: NativeClearingAccountInput | NativeClearingAccount, backing?: NativeClearingBackingCheck): NativeClearingAccount {
+    return this.#backedTransaction(backing, () => {
       const { policy } = this.#requiredDomain(clearingDomainId);
+      this.#requireBacking(backing, policy, 'accounts');
       const account = nativeClearingAccount(input, policy);
       if (account.positionAtoms !== 0n || account.cashBalanceQuoteAtoms !== 0n || account.collateralQuoteAtoms !== 0n
         || account.sequence !== 0n) {
@@ -278,7 +321,7 @@ export class SqliteNativeClearingStore {
       this.#db.prepare(`INSERT INTO native_clearing_accounts VALUES (?, ?, ?, ?)`)
         .run(account.accountId, policy.policyHash, account.accountHash, json(account, 'native clearing account'));
       return account;
-    }).immediate();
+    });
   }
 
   account(accountId: string): NativeClearingAccount | undefined {
@@ -303,9 +346,10 @@ export class SqliteNativeClearingStore {
     clearingDomainId: string;
     expectedStateHash: Uint8Array | string;
     reserveDeltaQuoteAtoms: bigint;
-  }>): NativeClearingDomainState {
-    return this.#db.transaction(() => {
+  }>, backing?: NativeClearingBackingCheck): NativeClearingDomainState {
+    return this.#backedTransaction(backing, () => {
       const { policy, state } = this.#requiredDomain(input.clearingDomainId);
+      this.#requireBacking(backing, policy, 'reserve');
       expected(state.stateHash, input.expectedStateHash, 'expected domain state hash');
       const next = adjustNativeClearingRecoveryReserve(state, policy, input.reserveDeltaQuoteAtoms);
       this.#updateState(state, next);
@@ -315,14 +359,14 @@ export class SqliteNativeClearingStore {
         resultingState: next,
       });
       return next;
-    }).immediate();
+    });
   }
 
   async recordMark(input: Readonly<{
     clearingDomainId: string;
     observation: NativeClearingMarkObservationInput;
     authorization: NativeClearingControlSignature;
-  }>): Promise<NativeClearingMarkObservation> {
+  }>, backing?: NativeClearingBackingCheck): Promise<NativeClearingMarkObservation> {
     const { policy } = this.#requiredDomain(input.clearingDomainId);
     const observation = nativeClearingMarkObservation(input.observation, policy);
     if (!await verifyNativeClearingControlSignature(
@@ -332,7 +376,8 @@ export class SqliteNativeClearingStore {
     )) {
       throw new NativeClearingStoreError('INVALID_SIGNATURE', 'Mark authority did not sign the observation.');
     }
-    return this.#db.transaction(() => {
+    return this.#backedTransaction(backing, () => {
+      this.#requireBacking(backing, policy, 'marks');
       const current = this.#latestMark(policy, false);
       if (current !== undefined && observation.sourceSequence <= current.sourceSequence) {
         throw new NativeClearingStoreError('STALE_MARK', 'Mark source sequence must increase.');
@@ -350,7 +395,7 @@ export class SqliteNativeClearingStore {
         clock(this.#clock()),
       );
       return observation;
-    }).immediate();
+    });
   }
 
   latestMark(clearingDomainId: string): NativeClearingMarkObservation | undefined {
@@ -361,16 +406,17 @@ export class SqliteNativeClearingStore {
   async adjustAuthorizedCollateral(input: Readonly<{
     authorization: NativeClearingCollateralAuthorizationInput;
     ownerSignature: NativeClearingControlSignature;
-  }>): Promise<NativeClearingAccount> {
+  }>, backing?: NativeClearingBackingCheck): Promise<NativeClearingAccount> {
     const command = nativeClearingCollateralAuthorization(input.authorization);
     if (!await verifyNativeClearingControlSignature(command.ownerId, command.authorizationHash, input.ownerSignature)) {
       throw new NativeClearingStoreError('INVALID_SIGNATURE', 'Clearing account owner did not sign the collateral command.');
     }
-    return this.#db.transaction(() => {
+    return this.#backedTransaction(backing, () => {
       const nowMs = this.#nowMs();
       const current = this.account(command.accountId);
       if (current === undefined) throw new NativeClearingStoreError('ACCOUNT_NOT_FOUND', 'Native clearing account was not found.');
       const policy = this.#policy(current.policyHash);
+      this.#requireBacking(backing, policy, 'collateral');
       verifyNativeClearingCollateralAuthorization(
         command,
         policy,
@@ -396,7 +442,7 @@ export class SqliteNativeClearingStore {
         resultingAccount: next,
       });
       return next;
-    }).immediate();
+    });
   }
 
   settleAuthorizedMatch(input: Readonly<{
@@ -620,6 +666,62 @@ export class SqliteNativeClearingStore {
 
   #nowMs(): bigint {
     return BigInt(clock(this.#clock()));
+  }
+
+  backingSnapshot(clearingDomainId: string): string {
+    return this.#db.transaction(() => {
+      const domain = this.domain(clearingDomainId);
+      return nativeClearingBackingSnapshot(domain, domain === undefined ? [] : this.accounts(clearingDomainId),
+        domain === undefined ? undefined : this.latestMark(clearingDomainId));
+    })();
+  }
+
+  backingReceipts(clearingDomainId: string, after = 0, limit = 100) {
+    const { policy } = this.#requiredDomain(clearingDomainId);
+    if (!Number.isSafeInteger(after) || after < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+      throw new NativeClearingStoreError('INVALID_INPUT', 'Native clearing backing cursor or limit is invalid.');
+    }
+    const rows = this.#db.prepare(`SELECT * FROM native_clearing_backing_receipts
+      WHERE policy_hash = ? AND receipt_sequence > ? ORDER BY receipt_sequence LIMIT ?`)
+      .all(policy.policyHash, after, limit) as {
+        receipt_sequence: number; action: string; before_snapshot: string; after_snapshot: string;
+        proof_json: string; recorded_at_ms: number;
+      }[];
+    return rows.map((row) => ({
+      sequence: row.receipt_sequence, action: row.action,
+      beforeSnapshot: parseProtocolJson(row.before_snapshot), afterSnapshot: parseProtocolJson(row.after_snapshot),
+      proof: parseProtocolJson(row.proof_json), recordedAtMs: row.recorded_at_ms,
+    }));
+  }
+
+  #backedTransaction<T>(backing: NativeClearingBackingCheck | undefined, mutate: () => T): T {
+    return this.#db.transaction(() => {
+      if (backing !== undefined && this.backingSnapshot(backing.clearingDomainId) !== backing.beforeSnapshot) {
+        throw new NativeClearingStoreError('STALE_BACKING', 'Clearing ledger changed while backing was being verified.');
+      }
+      const result = mutate();
+      if (backing !== undefined) {
+        if (this.backingSnapshot(backing.clearingDomainId) !== backing.afterSnapshot) {
+          throw new NativeClearingStoreError('BACKING_STATE_MISMATCH', 'Clearing mutation differs from the verified post-state.');
+        }
+        const { policy } = this.#requiredDomain(backing.clearingDomainId);
+        this.#db.prepare(`INSERT INTO native_clearing_backing_receipts
+          (policy_hash, action, before_snapshot, after_snapshot, proof_json, recorded_at_ms)
+          VALUES (?, ?, ?, ?, ?, ?)`).run(policy.policyHash, backing.action, backing.beforeSnapshot,
+          backing.afterSnapshot, json(backing.proof, 'native clearing backing proof'), clock(this.#clock()));
+      }
+      return result;
+    }).immediate();
+  }
+
+  #requireBacking(backing: NativeClearingBackingCheck | undefined, policy: NativeClearingPolicy, action: string): void {
+    if (backing === undefined) {
+      if (this.#db.prepare('SELECT 1 FROM native_clearing_backing_receipts WHERE policy_hash = ? LIMIT 1').get(policy.policyHash) !== undefined) {
+        throw new NativeClearingStoreError('BACKING_REQUIRED', 'A backed clearing domain requires verified evidence for funding changes.');
+      }
+    } else if (backing.clearingDomainId !== policy.clearingDomainId || backing.action !== action) {
+      throw new NativeClearingStoreError('BACKING_STATE_MISMATCH', 'Backing evidence belongs to a different domain or operation.');
+    }
   }
 
   #requiredDomain(id: string): Readonly<{ policy: NativeClearingPolicy; state: NativeClearingDomainState }> {

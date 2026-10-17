@@ -18,13 +18,14 @@ import {
 import { internalCaller, readInternalBody, sendError, sendJson } from './internal-http.js';
 import {
   NativeClearingStoreError,
+  type NativeClearingBackingCheck,
   type SqliteNativeClearingStore,
 } from './native-clearing-store.js';
 import type { NativeClearingControlSignature } from './native-clearing-authorization.js';
 import type { SqlitePackageExchangeStore } from './package-exchange-store.js';
 
 export interface NativeClearingAdminOptions {
-  readonly verifyBacking?: (path: string, body: Record<string, unknown>) => Promise<void>;
+  readonly verifyBacking?: (path: string, body: Record<string, unknown>) => Promise<NativeClearingBackingCheck | void>;
   readonly clearing: Pick<
     SqliteNativeClearingStore,
     'registerDomain' | 'openAccount' | 'adjustReserve' | 'recordMark' | 'adjustAuthorizedCollateral'
@@ -117,22 +118,25 @@ export function createNativeClearingAdminHandler(
         return;
       }
       const run = async (): Promise<unknown> => {
-        await options.verifyBacking?.(url.pathname, body);
+        const verified = await options.verifyBacking?.(url.pathname, body);
+        const backing = verified === undefined ? undefined : verified;
         switch (url.pathname) {
           case '/internal/native-clearing/domains':
             if (object(body.policy) === undefined || object(body.state) === undefined) throw new TypeError('Policy and state must be objects.');
             return options.clearing.registerDomain(
               body.policy as unknown as NativeClearingPolicyInput,
               body.state as unknown as NativeClearingDomainStateInput,
+              backing,
             );
           case '/internal/native-clearing/accounts':
             if (typeof body.clearingDomainId !== 'string' || object(body.account) === undefined) throw new TypeError('Domain and account are required.');
             return options.clearing.openAccount(
               body.clearingDomainId,
               body.account as unknown as NativeClearingAccountInput,
+              backing,
             );
           case '/internal/native-clearing/reserve':
-            return options.clearing.adjustReserve(body as unknown as Parameters<SqliteNativeClearingStore['adjustReserve']>[0]);
+            return options.clearing.adjustReserve(body as unknown as Parameters<SqliteNativeClearingStore['adjustReserve']>[0], backing);
           case '/internal/native-clearing/marks':
             if (typeof body.clearingDomainId !== 'string' || object(body.observation) === undefined || object(body.authorization) === undefined) {
               throw new TypeError('Domain, observation, and authorization are required.');
@@ -141,12 +145,12 @@ export function createNativeClearingAdminHandler(
               clearingDomainId: body.clearingDomainId,
               observation: body.observation as unknown as NativeClearingMarkObservationInput,
               authorization: body.authorization as unknown as NativeClearingControlSignature,
-            });
+            }, backing);
           case '/internal/native-clearing/collateral':
             return options.clearing.adjustAuthorizedCollateral({
               authorization: body.authorization as unknown as NativeClearingCollateralAuthorizationInput,
               ownerSignature: body.ownerSignature as unknown as NativeClearingControlSignature,
-            });
+            }, backing);
           case '/internal/native-clearing/matches': {
             const authorization = object(body.authorization);
             if (authorization === undefined || 'currentExpiryUnit' in authorization || 'currentExpiryValue' in authorization) {

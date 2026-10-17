@@ -269,6 +269,7 @@ test('native clearing reads remain optional and event pages are bounded', async 
     latestMark: () => undefined,
     defaultAuction: () => { throw new Error('unused'); },
     events: (_clearingDomainId: string, after: number, limit: number) => after === 0 && limit === 1 ? events : [],
+    backingReceipts: (_clearingDomainId: string, after: number, limit: number) => after === 0 && limit === 1 ? [{ sequence: 1, action: 'reserve' }] : [],
   } as unknown as NonNullable<PublicApiOptions['nativeClearing']>;
   await withMarket(async (get) => {
     const domains = await get('/v1/native-clearing/domains');
@@ -279,6 +280,11 @@ test('native clearing reads remain optional and event pages are bounded', async 
     assert.deepEqual((page.body as { events: unknown[] }).events, events);
     assert.equal((await get('/v1/native-clearing/domains/sol-carry-clearing/events?limit=501')).status, 400);
     assert.equal((await get('/v1/native-clearing/domains/sol-carry-clearing/backing')).status, 503);
+    const backingPage = await get('/v1/native-clearing/domains/sol-carry-clearing/backing-receipts?after=0&limit=1');
+    assert.equal(backingPage.status, 200);
+    assert.deepEqual((backingPage.body as { receipts: unknown[] }).receipts, [{ sequence: 1, action: 'reserve' }]);
+    assert.equal((await get('/v1/native-clearing/domains/sol-carry-clearing/backing-receipts?limit=501')).status, 400);
+    assert.equal((await get('/v1/native-clearing/domains/sol-carry-clearing/backing-receipts?after=-1')).status, 400);
   }, { nativeClearing });
 
   await withMarket(async (get) => {

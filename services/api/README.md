@@ -4,6 +4,8 @@ Private backend-for-frontend for the operator terminal.
 
 ## Native clearing funding gate
 
+Verified funding mutations commit with an immutable backing receipt in the same SQLite transaction. The receipt retains the finalized block number/hash, contract and token identities, verified balances, and exact before/after ledger snapshots. Concurrent ledger changes invalidate the check before any write. `GET /v1/native-clearing/domains/:id/backing-receipts?after=0&limit=100` exposes bounded historical receipts. These are recorded RPC observations for registered accounts, not a proof of global solvency or a live trading activation.
+
 Native-clearing ledger mutations require a reviewed onchain backing configuration. `NARYX_NATIVE_CLEARING_BACKING_CONFIG` names an external Protocol JSON file with `version: 1` and `bindings`. Each entry contains `clearingDomainId`, `rpcEnvironmentVariable`, and `binding`. The binding pins the domain reference, clearing-house address and code hash, collateral-token address and code hash, and exact collateral asset reference. RPC credentials remain in ignored environment files.
 
 `GET /v1/native-clearing/domains/:id/backing` verifies the current ledger against finalized contract state. Missing or mismatched backing returns an error, never a funded-balance claim. The current write bridge supports domain/account initialization, signed marks, reserve reconciliation, and owner-authorized collateral reconciliation while entries are paused and accounts are flat. Matches and default-auction mutations remain disabled until their own onchain reconciliation paths exist. Transactions must happen onchain first; ledger reconciliation never deposits tokens or broadcasts a transaction.
