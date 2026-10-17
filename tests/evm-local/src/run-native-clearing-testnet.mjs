@@ -12,6 +12,7 @@ import { nativeClearingPolicy, nativeClearingMarkObservation, nativeClearingAcco
   nativeClearingCollateralAuthorization, packageMatchingPolicy, packageMatchingPolicyHash, parseProtocolJson,
   stringifyProtocolJson, toHex, versionedManifestRef } from '@naryx/protocol-types';
 import { evmNativeClearingAccountId } from '@naryx/adapter-evm';
+import { runClearingLifecycle } from './native-clearing-lifecycle.mjs';
 
 const root = resolve(import.meta.dirname, '../../..');
 const budget = 10_000_000_000_000_000n;
@@ -61,7 +62,7 @@ async function main() {
   const chains = { 'base-sepolia': baseSepolia, 'arbitrum-sepolia': arbitrumSepolia };
   assert.ok(Object.hasOwn(chains, values.network ?? ''), 'Select a supported Sepolia network');
   assert.ok(values.output && isAbsolute(values.output) && !resolve(values.output).startsWith(`${root}/`), 'Evidence must be outside this repository');
-  assert.ok(['prepare', 'deploy', 'fund', 'mark', 'reconcile'].includes(values.step), 'Unknown step');
+  assert.ok(['prepare', 'deploy', 'fund', 'mark', 'reconcile', 'lifecycle', 'cashout', 'reconcile-lifecycle'].includes(values.step), 'Unknown step');
   const chain = chains[values.network];
   const rpc = process.env[chain.id === 84532 ? 'NARYX_BASE_SEPOLIA_RPC_URL' : 'NARYX_ARBITRUM_SEPOLIA_RPC_URL'];
   assert.ok(rpc, 'Testnet RPC is required');
@@ -178,6 +179,12 @@ async function main() {
   }
   assert.ok(record.clearingHouseCodeHash, 'Deploy and verify the clearing house first');
   assert.equal(keccak256(await client.getCode({ address: record.house })), record.clearingHouseCodeHash);
+  if (['lifecycle', 'cashout', 'reconcile-lifecycle'].includes(values.step)) {
+    assert.ok(values['admin-url'], 'A loopback API connection is required');
+    await runClearingLifecycle({ record, save, client, wallet, send, roles, artifact, release,
+      adminUrl: values['admin-url'], reconcile: values.step === 'reconcile-lifecycle', cashout: values.step === 'cashout' });
+    return;
+  }
   if (values.step === 'mark') {
     assert.ok(record.transactions['fund-reserve']?.blockNumber, 'Finish funding first');
     if (await client.getBalance({ address: actors.mark }) < 100_000_000_000_000n) {

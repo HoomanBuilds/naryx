@@ -2,6 +2,26 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { assetRef, parseProtocolJson, stringifyProtocolJson, toHex } from '@naryx/protocol-types';
 import { buildClearingPolicy, reserveTestnetBudget, finalizedTransactionEvidence } from '../src/run-native-clearing-testnet.mjs';
+import { clearingMatchTypedData } from '../src/native-clearing-lifecycle.mjs';
+import { hashTypedData } from 'viem';
+
+test('native consent binds the house, domain, both account sequences and exact match terms', () => {
+  const hash = new Uint8Array(32).fill(1);
+  const record = { chainId: 84532, house: '0x1111111111111111111111111111111111111111', policy: { policyHash: hash } };
+  const authorization = { authorizationHash: hash, quantityAtoms: 100n, priceTicks: 1000n, validUntilValue: 10000n };
+  const long = { accountId: 'test-long', sequence: 1n };
+  const short = { accountId: 'test-short', sequence: 2n };
+  const typed = clearingMatchTypedData(record, authorization, long, short);
+  const digest = hashTypedData(typed);
+  for (const changed of [
+    clearingMatchTypedData({ ...record, chainId: 421614 }, authorization, long, short),
+    clearingMatchTypedData(record, authorization, { ...long, sequence: 2n }, short),
+    clearingMatchTypedData(record, { ...authorization, quantityAtoms: 101n }, long, short),
+    clearingMatchTypedData(record, authorization, short, long),
+  ]) assert.notEqual(hashTypedData(changed), digest);
+  assert.equal(typed.message.maxFeeBps, 0);
+  assert.equal(typed.message.feePayerAccountId, typed.message.longAccountId);
+});
 
 test('finalized evidence replaces provisional hashes only with the canonical successful receipt', () => {
   const hash = `0x${'11'.repeat(32)}`;
