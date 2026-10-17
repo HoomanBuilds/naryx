@@ -90,6 +90,22 @@ test('interrupted signing never retries a signature and holds a conservative lea
   } finally { service.close(); rmSync(f.dir, { recursive: true }); }
 });
 
+test('a consumed onchain maker sequence permits a fresh quote before the old lease expires', async () => {
+  const f = fixture(); const service = f.service(); const original = f.port.quote;
+  try {
+    await service.requestQuote(request);
+    f.port.quote = async input => {
+      const q = await original(input);
+      const match = { ...q.match, shortSequence: 2n };
+      const typedData = { ...q.typedData, message: { ...q.typedData.message, ...match } };
+      return { ...q, observedBlock: { ...q.observedBlock, number: 2n }, match, typedData, digest: hashTypedData(typedData) };
+    };
+    const next = await service.requestQuote({ ...request, requestId: 'after-consumed-entry' });
+    assert.equal(next.quote.match.shortSequence, 2n);
+    await assert.rejects(service.requestQuote({ ...request, requestId: 'same-sequence' }), /outstanding quote/);
+  } finally { service.close(); rmSync(f.dir, { recursive: true }); }
+});
+
 test('unqualified accounts cannot acquire the maker lease or block a funded quote', async () => {
   const f = fixture(); const service = f.service();
   const quote = f.port.quote;
@@ -126,7 +142,8 @@ test('native cash HTTP preserves tagged integer terms and refuses forwarded call
   const f = fixture(); const service = f.service();
   const accountCalls: unknown[] = [];
   const handler = createNativeCashTestnetHandler({ service, markets: [{ marketId: request.marketId, binding: {} as never,
-    inspect: async () => ({}), account: async (owner, accountId) => { accountCalls.push({ owner, accountId }); return { collateralQuoteAtoms: 42n }; } }] });
+    inspect: async () => ({}), book: async () => ({ bidQuantity: 1n }),
+    account: async (owner, accountId) => { accountCalls.push({ owner, accountId }); return { collateralQuoteAtoms: 42n }; } }] });
   const server = createServer((request, response) => { void handler(request, response); });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -145,6 +162,9 @@ test('native cash HTTP preserves tagged integer terms and refuses forwarded call
     assert.equal(account.status, 200);
     assert.deepEqual(parseProtocolJson(await account.text()), { version: 1, result: { collateralQuoteAtoms: 42n } });
     assert.deepEqual(accountCalls, [{ owner, accountId: 'wallet-user' }]);
+    const book = await fetch(`${origin}/v1/native-cash/markets/${request.marketId}/book`);
+    assert.equal(book.status, 200);
+    assert.deepEqual(parseProtocolJson(await book.text()), { version: 1, result: { bidQuantity: 1n } });
     assert.equal((await fetch(`${origin}/v1/native-cash/markets/unknown/account`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: stringifyProtocolJson({ owner, accountId: 'wallet-user' }) })).status, 409);
     for (const headers of [{ Origin: 'https://example.com' }, { 'X-Forwarded-For': '127.0.0.1' }, { Forwarded: 'for=127.0.0.1' }]) {
       assert.equal((await fetch(`${origin}/v1/native-cash/markets`, { headers })).status, 403);

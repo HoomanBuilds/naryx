@@ -4,6 +4,7 @@ import { isAbsolute } from 'node:path';
 import { parseProtocolJson, stringifyProtocolJson } from '@naryx/protocol-types';
 import { EvmNativeCashRangeAdapter, NATIVE_CASH_RANGE_ABI, NATIVE_CASH_HOUSE_ABI, observeNativeCashMatch,
   type EvmNativeCashRangeBinding, type EvmNativeClearingTransitionReadPort } from '@naryx/adapter-evm';
+import { nativeCashContractAuthorization } from '@naryx/adapter-evm';
 import { createPublicClient, getAddress, http, keccak256, parseAbi, stringToHex, type Hex } from 'viem';
 import { loadEvmStrategySolverKey } from './evm-strategy-execution-authorization.js';
 import { NativeCashService, type NativeCashMarketPort, type NativeCashQuoteRequest } from './native-cash-service.js';
@@ -18,7 +19,7 @@ export async function loadNativeCashTestnetRuntime(environment: NodeJS.ProcessEn
   const status = lstatSync(configPath);
   if (!status.isFile() || status.isSymbolicLink() || status.size > 262_144) throw new Error('Native cash configuration must be a bounded regular file.');
   const config = parseProtocolJson(readFileSync(configPath, 'utf8')) as {
-    version: number; markets: readonly { binding: EvmNativeCashRangeBinding; rpcEnvironmentVariable: string; makerKeyPath: string }[];
+    version: number; markets: readonly { binding: EvmNativeCashRangeBinding; rpcEnvironmentVariable: string; makerKeyPath?: string }[];
   };
   if (config.version !== 1 || !Array.isArray(config.markets) || config.markets.length < 1 || config.markets.length > 8
     || Object.keys(config).sort().join(',') !== 'markets,version') throw new Error('Native cash configuration differs.');
@@ -26,9 +27,10 @@ export async function loadNativeCashTestnetRuntime(environment: NodeJS.ProcessEn
   const registrations: NativeCashRegistrationBinding[] = [];
   let registration: NativeCashRegistration;
   const markets: { marketId: string; binding: EvmNativeCashRangeBinding; inspect: () => Promise<unknown>;
-    account: (owner: string, accountId: string) => Promise<unknown> }[] = [];
+    account: (owner: string, accountId: string) => Promise<unknown>; book?: () => Promise<unknown> }[] = [];
   for (const entry of config.markets) {
-    if (Object.keys(entry).sort().join(',') !== 'binding,makerKeyPath,rpcEnvironmentVariable'
+    if (Object.keys(entry).sort().join(',') !== (entry.binding.makerAuthorization === undefined
+      ? 'binding,makerKeyPath,rpcEnvironmentVariable' : 'binding,rpcEnvironmentVariable')
       || !/^NARYX_[A-Z0-9_]+_RPC_URL$/.test(entry.rpcEnvironmentVariable)) throw new Error('Native cash market configuration differs.');
     const rpc = environment[entry.rpcEnvironmentVariable];
     if (!rpc) throw new Error('Native cash RPC is unavailable.');
@@ -70,7 +72,8 @@ export async function loadNativeCashTestnetRuntime(environment: NodeJS.ProcessEn
       abi: parseAbi(['function governor() view returns(address)']), functionName: 'governor' });
     registrations.push({ marketId: binding.marketId, manifestHash: keccak256(stringToHex(stringifyProtocolJson(binding))),
       chainId: Number(binding.domain.domainId.slice(7)), clearingHouse: binding.clearingHouse, governor });
-    const signer = loadEvmStrategySolverKey(entry.makerKeyPath, binding.makerOwner);
+    const signer = binding.makerAuthorization === undefined
+      ? loadEvmStrategySolverKey(entry.makerKeyPath!, binding.makerOwner) : undefined;
     ports.push({ marketId: binding.marketId, makerOwner: binding.makerOwner, quote: async input => {
       const quote = await adapter.quote(input);
       const state = registration.status(binding.marketId).state;
@@ -79,9 +82,16 @@ export async function loadNativeCashTestnetRuntime(environment: NodeJS.ProcessEn
     },
       sign: async quote => {
         if (await reads.chainId() !== BigInt(quote.chainId)) throw new Error('Native cash chain changed before signing.');
-        return signer.signTypedData(quote.typedData);
-      }, observe: (quote, hash) => observeNativeCashMatch(binding, reads, quote, hash) });
-    markets.push({ marketId: binding.marketId, binding, account: (owner, accountId) => adapter.account(getAddress(owner), accountId), inspect: async () => {
+        return signer === undefined ? nativeCashContractAuthorization(quote) : signer.signTypedData(quote.typedData);
+      }, verifySignature: (quote, signature) => adapter.verifyMakerSignature(quote, signature),
+      observe: (quote, hash) => observeNativeCashMatch(binding, reads, quote, hash) });
+    markets.push({ marketId: binding.marketId, binding, account: (owner, accountId) => adapter.account(getAddress(owner), accountId),
+      ...(binding.makerAuthorization === undefined ? {} : { book: async () => {
+        const state = registration.status(binding.marketId).state;
+        if (state === 'INACTIVE' || state === 'ALL_PAUSED') throw new Error('Native cash standing market is inactive.');
+        const book = await adapter.standingBook();
+        return state === 'ACTIVE' ? book : { ...book, bidQuantity: 0n, askQuantity: 0n };
+      } }), inspect: async () => {
       if (await reads.chainId() !== BigInt(binding.domain.domainId.slice(7))) throw new Error('Native cash chain changed.');
       const block = await head();
       const [reference, paused] = await Promise.all([
@@ -123,6 +133,12 @@ export function createNativeCashTestnetHandler(runtime: Pick<Awaited<ReturnType<
       }
       const quotePath = /^\/v1\/native-cash\/quotes\/([A-Za-z0-9._:-]+)(\/settlement)?$/.exec(url.pathname);
       const tradesPath = /^\/v1\/native-cash\/markets\/([A-Za-z0-9._:-]+)\/trades$/.exec(url.pathname);
+      const bookPath = /^\/v1\/native-cash\/markets\/([A-Za-z0-9._:-]+)\/book$/.exec(url.pathname);
+      if (request.method === 'GET' && bookPath !== null) {
+        const market = runtime.markets.find(m => m.marketId === bookPath[1]);
+        if (!market?.book) { send(404, { error: 'No contract-backed standing book is registered.' }); return; }
+        send(200, { version: 1, result: await market.book() }); return;
+      }
       if (request.method === 'GET' && tradesPath !== null) {
         send(200, { version: 1, activityClass: 'OWNER_SIGNED_TESTNET_EXECUTION', trades: runtime.service.trades(tradesPath[1]!) }); return;
       }

@@ -877,3 +877,4 @@ export { NARYX_MULTI_STRATEGY_ACCOUNT_STATE_ABI } from './multi-strategy-state.j
 export { EvmNativeCashRangeAdapter, NATIVE_CASH_RANGE_ABI, NATIVE_CASH_HOUSE_ABI,
   type EvmNativeCashRangeBinding, type EvmNativeCashRangeReadPort, type EvmNativeCashRangeQuote } from './native-cash-range.js';
 export { observeNativeCashMatch } from './native-cash-observation.js';
+export { nativeCashContractAuthorization, NATIVE_CASH_STANDING_ABI } from './native-cash-range.js';

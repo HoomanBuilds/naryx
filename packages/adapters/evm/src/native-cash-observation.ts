@@ -15,6 +15,8 @@ export async function observeNativeCashMatch(binding: EvmNativeCashRangeBinding,
     || !['eip155:84532', 'eip155:421614'].includes(binding.domain.domainId)
     || quote.kind !== binding.kind || quote.marketId !== binding.marketId || quote.environment !== 'testnet'
     || quote.makerOwner !== binding.makerOwner || !['BUY', 'SELL'].includes(quote.side)
+    || quote.makerAuthorization?.kind !== binding.makerAuthorization?.kind
+    || quote.makerAuthorization?.codeHash !== binding.makerAuthorization?.codeHash
     || quote.maximumPriceTicks !== binding.maximumPriceTicks || quote.priceTicks !== quote.match.priceTicks
     || quote.match.priceTicks < 1n || quote.match.priceTicks > binding.maximumPriceTicks
     || (quote.side === 'BUY' ? quote.match.shortAccountId : quote.match.longAccountId)
@@ -37,7 +39,8 @@ export async function observeNativeCashMatch(binding: EvmNativeCashRangeBinding,
     throw new Error('Native cash settlement is not successful, canonical and finalized.');
   }
   for (const [address, hash] of [[binding.controller, binding.controllerCodeHash],
-    [binding.clearingHouse, binding.clearingHouseCodeHash], [binding.collateralToken, binding.collateralTokenCodeHash]] as const) {
+    [binding.clearingHouse, binding.clearingHouseCodeHash], [binding.collateralToken, binding.collateralTokenCodeHash],
+    ...(binding.makerAuthorization === undefined ? [] : [[binding.makerOwner, binding.makerAuthorization.codeHash] as const])] as const) {
     if (keccak256(await reads.code(address, receipt.blockNumber)) !== hash) throw new Error('Native cash settlement code differs.');
   }
   const transaction = await reads.transaction(transactionHash);

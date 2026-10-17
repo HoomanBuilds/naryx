@@ -2,7 +2,7 @@ import {
   applyNativeClearingMatch, assetRef, domainRef, nativeClearingAccount, nativeClearingDomainState,
   nativeClearingPolicy, protocolId, toHex, type NativeClearingPolicy,
 } from '@naryx/protocol-types';
-import { getAddress, hashTypedData, keccak256, parseAbi, type Address, type Hex } from 'viem';
+import { encodeAbiParameters, getAddress, hashTypedData, keccak256, parseAbi, parseAbiParameters, recoverTypedDataAddress, type Address, type Hex } from 'viem';
 import { evmNativeClearingAccountId, type EvmNativeClearingBinding } from './native-clearing-backing.js';
 import { hash32, requiredEvmAddress, structField, type EvmContractRead } from './readPort.js';
 
@@ -42,6 +42,17 @@ export interface EvmNativeCashRangeBinding extends EvmNativeClearingBinding {
   readonly policy: NativeClearingPolicy;
   readonly makerAccountId: string;
   readonly makerOwner: Address;
+  readonly makerAuthorization?: Readonly<{ kind: 'ERC1271_NATIVE_CASH_STANDING_V1'; codeHash: Hex }>;
+}
+
+export const NATIVE_CASH_STANDING_ABI = parseAbi([
+  'function clearingHouse() view returns(address)', 'function controller() view returns(address)',
+  'function makerAccountId() view returns(bytes32)', 'function spreadBps() view returns(uint16)',
+  'function book() view returns(uint128 bidTicks,uint128 askTicks,uint128 bidQuantity,uint128 askQuantity,uint64 validUntil)',
+  'function isValidSignature(bytes32,bytes) view returns(bytes4)',
+]);
+export function nativeCashContractAuthorization(quote: Pick<EvmNativeCashRangeQuote, 'match'>): Hex {
+  return encodeAbiParameters(parseAbiParameters('(bytes32 authorizationHash,bytes32 longAccountId,bytes32 shortAccountId,bytes32 feePayerAccountId,uint64 longSequence,uint64 shortSequence,uint128 quantityAtoms,uint128 priceTicks,uint16 maxFeeBps,uint64 expiry)'), [quote.match]);
 }
 
 export interface EvmNativeCashRangeReadPort {
@@ -84,6 +95,47 @@ export class EvmNativeCashRangeAdapter {
       collateralToken: requiredEvmAddress(input.collateralToken, 'collateral token'), collateralTokenCodeHash: hash32(input.collateralTokenCodeHash, 'token code hash'),
       makerOwner: requiredEvmAddress(input.makerOwner, 'maker owner') });
     this.#reads = reads;
+    if (input.makerAuthorization !== undefined) {
+      requireCondition(input.makerAuthorization.kind === 'ERC1271_NATIVE_CASH_STANDING_V1', 'maker authorization class is unsupported');
+      hash32(input.makerAuthorization.codeHash, 'standing maker code hash');
+    }
+  }
+
+  async standingBook() {
+    const b = this.#binding;
+    requireCondition(b.makerAuthorization?.kind === 'ERC1271_NATIVE_CASH_STANDING_V1', 'no standing maker is registered');
+    requireCondition(await this.#reads.chainId() === BigInt(b.domain.domainId.slice(7)), 'RPC chain identity differs');
+    const block = await this.#reads.head();
+    for (const [address, codeHash] of [[b.makerOwner, b.makerAuthorization.codeHash], [b.controller, b.controllerCodeHash],
+      [b.clearingHouse, b.clearingHouseCodeHash], [b.collateralToken, b.collateralTokenCodeHash]] as const) {
+      requireCondition(keccak256(await this.#reads.code(address, block.number)) === codeHash, 'standing maker dependency code differs');
+    }
+    const read = (functionName: string) => this.#reads.read({ address: b.makerOwner, abi: NATIVE_CASH_STANDING_ABI, functionName }, block.number);
+    const [house, controller, accountId, spread, book] = await Promise.all([
+      read('clearingHouse'), read('controller'), read('makerAccountId'), read('spreadBps'), read('book'),
+    ]);
+    requireCondition(getAddress(String(house)) === b.clearingHouse && getAddress(String(controller)) === b.controller
+      && accountId === evmNativeClearingAccountId(`0x${toHex(b.policy.policyHash)}`, b.makerAccountId)
+      && spread === 10, 'standing maker binding differs');
+    const result = { version: 1, marketId: b.marketId, environment: 'testnet' as const, domain: b.domain,
+      makerOwner: b.makerOwner, clearingHouse: b.clearingHouse, codeHash: b.makerAuthorization.codeHash,
+      quoteMode: 'EXECUTION_COMMITMENT' as const, reservationPolicy: 'RESERVE_ON_ACCEPT' as const,
+      bidTicks: integer(structField(book, 0, 'bidTicks')), askTicks: integer(structField(book, 1, 'askTicks')),
+      bidQuantity: integer(structField(book, 2, 'bidQuantity')), askQuantity: integer(structField(book, 3, 'askQuantity')),
+      validUntil: integer(structField(book, 4, 'validUntil')), block };
+    requireCondition(result.validUntil > block.timestamp && result.bidTicks >= 1n && result.askTicks <= b.maximumPriceTicks
+      && result.bidTicks <= result.askTicks && result.bidQuantity <= b.policy.maximumPositionAtoms
+      && result.askQuantity <= b.policy.maximumPositionAtoms, 'standing book bounds differ');
+    return Object.freeze(result);
+  }
+
+  async verifyMakerSignature(quote: EvmNativeCashRangeQuote, signature: Hex): Promise<boolean> {
+    if (this.#binding.makerAuthorization === undefined) return getAddress(await recoverTypedDataAddress({ ...quote.typedData, signature })) === this.#binding.makerOwner;
+    await this.standingBook();
+    if (signature !== nativeCashContractAuthorization(quote)) return false;
+    const block = await this.#reads.head();
+    return await this.#reads.read({ address: this.#binding.makerOwner, abi: NATIVE_CASH_STANDING_ABI,
+      functionName: 'isValidSignature', args: [quote.digest, signature] }, block.number) === '0x1626ba7e';
   }
 
   async account(ownerInput: Address, logicalId: string) {
@@ -128,6 +180,7 @@ export class EvmNativeCashRangeAdapter {
     authorizationHash: Hex; nowSeconds: bigint; lifetimeSeconds: bigint; spreadBps: number;
   }>) {
     const binding = this.#binding;
+    if (binding.makerAuthorization !== undefined) await this.standingBook();
     const owner = requiredEvmAddress(input.owner, 'taker owner');
     const takerId = protocolId(input.accountId);
     hash32(input.authorizationHash, 'cash quote authorization hash');
@@ -208,7 +261,8 @@ export class EvmNativeCashRangeAdapter {
       domain: binding.domain, guarantee: 'OWNER_SIGNED_NATIVE_CASH_MATCH' as const, quoteMode: 'EXECUTION_COMMITMENT' as const,
       chainId: typedData.domain.chainId, clearingHouse: binding.clearingHouse, makerOwner: binding.makerOwner, owner,
       side: input.side, reducingOnly, priceTicks: price, referencePriceTicks: markPrice, maximumPriceTicks: binding.maximumPriceTicks,
-      observedBlock: Object.freeze(head), match: Object.freeze(match), typedData, digest: hashTypedData(typedData) });
+      observedBlock: Object.freeze(head), match: Object.freeze(match), typedData, digest: hashTypedData(typedData),
+      ...(binding.makerAuthorization === undefined ? {} : { makerAuthorization: binding.makerAuthorization }) });
   }
 }
 

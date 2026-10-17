@@ -13,6 +13,7 @@ export interface NativeCashMarketPort {
   quote(input: { owner: Address; accountId: string; side: 'BUY' | 'SELL'; quantityAtoms: bigint;
     authorizationHash: Hex; nowSeconds: bigint; lifetimeSeconds: bigint; spreadBps: number }): Promise<EvmNativeCashRangeQuote>;
   sign(quote: EvmNativeCashRangeQuote): Promise<Hex>;
+  verifySignature?(quote: EvmNativeCashRangeQuote, signature: Hex): Promise<boolean>;
   observe(quote: EvmNativeCashRangeQuote, transactionHash: Hex): ReturnType<typeof observeNativeCashMatch>;
 }
 
@@ -128,9 +129,18 @@ export class NativeCashService {
       const result = stored(); if (result !== undefined) return result;
       const current = this.#now();
       if (quote.match.expiry * 1000n < BigInt(current + 5000)) throw new Error('Native cash quote expired before issuance.');
-      const lease = this.#db.prepare('SELECT expires_at_ms FROM native_cash_quote_leases WHERE market_id=?')
-        .get(request.marketId) as { expires_at_ms: number } | undefined;
-      if (lease !== undefined && lease.expires_at_ms > current) throw new Error('Native cash maker has an outstanding quote; retry after expiry.');
+      const lease = this.#db.prepare('SELECT request_id,expires_at_ms FROM native_cash_quote_leases WHERE market_id=?')
+        .get(request.marketId) as { request_id: string; expires_at_ms: number } | undefined;
+      if (lease !== undefined && lease.expires_at_ms > current) {
+        const previousQuote = this.quote(lease.request_id)?.quote;
+        const makerSequence = quote.side === 'BUY' ? quote.match.shortSequence : quote.match.longSequence;
+        const previousSequence = previousQuote?.side === 'BUY' ? previousQuote.match.shortSequence : previousQuote?.match.longSequence;
+        if (previousQuote === undefined || previousSequence === undefined || makerSequence <= previousSequence
+          || quote.clearingHouse !== previousQuote.clearingHouse || quote.chainId !== previousQuote.chainId
+          || quote.makerOwner !== previousQuote.makerOwner || quote.observedBlock.number < previousQuote.observedBlock.number) {
+          throw new Error('Native cash maker has an outstanding quote; retry after expiry.');
+        }
+      }
       this.#db.prepare('INSERT INTO native_cash_quotes VALUES(?,?,?,?,\'ISSUING\',NULL,?)')
         .run(request.requestId, request.marketId, request.owner, requestJson, now);
       this.#db.prepare('INSERT INTO native_cash_quote_leases VALUES(?,?,?) ON CONFLICT(market_id) DO UPDATE SET request_id=excluded.request_id,expires_at_ms=excluded.expires_at_ms')
@@ -140,7 +150,10 @@ export class NativeCashService {
     if (existing !== undefined) return existing;
     try {
       const makerSignature = await market.sign(quote);
-      if (getAddress(await recoverTypedDataAddress({ ...quote.typedData, signature: makerSignature })) !== getAddress(market.makerOwner)) {
+      const verified = market.verifySignature === undefined
+        ? getAddress(await recoverTypedDataAddress({ ...quote.typedData, signature: makerSignature })) === getAddress(market.makerOwner)
+        : await market.verifySignature(quote, makerSignature);
+      if (!verified) {
         throw new Error('Native cash maker signature differs.');
       }
       const result: NativeCashSignedQuote = { version: 1, requestId: request.requestId, quote, makerSignature };

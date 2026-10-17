@@ -3,7 +3,7 @@ import test from 'node:test';
 import { assetRef, domainRef, nativeClearingPolicy, toHex, versionedManifestRef } from '@naryx/protocol-types';
 import { encodeAbiParameters, encodeEventTopics, encodeFunctionData, getAddress, hashTypedData, keccak256, parseAbi, type Address, type Hex, type TransactionReceipt } from 'viem';
 import { EvmNativeCashRangeAdapter, type EvmNativeCashRangeBinding, type EvmNativeCashRangeReadPort } from '../src/native-cash-range.js';
-import { NATIVE_CASH_HOUSE_ABI } from '../src/native-cash-range.js';
+import { NATIVE_CASH_HOUSE_ABI, nativeCashContractAuthorization } from '../src/native-cash-range.js';
 import { observeNativeCashMatch } from '../src/native-cash-observation.js';
 import type { EvmNativeClearingTransitionReadPort } from '../src/native-clearing-transition.js';
 import { evmNativeClearingAccountId } from '../src/native-clearing-backing.js';
@@ -62,6 +62,23 @@ test('native cash quotes bind exact owner sequences and fully funded contract st
   assert.equal(sell.priceTicks, 499_500n);
   assert.equal(quote.match.longAccountId, sell.match.shortAccountId);
   assert.equal(quote.match.shortAccountId, sell.match.longAccountId);
+});
+
+test('standing maker books pin their contract identity and use exact ERC1271 match authorizations', async () => {
+  const f = fixture();
+  const smart = { ...binding, makerAuthorization: { kind: 'ERC1271_NATIVE_CASH_STANDING_V1' as const, codeHash: keccak256('0x01') } };
+  f.values.set('controller', controller);
+  f.values.set('makerAccountId', evmNativeClearingAccountId(`0x${toHex(policy.policyHash)}`, binding.makerAccountId));
+  f.values.set('spreadBps', 10);
+  f.values.set('book', [499_500n, 500_502n, 1n, 1n, 1600n]);
+  f.values.set('isValidSignature', '0x1626ba7e');
+  const adapter = new EvmNativeCashRangeAdapter(smart, f.reads);
+  const book = await adapter.standingBook(); assert.equal(book.bidQuantity, 1n);
+  const q = await adapter.quote(input);
+  assert.equal(await adapter.verifyMakerSignature(q, nativeCashContractAuthorization(q)), true);
+  assert.equal(await adapter.verifyMakerSignature(q, '0x00'), false);
+  f.values.set('controller', address('9'));
+  await assert.rejects(adapter.standingBook(), /binding differs/);
 });
 
 test('native account reads bind owner, policy, collateral and testnet identity without depending on live marks', async () => {
