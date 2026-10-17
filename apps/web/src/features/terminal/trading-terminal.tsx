@@ -288,7 +288,7 @@ function hyperliquidLaneBlocked(progress: HyperliquidAttemptProgress | null | un
 
 function hyperliquidProgressLabel(progress: HyperliquidAttemptProgress | null): string | null {
   if (progress === null) return null;
-  if (hyperliquidLaneBlocked(progress)) return "Waiting, shared lane paused";
+  if (hyperliquidLaneBlocked(progress)) return "Waiting, execution lane paused";
   if (progress.state === "QUEUED") {
     return progress.queuePosition === 0 ? "Queued, next in line" : `Queued, ${progress.queuePosition} ahead`;
   }
@@ -1557,7 +1557,7 @@ function Ticket({
         <span>Account</span>
         <span className={styles.ticketAccount} title={account ?? undefined}>
           <ChainIcon chain={selectedDomain} size={13} />
-          {selectedDomain === "hyperliquid" ? (account ? `${account} via Naryx testnet account` : "Not connected") : account ?? "Not connected"}
+          {selectedDomain === "hyperliquid" ? (account ? `${account} - ${hyperliquidFlow?.context?.authorizationMode === "OWNER_SIGNED_OMNIBUS_ACCOUNT" ? "controlled shared account" : "your Hyperliquid account"}` : "Not connected") : account ?? "Not connected"}
         </span>
       </div>
 

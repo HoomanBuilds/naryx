@@ -92,7 +92,7 @@ export function HyperliquidAccountSetup({ apiOrigin }: { apiOrigin: string | nul
     <p className={styles.reviewNotice}>Your funds stay in your own Hyperliquid Testnet account. Naryx stores an encrypted API key with trading authority, not your wallet key. Venue approval is not a market-specific permission.</p>
     <p className={styles.reviewNotice}>Use Standard accounts with isolated margin for BTC and supported HIP-3 markets. Close existing positions and orders before enrollment. Fund each required testnet market separately.</p>
     {status?.owner === owner && status.agentAddress ? <p className={styles.reviewNotice}>
-      API wallet: <button type="button" title={status.agentAddress} onClick={() => void navigator.clipboard.writeText(status.agentAddress!)}>{status.agentAddress.slice(0, 8)}...{status.agentAddress.slice(-6)}</button>
+      API wallet: <button type="button" title={status.agentAddress} onClick={() => void navigator.clipboard.writeText(status.agentAddress!).catch(() => setError("Could not copy the API wallet address."))}>{status.agentAddress.slice(0, 8)}...{status.agentAddress.slice(-6)}</button>
     </p> : null}
     <a href="https://app.hyperliquid-testnet.xyz/trade" target="_blank" rel="noreferrer">Open Hyperliquid Testnet settings</a>
     <button type="button" className={styles.primaryAction} disabled={busy !== null || wallet.awaitingWallet || wallet.switching} onClick={() => void advance()}>
