@@ -1,0 +1,22 @@
+[Unit]
+Description=Naryx bounded native cash testnet oracle updater
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=naryx
+Group=naryx
+WorkingDirectory=/srv/naryx/app/services/solver
+ExecStart=/usr/bin/flock --nonblock /srv/naryx/data/native-cash-v1/mark.lock /usr/bin/node --env-file=/srv/naryx/release/env/native-cash.env /srv/naryx/app/services/solver/dist/native-cash-mark-main.js
+Restart=on-failure
+RestartSec=5
+ReadWritePaths=/srv/naryx/data/native-cash-v1
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
