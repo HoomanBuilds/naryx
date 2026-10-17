@@ -36,6 +36,7 @@ import {
   nativeClearingPolicy,
   type NativeClearingPolicy,
 } from './native-package-clearing.js';
+import { packageGraph, packageGraphHash, type PackageGraphInput } from './package-graph.js';
 
 export const NATIVE_CLEARING_MATCH_AUTHORIZATION_VERSION = 1;
 
@@ -51,6 +52,43 @@ export interface NativeClearingMatchAuthorizationInput {
   readonly fillSequence: bigint;
   readonly currentExpiryUnit: ExpiryUnit;
   readonly currentExpiryValue: bigint;
+  readonly takerGraph?: PackageGraphInput;
+  readonly makerGraph?: PackageGraphInput;
+}
+
+function verifyEconomicUnit(
+  input: NativeClearingMatchAuthorizationInput,
+  policy: NativeClearingPolicy,
+  taker: PackageSettlementCommitment,
+  maker: PackageSettlementCommitment,
+): void {
+  if (input.takerGraph === undefined && input.makerGraph === undefined && equalHash(taker.graphHash, maker.graphHash)) {
+    return;
+  }
+  if (input.takerGraph === undefined || input.makerGraph === undefined) {
+    throw new MalformedInputError('nativeClearingMatchAuthorization.graphs', 'different owner graphs require both original economic-unit witnesses');
+  }
+  const graphs = [packageGraph(input.takerGraph), packageGraph(input.makerGraph)];
+  for (const [index, commitment] of [taker, maker].entries()) {
+    const graph = graphs[index]!;
+    if (!equalHash(packageGraphHash(graph), commitment.graphHash) || graph.owner !== commitment.participantId
+      || graph.strategyAccountRefs.length !== 1 || graph.strategyAccountRefs[0] !== commitment.settlementAccount
+      || graph.environment !== policy.environment || graph.executionClassId !== policy.executionClassId
+      || graph.seriesId !== policy.strategySeries.subjectId || graph.seriesVersion !== policy.strategySeries.manifestVersion
+      || !equalHash(graph.seriesManifestHash, policy.strategySeries.manifestHash)
+      || graph.settlementClass !== 'ATOMIC_POSTCONDITION' || graph.recoverySlots.length !== 0
+      || graph.expiryUnit !== commitment.validUntilUnit || graph.packageExpiryValue < commitment.validUntilValue) {
+      throw new MalformedInputError('nativeClearingMatchAuthorization.graphs', 'economic-unit witness differs from its signed owner, series or clearing class');
+    }
+  }
+  const neutralHash = commitmentHash(new Uint8Array(32).fill(1));
+  const unitHash = (graph: ReturnType<typeof packageGraph>) => packageGraphHash({ ...graph,
+    owner: 'native-clearing-economic-unit', strategyAccountRefs: ['native-clearing-economic-unit'], nonce: 0n,
+    policyHashes: { netting: neutralHash, privacy: neutralHash, solver: neutralHash, delivery: neutralHash, resource: neutralHash, portfolioRiskLimits: neutralHash },
+  });
+  if (!equalHash(unitHash(graphs[0]!), unitHash(graphs[1]!))) {
+    throw new MalformedInputError('nativeClearingMatchAuthorization.graphs', 'different package economics');
+  }
 }
 
 export interface NativeClearingMatchAuthorization {
@@ -156,10 +194,10 @@ export function nativeClearingMatchAuthorization(
     throw new MalformedInputError('nativeClearingMatchAuthorization.commitments', 'settlement commitment identity mismatch');
   }
   if (taker.environment !== policy.environment || maker.environment !== policy.environment
-    || taker.executionClassId !== policy.executionClassId || maker.executionClassId !== policy.executionClassId
-    || !equalHash(taker.graphHash, maker.graphHash)) {
+    || taker.executionClassId !== policy.executionClassId || maker.executionClassId !== policy.executionClassId) {
     throw new MalformedInputError('nativeClearingMatchAuthorization.commitments', 'settlement commitments describe different package economics');
   }
+  verifyEconomicUnit(input, policy, taker, maker);
   if (taker.quantity < fill.quantity || maker.quantity < fill.quantity) {
     throw new MalformedInputError('nativeClearingMatchAuthorization.commitments', 'settlement commitment quantity is below the fill');
   }

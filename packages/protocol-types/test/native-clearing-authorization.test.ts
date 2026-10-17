@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   assetRef,
+  adapterRef,
   commitmentHash,
+  domainRef,
   manifestHash,
   nativeClearingMatchAuthorization,
   nativeClearingPolicy,
@@ -10,12 +12,15 @@ import {
   packageAllocationHash,
   packageMatchingPolicy,
   packageMatchingPolicyHash,
+  packageGraph,
+  packageGraphHash,
   packageSettlementCommitment,
   packageSettlementCommitmentHash,
   packageSettlementHandoff,
   protocolId,
   versionedManifestRef,
   type PackageLiquiditySource,
+  type PackageGraphInput,
 } from '../src/index.js';
 
 const id = (value: number): string => value.toString(16).padStart(64, '0');
@@ -162,7 +167,7 @@ test('native clearing authorization rejects implied fills, mismatched commitment
   const otherGraphHandoff = packageSettlementHandoff({ ...direct.handoff, fills: [{ ...direct.handoff.fills[0]!, makerSettlementCommitmentHash: packageSettlementCommitmentHash(otherGraph) }] });
   assert.throws(() => nativeClearingMatchAuthorization({ ...direct, handoff: otherGraphHandoff,
     takerSettlementCommitment: direct.taker, makerSettlementCommitment: otherGraph, fillSequence: 1n,
-    currentExpiryUnit: 'SOLANA_SLOT', currentExpiryValue: 50n }), /different package economics/);
+    currentExpiryUnit: 'SOLANA_SLOT', currentExpiryValue: 50n }), /require both original/);
   const wrongMaker = packageSettlementCommitment({
     ...direct.maker,
     packageOrderId: id(99),
@@ -191,4 +196,53 @@ test('native clearing authorization rejects implied fills, mismatched commitment
     currentExpiryUnit: 'SOLANA_SLOT',
     currentExpiryValue: 90n,
   }), /is expired/);
+});
+
+function ownerGraph(owner: string, account: string, nonce: bigint): PackageGraphInput {
+  const sol = assetRef('sol', id(30), 9);
+  return packageGraph({
+    graphVersion: 1, environment: 'devnet', templateId: 'carry-v1', templateVersion: 1,
+    packageTemplateManifestHash: id(31), seriesId: 'sol-carry', seriesVersion: 1, seriesManifestHash: id(1),
+    executionClassId: 'sol-carry-package', executionClassVersion: 1, executionClassManifestHash: id(32),
+    lifecycleAction: 'ENTRY', owner, strategyAccountRefs: [account], nonce,
+    legs: [{ legId: 'spot', legFamily: 'SPOT_SWAP', legTypeId: 'spot-purchase',
+      domain: domainRef('svm:devnet', 1, id(33)),
+      adapter: adapterRef({ adapterId: 'spot-adapter', adapterManifestVersion: 1, adapterManifestHash: id(34) }),
+      venue: versionedManifestRef('spot', 1, id(35)), market: versionedManifestRef('sol-usdc', 1, id(36)),
+      assets: [sol, assetRef('usdc', id(2), 6)], side: 'BUY', quantityAsset: sol,
+      quantityAtoms: 10n, minimumQuantityAtoms: 10n, maximumFeeQuoteAtoms: 0n,
+      preconditionHashes: [], postconditionHashes: [], timeInForce: 'FOK', legExpiryValue: 100n }],
+    dependencyEdges: [], executionGroups: [{ groupId: 'atomic', kind: 'ALL_OR_NONE', legIds: ['spot'] }],
+    settlementClass: 'ATOMIC_POSTCONDITION',
+    policyHashes: { netting: id(Number(nonce) + 40), privacy: id(41), solver: id(42), delivery: id(43), resource: id(44), portfolioRiskLimits: id(45) },
+    recoverySlots: [], maximumRecoveryCostQuoteAtoms: 0n, expiryUnit: 'SOLANA_SLOT', packageExpiryValue: 100n,
+  });
+}
+
+test('owner-bound graphs clear only when their original witnesses prove identical trading terms', () => {
+  const value = fixture();
+  const takerGraph = ownerGraph('taker', 'account-taker', 1n);
+  const makerGraph = ownerGraph('maker', 'account-maker', 2n);
+  const witness = (right: PackageGraphInput = makerGraph) => {
+    const taker = packageSettlementCommitment({ ...value.taker, graphHash: packageGraphHash(takerGraph) });
+    const maker = packageSettlementCommitment({ ...value.maker, graphHash: packageGraphHash(right) });
+    return { ...value, takerGraph, makerGraph: right, takerSettlementCommitment: taker, makerSettlementCommitment: maker,
+      handoff: packageSettlementHandoff({ ...value.handoff, takerSettlementCommitmentHash: packageSettlementCommitmentHash(taker),
+        fills: [{ ...value.handoff.fills[0]!, makerSettlementCommitmentHash: packageSettlementCommitmentHash(maker) }] }),
+      fillSequence: 1n, currentExpiryUnit: 'SOLANA_SLOT' as const, currentExpiryValue: 50n };
+  };
+  const input = witness();
+  assert.notDeepEqual(input.takerSettlementCommitment.graphHash, input.makerSettlementCommitment.graphHash);
+  assert.equal(nativeClearingMatchAuthorization(input).quantityAtoms, 10n);
+  const { makerGraph: omitted, ...missingWitness } = input;
+  assert.ok(omitted);
+  assert.throws(() => nativeClearingMatchAuthorization(missingWitness), /require both original/);
+  assert.throws(() => nativeClearingMatchAuthorization({ ...input, makerGraph: { ...makerGraph, nonce: 3n } }), /witness differs/);
+  assert.throws(() => nativeClearingMatchAuthorization(witness({ ...makerGraph, owner: 'other-owner' })), /witness differs/);
+  assert.throws(() => nativeClearingMatchAuthorization(witness({ ...makerGraph, strategyAccountRefs: ['other-account'] })), /witness differs/);
+  assert.throws(() => nativeClearingMatchAuthorization(witness({ ...makerGraph, seriesId: 'other-series' })), /witness differs/);
+  assert.throws(() => nativeClearingMatchAuthorization(witness({ ...makerGraph,
+    legs: [{ ...makerGraph.legs[0]!, quantityAtoms: 20n, minimumQuantityAtoms: 20n }] })), /different package economics/);
+  assert.throws(() => nativeClearingMatchAuthorization(witness({ ...makerGraph,
+    legs: [{ ...makerGraph.legs[0]!, maximumFeeQuoteAtoms: 1n }] })), /different package economics/);
 });
