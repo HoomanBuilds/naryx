@@ -52,7 +52,7 @@ CREATE TRIGGER IF NOT EXISTS native_cash_receipts_no_delete BEFORE DELETE ON nat
   BEGIN SELECT RAISE(ABORT,'native cash receipts are durable'); END;
 `;
 
-function externalPath(value: string) {
+export function nativeCashDataPath(value: string) {
   if (!isAbsolute(value) || value === ':memory:') throw new Error('Native cash database requires an absolute durable path.');
   const path = resolve(value);
   let root = dirname(fileURLToPath(import.meta.url));
@@ -75,7 +75,7 @@ export class NativeCashService {
     }
     this.#markets = new Map(markets.map(m => [m.marketId, m]));
     this.#clock = clock;
-    this.#db = new Database(externalPath(path));
+    this.#db = new Database(nativeCashDataPath(path));
     this.#db.pragma('journal_mode = WAL');
     this.#db.pragma('synchronous = FULL');
     this.#db.pragma('busy_timeout = 5000');
