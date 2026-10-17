@@ -20,6 +20,8 @@ Quote review binds the selected market, domain manifest, policy, owner account, 
 
 ### Package execution and evidence
 
+`getNativeCashBook` validates standing cash-book domain, supplier, code identity, size and price bounds. The recognized `ERC1271_NATIVE_CASH_STANDING_V1` supplier uses exact match authorization bytes rather than an EOA maker signature. The SDK binds those bytes to the selected market and taker intent; the clearing house verifies the supplier contract onchain at execution. Included transactions remain in a bounded receipt journal until finalization, but confirmed account refresh unlocks the next action, including exits.
+
 `NaryxClient` covers every public v1 route: registries (domains, instruments, package templates, solvers), strategy series and execution classes, package markets (listing, depth, tape, candles, executable index, implied provenance), allocation evidence, and the computation routes (order validation, route-decision replay, route comparison, clearing simulation, de-risk validation). It accepts only an HTTPS endpoint or HTTP on a loopback host, bounds response size, requires protocol JSON, and validates every field it returns. It holds no key and signs nothing.
 
 Served evidence is never trusted where it can be checked:

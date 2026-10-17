@@ -33,6 +33,8 @@ Submitted transaction hashes are stored locally per API, house, and wallet. Acti
 
 The initial ETH cash-range markets are bounded, fully collateralized cash instruments. They do not create routed spot/perpetual positions, options, cross-chain atomicity, or public package-book depth.
 
+Registered standing-supplier variants additionally show live contract-derived bids, asks and funded capacity. Their pricing policy runs onchain through ERC-1271. These separate cash-range books do not imply that the external strategy books have funded maker liquidity. Capacity is conditional on the account state at acceptance and is never labeled an exclusive inventory reservation.
+
 ## Data and trust boundaries
 
 `src/features/terminal/shell/` owns the shared header, selected domain, service health, wallet context, and transaction watch. `pages/` owns the six terminal views. `pro/` owns the chart, depth, ticket-side widgets, and market bar. `private-http-terminal-provider.ts` talks to the private terminal API; `public-market-feed.ts` uses the public v1 API and stream.

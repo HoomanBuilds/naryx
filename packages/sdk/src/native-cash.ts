@@ -1,5 +1,5 @@
 import { domainRef, nativeClearingPolicy, protocolId, toHex, type DomainRef, type NativeClearingPolicy } from '@naryx/protocol-types';
-import { encodeAbiParameters, encodeFunctionData, erc20Abi, getAddress, hashTypedData, keccak256, parseAbi,
+import { encodeAbiParameters, encodeFunctionData, erc20Abi, getAddress, hashTypedData, keccak256, parseAbi, parseAbiParameters,
   recoverTypedDataAddress, type Address, type Hex } from 'viem';
 
 const HOUSE_ABI = parseAbi([
@@ -24,8 +24,17 @@ export interface NativeCashMarket {
   readonly binding: Readonly<{ kind: 'EVM_NATIVE_CASH_RANGE_V1'; marketId: string; domain: DomainRef;
     controller: Address; controllerCodeHash: Hex; clearingHouse: Address; clearingHouseCodeHash: Hex;
     collateralToken: Address; collateralTokenCodeHash: Hex; policy: NativeClearingPolicy;
-    maximumPriceTicks: bigint; makerAccountId: string; makerOwner: Address }>;
+    maximumPriceTicks: bigint; makerAccountId: string; makerOwner: Address;
+    makerAuthorization?: NativeCashMakerAuthorization }>;
   readonly reference: unknown;
+}
+export interface NativeCashMakerAuthorization { readonly kind: 'ERC1271_NATIVE_CASH_STANDING_V1'; readonly codeHash: Hex }
+export interface NativeCashStandingBook {
+  readonly version: 1; readonly marketId: string; readonly environment: 'testnet'; readonly domain: DomainRef;
+  readonly makerOwner: Address; readonly clearingHouse: Address; readonly codeHash: Hex;
+  readonly quoteMode: 'EXECUTION_COMMITMENT'; readonly reservationPolicy: 'RESERVE_ON_ACCEPT';
+  readonly bidTicks: bigint; readonly askTicks: bigint; readonly bidQuantity: bigint; readonly askQuantity: bigint;
+  readonly validUntil: bigint; readonly block: Readonly<{ number: bigint; hash: Hex; timestamp: bigint }>;
 }
 
 export interface NativeCashAccount {
@@ -65,7 +74,8 @@ export interface NativeCashSignedQuote {
     domain: DomainRef; guarantee: 'OWNER_SIGNED_NATIVE_CASH_MATCH'; quoteMode: 'EXECUTION_COMMITMENT';
     chainId: number; clearingHouse: Address; makerOwner: Address; owner: Address; side: 'BUY' | 'SELL'; reducingOnly: boolean;
     priceTicks: bigint; referencePriceTicks: bigint; maximumPriceTicks: bigint;
-    match: NativeCashMatch; typedData: ReturnType<typeof nativeCashTypedData>; digest: Hex }>;
+    match: NativeCashMatch; typedData: ReturnType<typeof nativeCashTypedData>; digest: Hex;
+    makerAuthorization?: NativeCashMakerAuthorization }>;
 }
 export interface NativeCashTrade {
   readonly version: 1; readonly kind: 'NATIVE_CASH_RANGE_MATCH'; readonly environment: 'testnet';
@@ -102,6 +112,11 @@ export function reviewNativeCashMarket(input: unknown): NativeCashMarket {
   requireCash(getAddress(policy.markAuthorityId) === getAddress(b.controller));
   for (const value of [b.controllerCodeHash, b.clearingHouseCodeHash, b.collateralTokenCodeHash]) hash(value);
   protocolId(b.makerAccountId);
+  if (b.makerAuthorization !== undefined) {
+    requireCash(b.makerAuthorization.kind === 'ERC1271_NATIVE_CASH_STANDING_V1'
+      && Object.keys(b.makerAuthorization).sort().join(',') === 'codeHash,kind');
+    hash(b.makerAuthorization.codeHash);
+  }
   return Object.freeze({ ...market, binding: Object.freeze({ ...b, domain, policy }) });
 }
 
@@ -147,6 +162,8 @@ export async function reviewNativeCashQuote(value: unknown, market: NativeCashMa
     && q.chainId === Number(market.binding.domain.domainId.slice(7)) && getAddress(q.clearingHouse) === getAddress(market.binding.clearingHouse)
     && getAddress(q.owner) === getAddress(request.owner) && getAddress(q.makerOwner) === getAddress(market.binding.makerOwner)
     && q.side === request.side && ['BUY', 'SELL'].includes(q.side) && typeof q.reducingOnly === 'boolean'
+    && q.makerAuthorization?.kind === market.binding.makerAuthorization?.kind
+    && q.makerAuthorization?.codeHash === market.binding.makerAuthorization?.codeHash
     && q.domain.domainId === market.binding.domain.domainId && q.domain.domainManifestVersion === market.binding.domain.domainManifestVersion
     && toHex(q.domain.domainManifestHash) === toHex(market.binding.domain.domainManifestHash));
   const m = q.match;
@@ -164,9 +181,34 @@ export async function reviewNativeCashQuote(value: unknown, market: NativeCashMa
     && m.expiry > nowSeconds && m.expiry <= nowSeconds + 30n);
   const typedData = nativeCashTypedData(market, m);
   requireCash(hashTypedData(typedData) === q.digest && hashTypedData(q.typedData) === q.digest
-    && /^0x[0-9a-f]{130}$/i.test(signed.makerSignature)
-    && getAddress(await recoverTypedDataAddress({ ...typedData, signature: signed.makerSignature })) === getAddress(market.binding.makerOwner));
+    && await validMakerSignature({ ...q, typedData }, signed.makerSignature));
   return Object.freeze({ ...signed, quote: Object.freeze({ ...q, typedData }) });
+}
+
+async function validMakerSignature(q: NativeCashSignedQuote['quote'], signature: Hex): Promise<boolean> {
+  if (q.makerAuthorization === undefined) return /^0x[0-9a-f]{130}$/i.test(signature)
+    && getAddress(await recoverTypedDataAddress({ ...q.typedData, signature })) === getAddress(q.makerOwner);
+  requireCash(q.makerAuthorization.kind === 'ERC1271_NATIVE_CASH_STANDING_V1');
+  hash(q.makerAuthorization.codeHash);
+  const encoded = encodeAbiParameters(parseAbiParameters('(bytes32 authorizationHash,bytes32 longAccountId,bytes32 shortAccountId,bytes32 feePayerAccountId,uint64 longSequence,uint64 shortSequence,uint128 quantityAtoms,uint128 priceTicks,uint16 maxFeeBps,uint64 expiry)'), [q.match]);
+  return signature === encoded;
+}
+
+export function reviewNativeCashBook(value: unknown, market: NativeCashMarket): NativeCashStandingBook {
+  const b = value as NativeCashStandingBook;
+  requireCash(!!b && b.version === 1 && b.marketId === market.marketId && b.environment === 'testnet'
+    && !!market.binding.makerAuthorization && b.codeHash === market.binding.makerAuthorization.codeHash
+    && getAddress(b.makerOwner) === getAddress(market.binding.makerOwner)
+    && getAddress(b.clearingHouse) === getAddress(market.binding.clearingHouse)
+    && b.domain.domainId === market.binding.domain.domainId && b.domain.domainManifestVersion === market.binding.domain.domainManifestVersion
+    && toHex(b.domain.domainManifestHash) === toHex(market.binding.domain.domainManifestHash)
+    && b.quoteMode === 'EXECUTION_COMMITMENT' && b.reservationPolicy === 'RESERVE_ON_ACCEPT');
+  for (const name of ['bidTicks', 'askTicks', 'bidQuantity', 'askQuantity', 'validUntil'] as const) requireCash(typeof b[name] === 'bigint' && b[name] >= 0n);
+  requireCash(b.bidTicks >= 1n && b.askTicks <= market.binding.maximumPriceTicks && b.bidTicks <= b.askTicks
+    && b.bidQuantity <= market.binding.policy.maximumPositionAtoms && b.askQuantity <= market.binding.policy.maximumPositionAtoms
+    && !!b.block && typeof b.block.timestamp === 'bigint' && b.validUntil > b.block.timestamp);
+  hash(b.block.hash);
+  return Object.freeze(b);
 }
 
 export function nativeCashAccountTransaction(market: NativeCashMarket, account: NativeCashAccount,
@@ -195,7 +237,7 @@ export async function nativeCashMatchTransaction(signed: NativeCashSignedQuote, 
     && q.typedData.domain.chainId === q.chainId && q.typedData.domain.verifyingContract === q.clearingHouse
     && hashTypedData(q.typedData) === q.digest && q.match.maxFeeBps === 0
     && Object.entries(q.match).every(([key, value]) => q.typedData.message[key as keyof typeof q.typedData.message] === value)
-    && getAddress(await recoverTypedDataAddress({ ...q.typedData, signature: signed.makerSignature })) === getAddress(q.makerOwner)
+    && await validMakerSignature(q, signed.makerSignature)
     && getAddress(await recoverTypedDataAddress({ ...q.typedData, signature: ownerSignature })) === getAddress(q.owner));
   return { to: q.clearingHouse, value: '0', data: encodeFunctionData({ abi: HOUSE_ABI, functionName: 'executeMatch',
     args: [q.match, q.side === 'BUY' ? ownerSignature : signed.makerSignature, q.side === 'BUY' ? signed.makerSignature : ownerSignature] }) };

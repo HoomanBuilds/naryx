@@ -173,6 +173,7 @@ export {
 export { nativeCashAccountKey, nativeCashWalletAccountId, nativeCashAccountTransaction, nativeCashMatchTransaction,
   reviewNativeCashMarket, reviewNativeCashAccount, reviewNativeCashQuote, reviewNativeCashTrade,
   type NativeCashMarket, type NativeCashAccount, type NativeCashQuoteRequest, type NativeCashSignedQuote,
-  type NativeCashMatch, type NativeCashTrade, type NativeCashTransaction } from './native-cash.js';
+  type NativeCashMatch, type NativeCashTrade, type NativeCashTransaction,
+  reviewNativeCashBook, type NativeCashStandingBook, type NativeCashMakerAuthorization } from './native-cash.js';
 export { readNativeCashPending, updateNativeCashPending, NATIVE_CASH_PENDING_LIMIT,
   type NativeCashPendingTransaction } from './native-cash-pending.js';

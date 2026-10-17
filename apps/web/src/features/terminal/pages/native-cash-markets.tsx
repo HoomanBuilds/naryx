@@ -77,6 +77,9 @@ function CashMarket({ market, client, baseUrl }: { market: NativeCashMarket; cli
     queryFn: () => client.getNativeCashAccount(market, owner!, accountId!) });
   const tradesQuery = useQuery({ queryKey: ["native-cash-trades", baseUrl, market.marketId],
     queryFn: () => client.getNativeCashTrades(market), retry: false, refetchInterval: 30_000, refetchIntervalInBackground: false });
+  const standingBook = useQuery({ queryKey: ["native-cash-book", baseUrl, market.marketId],
+    enabled: market.binding.makerAuthorization !== undefined, queryFn: () => client.getNativeCashBook(market),
+    retry: false, refetchInterval: 10_000, refetchIntervalInBackground: false });
   const account = accountQuery.data;
   const decimals = market.binding.policy.accountingAsset.decimals;
   const token = (value: bigint) => formatAtomicAmount(value, decimals, "test USDC");
@@ -199,11 +202,18 @@ function CashMarket({ market, client, baseUrl }: { market: NativeCashMarket; cli
   const explorer = network.blockExplorers.default.url;
   return <article className={styles.card}>
     <header className={styles.cardHead}>
-      <div className={cash.marketName}><ChainIcon chain={domain} size={22} /><div><h3>ETH cash range</h3><p>{network.name} · Fully collateralized · Cash only</p></div></div>
+      <div className={cash.marketName}><ChainIcon chain={domain} size={22} /><div><h3>ETH cash range{market.binding.makerAuthorization ? " - standing book" : ""}</h3><p>{network.name} · Fully collateralized · Cash only</p></div></div>
       <a className={styles.ghost} href={`${explorer}/address/${market.binding.clearingHouse}`} target="_blank" rel="noreferrer" title={market.binding.clearingHouse}>House {shortAddress(market.binding.clearingHouse)}</a>
     </header>
     <div className={cash.body}>
       <p className={cash.terms}>This is a bounded ETH-price cash market, not a spot/perp package. One unit tracks the controller&apos;s clamped 0.001 ETH exposure from $1,000 to $5,000, plus its minimum price tick. No ETH or external venue position is delivered.</p>
+      {market.binding.makerAuthorization ? <div className={cash.review}><h4>Contract-backed standing liquidity</h4>
+        {standingBook.data ? <dl className={cash.metrics}>
+          <div><dt>Bid / available units</dt><dd>{token(standingBook.data.bidTicks)} / {standingBook.data.bidQuantity.toLocaleString("en-US")} units</dd></div>
+          <div><dt>Ask / available units</dt><dd>{token(standingBook.data.askTicks)} / {standingBook.data.askQuantity.toLocaleString("en-US")} units</dd></div>
+        </dl> : <p>{standingBook.isError ? "Standing book unavailable. Current state must qualify before execution." : "Reading funded maker inventory."}</p>}
+        <p className={cash.terms}>Prices and capacity come from the maker contract. Exact terms, maker inventory and owner margin are rechecked at acceptance. This is not an exclusive inventory reservation.</p>
+      </div> : null}
       {!owner ? <button className={styles.connect} onClick={() => modal.open("evm")}>Connect EVM wallet</button>
         : !wallet.onChain(domain) ? <button className={styles.connect} disabled={wallet.switching} onClick={() => void wallet.switchNetwork(domain)}>Switch to {network.name}</button> : null}
       {owner ? <>

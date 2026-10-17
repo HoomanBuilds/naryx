@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { assetRef, domainRef, nativeClearingPolicy, stringifyProtocolJson, toHex, versionedManifestRef } from '@naryx/protocol-types';
-import { decodeFunctionData, erc20Abi, hashTypedData, parseAbi, type Hex } from 'viem';
+import { decodeFunctionData, encodeAbiParameters, erc20Abi, hashTypedData, parseAbi, parseAbiParameters, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { NaryxClient, NaryxApiError, nativeCashAccountKey, nativeCashAccountTransaction, nativeCashMatchTransaction,
   reviewNativeCashMarket, reviewNativeCashAccount, reviewNativeCashQuote, type NativeCashMarket,
@@ -94,4 +94,17 @@ test('native cash client uses public account and quote routes and translates str
   assert.equal((await client.getNativeCashAccount(m!, owner.address, accountId)).collateralQuoteAtoms, 10_000_000n);
   assert.equal(calls[1]?.method, 'POST');
   await assert.rejects(client.requestNativeCashQuote(m!, request), (e: unknown) => e instanceof NaryxApiError && e.status === 409);
+});
+
+test('recognized standing makers use exact contract authorization bytes, not an invented EOA signature', async () => {
+  const signed = await signedQuote();
+  const makerAuthorization = { kind: 'ERC1271_NATIVE_CASH_STANDING_V1' as const, codeHash: `0x${hash}` as Hex };
+  const standingMarket = { ...market, binding: { ...market.binding, makerAuthorization } };
+  const makerSignature = encodeAbiParameters(parseAbiParameters('(bytes32 authorizationHash,bytes32 longAccountId,bytes32 shortAccountId,bytes32 feePayerAccountId,uint64 longSequence,uint64 shortSequence,uint128 quantityAtoms,uint128 priceTicks,uint16 maxFeeBps,uint64 expiry)'), [signed.quote.match]);
+  const standing = { ...signed, makerSignature, quote: { ...signed.quote, makerAuthorization } };
+  const checked = await reviewNativeCashQuote(standing, standingMarket, request, 1000n);
+  const userSignature = await owner.signTypedData(checked.quote.typedData);
+  assert.equal((await nativeCashMatchTransaction(checked, userSignature, 1001n)).to, house);
+  await assert.rejects(reviewNativeCashQuote({ ...standing, makerSignature: signed.makerSignature }, standingMarket, request, 1000n), /does not match/);
+  await assert.rejects(reviewNativeCashQuote(standing, market, request, 1000n), /does not match/);
 });

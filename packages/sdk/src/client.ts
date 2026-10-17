@@ -254,7 +254,7 @@ import {
   type SettlementPremiumSurface,
 } from '@naryx/protocol-types';
 import { verifyTypedData, type Hex } from 'viem';
-import { reviewNativeCashMarket, reviewNativeCashAccount, reviewNativeCashQuote, reviewNativeCashTrade,
+import { reviewNativeCashMarket, reviewNativeCashAccount, reviewNativeCashQuote, reviewNativeCashTrade, reviewNativeCashBook,
   type NativeCashMarket, type NativeCashQuoteRequest } from './native-cash.js';
 
 const MAX_RESPONSE_CHARS = 2_097_152;
@@ -2447,6 +2447,13 @@ export class NaryxClient {
     const body = record(await this.#request('GET', `/v1/native-cash/markets/${checkId(market.marketId, 'market')}/trades`), 'native cash trades');
     if (body.version !== 1 || body.activityClass !== 'OWNER_SIGNED_TESTNET_EXECUTION') throw new NaryxEvidenceError('Unsupported native cash activity.');
     return Object.freeze(list(body.trades, 'native cash trades').map(value => reviewNativeCashTrade(value, market)));
+  }
+
+  async getNativeCashBook(market: NativeCashMarket) {
+    reviewNativeCashMarket(market);
+    const body = record(await this.#request('GET', `/v1/native-cash/markets/${checkId(market.marketId, 'market')}/book`), 'native cash book');
+    if (body.version !== 1) throw new NaryxEvidenceError('Unsupported native cash response.');
+    return reviewNativeCashBook(body.result, market);
   }
 
   async observeNativeCashSettlement(market: NativeCashMarket, requestId: string, transactionHash: string) {
