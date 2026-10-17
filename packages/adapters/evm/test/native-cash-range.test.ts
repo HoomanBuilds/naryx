@@ -125,4 +125,7 @@ test('cash settlement records only exact finalized owner matches and rejects rep
     { chainId: async () => 1n },
   ]) await assert.rejects(observeNativeCashMatch(binding, { ...reads, ...variant }, quote, tx));
   await assert.rejects(observeNativeCashMatch(binding, reads, { ...quote, match: { ...quote.match, quantityAtoms: 2n } }, tx));
+  await assert.rejects(observeNativeCashMatch({ ...binding, makerOwner: owner }, reads, quote, tx));
+  await assert.rejects(observeNativeCashMatch({ ...binding, makerAccountId: 'different-maker-account' }, reads, quote, tx));
+  await assert.rejects(observeNativeCashMatch(binding, reads, { ...quote, maximumPriceTicks: quote.maximumPriceTicks + 1n }, tx));
 });

@@ -3,6 +3,7 @@ import { decodeEventLog, decodeFunctionData, hashTypedData, keccak256, parseAbi,
 import { NATIVE_CASH_HOUSE_ABI, type EvmNativeCashRangeBinding, type EvmNativeCashRangeQuote } from './native-cash-range.js';
 import type { EvmNativeClearingTransitionReadPort } from './native-clearing-transition.js';
 import { structField } from './readPort.js';
+import { evmNativeClearingAccountId } from './native-clearing-backing.js';
 
 const EVENTS = parseAbi([
   'event PackageMatched(bytes32 indexed authorizationHash,bytes32 indexed longAccountId,bytes32 indexed shortAccountId,uint128 quantityAtoms,uint128 priceTicks,uint256 feeAtoms)',
@@ -12,7 +13,12 @@ export async function observeNativeCashMatch(binding: EvmNativeCashRangeBinding,
   reads: EvmNativeClearingTransitionReadPort, quote: EvmNativeCashRangeQuote, transactionHash: Hex) {
   if (binding.kind !== 'EVM_NATIVE_CASH_RANGE_V1' || binding.policy.environment !== 'testnet'
     || !['eip155:84532', 'eip155:421614'].includes(binding.domain.domainId)
-    || quote.kind !== binding.kind || quote.marketId !== binding.marketId
+    || quote.kind !== binding.kind || quote.marketId !== binding.marketId || quote.environment !== 'testnet'
+    || quote.makerOwner !== binding.makerOwner || !['BUY', 'SELL'].includes(quote.side)
+    || quote.maximumPriceTicks !== binding.maximumPriceTicks || quote.priceTicks !== quote.match.priceTicks
+    || quote.match.priceTicks < 1n || quote.match.priceTicks > binding.maximumPriceTicks
+    || (quote.side === 'BUY' ? quote.match.shortAccountId : quote.match.longAccountId)
+      !== evmNativeClearingAccountId(`0x${toHex(binding.policy.policyHash)}`, binding.makerAccountId)
     || quote.clearingHouse !== binding.clearingHouse || quote.chainId !== Number(binding.domain.domainId.slice(7))
     || quote.domain.domainId !== binding.domain.domainId || quote.domain.domainManifestVersion !== binding.domain.domainManifestVersion
     || !bytesEqual(quote.domain.domainManifestHash, binding.domain.domainManifestHash)
