@@ -6,12 +6,18 @@ import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { parseUnits } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { parseProtocolJson, stringifyProtocolJson, strategyPackageOrder, strategyPackageOrderHash,
+import { packageGraph, parseProtocolJson, stringifyProtocolJson, strategyPackageOrder, strategyPackageOrderHash,
   packageGraphHash, toHex } from '@naryx/protocol-types';
 
 const infoUrl = 'https://api.hyperliquid-testnet.xyz/info';
 const root = resolve(import.meta.dirname, '../../..');
 const roles = ['naryx-clearing-maker-v1', 'naryx-test-trader-v1', 'naryx-clearing-backstop-v1', 'naryx-market-owner-v1'];
+
+export function crossBatchEntryMarkets(markets, reverse) {
+  assert.equal(markets.length, 2);
+  return markets.map((market, index) => ({ ...(reverse ? markets[1 - index] : market),
+    role: market.role, entrySide: market.entrySide }));
+}
 
 export function crossBatchEntryLimit(levels, side, requiredQuantityAtoms) {
   assert.ok(Array.isArray(levels) && levels.length > 0 && ['BUY', 'SELL'].includes(side));
@@ -32,12 +38,24 @@ export function crossBatchEntryLimit(levels, side, requiredQuantityAtoms) {
   return limit;
 }
 
+export function requireCrossBatchExitLiquidity(levels, buy, oraclePrice, quantityAtoms) {
+  const oracle = parseUnits(oraclePrice, 8);
+  assert.ok(oracle > 0n);
+  const lower = oracle * 95n / 100n, upper = oracle * 105n / 100n;
+  const available = levels.filter((level) => {
+    const price = parseUnits(level.px, 8);
+    return buy ? price <= upper : price >= lower;
+  }).reduce((sum, level) => sum + parseUnits(level.sz, 10), 0n);
+  assert.ok(available >= quantityAtoms, 'Executable exit depth is unavailable inside the conservative oracle bound');
+}
+
 async function main() {
   const { values } = parseArgs({ options: { output: { type: 'string' }, 'admin-url': { type: 'string' },
     step: { type: 'string', default: 'prepare' }, broadcast: { type: 'boolean', default: false },
+    residual: { type: 'boolean', default: false },
     'password-env': { type: 'string', default: 'SETRYN_DEPLOYER_PASSWORD' } } });
   assert.ok(values.output && isAbsolute(values.output) && !resolve(values.output).startsWith(`${root}/`), 'Use an external evidence file');
-  assert.ok(['prepare', 'submit', 'inspect'].includes(values.step));
+  assert.ok(['prepare', 'submit', 'inspect', 'cancel'].includes(values.step));
   const origin = new URL(values['admin-url']);
   assert.ok(origin.protocol === 'http:' && origin.hostname === '127.0.0.1' && origin.pathname === '/', 'Only a loopback API is supported');
   const request = async (path, body) => {
@@ -82,7 +100,7 @@ async function main() {
       assert.equal(data.leverage.value, 5);
     }
     record = { version: 1, environment: 'TESTNET', account: profile.settlementAccount, profileId: profile.profileId,
-      quantityAtoms: 2_000_000n, economicQuantityAtoms: 2_000_000n, nonce: BigInt(Date.now()),
+      quantityAtoms: 2_000_000n, economicQuantityAtoms: 2_000_000n, residual: values.residual, nonce: BigInt(Date.now()),
       expiry: BigInt(Date.now()) + 290_000n, pairs: [], sourceBefore: sourceState, destinationBefore: destinationState,
       scope: 'CONTROLLED_TESTNET_CROSS_BATCH_NOT_ORGANIC_VOLUME' };
     save();
@@ -95,7 +113,7 @@ async function main() {
   }
   assert.equal(record.environment, 'TESTNET');
   assert.equal(record.account, profile.settlementAccount);
-  assert.ok(BigInt(Date.now()) < record.expiry - 20_000n, 'Do not replace an expired signed run; inspect its existing executions first');
+  if (values.step !== 'cancel') assert.ok(BigInt(Date.now()) < record.expiry - 20_000n, 'Do not replace an expired signed run; inspect its existing executions first');
   const password = process.env[values['password-env']];
   assert.ok(password, 'Test owner keystore password is required');
   const wallets = new Map();
@@ -109,45 +127,77 @@ async function main() {
     }
     return wallets.get(role);
   };
-  if (values.step === 'prepare') {
-    const limits = [];
-    for (const market of profile.markets) {
-      const book = await info({ type: 'l2Book', coin: market.coin });
-      const side = market.entrySide === 'BUY' ? book.levels[1] : book.levels[0];
-      const quoteAtoms = crossBatchEntryLimit(side, market.entrySide, record.quantityAtoms * 4n);
-      limits.push({ legId: market.role, quoteAtoms: quoteAtoms.toString(), baseAtoms: '10000000000' });
+  if (values.step === 'cancel') {
+    for (const pair of record.pairs) for (const item of pair.entries) {
+      if (item.order.side !== 'ASK' || item.cancelled) continue;
+      const response = await fetch(new URL(`/v1/package-book/orders/${item.order.orderId}/settlement-readiness`, origin));
+      if (response.status === 404) continue;
+      assert.equal(response.status, 200);
+      const progress = parseProtocolJson(await response.text());
+      if (!progress.readiness.acceptsFurtherMatches) continue;
+      const cancellation = { version: 1, executionClassId: item.order.executionClassId,
+        entryId: item.order.orderId, participantId: item.order.participantId };
+      const signing = await request('/v1/package-book/cancellations/authorization', { cancellation });
+      assert.equal(signing.scheme, 'EIP712_SECP256K1');
+      const signature = await wallet(item.role).signTypedData(signing.typedData);
+      item.cancellation = { cancellation, authorization: { scheme: signing.scheme, signature } };
+      save();
+      item.cancelled = await request('/v1/package-book/cancellations', item.cancellation);
+      save();
     }
+    console.log(JSON.stringify({ cancelledOrders: record.pairs.flatMap((pair) => pair.entries).filter((item) => item.cancelled).length }));
+    return;
+  }
+  if (values.step === 'prepare') {
     for (let pairIndex = 0; pairIndex < 2; pairIndex += 1) {
       if (record.pairs[pairIndex]) continue;
+      const quantityAtoms = record.residual && pairIndex === 1 ? record.quantityAtoms / 2n : record.quantityAtoms;
+      const markets = crossBatchEntryMarkets(profile.markets, pairIndex === 1);
+      const limits = [];
+      for (const market of markets) {
+        const book = await info({ type: 'l2Book', coin: market.coin });
+        const context = await info({ type: 'metaAndAssetCtxs', ...(market.coin.includes(':') ? { dex: market.coin.split(':')[0] } : {}) });
+        const marketIndex = context[0].universe.findIndex((item) => item.name === market.coin);
+        assert.ok(marketIndex >= 0);
+        requireCrossBatchExitLiquidity(book.levels[market.entrySide === 'BUY' ? 0 : 1],
+          market.entrySide !== 'BUY', context[1][marketIndex].oraclePx, record.quantityAtoms * 4n);
+        const side = market.entrySide === 'BUY' ? book.levels[1] : book.levels[0];
+        const quoteAtoms = crossBatchEntryLimit(side, market.entrySide, record.quantityAtoms * 4n);
+        limits.push({ legId: market.role, quoteAtoms: quoteAtoms.toString(), baseAtoms: '10000000000' });
+      }
       const pair = { entries: [] };
       for (let index = 0; index < 2; index += 1) {
         const role = roles[pairIndex * 2 + index];
         const owner = wallet(role);
         const created = await request('/internal/terminal/strategy-orders/create', { profileId: profile.profileId,
-          owner: owner.address.toLowerCase(), lifecycleAction: 'ENTRY', quantityAtoms: record.quantityAtoms.toString(),
-          economicQuantityAtoms: record.economicQuantityAtoms.toString(), limitPrices: limits,
+          owner: owner.address.toLowerCase(), lifecycleAction: 'ENTRY', quantityAtoms: quantityAtoms.toString(),
+          economicQuantityAtoms: quantityAtoms.toString(), limitPrices: limits,
           expiryValue: record.expiry.toString(), nonce: (record.nonce + BigInt(pairIndex * 2 + index)).toString() });
         assert.equal(toHex(strategyPackageOrderHash(created.order)), created.orderHash);
         assert.equal(toHex(packageGraphHash(created.graph)), created.graphHash);
         assert.equal(created.order.environment, 'testnet');
         assert.equal(created.order.executionClassId, profile.executionClassId);
         assert.ok(created.graph.legs.every((leg) => leg.domain.domainId === 'hypercore:testnet'));
-        let orderHash = created.orderHash;
-        if (index === 0) {
-          const resting = strategyPackageOrder({ ...created.order, packageOrderType: 'LIMIT', packageTimeInForce: 'GTD' });
-          orderHash = (await request('/v1/strategy-orders', { order: resting, graph: created.graph })).orderHashHex;
-        }
+        const graph = packageGraph({ ...created.graph, legs: created.graph.legs.map((leg, legIndex) => {
+          const target = pairIndex === 1 ? created.graph.legs[1 - legIndex] : leg;
+          return { ...leg, adapter: target.adapter, venue: target.venue, market: target.market };
+        }) });
+        const order = strategyPackageOrder({ ...created.order, graphHash: packageGraphHash(graph),
+          ...(index === 0 ? { packageOrderType: 'LIMIT', packageTimeInForce: 'GTD' } : {}) });
+        const orderHash = (await request('/v1/strategy-orders', { order, graph })).orderHashHex;
         const ready = await request('/v1/package-book/orders/prepare', { strategyOrderHash: orderHash,
           side: index === 0 ? 'ASK' : 'BID', limitPriceTicks: '1000' });
         const signing = await request('/v1/package-book/orders/authorization', { order: ready.order, settlementCommitment: ready.settlementCommitment });
         assert.equal(signing.scheme, 'EIP712_SECP256K1');
         const signature = await owner.signTypedData(signing.typedData);
-        pair.entries.push({ role, order: ready.order, settlementCommitment: ready.settlementCommitment, signature });
+        pair.entries.push({ role, strategyOrder: order, graph, order: ready.order,
+          settlementCommitment: ready.settlementCommitment, signature });
       }
       record.pairs.push(pair);
       save();
     }
-    console.log(JSON.stringify({ preparedPairs: record.pairs.length, sourcePackages: 4, quantityPerLegBTC: '0.0002', broadcastToVenue: false }));
+    console.log(JSON.stringify({ preparedPairs: record.pairs.length, sourcePackages: 4,
+      quantityPerLegBTC: record.residual ? ['0.0002', '0.0001'] : ['0.0002', '0.0002'], broadcastToVenue: false }));
     return;
   }
   assert.equal(record.pairs.length, 2, 'Prepare both pairs first');
@@ -161,12 +211,13 @@ async function main() {
       const result = await request('/v1/package-book/orders', { order: item.order, settlementCommitment: item.settlementCommitment,
         authorization: { scheme: 'EIP712_SECP256K1', signature: item.signature } });
       assert.equal(result.accepted, true);
+      item.submitted = true;
+      item.submission = result;
+      save();
       if (item.order.side === 'BID') {
         assert.equal(result.allocation.fills.length, 1);
         assert.equal(toHex(result.allocation.fills[0].makerEntryId), pair.entries[0].order.orderId);
       }
-      item.submitted = true;
-      save();
     }
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }

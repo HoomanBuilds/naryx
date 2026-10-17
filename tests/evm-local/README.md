@@ -63,3 +63,22 @@ two confirmations substitutes for chain finality.
 Native cash settlement does not execute the external option legs described by the economic
 reference graphs. The runner does not publish continuous liquidity. Keep the owner-only evidence
 file outside Git. Resuming reuses journaled transactions and checks canonical ledger state.
+
+## Hyperliquid cross-batch cohort
+
+`node --env-file=contracts/evm/.env tests/evm-local/src/run-hyperliquid-cross-batch.mjs
+--output /absolute/external/cohort.json --admin-url http://127.0.0.1:18807 --step prepare --broadcast`
+uses dedicated test owners to sign four funding-spread package orders against real BTC and
+sekaw:BTC depth. The second pair reverses the venues, not the template's long and short rules.
+Submit immediately with the same arguments and `--step submit`; signatures expire after five minutes.
+Use `--step inspect` for current cross-batch and venue state. `--step cancel --broadcast` cancels
+only still-resting asks named in that cohort, with each owner's signature.
+
+Equal pairs test internal cross-batch cancellation. Add `--residual` at preparation to use
+0.0002 BTC per owner in the first pair and 0.0001 in the second, leaving real 0.0002 BTC external
+residuals on both venues. Submission persists its actual response before checking the expected
+counterparty, so an unexpected fill is not misreported as an unsubmitted order.
+
+Inspect final execution receipts through the public API and SDK before claiming success.
+Matched orders, internally cleared residuals, venue fills, and final owner settlement are separate
+states. These controlled testnet flows are not organic trading volume or continuous maker liquidity.
