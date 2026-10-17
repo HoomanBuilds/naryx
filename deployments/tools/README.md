@@ -1,5 +1,35 @@
 # Release manifest generator
 
+## Dedicated Hyperliquid test pool
+
+`prepare-hyperliquid-test-pool.mjs --root /srv/naryx --source <reviewed residual config>`
+validates the live testnet BTC and collateral identities without writes. `--apply` creates
+new encrypted pool, trading-agent, two-owner, and recovery-sponsor identities, separate journals,
+and a 20 mock-USDC pool cap. It refuses existing destinations and never sends funds.
+The existing residual config is a one-time seed, not a mutable runtime dependency.
+
+After explicit approval of exact testnet funding, `run-hyperliquid-test-pool.mjs --root /srv/naryx`
+operates only that dedicated cohort through the loopback pool service:
+
+| Step | Effect |
+| --- | --- |
+| `--step status` | Read current members, venue state, operation results, and epoch stages |
+| `--step enroll --broadcast` | Sign and persist each dedicated owner's custody consent |
+| `--step deposit --role <owner-1,owner-2,sponsor> --broadcast` | Send exactly 7 mock USDC once, verify both transfer ledgers, then credit actual net proceeds |
+| `--step configure --broadcast` | Approve the dedicated trading agent for seven days and set 5x cross margin |
+| `--step epoch --id <unique-id> --broadcast` | Sign one small opposing two-user BTC epoch, with a funded recovery sponsor and automatic close |
+| `--step withdraw --role <owner-1,owner-2,sponsor> --broadcast` | Sign a full owner withdrawal, submit once, and reconcile verified transfer evidence |
+| `--step observe --id <unique-id>` | Save a read-only evidence snapshot outside the repository |
+
+Run deposits sequentially and reconcile each before transferring the next. Source funding is
+separate and explicitly approved; the tool does not load an existing deployer key. Transfers
+require explicitly disabled account and DEX abstraction. The tool sets Standard mode only on
+the dedicated, flat cohort; it does not interpret a fresh account's unset mode as disabled.
+Transfers are journaled before submission and are never resent automatically after a lost response.
+If evidence is delayed, rerun the same command to observe the original nonce. Do not delete
+journals, invent a replacement operation ID to bypass uncertainty, or manually edit balances.
+These commands are operator-only testnet verification, not public pooled custody enrollment.
+
 ## Hyperliquid per-user account migration
 
 `prepare-hyperliquid-per-user.mjs --root /srv/naryx` inspects an existing Testnet master-account
