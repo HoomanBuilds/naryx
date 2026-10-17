@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { validateTestnetUnwindAction } from '../src/testnet-netting-unwind.js';
+import { validateTestnetUnwindAction, validateTestnetRecoveryCancellation } from '../src/testnet-netting-unwind.js';
+
+test('recovery cancellation cannot target another market or another order', () => {
+  const payload = { nonce: 1000, action: { type: 'cancel', cancels: [{ a: 390000, o: 123 }] } };
+  assert.doesNotThrow(() => validateTestnetRecoveryCancellation(payload, 123));
+  assert.throws(() => validateTestnetRecoveryCancellation(payload, 124));
+  assert.throws(() => validateTestnetRecoveryCancellation({ ...payload, action: { ...payload.action, cancels: [{ a: 3, o: 123 }] } }, 123));
+});
 
 test('controlled unwind permits only the exact reduce-only testnet BTC close', () => {
   const expected = { asset: 3, buy: false, price: '80000' };

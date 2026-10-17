@@ -128,6 +128,9 @@ The resulting journal proves operator unwind, not final allocation to individual
 If the first close filled but the secondary venue has no oracle-valid taker liquidity, `--passive`
 uses a separate journal and can place one reduce-only recovery bid near the current oracle.
 `WAITING_LIQUIDITY` is not a completed unwind. Repeated inspection never resubmits it.
+When bounded taker liquidity returns, `--complete --broadcast` closes only the verified remaining
+secondary position and cancels the recorded recovery order if still open. Its separate completion
+journal must confirm both venues flat and no live recovery order before reporting `VERIFIED_FLAT`.
 
 New perpetual residual submissions also qualify actual entry and opposing exit depth before
 reserving a submission nonce. A missing oracle or insufficient exit depth blocks entry, not

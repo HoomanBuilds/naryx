@@ -32,12 +32,21 @@ export function validateTestnetUnwindAction(payload: unknown, expected: { asset:
   if (expected.tif === 'Gtc') assert.equal(expected.asset, 390000);
 }
 
+export function validateTestnetRecoveryCancellation(payload: unknown, orderId: number): void {
+  const request = payload as { nonce?: unknown; vaultAddress?: unknown; action?: unknown };
+  assert.ok(Number.isSafeInteger(orderId) && orderId > 0 && Number.isSafeInteger(request.nonce) && Number(request.nonce) > 0);
+  assert.equal(request.vaultAddress, undefined);
+  assert.deepEqual(request.action, { type: 'cancel', cancels: [{ a: 390000, o: orderId }] });
+}
+
 async function main() {
   const { values } = parseArgs({ options: { journal: { type: 'string' }, plans: { type: 'string' },
-    broadcast: { type: 'boolean', default: false }, passive: { type: 'boolean', default: false } } });
+    broadcast: { type: 'boolean', default: false }, passive: { type: 'boolean', default: false }, complete: { type: 'boolean', default: false } } });
   const root = resolve(import.meta.dirname, '../../..');
   assert.ok(values.journal && isAbsolute(values.journal) && !resolve(values.journal).startsWith(`${root}/`));
-  const journalPath = values.passive ? `${values.journal}.passive` : values.journal;
+  assert.ok(!(values.passive && values.complete));
+  const secondaryOnly = values.passive || values.complete;
+  const journalPath = values.passive ? `${values.journal}.passive` : values.complete ? `${values.journal}.complete` : values.journal;
   const hashes = values.plans?.split(',') ?? [];
   assert.ok(hashes.length === 2 && new Set(hashes).size === 2 && hashes.every((hash) => /^[0-9a-f]{64}$/.test(hash)));
   const account = getAddress(process.env.NARYX_HYPERLIQUID_TESTNET_TRADING_ACCOUNT ?? '');
@@ -55,8 +64,15 @@ async function main() {
     const prior = JSON.parse(readFileSync(journalPath, 'utf8'));
     assert.equal(prior.account, account);
     assert.deepEqual(prior.plans, hashes);
-    console.log(JSON.stringify({ status: prior.status, resubmission: false,
-      flat: (await state()).every((item) => item.assetPositions.length === 0) }));
+    const flat = (await state()).every((item) => item.assetPositions.length === 0);
+    let status = prior.status;
+    if (flat && existsSync(`${values.journal}.complete`)) {
+      const completed = JSON.parse(readFileSync(`${values.journal}.complete`, 'utf8'));
+      assert.equal(completed.account, account);
+      assert.deepEqual(completed.plans, hashes);
+      if (completed.status === 'VERIFIED_FLAT') status = completed.status;
+    }
+    console.log(JSON.stringify({ status, resubmission: false, flat }));
     return;
   }
   const clearings: Clearing[] = [];
@@ -78,23 +94,32 @@ async function main() {
   const before = await state();
   const specs = [{ asset: 3, coin: 'BTC', buy: false, size: '0.0002' },
     { asset: 390000, coin: 'sekaw:BTC', buy: true, size: '-0.0002' }];
-  if (values.passive) {
+  let recoveryOrderId: number | undefined;
+  if (secondaryOnly) {
     assert.ok(existsSync(values.journal), 'Passive recovery requires the original unwind journal');
     const parent = JSON.parse(readFileSync(values.journal, 'utf8'));
     assert.equal(parent.account, account);
     assert.deepEqual(parent.plans, hashes);
     assert.equal(parseUnits(parent.responses[0].response.data.statuses[0].filled.totalSz, 10), 2_000_000n);
     assert.equal(before[0]!.assetPositions.length, 0, 'The first close must already be observed flat');
+    if (values.complete) {
+      const passive = JSON.parse(readFileSync(`${values.journal}.passive`, 'utf8'));
+      assert.equal(passive.account, account);
+      assert.deepEqual(passive.plans, hashes);
+      assert.equal(passive.status, 'WAITING_LIQUIDITY');
+      recoveryOrderId = passive.restingOrderId;
+      assert.ok(Number.isSafeInteger(recoveryOrderId) && recoveryOrderId! > 0);
+    }
   }
   for (const [index, spec] of specs.entries()) {
-    if (values.passive && index === 0) continue;
+    if (secondaryOnly && index === 0) continue;
     assert.equal(before[index]!.assetPositions.length, 1, 'Unrelated positions prohibit cohort unwind');
     assert.equal(before[index]!.assetPositions[0]!.position.coin, spec.coin);
     assert.equal(before[index]!.assetPositions[0]!.position.szi, spec.size);
   }
   const orders: { asset: number; coin: string; buy: boolean; price: string; tif: 'Ioc' | 'Gtc' }[] = [];
   for (const spec of specs) {
-    if (values.passive && spec.asset === 3) continue;
+    if (secondaryOnly && spec.asset === 3) continue;
     const book = await info.l2Book({ coin: spec.coin });
     const levels = book?.levels[spec.buy ? 1 : 0];
     assert.ok(levels?.length);
@@ -125,9 +150,11 @@ async function main() {
     scope: 'CONTROLLED_COHORT_OPERATOR_UNWIND_NOT_OWNER_SETTLEMENT', before, orders, createdAtMs: Date.now(), status: 'PLANNED' };
   const save = () => writeFileSync(journalPath, `${JSON.stringify(record)}\n`, { mode: 0o600 });
   let index = 0;
+  let cancelling = false;
   const guarded = { isTestnet: true, request: async <T>(route: 'info' | 'exchange' | 'explorer', payload: unknown, signal?: AbortSignal): Promise<T> => {
     assert.equal(route, 'exchange');
-    validateTestnetUnwindAction(payload, orders[index]!);
+    if (cancelling) validateTestnetRecoveryCancellation(payload, recoveryOrderId!);
+    else validateTestnetUnwindAction(payload, orders[index]!);
     record.signedRequests = [...(record.signedRequests as unknown[] ?? []), payload];
     record.status = 'SUBMISSION_PENDING';
     save();
@@ -157,6 +184,17 @@ async function main() {
   }
   record.after = await state();
   assert.ok((record.after as Awaited<ReturnType<typeof state>>).every((item) => item.assetPositions.length === 0));
+  if (recoveryOrderId !== undefined) {
+    const status = await info.orderStatus({ user: account, oid: recoveryOrderId });
+    if (status.status === 'order' && status.order.status === 'open') {
+      cancelling = true;
+      record.recoveryCancellation = await exchange.cancel({ cancels: [{ a: 390000, o: recoveryOrderId }] });
+      save();
+    }
+    const finalOrderStatus = await info.orderStatus({ user: account, oid: recoveryOrderId });
+    record.recoveryOrderStatus = finalOrderStatus;
+    assert.ok(finalOrderStatus.status !== 'order' || finalOrderStatus.order.status !== 'open');
+  }
   record.status = 'VERIFIED_FLAT';
   save();
   console.log(JSON.stringify({ account, status: record.status, quantityClosedPerMarketBTC: '0.0002' }));
