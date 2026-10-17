@@ -55,7 +55,7 @@ async function main() {
   const chain = values.network === 'base-sepolia' ? baseSepolia : values.network === 'arbitrum-sepolia' ? arbitrumSepolia : undefined;
   assert.ok(chain, 'Select a supported Sepolia network');
   assert.ok(values.output && isAbsolute(values.output) && !resolve(values.output).startsWith(root + '/'), 'Checkpoint must be outside the repository');
-  assert.ok(['prepare', 'deploy', 'fund', 'mark', 'activate', 'pause', 'entry', 'exit', 'observe'].includes(values.step), 'Unknown native cash step');
+  assert.ok(['prepare', 'deploy', 'fund', 'mark', 'register', 'activate', 'pause', 'entry', 'exit', 'observe'].includes(values.step), 'Unknown native cash step');
   const rpc = process.env[chain.id === 84532 ? 'NARYX_BASE_SEPOLIA_RPC_URL' : 'NARYX_ARBITRUM_SEPOLIA_RPC_URL'];
   assert.ok(rpc, 'Testnet RPC is required');
   const client = createPublicClient({ chain, transport: http(rpc, { timeout: 15_000, retryCount: 1 }) });
@@ -191,6 +191,36 @@ async function main() {
       controller: record.controller, sourceRound: roundId, priceTicks: price, sourceUpdatedAt: updatedAt, sourceSequence: sequence, validUntil: until })));
     await send(id, 'mark', { to: record.controller, data: encodeFunctionData({ abi: artifact.abi,
       functionName: 'refreshMark', args: [observationHash, price, sequence, until] }) }); return;
+  }
+  if (values.step === 'register') {
+    const marketId = `${record.network}-eth-cash-range-v1`;
+    const markets = await service('/v1/native-cash/markets');
+    const market = markets.markets.find(item => item.marketId === marketId);
+    assert.equal(market?.binding.clearingHouse, record.house);
+    assert.equal(market.binding.controllerCodeHash, record.controllerCodeHash);
+    assert.equal(market.binding.clearingHouseCodeHash, record.houseCodeHash);
+    assert.equal(toHex(market.binding.policy.policyHash), toHex(record.policy.policyHash));
+    if (!record.registration) {
+      const challenge = await service(`/internal/native-cash/registrations/${marketId}/challenge`, { state: 'ACTIVE' });
+      assert.equal(getAddress(challenge.governor), actors.operator);
+      assert.equal(challenge.typedData.domain.name, 'Naryx Native Cash Activation');
+      assert.equal(challenge.typedData.domain.version, '1');
+      assert.equal(challenge.typedData.domain.chainId, chain.id);
+      assert.equal(challenge.typedData.domain.verifyingContract, record.house);
+      assert.equal(challenge.typedData.primaryType, 'NativeCashActivation');
+      assert.equal(challenge.typedData.message.marketManifestHash, keccak256(stringToHex(stringifyProtocolJson(market.binding))));
+      assert.equal(challenge.typedData.message.nextState, 1);
+      assert.ok(challenge.typedData.message.sequence > 0n);
+      const now = BigInt(Math.floor(Date.now() / 1000));
+      assert.ok(challenge.typedData.message.notBefore >= now + 55n && challenge.typedData.message.validUntil <= now + 305n);
+      assert.equal(await client.getChainId(), chain.id);
+      const signature = await wallet('operator').signTypedData(challenge.typedData);
+      record.registration = { challenge, signature }; save();
+    }
+    const result = await service(`/internal/native-cash/registrations/${marketId}/authorize`, {
+      challengeId: record.registration.challenge.challengeId, signature: record.registration.signature });
+    record.registration.result = result; save();
+    console.log(JSON.stringify({ marketId, state: result.state, pendingState: result.pendingState, activateAt: result.activateAt })); return;
   }
   if (values.step === 'activate') {
     assert.ok(record.transactions['deposit-maker'] && record.transactions['deposit-trader'], 'Funding must finish before activation');

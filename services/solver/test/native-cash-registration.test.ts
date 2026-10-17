@@ -47,3 +47,19 @@ test('registration rejects wrong authority, wrong market, expired consent and ch
     assert.throws(() => new NativeCashRegistration(path, [{ ...binding, manifestHash: `0x${'33'.repeat(32)}` }]), /cannot mutate/);
   } finally { registry.close(); rmSync(dir, { recursive: true }); }
 });
+
+test('reopening exits from an all-pause is delayed and deprecation cannot be reversed', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'naryx-cash-registration-')); const path = join(dir, 'registration.sqlite');
+  let now = 1_000_000; const registry = new NativeCashRegistration(path, [binding], () => now);
+  const authorize = async (state: Parameters<NativeCashRegistration['challenge']>[1]) => {
+    const challenge = registry.challenge(binding.marketId, state);
+    return registry.authorize(binding.marketId, challenge.challengeId, await governor.signTypedData(challenge.typedData));
+  };
+  try {
+    await authorize('ALL_PAUSED'); assert.equal(registry.status(binding.marketId).state, 'ALL_PAUSED');
+    await authorize('EXIT_ONLY'); assert.equal(registry.status(binding.marketId).state, 'ALL_PAUSED');
+    now += 60_000; assert.equal(registry.status(binding.marketId).state, 'EXIT_ONLY');
+    await authorize('DEPRECATED'); assert.equal(registry.status(binding.marketId).state, 'DEPRECATED');
+    assert.throws(() => registry.challenge(binding.marketId, 'ACTIVE'), /cannot reactivate/);
+  } finally { registry.close(); rmSync(dir, { recursive: true }); }
+});

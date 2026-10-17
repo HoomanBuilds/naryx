@@ -82,3 +82,12 @@ counterparty, so an unexpected fill is not misreported as an unsubmitted order.
 Inspect final execution receipts through the public API and SDK before claiming success.
 Matched orders, internally cleared residuals, venue fills, and final owner settlement are separate
 states. These controlled testnet flows are not organic trading volume or continuous maker liquidity.
+## Dedicated oracle-priced native cash markets
+
+`node src/run-native-cash-testnet.mjs` is the separate Base Sepolia and Arbitrum Sepolia setup and controlled-trading runner. Its steps are `prepare`, `deploy`, `fund`, `register`, `activate`, `entry`, `exit`, `observe`, and `pause`. Checkpoints must be absolute paths outside the repository. `prepare` requires `--previous-evidence` from the earlier clearing test to retain its spent token and gas budgets. All later steps require explicit `--broadcast`; service operations also require `--service-origin` pointing to a direct loopback connection to the dedicated cash service.
+
+Each new house is funded with 40 test USDC for its maker and 10 for its dedicated test trader, with entries initially paused. The range is 0.001 ETH exposure between $1,000 and $5,000, quoted in test USDC, with full-range collateral on both sides. Its Chainlink ETH/USD source is checked against actual testnet chain identity, description, decimals, freshness, and deployed controller code. Missing sequencer feeds are an explicit testnet limitation, not mainnet readiness.
+
+The `register` step obtains the actual governor's consent for the exact market manifest and waits for the service's activation delay. `activate` additionally requires verified funding and a live oracle-worker mark before unpausing the house. `entry` and `exit` perform a real one-package owner-signed round trip through the dedicated quote service, saving quotes, signatures, and raw transactions before submission. `observe` only records the trades after independent canonical finality verification. The service's dedicated database receipts are not fabricated routed-package allocations, external positions, organic volume, or cross-user HyperCore margin netting.
+
+The worker includes previous setup costs in its 0.009 test ETH cap; this CLI reserves at most a further 0.001 test ETH after funding. Do not run unrelated operations from the same approved test budget without updating its accounting. The first 50 test USDC funding plus prior evidence must stay within 100 test USDC per network.
