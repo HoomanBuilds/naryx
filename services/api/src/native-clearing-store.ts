@@ -415,6 +415,13 @@ export class SqliteNativeClearingStore {
     return this.#latestMark(policy, false);
   }
 
+  markByHash(clearingDomainId: string, observationHash: Uint8Array | string): NativeClearingMarkObservation | undefined {
+    const { policy } = this.#requiredDomain(clearingDomainId);
+    const row = this.#db.prepare('SELECT * FROM native_clearing_marks WHERE policy_hash = ? AND observation_hash = ?')
+      .get(policy.policyHash, commitmentHash(observationHash)) as MarkRow | undefined;
+    return row === undefined ? undefined : this.#decodeMark(row, policy);
+  }
+
   async adjustAuthorizedCollateral(input: Readonly<{
     authorization: NativeClearingCollateralAuthorizationInput;
     ownerSignature: NativeClearingControlSignature;

@@ -54,6 +54,29 @@ test('clearing funding gate verifies the proposed post-state and refuses unbacke
   await assert.rejects(service.verifyMutation('/internal/native-clearing/domains', { policy, state: { version: 1, policyHash: policy.policyHash, openInterestAtoms: 0n, recoveryReserveQuoteAtoms: 5n, sequence: 0n } }), { code: 'INVALID_GENESIS' });
 });
 
+test('finality reconciliation selects the transaction mark instead of a newer live observation', async () => {
+  const { policy, state } = fixture();
+  const mark = nativeClearingMarkObservation({ version: 1, policyHash: policy.policyHash, source: policy.markSource,
+    authorityId: policy.markAuthorityId, sourceSequence: 1n, priceTicks: 1_000n, observedAtMs: 10_000n, validUntilMs: 15_000n }, policy);
+  const next = nativeClearingMarkObservation({ ...mark, sourceSequence: 2n, priceTicks: 900n }, policy);
+  let selected = false;
+  const clearing = { domain: () => ({ policy, state }), accounts: () => [], account: () => undefined,
+    latestMark: () => next, backingSnapshot: () => 'before',
+    markByHash: (_id: string, hash: Uint8Array | string) => {
+      assert.equal(hash, `0x${toHex(mark.observationHash)}`);
+      return mark;
+    }, recordFinalizedTransition: () => { throw new Error('No verified transition was returned'); },
+  };
+  const service = new NativeClearingBackingService(clearing, new Map(), () => 30_000, new Map([[policy.clearingDomainId, {
+    executionMarkHash: async () => `0x${toHex(mark.observationHash)}` as const,
+    match: async (input) => { assert.equal(input.mark.sourceSequence, 1n); selected = true; throw new Error('Boundary inspected'); },
+    recover: async () => { throw new Error('Wrong operation'); },
+  }]]));
+  await assert.rejects(service.observe('MATCH', { clearingDomainId: policy.clearingDomainId,
+    transactionHash: `0x${'77'.repeat(32)}`, authorization: {} }), { code: 'BACKING_UNVERIFIED' });
+  assert.equal(selected, true);
+});
+
 test('verified funding commits its backing receipt atomically and rejects stale cross-process proofs', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'naryx-clearing-backing-'));
   const path = join(directory, 'clearing.db');
@@ -84,6 +107,8 @@ test('verified funding commits its backing receipt atomically and rejects stale 
       scheme: 'EIP191_SECP256K1' as const, signature: await markSigner.signMessage({ message: { raw: `0x${toHex(observation.observationHash)}` } }),
     } };
     await store.recordMark(markBody, await verify('marks', markBody));
+    assert.deepEqual(store.markByHash(policy.clearingDomainId, observation.observationHash), observation);
+    assert.equal(store.markByHash(policy.clearingDomainId, '99'.repeat(32)), undefined);
     const authorization = nativeClearingCollateralAuthorization({ version: 1, policyHash: policy.policyHash, accountId: account.accountId, ownerId: account.ownerId, expectedAccountHash: account.accountHash, expectedAccountSequence: 0n, collateralDeltaQuoteAtoms: 25n, validUntilUnit: 'HYPERLIQUID_UNIX_MILLISECONDS', validUntilValue: 20_000n });
     const collateral = { authorization, ownerSignature: { scheme: 'EIP191_SECP256K1' as const,
       signature: await takerSigner.signMessage({ message: { raw: `0x${toHex(authorization.authorizationHash)}` } }),

@@ -5,6 +5,7 @@ import {
   domainRef,
   nativeClearingExecutionId,
   nativeClearingMatchAuthorization,
+  nativeClearingMarkObservation,
   nativeClearingPolicy,
   protocolId,
   resolveNativeClearingDefault,
@@ -63,7 +64,20 @@ export class EvmNativeClearingTransitionVerifier {
     this.#reads = reads;
   }
 
+  async executionMarkHash(transactionHash: Hex): Promise<Hex> {
+    hash32(transactionHash, 'clearing transaction hash');
+    if (await this.#reads.chainId() !== BigInt(this.#binding.domain.domainId.slice(7))) throw new Error('Clearing transaction chain differs.');
+    const receipt = await this.#reads.receipt(transactionHash);
+    if (receipt.status !== 'success' || receipt.transactionHash.toLowerCase() !== transactionHash.toLowerCase()) {
+      throw new Error('Clearing transaction has no successful receipt.');
+    }
+    const mark = await this.#reads.read({ address: this.#binding.clearingHouse, abi: ABI, functionName: 'currentMark' }, receipt.blockNumber);
+    return hash32(structField(mark, 0, 'observationHash'), 'execution mark hash');
+  }
+
   async #context(input: EvmNativeClearingTransitionInput) {
+    const observation = nativeClearingMarkObservation(input.mark, input.policy);
+    if (!bytesEqual(observation.observationHash, input.mark.observationHash)) throw new Error('Clearing observation hash differs.');
     hash32(input.transactionHash, 'clearing transaction hash');
     if (await this.#reads.chainId() !== BigInt(this.#binding.domain.domainId.slice(7))) throw new Error('Clearing transaction chain differs.');
     const receipt = await this.#reads.receipt(input.transactionHash);

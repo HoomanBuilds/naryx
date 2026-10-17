@@ -100,6 +100,7 @@ function fixture(recovery = false) {
 test('finalized native matches bind the event, historical authorization clock and exact account transition', async () => {
   const { binding, reads, input } = fixture();
   const result = await new EvmNativeClearingTransitionVerifier(binding, reads).match(input);
+  assert.equal(await new EvmNativeClearingTransitionVerifier(binding, reads).executionMarkHash(tx), `0x${toHex(input.mark.observationHash)}`);
   assert.equal(result.state.openInterestAtoms, 10n);
   assert.equal(result.accounts[0]!.positionAtoms, 10n);
   assert.equal(result.proof.blockNumber, 42n);
@@ -119,6 +120,8 @@ test('native match reconciliation refuses unfinalized, ambiguous, unconsumed and
     { chainId: async () => 1n },
   ];
   for (const variant of variants) await assert.rejects(new EvmNativeClearingTransitionVerifier(binding, { ...reads, ...variant }).match(input));
+  await assert.rejects(new EvmNativeClearingTransitionVerifier(binding, reads).match({ ...input,
+    mark: { ...input.mark, observationHash: commitmentHash('99'.repeat(32)) } }), /observation hash differs/);
 });
 
 test('native default reconciliation preserves exact reserve loss, residual deficit and transferred exposure', async () => {

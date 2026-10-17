@@ -25,17 +25,18 @@ import { createPublicClient, http, type Hex } from 'viem';
 import { NativeClearingStoreError, nativeClearingBackingSnapshot, type NativeClearingBackingCheck, type SqliteNativeClearingStore } from './native-clearing-store.js';
 
 type Clearing = Pick<SqliteNativeClearingStore, 'domain' | 'accounts' | 'account' | 'latestMark' | 'backingSnapshot'>
-  & Partial<Pick<SqliteNativeClearingStore, 'contractTransition' | 'recordFinalizedTransition'>>;
+  & Partial<Pick<SqliteNativeClearingStore, 'contractTransition' | 'recordFinalizedTransition' | 'markByHash'>>;
 type Verifier = Pick<EvmNativeClearingBackingVerifier, 'verify'>;
+type TransitionVerifier = Pick<EvmNativeClearingTransitionVerifier, 'executionMarkHash' | 'match' | 'recover'>;
 
 export class NativeClearingBackingService {
   readonly #clearing: Clearing;
   readonly #verifiers: ReadonlyMap<string, Verifier>;
   readonly #clock: () => number;
-  readonly #transitions: ReadonlyMap<string, EvmNativeClearingTransitionVerifier>;
+  readonly #transitions: ReadonlyMap<string, TransitionVerifier>;
 
   constructor(clearing: Clearing, verifiers: ReadonlyMap<string, Verifier>, clock: () => number = Date.now,
-    transitions: ReadonlyMap<string, EvmNativeClearingTransitionVerifier> = new Map()) {
+    transitions: ReadonlyMap<string, TransitionVerifier> = new Map()) {
     this.#clearing = clearing;
     this.#verifiers = new Map(verifiers);
     this.#clock = clock;
@@ -81,7 +82,13 @@ export class NativeClearingBackingService {
       return existing;
     }
     const before = this.#clearing.backingSnapshot(body.clearingDomainId);
-    const mark = this.#clearing.latestMark(body.clearingDomainId);
+    let mark;
+    try {
+      const observationHash = await verifier.executionMarkHash(body.transactionHash as Hex);
+      mark = this.#clearing.markByHash?.(body.clearingDomainId, observationHash);
+    } catch {
+      throw new NativeClearingStoreError('BACKING_UNVERIFIED', 'Clearing execution mark cannot be verified.');
+    }
     if (mark === undefined) throw new NativeClearingStoreError('MARK_UNAVAILABLE', 'Clearing mark is unavailable.');
     const input = { policy: domain.policy, state: domain.state, accounts: this.#clearing.accounts(body.clearingDomainId),
       mark, transactionHash: body.transactionHash as Hex };
