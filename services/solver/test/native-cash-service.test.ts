@@ -112,6 +112,26 @@ test('unknown, unverified and mismatched cash observations cannot acquire finali
   } finally { service.close(); rmSync(f.dir, { recursive: true }); }
 });
 
+test('cash finality admission stays bounded and retries do not consume another queue slot', async () => {
+  const f = fixture(); const service = f.service();
+  f.port.observe = async (quote, tx) => { throw new NativeCashAwaitingFinality(tx, quote.digest); };
+  try {
+    for (let i = 0; i < 256; i++) {
+      const requestId = `pending-${i}`;
+      await service.requestQuote({ ...request, requestId });
+      const tx = `0x${(i + 1).toString(16).padStart(64, '0')}` as Hex;
+      await assert.rejects(service.observe(requestId, tx), NativeCashAwaitingFinality);
+      f.advance(20_000);
+    }
+    const first = `0x${'0'.repeat(63)}1` as Hex;
+    await assert.rejects(service.observe('pending-0', first), NativeCashAwaitingFinality);
+    await assert.rejects(service.observe('pending-0', hash), /conflicts/);
+    await service.requestQuote({ ...request, requestId: 'over-capacity' });
+    await assert.rejects(service.observe('over-capacity', hash), /queue is full/);
+    assert.deepEqual(await service.reconcilePending(), { checked: 8, finalized: 0 });
+  } finally { service.close(); rmSync(f.dir, { recursive: true }); }
+});
+
 test('interrupted signing never retries a signature and holds a conservative lease', async () => {
   const f = fixture(); const service = f.service();
   f.port.sign = async () => { throw new Error('signer unavailable'); };
