@@ -29,7 +29,7 @@ export interface QuoteAutomationPolicy {
 export type QuoteAutomationAction =
   | { readonly kind: 'HALTED' }
   | { readonly kind: 'RESERVED'; readonly filledSize: bigint; readonly reservedCapacity: bigint }
-  | { readonly kind: 'KILLED'; readonly reason: 'STALE_REFERENCE' | 'INVENTORY_LIMIT' | 'UNTRACKED_FILLS' | 'EXPIRED_QUOTES' | 'REFERENCE_CLOCK' | 'REFERENCE_BINDING' }
+  | { readonly kind: 'KILLED'; readonly reason: 'STALE_REFERENCE' | 'INVENTORY_LIMIT' | 'UNTRACKED_FILLS' | 'EXPIRED_QUOTES' | 'REFERENCE_CLOCK' | 'REFERENCE_BINDING' | 'REFERENCE_UNAVAILABLE' | 'BACKING_UNAVAILABLE' | 'QUOTE_REFRESH_FAILED' | 'STOP_REQUESTED' }
   | { readonly kind: 'QUOTES_RENEWED'; readonly levelCount: number }
   | { readonly kind: 'REPRICED'; readonly referenceSequence: bigint }
   | { readonly kind: 'HEARTBEAT'; readonly heartbeatExpiry: bigint };
@@ -42,6 +42,7 @@ export interface QuoteAutomation {
    * before the next is prepared, so a failed step leaves the last published state in force.
    */
   tick(): Promise<readonly QuoteAutomationAction[]>;
+  halt(): Promise<readonly QuoteAutomationAction[]>;
 }
 
 export interface QuoteAutomationCheckpoint {
@@ -49,7 +50,7 @@ export interface QuoteAutomationCheckpoint {
   readonly shardId: string;
   readonly watchedHashes: readonly string[];
   readonly accountedFills: readonly { readonly shardHash: string; readonly size: bigint }[];
-  readonly pending?: { readonly previousShardHash: string; readonly shard: PackageQuoteShardInput;
+  readonly pending?: { readonly previousShardHash: string; readonly supersededShardHash?: string; readonly shard: PackageQuoteShardInput;
     readonly foldedFills: readonly { readonly shardHash: string; readonly size: bigint }[] };
 }
 
@@ -57,7 +58,8 @@ export interface QuoteAutomationCheckpoint {
  * Quote automation for one shard. It holds no key: every shard state is signed through `signShard`.
  * A shard whose kill switch is set is left alone; re-arming it is a deliberate human action.
  */
-export function createQuoteAutomation(options: {
+export interface QuoteAutomationOptions {
+  readonly expectedEnvironment?: string;
   readonly client: Pick<NaryxSolverClient, 'getShard' | 'getShardFills' | 'putShard' | 'replaceShard' | 'heartbeat' | 'killSwitch'>;
   readonly shardId: string;
   readonly policy: QuoteAutomationPolicy;
@@ -66,7 +68,10 @@ export function createQuoteAutomation(options: {
   readonly signShard: (shardHash: Uint8Array) => Promise<Uint8Array>;
   readonly checkpointStore?: { load(): Promise<QuoteAutomationCheckpoint | undefined>; save(checkpoint: QuoteAutomationCheckpoint): Promise<void> };
   readonly refreshLevels?: (shard: PackageQuoteShardInput, reference: QuoteReferenceStateInput, now: bigint) => Promise<PackageQuoteShardInput['quoteLevels']>;
-}): QuoteAutomation {
+  readonly assertBacking?: (shard: PackageQuoteShardInput, reference: QuoteReferenceStateInput, now: bigint) => Promise<void>;
+}
+
+export function createQuoteAutomation(options: QuoteAutomationOptions): QuoteAutomation {
   const { policy } = options;
   if (!Number.isInteger(policy.maxInventoryUtilizationBps) || policy.maxInventoryUtilizationBps <= 0 || policy.maxInventoryUtilizationBps > 10_000
     || policy.heartbeatLead < 0n || policy.heartbeatExtension <= policy.heartbeatLead || policy.maxReferenceAge <= 0n) {
@@ -88,8 +93,15 @@ export function createQuoteAutomation(options: {
     watched.add(toHex(hash));
     return { ...unsigned, signature };
   };
+  const confirm = async (expected: PackageQuoteShardInput) => {
+    const served = await options.client.getShard(options.shardId) as { shard?: PackageQuoteShardInput; shardHash?: string };
+    const expectedHash = toHex(packageQuoteShardHash(expected));
+    if (served.shard === undefined || served.shardHash !== expectedHash
+      || toHex(packageQuoteShardHash(served.shard)) !== expectedHash) throw new NaryxEvidenceError('maker publication could not be confirmed');
+  };
 
-  const tick = async (): Promise<readonly QuoteAutomationAction[]> => {
+  const tick = async (stop: boolean): Promise<readonly QuoteAutomationAction[]> => {
+      let stopReason: Extract<QuoteAutomationAction, { kind: 'KILLED' }>['reason'] = 'STOP_REQUESTED';
       if (!loaded) {
         const checkpoint = await options.checkpointStore?.load();
         if (checkpoint !== undefined) {
@@ -104,6 +116,7 @@ export function createQuoteAutomation(options: {
           for (const fill of checkpoint.accountedFills) accounted.set(fill.shardHash, fill.size);
           pending = checkpoint.pending;
           if (pending !== undefined && (!validHash(pending.previousShardHash)
+            || (pending.supersededShardHash !== undefined && (!validHash(pending.supersededShardHash) || !watched.has(pending.supersededShardHash)))
             || !watched.has(toHex(packageQuoteShardHash(pending.shard)))
             || pending.foldedFills.some((fill) => !watched.has(fill.shardHash) || typeof fill.size !== 'bigint'
               || fill.size < (accounted.get(fill.shardHash) ?? 0n) || fill.size >= 1n << 128n))) throw new NaryxEvidenceError('maker pending checkpoint is invalid');
@@ -113,20 +126,49 @@ export function createQuoteAutomation(options: {
       const served = (await options.client.getShard(options.shardId)) as { shard?: PackageQuoteShardInput; shardHash?: string };
       if (served.shard === undefined) throw new NaryxEvidenceError('the shard read carried no shard');
       let shard: PackageQuoteShardInput = packageQuoteShard(served.shard);
+      if (options.expectedEnvironment !== undefined && shard.environment !== options.expectedEnvironment) throw new NaryxEvidenceError('maker shard environment differs');
       if (served.shardHash !== toHex(packageQuoteShardHash(shard))) throw new NaryxEvidenceError('the served shard does not match its hash');
       if (`${shard.templateId}.${shard.marketGroupId}` !== options.shardId) throw new NaryxEvidenceError('the served shard identity differs');
       if (pending !== undefined) {
-        const next = packageQuoteShard(pending.shard);
+        let next = packageQuoteShard(pending.shard);
+        if (next.environment !== shard.environment) throw new NaryxEvidenceError('pending maker environment differs');
         if (`${next.templateId}.${next.marketGroupId}` !== options.shardId) throw new NaryxEvidenceError('the pending shard identity differs');
         const nextHash = toHex(packageQuoteShardHash(next));
-        if (served.shardHash === pending.previousShardHash) await options.client.putShard(next);
-        else if (served.shardHash !== nextHash) throw new NaryxEvidenceError('maker state changed outside the pending update');
+        if (served.shardHash !== pending.previousShardHash && served.shardHash !== pending.supersededShardHash
+          && served.shardHash !== nextHash) throw new NaryxEvidenceError('maker state changed outside the pending update');
+        if (!stop && served.shardHash === pending.previousShardHash && next.killSwitchState === 'INACTIVE') {
+          try {
+            const reference = quoteReferenceState(await options.readReference());
+            const now = options.now();
+            if (reference.environment !== next.environment || reference.marketGroupId !== next.marketGroupId
+              || toHex(quoteReferenceStateHash(reference)) !== toHex(next.referenceStateHash)
+              || reference.observedAtValue > now || now - reference.observedAtValue > policy.maxReferenceAge
+              || next.heartbeatExpiry <= now || next.quoteLevels.some((level) => level.validUntilUnit !== reference.observedAtUnit || level.validUntilValue <= now)) {
+              stop = true;
+              stopReason = 'STALE_REFERENCE';
+            } else {
+              try { await options.assertBacking?.(next, reference, now); }
+              catch { stop = true; stopReason = 'BACKING_UNAVAILABLE'; }
+              if (options.now() - reference.observedAtValue > policy.maxReferenceAge) { stop = true; stopReason = 'STALE_REFERENCE'; }
+            }
+          } catch { stop = true; stopReason = 'REFERENCE_UNAVAILABLE'; }
+        }
+        if (stop && next.killSwitchState === 'INACTIVE') {
+          next = packageQuoteShard(await sign(prepareShardKillSwitch(next, 'ACTIVE')));
+          pending = { ...pending, supersededShardHash: nextHash, shard: next };
+          await save();
+          await options.client.putShard(next);
+          await confirm(next);
+        } else if (served.shardHash !== nextHash) {
+          await options.client.putShard(next);
+          await confirm(next);
+        }
         shard = next;
         for (const fill of pending.foldedFills) accounted.set(fill.shardHash, fill.size);
         pending = undefined;
         await save();
       }
-      if (shard.killSwitchState === 'ACTIVE') return [{ kind: 'HALTED' }];
+      if (shard.killSwitchState === 'ACTIVE') return stop ? [{ kind: 'KILLED', reason: stopReason }] : [{ kind: 'HALTED' }];
       const actions: QuoteAutomationAction[] = [];
       const publish = async (unsigned: PackageQuoteShardInput, method: 'putShard' | 'replaceShard' | 'heartbeat' | 'killSwitch', folded: readonly [string, bigint][] = []) => {
         const next = await sign(unsigned);
@@ -134,6 +176,7 @@ export function createQuoteAutomation(options: {
           foldedFills: folded.map(([shardHash, size]) => ({ shardHash, size })) };
         await save();
         await options.client[method](next);
+        await confirm(next);
         shard = next;
         for (const [hash, size] of folded) accounted.set(hash, size);
         pending = undefined;
@@ -144,6 +187,7 @@ export function createQuoteAutomation(options: {
         actions.push({ kind: 'KILLED', reason });
         return actions;
       };
+      if (stop) return kill(stopReason);
 
       // Capital: settled fills are never offered again. Fills of the current state, and late fills of
       // any earlier state this automation watched, are folded into reserved capacity exactly once.
@@ -171,13 +215,18 @@ export function createQuoteAutomation(options: {
       if (shard.inventoryCap === 0n || shard.reservedCapacity * 10_000n >= shard.inventoryCap * BigInt(policy.maxInventoryUtilizationBps)) return kill('INVENTORY_LIMIT');
 
       // Reference: stale observations stop quoting; newer ones reprice every level at once.
-      const reference = quoteReferenceState(await options.readReference());
+      let reference: QuoteReferenceStateInput;
+      try { reference = quoteReferenceState(await options.readReference()); }
+      catch { return kill('REFERENCE_UNAVAILABLE'); }
       const now = options.now();
       if (reference.environment !== shard.environment || reference.marketGroupId !== shard.marketGroupId
         || reference.referenceSequence < shard.referenceSequence
         || (reference.referenceSequence === shard.referenceSequence && toHex(quoteReferenceStateHash(reference)) !== toHex(packageQuoteShard(shard).referenceStateHash))) return kill('REFERENCE_BINDING');
       if (shard.quoteLevels.some((level) => level.validUntilUnit !== reference.observedAtUnit)) return kill('REFERENCE_CLOCK');
       if (reference.observedAtValue > now || now - reference.observedAtValue > policy.maxReferenceAge) return kill('STALE_REFERENCE');
+      try { await options.assertBacking?.(shard, reference, now); }
+      catch { return kill('BACKING_UNAVAILABLE'); }
+      if (options.now() - reference.observedAtValue > policy.maxReferenceAge) return kill('STALE_REFERENCE');
       if (reference.referenceSequence > shard.referenceSequence) {
         await publish(prepareShardReprice(shard, reference), 'replaceShard');
         actions.push({ kind: 'REPRICED', referenceSequence: reference.referenceSequence });
@@ -185,28 +234,41 @@ export function createQuoteAutomation(options: {
 
       if (shard.quoteLevels.some((level) => level.validUntilValue <= now + policy.heartbeatLead)) {
         if (options.refreshLevels !== undefined) {
-          const quoteLevels = await options.refreshLevels(shard, reference, now);
+          let quoteLevels: PackageQuoteShardInput['quoteLevels'];
+          try {
+            quoteLevels = (await options.refreshLevels(shard, reference, options.now()));
+            packageQuoteShard({ ...shard, quoteLevels });
+          } catch { return kill('QUOTE_REFRESH_FAILED'); }
+          const refreshedAt = options.now();
+          if (refreshedAt - reference.observedAtValue > policy.maxReferenceAge) return kill('STALE_REFERENCE');
           if (quoteLevels.length === 0 || quoteLevels.some((level) => level.validUntilUnit !== reference.observedAtUnit
-            || level.validUntilValue <= now + policy.heartbeatLead)) return kill('EXPIRED_QUOTES');
+            || level.validUntilValue <= refreshedAt + policy.heartbeatLead)) return kill('EXPIRED_QUOTES');
+          try { await options.assertBacking?.({ ...shard, quoteLevels }, reference, refreshedAt); }
+          catch { return kill('BACKING_UNAVAILABLE'); }
+          if (options.now() - reference.observedAtValue > policy.maxReferenceAge) return kill('STALE_REFERENCE');
           await publish({ ...shard, quoteLevels, shardSequence: shard.shardSequence + 1n, signature: new Uint8Array(0) }, 'putShard');
           actions.push({ kind: 'QUOTES_RENEWED', levelCount: quoteLevels.length });
         } else if (shard.quoteLevels.some((level) => level.validUntilValue <= now)) return kill('EXPIRED_QUOTES');
       }
 
-      if (shard.heartbeatExpiry <= now + policy.heartbeatLead) {
-        const heartbeatExpiry = now + policy.heartbeatExtension;
+      const heartbeatAt = options.now();
+      if (heartbeatAt - reference.observedAtValue > policy.maxReferenceAge) return kill('STALE_REFERENCE');
+      if (shard.heartbeatExpiry <= heartbeatAt + policy.heartbeatLead) {
+        const heartbeatExpiry = heartbeatAt + policy.heartbeatExtension;
         await publish(prepareShardHeartbeat(shard, heartbeatExpiry), 'heartbeat');
         actions.push({ kind: 'HEARTBEAT', heartbeatExpiry });
       }
       await save();
       return actions;
   };
-  return {
-    async tick() {
+  const run = async (stop: boolean) => {
       if (ticking) throw new NaryxEvidenceError('maker automation tick is already running');
       ticking = true;
-      try { return await tick(); }
+      try { return await tick(stop); }
       finally { ticking = false; }
-    },
+  };
+  return {
+    tick: () => run(false),
+    halt: () => run(true),
   };
 }
