@@ -27,3 +27,9 @@ Both observers return frozen objects with evidence grades (`transaction-receipt`
 `EvmNativeClearingBackingVerifier` verifies a ledger projection against one pinned finalized block. It checks the Sepolia domain, clearing-house and collateral-token code hashes, exact accounting asset, policy configuration, account ownership, collateral, cash, positions, sequence numbers, open interest, reserve, and token coverage. A changed block hash, insufficient backing, or unsupported fee accounting fails closed.
 
 The evidence covers only the supplied registered accounts, not undisclosed liabilities or global solvency. Account identifiers use `evmNativeClearingAccountId(policyHash, accountId)`. This read-only verifier neither signs nor activates native trading. Its current network gate permits Base Sepolia and Arbitrum Sepolia only.
+
+## Native cash range quotes
+
+`EvmNativeCashRangeAdapter` quotes the separately deployed `NativeCashRangeMarket` class on the two supported Sepolia networks. These are collateral-backed cash positions in a bounded oracle-price range, not routed spot, perpetual, or options positions. The adapter checks pinned code, oracle-derived and stored marks, actual owner accounts, collateral, margin, entry-pause rules, and account sequences at one block before producing the house's exact owner-signable EIP-712 match.
+
+Quotes expire within 30 seconds and never outlive either reference validity limit. They are execution commitments, not exclusive inventory reservations. Concurrent fills or withdrawals can invalidate a quote; the clearing contract checks both owners' signatures, sequences, collateral, price bounds, and authorization replay protection at execution. This adapter has no key or broadcast path, and constructing it does not activate a market or worker.

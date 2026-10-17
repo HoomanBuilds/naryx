@@ -874,3 +874,5 @@ export {
   testPerpFeeWad,
 } from './testPerpMarket.js';
 export { NARYX_MULTI_STRATEGY_ACCOUNT_STATE_ABI } from './multi-strategy-state.js';
+export { EvmNativeCashRangeAdapter, NATIVE_CASH_RANGE_ABI, NATIVE_CASH_HOUSE_ABI,
+  type EvmNativeCashRangeBinding, type EvmNativeCashRangeReadPort, type EvmNativeCashRangeQuote } from './native-cash-range.js';
