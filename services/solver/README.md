@@ -97,7 +97,7 @@ clearing or novation mechanism. Historical shared-account evidence is not per-us
 ### Optional dedicated pooled test-account runtime
 
 `hyperliquid-pooled-collateral-store.ts`, `hyperliquid-pool-funding.ts`,
-`hyperliquid-pool-funding-reads.ts`, and `hyperliquid-pool-withdrawal.ts` implement an
+`hyperliquid-pool-funding-reads.ts`, and `hyperliquid-pool-withdrawal.ts` implement a
 separate testnet custody boundary. `hyperliquid-pool-main.ts` hosts its operator-only
 runtime independently of `main.ts`, the public API, and the terminal. It is disabled
 by default. Existing per-user accounts are not migrated or pooled.
@@ -172,11 +172,18 @@ signed epochs, advancement, close, recovery, and signed withdrawal preparation,
 submission, evidence completion, and unsubmitted-expiry release. Responses use the
 existing protocol JSON codec. This is not a public custodial product or frontend integration.
 
-Funded dedicated-account activation and a live deposit/trade/withdrawal round trip
-must still be verified independently of the unit tests before claiming this mode live.
-Do not use ledger `settleEpoch` inputs from public requests, enable shared trading
-through the existing per-user route, or advertise cross-user margin as live based
-only on these custody tests.
+The dedicated AWS test cohort completed a funded round trip on October 17, 2026:
+three observed deposits backed 20 mock USDC; two signed owners held opposing BTC
+quantities with a single 0.00013 BTC net venue position. The supervisor survived a
+restart while open, closed once, and reconciled 19.990344 mock USDC exactly. All three
+owner withdrawals completed, leaving zero pool cash, liabilities, positions, and
+pending operations. This is controlled testnet evidence, not organic volume.
+
+This operator-only cohort is not public custody enrollment, cross-account HyperCore
+novation, or a terminal feature. Do not use ledger `settleEpoch` inputs from public
+requests or enable shared trading through the existing per-user route. Repeating the
+test requires approved funding and new signed epoch authority; idle service health
+does not mean there is continuously funded pool capacity.
 
 Canonical cash-and-carry creation, quote pricing, owner authorization, strategy staging, exits,
 and the terminal use the same owner-account binding in per-user mode. The terminal never
