@@ -1,5 +1,19 @@
 # Release manifest generator
 
+## Hyperliquid per-user account migration
+
+`prepare-hyperliquid-per-user.mjs --root /srv/naryx` inspects an existing Testnet master-account
+deployment without changing it. Adding `--apply` backs up both service environment files,
+registers the existing owner and approved API wallet, preserves that same account's journal and
+signer lease, selects `PER_USER`, and disables shared-account residual execution. It never reads
+private-key contents, signs, transfers funds, or migrates historical positions between owners.
+
+Stop only the affected API and solver services before applying this configuration alongside the
+matching service artifacts. Start the solver and API, then verify health, owner-account binding,
+agent approval, and the existing journal. A different existing registry is never overwritten.
+This migration registers only the existing account. New users require their own separately
+approved agents and registry records; it is not self-service account enrollment.
+
 ## Conformance oracle maintenance
 
 The native EVM test perpetual and dated-future markets use an owner-operated test oracle. Refreshing it preserves the existing test answer and advances the onchain timestamp; it is not a live market-price feed. The tool uses the shortest heartbeat among the reviewed native markets and any active canonical test perpetual market sharing their oracle. Run it more frequently than half that heartbeat, shown as `maxAgeSeconds`, while demonstrating these markets. Stale rounds remain rejected by the contracts.
