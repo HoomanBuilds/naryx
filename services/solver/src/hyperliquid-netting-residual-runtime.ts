@@ -79,6 +79,7 @@ extends HyperliquidNettingResidualDurableJournalPort {
 }
 
 export interface HyperliquidNettingResidualRuntimeOptions {
+  readonly qualifyNewSubmission?: (plan: HyperliquidNettingResidualPlan, nowMs: number) => Promise<void>;
   readonly account: HyperliquidSubmissionAccount;
   readonly agentWallet: `0x${string}`;
   readonly signerLeaseId: string;
@@ -166,7 +167,7 @@ export class HyperliquidNettingResidualTestnetRuntime {
   readonly #options: Readonly<Required<Pick<HyperliquidNettingResidualRuntimeOptions,
   'account' | 'agentWallet' | 'signerLeaseId' | 'vaultAddress'
   | 'maximumEvidenceAgeMs' | 'maximumSnapshotSkewMs'>> &
-  Pick<HyperliquidNettingResidualRuntimeOptions, 'maximumFillPages'>>;
+  Pick<HyperliquidNettingResidualRuntimeOptions, 'maximumFillPages' | 'qualifyNewSubmission'>>;
   readonly #clock: () => number;
   readonly #trustedTime: HyperliquidTrustedTimePort;
 
@@ -206,6 +207,7 @@ export class HyperliquidNettingResidualTestnetRuntime {
       maximumEvidenceAgeMs,
       maximumSnapshotSkewMs,
       ...(maximumFillPages === undefined ? {} : { maximumFillPages }),
+      ...(options.qualifyNewSubmission === undefined ? {} : { qualifyNewSubmission: options.qualifyNewSubmission }),
     });
     this.#clock = options.clock ?? Date.now;
     this.#trustedTime = options.trustedTime;
@@ -255,6 +257,7 @@ export class HyperliquidNettingResidualTestnetRuntime {
       );
     }
     if (timeDecision !== null) {
+      await this.#options.qualifyNewSubmission?.(plan, nowMs);
       this.#journal.recordTrustedTimeDecision(id, timeDecision);
     }
     const context = existing === null

@@ -198,9 +198,10 @@ test('qualifies main and HIP-3 perpetual markets from their canonical asset IDs'
       assert.ok(book);
       return book;
     },
+    perpetualContext: async () => ({ funding: '0', oraclePx: '60000' }),
   };
 
-  await qualifyHyperliquidPerpetualStrategyMarkets({
+  const qualification: Parameters<typeof qualifyHyperliquidPerpetualStrategyMarkets>[0] = {
     reader: marketReader,
     plans: [{
       legs: [
@@ -217,5 +218,12 @@ test('qualifies main and HIP-3 perpetual markets from their canonical asset IDs'
     allowedCoins: ['BTC', 'xyz:BTC'], quoteTokenIndex: 0, minimumDepth: '0.001',
     maxBookAgeMs: 1_000, maxSnapshotSkewMs: 500, maxReferenceDivergenceBps: 50,
     currentTimeMs: () => 1_000_000,
-  });
+  };
+  await qualifyHyperliquidPerpetualStrategyMarkets(qualification);
+  const secondary = books.get('xyz:BTC')!;
+  secondary.levels[1][0]!.px = '72000';
+  await assert.rejects(qualifyHyperliquidPerpetualStrategyMarkets(qualification), /exit depth inside the oracle bound/);
+  secondary.levels[1][0]!.px = '60020';
+  await assert.rejects(qualifyHyperliquidPerpetualStrategyMarkets({ ...qualification,
+    reader: { ...marketReader, perpetualContext: async () => ({ funding: '0' }) } }), /entry oracle is unavailable/);
 });

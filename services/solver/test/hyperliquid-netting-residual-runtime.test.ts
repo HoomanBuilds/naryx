@@ -215,6 +215,8 @@ test('executes one durable residual and resumes evidence without rebroadcast', a
     new HyperliquidSdkTestnetOrderSubmitter(signer(), transport),
   );
   let nowMs = 1_999_999_999_900;
+  let qualificationCalls = 0;
+  let rejectQualification = true;
   const evidence = {
     async collect(input: HyperliquidNettingResidualEvidenceCollectInput) {
       return {
@@ -257,9 +259,18 @@ test('executes one durable residual and resumes evidence without rebroadcast', a
       maximumSnapshotSkewMs: 100,
       trustedTime: trustedTimePort(1_999_999_999_900),
       clock: () => nowMs,
+      qualifyNewSubmission: async () => {
+        qualificationCalls += 1;
+        if (rejectQualification) throw new Error('exit liquidity unavailable');
+      },
     },
   );
   const executionInput = { intent, idempotencyKey: toHex(intent.intentHash) };
+
+  await assert.rejects(runtime.execute(executionInput), /exit liquidity unavailable/);
+  assert.equal(transport.requests.length, 0);
+  rejectQualification = false;
+  nowMs += 1;
 
   const first = await runtime.execute(executionInput);
   assert.equal(first.outcome, 'EXACT_FILLED');
@@ -287,6 +298,7 @@ test('executes one durable residual and resumes evidence without rebroadcast', a
   assert.equal(resumed.outcome, 'EXACT_FILLED');
   assert.equal(resumed.filledSignedQuantityAtoms, first.filledSignedQuantityAtoms);
   assert.equal(resumed.submittedAtValue, first.submittedAtValue);
+  assert.equal(qualificationCalls, 3);
   // The window closes at a read deadline a quarter of the evidence age bound after the clock.
   assert.equal(resumed.observedAtValue, intent.validUntilValue + 1n + 250n);
   assert.equal(transport.requests.length, 2);

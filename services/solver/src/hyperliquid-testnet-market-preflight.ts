@@ -38,6 +38,7 @@ export interface HyperliquidTestnetMarketReadPort {
   perpetualDexs?(): Promise<PerpDexsResponse>;
   perpetualMeta?(dex: string): Promise<MetaResponse>;
   l2Book?(coin: string): Promise<L2BookResponse>;
+  perpetualContext?(coin: string): Promise<HyperliquidTestnetPerpetualContext>;
 }
 
 export type HyperliquidTestnetUserFeeRates = Pick<UserFeesResponse, 'userCrossRate' | 'userSpotCrossRate'>;
@@ -51,6 +52,7 @@ export interface HyperliquidTestnetQuoteMarketReadPort {
 
 export interface HyperliquidTestnetPerpetualContext {
   readonly funding: string;
+  readonly oraclePx?: string;
 }
 
 export interface HyperliquidTestnetGeneralizedMarketReadPort extends HyperliquidTestnetQuoteMarketReadPort {
@@ -304,13 +306,20 @@ implements HyperliquidTestnetMarketReadPort, HyperliquidTestnetQuoteMarketReadPo
     return this.#client.userFees({ user });
   }
 
+  async quoteTokenIndex(tokenId: string): Promise<number> {
+    const token = (await this.#client.spotMeta()).tokens.find((item) => item.tokenId === tokenId);
+    requireCondition(token !== undefined, 'configured quote token identity is unavailable');
+    return token.index;
+  }
+
   async perpetualContext(coin: string): Promise<HyperliquidTestnetPerpetualContext> {
-    const [meta, contexts] = await this.#client.metaAndAssetCtxs();
+    const dex = coin.includes(':') ? coin.split(':')[0]! : '';
+    const [meta, contexts] = await this.#client.metaAndAssetCtxs(dex === '' ? {} : { dex });
     const index = meta.universe.findIndex((asset) => asset.name === coin);
     const context = index < 0 ? undefined : contexts[index];
-    requireCondition(context !== undefined && typeof context.funding === 'string',
+    requireCondition(context !== undefined && typeof context.funding === 'string' && typeof context.oraclePx === 'string',
       `perpetual context ${coin} is unavailable`);
-    return Object.freeze({ funding: context.funding });
+    return Object.freeze({ funding: context.funding, oraclePx: context.oraclePx });
   }
 }
 
@@ -393,6 +402,14 @@ export async function qualifyHyperliquidPerpetualStrategyMarkets(input: Readonly
     requireCondition(book.time <= nowMs && nowMs - book.time <= input.maxBookAgeMs,
       `perpetual book ${market.universe.name} is stale or future-dated`);
     const matching = orders.filter((order) => order.a === market.assetId);
+    const opening = matching.filter((order) => !order.r);
+    let oracle: Decimal | undefined;
+    if (opening.length > 0) {
+      requireCondition(typeof input.reader.perpetualContext === 'function', 'entry requires an oracle-bound exit-liquidity observation');
+      const context = await input.reader.perpetualContext!(market.universe.name);
+      requireCondition(typeof context.oraclePx === 'string', 'entry oracle is unavailable');
+      oracle = positiveDecimal(context.oraclePx!, 'entry oracle');
+    }
     for (const order of matching) {
       requireCondition(decimal(order.s, 'perpetual planned quantity').scale <= market.universe.szDecimals,
         `perpetual ${market.universe.name} size precision exceeds metadata`);
@@ -401,6 +418,16 @@ export async function qualifyHyperliquidPerpetualStrategyMarkets(input: Readonly
       requireCondition(compare(executableDepth(
         book, order.b, order.p, `perpetual ${market.universe.name}`,
       ), required) >= 0, `perpetual ${market.universe.name} executable depth is insufficient`);
+      if (!order.r && oracle !== undefined) {
+        const bps = Math.min(input.maxReferenceDivergenceBps, 500);
+        const bound = { atoms: oracle.atoms * BigInt(order.b ? 10_000 - bps : 10_000 + bps), scale: oracle.scale + 4 };
+        const exitDepth = book.levels[order.b ? 0 : 1].filter((level) => order.b
+          ? compare(decimal(level.px, 'exit price'), bound) >= 0
+          : compare(decimal(level.px, 'exit price'), bound) <= 0)
+          .reduce((sum, level) => add(sum, decimal(level.sz, 'exit size')), { atoms: 0n, scale: 0 });
+        requireCondition(compare(exitDepth, required) >= 0,
+          `perpetual ${market.universe.name} exit depth inside the oracle bound is insufficient`);
+      }
     }
   }
   const times = books.map(({ book }) => book.time);

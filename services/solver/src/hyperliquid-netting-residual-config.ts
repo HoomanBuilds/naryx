@@ -34,7 +34,7 @@ import {
   HyperliquidNettingResidualTestnetHttpEvidence,
   type HyperliquidNettingResidualEvidenceBinding,
 } from './hyperliquid-testnet-evidence-http.js';
-import { HyperliquidSdkTestnetMarketReadClient } from './hyperliquid-testnet-market-preflight.js';
+import { HyperliquidSdkTestnetMarketReadClient, qualifyHyperliquidPerpetualStrategyMarkets } from './hyperliquid-testnet-market-preflight.js';
 import {
   createHyperliquidTrustedTimeSources,
   HyperliquidTrustedClock,
@@ -296,9 +296,10 @@ export async function loadHyperliquidNettingResidualTestnetRuntime(
   });
   try {
     const clock = dependencies.clock ?? Date.now;
+    const marketReader = new HyperliquidSdkTestnetMarketReadClient();
     const trustedTime = dependencies.trustedTime ?? new HyperliquidTrustedClock(
       hyperliquidTrustedTimePolicyFromEnvironment(environment),
-      createHyperliquidTrustedTimeSources(new HyperliquidSdkTestnetMarketReadClient(), clock),
+      createHyperliquidTrustedTimeSources(marketReader, clock),
     );
     const transport = (dependencies.transportFactory
       ?? (() => new HyperliquidTestnetHttpExchangeTransport()))();
@@ -347,6 +348,20 @@ export async function loadHyperliquidNettingResidualTestnetRuntime(
           64,
         ),
         trustedTime,
+        qualifyNewSubmission: async (plan, nowMs) => {
+          if (plan.order.a >= 10_000 && plan.order.a < 100_000) return;
+          await qualifyHyperliquidPerpetualStrategyMarkets({
+            reader: marketReader,
+            plans: [{ legs: [{ role: 'PERPETUAL', order: plan.order }] }],
+            allowedCoins: required(environment, 'NARYX_HYPERLIQUID_TESTNET_ALLOWED_PERPETUAL_COINS').split(',').map((coin) => coin.trim()),
+            quoteTokenIndex: await marketReader.quoteTokenIndex(required(environment, 'NARYX_HYPERLIQUID_TESTNET_QUOTE_TOKEN_ID')),
+            minimumDepth: plan.order.s,
+            maxBookAgeMs: positiveInteger(environment, 'NARYX_HYPERLIQUID_TESTNET_MAX_BOOK_AGE_MS', 5_000, 60_000),
+            maxSnapshotSkewMs: positiveInteger(environment, 'NARYX_HYPERLIQUID_TESTNET_MAX_BOOK_SNAPSHOT_SKEW_MS', 5_000, 60_000),
+            maxReferenceDivergenceBps: 500,
+            currentTimeMs: () => Math.max(nowMs, clock()),
+          });
+        },
         ...(dependencies.clock === undefined ? {} : { clock: dependencies.clock }),
       },
     );
