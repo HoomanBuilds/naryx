@@ -114,11 +114,15 @@ function CashMarket({ market, client, baseUrl }: { market: NativeCashMarket; cli
     } });
   useEffect(() => {
     if (!pending || !reconciliation.data) return;
-    writePending(storageKey, null);
-    notify(reconciliation.data === "confirmed" ? "ok" : "bad", reconciliation.data === "confirmed"
-      ? `${pending.action} confirmed and recorded.` : "Transaction reverted. No cash position was changed.");
-    void refresh();
-  }, [pending, reconciliation.data, storageKey, refresh, notify]);
+    let cancelled = false;
+    void refresh().then(() => {
+      if (cancelled || readPending(storageKey) !== rawPending) return;
+      writePending(storageKey, null);
+      notify(reconciliation.data === "confirmed" ? "ok" : "bad", reconciliation.data === "confirmed"
+        ? `${pending.action} confirmed and recorded.` : "Transaction reverted. No cash position was changed.");
+    });
+    return () => { cancelled = true; };
+  }, [pending, rawPending, reconciliation.data, storageKey, refresh, notify]);
 
   function requireOwner() {
     const connection = getConnection(config);
@@ -172,7 +176,8 @@ function CashMarket({ market, client, baseUrl }: { market: NativeCashMarket; cli
     } catch (error) { setSigned(null); setMessage(failure(error)); }
     finally { lock.current = false; setBusy(null); }
   }
-  const disabled = !!busy || !!pending || wallet.awaitingWallet || wallet.switching || !wallet.onChain(domain);
+  const disabled = !!busy || !!pending || accountQuery.isError || accountQuery.isFetching
+    || wallet.awaitingWallet || wallet.switching || !wallet.onChain(domain);
   const expiry = signed ? Number(signed.quote.match.expiry) - now : 0;
   const quoteCurrent = signed && signed.quote.owner.toLowerCase() === owner?.toLowerCase() && expiry > 0;
   const explorer = network.blockExplorers.default.url;
