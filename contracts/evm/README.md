@@ -30,6 +30,10 @@ The controller is the clearing house's immutable mark authority. Even the config
 
 ## Local validation
 
+`NativeCashStandingMaker` supplies continuous, contract-backed bid/ask liquidity to an existing cash-range clearing house through its ERC-1271 owner-signature interface. Its inventory account owns real deposited collateral. It derives bounded prices from the pinned range controller, refuses stale or mismatched marks and nonzero fees, and sizes offers against current equity, position limits and shared open interest. Every fill still requires the taker's signature and the clearing house's nonce, replay, margin and conservation checks.
+
+Disabling the supplier stops new inventory exposure while preserving reducing trades. Inventory withdrawal requires quoting disabled and the supplier flat. Only the supplier's own capital is controlled by its two-step owner; user accounts and withdrawals remain in the existing clearing house. Capacity is revalidated on acceptance, not promised as an exclusive reservation. This maker does not provide liquidity for routed external spot or perpetual positions.
+
 ```bash
 forge fmt --check
 forge build
