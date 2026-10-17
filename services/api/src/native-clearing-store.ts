@@ -563,8 +563,14 @@ export class SqliteNativeClearingStore {
     }
     return this.#db.transaction(() => {
       const currentAuction = this.#auctionRecord(input.auctionId);
-      if (currentAuction.status !== 'OPEN') {
+      const nowMs = this.#nowMs();
+      if (currentAuction.status !== 'OPEN' || nowMs >= currentAuction.auction.bidsCloseAtMs || nowMs > bid.validUntilMs) {
         throw new NativeClearingStoreError('AUCTION_CLOSED', 'Default auction is not accepting bids.');
+      }
+      const currentBackstop = this.#requiredAccount(bid.backstopAccountId, policy);
+      if (!bytesEqual(currentBackstop.accountHash, bid.backstopAccountHash)
+        || currentBackstop.ownerId !== bid.backstopOwnerId || currentBackstop.sequence !== bid.nonce) {
+        throw new NativeClearingStoreError('STALE_BID', 'Default bid is not bound to current backstop state.');
       }
       this.#db.prepare(`
         INSERT INTO native_clearing_default_bids

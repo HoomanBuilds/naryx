@@ -218,6 +218,15 @@ test('default auction transfers exposure and journals reserve loss', async () =>
     const bid = nativeClearingDefaultBid(bidInput, auction);
     const bidSignature = await backstopSigner.signMessage({ message: { raw: `0x${toHex(bid.bidHash)}` } });
     now = 10_500;
+    const lateBid = store.submitDefaultBid({
+      auctionId: auction.auctionId,
+      bid: bidInput,
+      ownerSignature: { scheme: 'EIP191_SECP256K1', signature: bidSignature },
+    });
+    now = 11_000;
+    await assert.rejects(lateBid, { code: 'AUCTION_CLOSED' });
+    assert.equal(store.defaultAuction(auction.auctionId).bids.length, 0);
+    now = 10_500;
     await store.submitDefaultBid({
       auctionId: auction.auctionId,
       bid: bidInput,
