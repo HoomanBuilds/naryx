@@ -516,6 +516,9 @@ test("the private terminal server answers public market routes before its origin
     {}, undefined, undefined, {}, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
     undefined, undefined, runtime.handler,
   );
+  server.on('upgrade', (request, socket, head) => {
+    if (!runtime.upgrade(request, socket, head)) socket.destroy();
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as AddressInfo;
   try {
@@ -525,6 +528,16 @@ test("the private terminal server answers public market routes before its origin
     const privateRoute = await fetch(`http://127.0.0.1:${port}/internal/healthz`, { headers: { Origin: "https://reader.example" } });
     assert.equal(privateRoute.status, 403);
     assert.equal((await fetch(`http://127.0.0.1:${port}/internal/healthz`)).status, 200);
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/v1/stream`);
+    await new Promise<void>((resolve, reject) => {
+      socket.addEventListener('open', () => resolve(), { once: true });
+      socket.addEventListener('error', reject, { once: true });
+    });
+    const closed = new Promise<CloseEvent>(resolve => socket.addEventListener('close', resolve, { once: true }));
+    assert.equal(typeof runtime.closeStreams, 'function');
+    runtime.closeStreams!();
+    assert.equal((await closed).code, 1001);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/v1/markets/${CLASS}/package-depth`)).status, 404);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     runtime.close();

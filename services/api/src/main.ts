@@ -1297,8 +1297,9 @@ const publicServer = publicMarket?.listener === undefined
   });
 // Public market data streams over WebSocket on whichever server carries the public API.
 const streamHost = publicServer ?? (publicMarket === undefined ? undefined : server);
+let shuttingDown = false;
 streamHost?.on("upgrade", (request, socket, head) => {
-  if (publicMarket?.upgrade(request, socket, head) !== true) socket.destroy();
+  if (shuttingDown || publicMarket?.upgrade(request, socket, head) !== true) socket.destroy();
 });
 if (publicServer !== undefined && publicMarket?.listener !== undefined) {
   const { host, port } = publicMarket.listener;
@@ -1308,6 +1309,9 @@ if (publicServer !== undefined && publicMarket?.listener !== undefined) {
 }
 
 function shutdown(): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  publicMarket?.closeStreams?.();
   hyperliquidPriceFeed?.stop();
   baseOrderRuntime?.feed.stop();
   solanaDevnetOrderRuntime?.feed.stop();

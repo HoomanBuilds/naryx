@@ -132,6 +132,7 @@ export interface PublicMarketRuntime {
   /** Loopback keeper executor and coordinator routes under `/internal/`; mount only on the private server. */
   readonly internalHandler?: (request: IncomingMessage, response: ServerResponse) => boolean;
   readonly reconcileAdvancedOrders?: () => { completed: number; pending: number; failed: number; expired: number };
+  closeStreams?(): void;
   close(): void;
 }
 
@@ -938,6 +939,7 @@ export function loadPublicMarketRuntime(
       ...(listener === undefined ? {} : { listener: Object.freeze(listener) }),
       upgrade: (request: IncomingMessage, socket: Duplex, head: Buffer) =>
         stream.upgrade(request, socket, head) || (solverStream?.upgrade(request, socket, head) ?? false),
+      closeStreams: () => { stream.close(); solverStream?.close(); },
       clockUnit: support.clockUnit,
       requestsPerMinute,
       solverApiEnabled: solverHandler !== undefined,
