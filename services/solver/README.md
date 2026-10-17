@@ -94,12 +94,13 @@ netting execution is refused in per-user mode: cancelling obligations between di
 cannot settle their independent HyperCore accounts. It requires a separately qualified funded
 clearing or novation mechanism. Historical shared-account evidence is not per-user settlement.
 
-### Optional pooled test-account custody foundation
+### Optional dedicated pooled test-account runtime
 
 `hyperliquid-pooled-collateral-store.ts`, `hyperliquid-pool-funding.ts`,
 `hyperliquid-pool-funding-reads.ts`, and `hyperliquid-pool-withdrawal.ts` implement an
-inactive, separate testnet custody boundary. They are not connected to `main.ts`, the
-public API, or the terminal. Existing per-user accounts are not migrated or pooled.
+separate testnet custody boundary. `hyperliquid-pool-main.ts` hosts its operator-only
+runtime independently of `main.ts`, the public API, and the terminal. It is disabled
+by default. Existing per-user accounts are not migrated or pooled.
 Consent creates a claim in Naryx's ledger, not an owner-specific HyperCore position.
 
 - An immutable database binding pins the testnet domain, dedicated pool account,
@@ -131,9 +132,48 @@ to the default settlement DEX. Exclusive operator control and no out-of-band wri
 are required. This foundation neither grants trading authority nor guarantees a loss
 cap against market gaps.
 
-Activation still requires owner-signed trading mandates, virtual-position and
-funding/fee allocation, qualified residual execution, funded default/recovery rules,
-live deposit/trade/withdrawal reconciliation, and isolated runtime/API integration.
+- Every epoch needs a separate signature from every trader and one funded recovery
+  sponsor. Signatures bind both execution policies, quantities, fees, loss reservations,
+  deadlines, and the custody configuration. Custody consent alone cannot authorize a trade.
+- Entry reserves cash before dispatch. Only terminal exact entry fills allocate virtual
+  positions. Unknown entries are observed without resubmission. Cancellation tombstones
+  block an unsent order permanently, including a worker racing to submit it.
+- Closing is reduce-only. Partial closes retry only the remaining evidenced quantity,
+  with separate intents and receipts. A cumulative close is not an atomic fill. Internal
+  close prices are fixed by the initial close plan; observed external costs and fees are
+  allocated pro rata with deterministic integer rounding.
+- Failed entry recovery charges the separately signed sponsor, not unrelated members.
+  Ordinary closing caps each trader's allocated loss and fees, charging an admitted
+  shortfall to the funded sponsor. Exhausted backing leaves the pool locked. This is
+  not an ex-ante guarantee against unlimited gaps or venue default.
+- Funding comes from the venue ledger. Funding overlapping an unresolved execution
+  interval fails closed rather than guessing the held position. A closure settles only
+  when every virtual position closes and all fees, funding, and realized cash reconcile
+  exactly to freshly observed withdrawable equity.
+- The supervisor resumes pending epochs and closes them at their signed deadline.
+  At most 32 close attempts per instrument are admitted. Unresolved venue evidence,
+  exhausted retry budgets, or unexplained equity need operator reconciliation.
+
+Run the isolated service only with `NARYX_HYPERLIQUID_POOL_ENABLED=true`,
+`NARYX_HYPERLIQUID_POOL_ENVIRONMENT=TESTNET`, and an owner-only external config at
+`NARYX_HYPERLIQUID_POOL_CONFIG`. It also requires the existing trusted-time environment
+settings. The config pins `binding`, separate `databasePath` and `journalPath`,
+`entryConfigPath`, `exitConfigPath`, explicit `markets`, `agentAddress`, `agentKeyPath`,
+`custodyKeyPath`, `encryptionKeyPath`, `operatorTokenPath`, and `keeperOrigin`, plus
+`version: 1` and `environment: "TESTNET"`. The two residual configs use the existing
+reviewed residual policy/binding format. The pool policy hash binds both policies.
+The dedicated custody key can withdraw only through the journaled testnet transport;
+it is not a restricted API wallet. The separate trading key is a venue API wallet.
+
+The systemd unit uses an exclusive process lock and listens only on loopback port
+8821. An independent 32-byte hex operator token protects `/v1/pool/*`; browser-origin
+and forwarded requests are refused. Commands cover enrollment, observed deposits,
+signed epochs, advancement, close, recovery, and signed withdrawal preparation,
+submission, evidence completion, and unsubmitted-expiry release. Responses use the
+existing protocol JSON codec. This is not a public custodial product or frontend integration.
+
+Funded dedicated-account activation and a live deposit/trade/withdrawal round trip
+must still be verified independently of the unit tests before claiming this mode live.
 Do not use ledger `settleEpoch` inputs from public requests, enable shared trading
 through the existing per-user route, or advertise cross-user margin as live based
 only on these custody tests.

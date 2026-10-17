@@ -1,0 +1,22 @@
+[Unit]
+Description=Naryx dedicated Hyperliquid test-account pool
+Wants=network-online.target
+After=network-online.target naryx-keeper.service
+
+[Service]
+Type=simple
+User=naryx
+Group=naryx
+WorkingDirectory=/srv/naryx/app/services/solver
+ExecStart=/usr/bin/flock --exclusive --nonblock /srv/naryx/data/hyperliquid-pool-v1/runtime.lock /usr/bin/node --env-file=/srv/naryx/release/env/hyperliquid-pool.env /srv/naryx/app/services/solver/dist/hyperliquid-pool-main.js
+Restart=on-failure
+RestartSec=5
+ReadWritePaths=/srv/naryx/data/hyperliquid-pool-v1
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
