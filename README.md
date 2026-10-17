@@ -5,8 +5,8 @@
 <p align="center"><strong>The Complex Order Network. Trade the strategy, not the legs.</strong></p>
 
 <p align="center">
-  <a href="https://naryx.vercel.app">Website</a> |
-  <a href="https://naryx.vercel.app/trade">Trading terminal</a> |
+  <a href="https://naryx.xyz">Website</a> |
+  <a href="https://naryx.xyz/trade">Trading terminal</a> |
   <a href="apps/web/README.md">Web guide</a> |
   <a href="contracts/README.md">Contracts</a> |
   <a href="packages/sdk/README.md">TypeScript SDK</a>
@@ -138,7 +138,11 @@ Review the exact public records in [Solana Devnet](deployments/solana/devnet/rel
 
 The native clearing path binds exact package-book allocations, owner-authorized collateral changes, independently signed sequence-monotonic marks, bounded default auctions, and durable evidence. The EVM clearing house adds token custody, owner-signed bilateral matching, exact margin and fee accounting, open-interest and position caps, pause controls, funded recovery reserves, and auction recovery. The [Base Sepolia multi-strategy release](deployments/evm/base-sepolia/multi-strategy-release.json) records a deployed, unpaused clearing house; that record alone does not establish funded reserves or trading volume.
 
-A separate native cash range service supports a bounded oracle-priced payoff family on Base Sepolia and Arbitrum Sepolia. Its controller enforces the price formula and full-range collateral, while its quote service checks funded owner accounts and exact sequences before signing. Governor-signed manifest registration, a delayed entry gate, a budget-capped oracle worker, durable quote leases, and finalized cash receipts are separate from routed strategy execution. Cash positions do not imply ownership of external spot, perpetual, or option positions. The dedicated `/v1/native-cash/` API is implemented; terminal integration and package-book integration are separate work, not established by deploying the service.
+A separate native cash range service supports a bounded oracle-priced payoff family on Base Sepolia and Arbitrum Sepolia. Its controller enforces the price formula and full-range collateral, while its quote service checks funded owner accounts and exact sequences before signing. Markets and Portfolio expose account opening, exact approvals, deposits, cash trades, exits, realized-cash settlement, withdrawals, and finalized receipts. Contract-backed standing makers derive executable bids, asks, and capacity from their funded clearing accounts. These books pause when the oracle and clearing mark disagree; capacity is shared and is not reserved until acceptance. Independently supervised domain refresh loops retain exact freshness and gas-budget limits.
+
+Governor-signed manifest registration, delayed entry gates, durable quote leases, and finalized cash receipts remain separate from routed strategy execution. The service queues only independently verified included matches for restart-safe finality reconciliation, so an admitted trade does not depend on an open browser tab. Cash positions do not imply ownership of external spot, perpetual, or option positions. The dedicated `/v1/native-cash/` markets do not manufacture depth in unrelated strategy books.
+
+Hyperliquid users enroll their own testnet trading accounts. Owner-cohort coordination sequences separately authorized executions and preserves independent receipts; it does not pool collateral, transfer positions between users, or grant cross-user margin offsets. Those guarantees would require a separate custody and clearing design, not another execution adapter.
 
 The landing page uses third-party fonts under `apps/web/src/features/landing/fonts` and third-party artwork under `apps/web/public/landing` as local design material. Their licenses are unverified, so they must be verified or replaced with assets Naryx can ship before any public release of `apps/web`. Chain, token, and wallet marks in the landing page and terminal come from the pinned `@web3icons/react` package (MIT-licensed code); the marks themselves are trademarks of their owners, used only to name the networks and assets Naryx operates on, and each owner's brand guidelines should be confirmed before public release.
 
