@@ -1,5 +1,11 @@
 # services/api
 
+## Independent Hyperliquid owner execution
+
+`NARYX_HYPERLIQUID_TESTNET_OWNER_COHORTS_ENABLED=true` enables the loopback-only `/internal/hyperliquid-testnet/owner-cohorts` controller in `PER_USER` mode. Its separate durable database is configured through `NARYX_HYPERLIQUID_TESTNET_OWNER_COHORTS_DB`. POST `{ cohortId, requests: [{ attemptId, idempotencyKey }, ...] }` admits two to eight distinct owners' already selected, owner-authorized strategy attempts. GET `/{cohortId}` reads progress; POST `/{cohortId}/execute` with `{}` executes or reconciles it.
+
+This is sequenced execution into independent owner accounts, not atomic settlement, position novation, cross-user collateral netting, or an omnibus ledger. Each member must bind its owner as its settlement account. Membership is immutable; an execution can belong to only one cohort. All pending members' authorizations and bindings are checked before the first submission. Each submission is durably claimed before handing off to the existing executor, which still enforces balances, caps, nonces and authority. A completed member needs its own stored strategy receipt. Missing evidence, uncertain submission and recovery stop later members. Restart only observes a claimed attempt, never sends it again. A recovered member can subsequently reconcile and allow the cohort to continue; final no-effect members cannot be silently replaced.
+
 Private backend-for-frontend for the operator terminal.
 
 ## Native clearing funding gate

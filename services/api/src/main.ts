@@ -3,6 +3,8 @@ import { isAbsolute, resolve } from "node:path";
 import { createPrivateTerminalServer, loadPrivateTerminalServerConfig } from "./http-server.js";
 import { loadMakerControlProxy } from "./maker-control-proxy.js";
 import { createHyperliquidEnrollmentProxy } from "./hyperliquid-testnet-enrollment-proxy.js";
+import { HyperliquidOwnerCohorts, OwnerCohortError } from "./hyperliquid-owner-cohort.js";
+import { createHyperliquidOwnerCohortHandler } from "./hyperliquid-owner-cohort-http.js";
 import { loadPublicMarketRuntime } from "./public-market-runtime.js";
 import { SqliteInternalOrderStore } from "./internal-order-store.js";
 import { createLocalAtomicOrderRuntime } from "./local-atomic-order-context.js";
@@ -582,8 +584,6 @@ if (hyperliquidRuntimeEnabled && hyperliquidEvidenceEnabled) {
 }
 let hyperliquidExecutionRuntime: DurableHyperliquidTestnetTerminalExecutionPort | undefined;
 let hyperliquidExecutionRuntimeError: unknown;
-// Every user's package executes in the one configured trading account; the owner ledger records
-// which wallet owns which package and gates entries and exits on the owner's signature.
 let hyperliquidOwnerLedger: HyperliquidTestnetOwnerLedger | undefined;
 if (hyperliquidRuntimeEnabled && hyperliquidExecutorClientEnabled) {
   try {
@@ -719,6 +719,33 @@ const hyperliquidOwnerRoutes = hyperliquidOwnerLedger === undefined || hyperliqu
     }),
     attemptStatus: (request) => hyperliquidExecutionRuntime!.status(request),
   });
+let hyperliquidOwnerCohorts: HyperliquidOwnerCohorts | undefined;
+if (explicitlyEnabled('NARYX_HYPERLIQUID_TESTNET_OWNER_COHORTS_ENABLED')) {
+  const executions = hyperliquidExecutionRuntime;
+  const strategies = publicMarket?.strategyPackageExecutions;
+  if (hyperliquidAccountMode !== 'PER_USER' || executions === undefined || strategies === undefined) {
+    throw new Error('Owner cohorts require the per-user testnet execution runtime.');
+  }
+  hyperliquidOwnerCohorts = new HyperliquidOwnerCohorts(absolutePath(
+    process.env.NARYX_HYPERLIQUID_TESTNET_OWNER_COHORTS_DB ?? '', 'owner cohorts database'), {
+    bind(request) {
+      const attempt = strategies.anyStrategyExecutionAttempt(request.attemptId);
+      const documents = attempt === undefined ? undefined : strategies.admissionByQuote(attempt.quoteHashHex);
+      if (attempt === undefined || documents === undefined
+        || documents.order.environment !== 'testnet' || documents.graph.legs.some((leg) => leg.domain.domainId !== 'hypercore:testnet')) {
+        throw new OwnerCohortError('INVALID_ATTEMPT', 'A cohort needs an admitted Hyperliquid Testnet strategy attempt.');
+      }
+      return { owner: documents.order.owner, settlementAccount: documents.order.settlementAccount, orderHash: attempt.orderHashHex };
+    },
+    requireOwnerAuthorization: (request) => executions.requireOwnerAuthorization(request),
+    execute: (request) => executions.execute(request),
+    status: (request) => executions.status(request),
+    receiptHash(request) {
+      const attempt = strategies.anyStrategyExecutionAttempt(request.attemptId);
+      return attempt === undefined ? undefined : strategies.receiptByQuote(attempt.quoteHashHex)?.receiptHashHex;
+    },
+  });
+}
 /** The public Base account route reads several contracts per request; identical reads within 2s are joined. */
 function cachedBaseAccount(port: BaseSepoliaOrderRuntime["account"]): BaseSepoliaOrderRuntime["account"] {
   const cache = createReadCache<Awaited<ReturnType<BaseSepoliaOrderRuntime["account"]["status"]>>>({ ttlMs: 2_000 });
@@ -1248,6 +1275,7 @@ const server = createPrivateTerminalServer(
     solanaDevnetRuntime === undefined ? undefined : createSolanaDevnetStandingBookRoutes(process.env.NARYX_SOLANA_DEVNET_BINDING_ORIGIN ?? ""),
     baseExitRoutes,
     hyperliquidOwnerRoutes,
+    hyperliquidOwnerCohorts === undefined ? undefined : createHyperliquidOwnerCohortHandler(hyperliquidOwnerCohorts),
     referenceHistory === undefined
       ? undefined
       : createReferenceCandleRoutes({ store: referenceHistory, markets: terminalMarketSources }),
@@ -1325,6 +1353,7 @@ function shutdown(): void {
     basePreparationStore?.close();
     arbitrumOutcomeStore?.close();
     hyperliquidExecutionRuntime?.close();
+    hyperliquidOwnerCohorts?.close();
     hyperliquidOwnerLedger?.close();
     referenceHistory?.close();
     publicMarket?.close();
