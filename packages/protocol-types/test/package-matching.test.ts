@@ -161,6 +161,11 @@ describe('package taker order authorization', () => {
     assert.notEqual(toHex(hash), toHex(packageTakerOrderHash({ ...input, participantId: 'another-maker' })));
     assert.notEqual(toHex(hash), toHex(packageTakerOrderHash({ ...input, settlementLeaseUntilValue: NOW + 2_000n })));
     assert.equal(toHex(hash), toHex(packageTakerOrderHash({ ...input, orderId: id(99) })));
+    const bound = { ...input, strategyOrderHash: id(100) };
+    assert.notEqual(toHex(hash), toHex(packageTakerOrderHash(bound)));
+    assert.notEqual(toHex(packageTakerOrderHash(bound)), toHex(packageTakerOrderHash({ ...bound, strategyOrderHash: id(101) })));
+    assert.deepEqual(packageTakerOrderBytes(bound).slice(0, packageTakerOrderBytes(input).length), packageTakerOrderBytes(input));
+    assert.throws(() => packageTakerOrderHash({ ...input, strategyOrderHash: 'invalid' }));
   });
 
   test('GTC authorization requires a bounded settlement lease', () => {

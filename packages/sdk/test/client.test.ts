@@ -588,6 +588,7 @@ describe('public API client', () => {
       minimumQuantity: 10n,
       participantId,
       commonControlGroupId: participantId,
+      strategyOrderHash: id(7_001),
     };
     const provisional = { ...draft, orderId: '00'.repeat(32) };
     const orderId = toHex(packageTakerOrderHash(provisional));

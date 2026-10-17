@@ -2018,6 +2018,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       }
       const draft: PackageTakerOrderInput = {
         orderId: "00".repeat(32),
+        strategyOrderHash: body.strategyOrderHash,
         executionClassId: strategy.executionClassId,
         side: body.side,
         orderType: strategy.packageOrderType,
@@ -2187,6 +2188,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         || !bytesEqual(commitment.packageOrderId, orderHash)
         || commitment.participantId !== order.participantId
         || commitment.quantity !== order.quantity
+        || (order.strategyOrderHash !== undefined
+          && !bytesEqual(commitmentHash(order.strategyOrderHash), commitment.strategyOrderHash))
       ) {
         throw new RequestError(
           400,

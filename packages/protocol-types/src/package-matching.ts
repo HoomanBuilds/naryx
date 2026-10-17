@@ -969,6 +969,7 @@ export function amendPackageBookEntry(
 
 export interface PackageTakerOrderInput {
   readonly orderId: Uint8Array | string;
+  readonly strategyOrderHash?: Uint8Array | string;
   readonly executionClassId: string;
   readonly side: PackageBookSide;
   readonly orderType: PackageOrderType;
@@ -983,6 +984,7 @@ export interface PackageTakerOrderInput {
 }
 
 interface CanonicalPackageTakerOrder {
+  readonly strategyOrderHash?: CommitmentHash;
   readonly executionClassId: ProtocolId;
   readonly side: PackageBookSide;
   readonly orderType: PackageOrderType;
@@ -1010,6 +1012,9 @@ function canonicalPackageTakerOrder(input: PackageTakerOrderInput, context: stri
     );
   }
   return Object.freeze({
+    ...(input.strategyOrderHash === undefined ? {} : {
+      strategyOrderHash: commitmentHash(input.strategyOrderHash, `${context}.strategyOrderHash`),
+    }),
     executionClassId: protocolId(input.executionClassId, `${context}.executionClassId`),
     side: variant(PACKAGE_BOOK_SIDE, input.side, `${context}.side`),
     orderType: variant(PACKAGE_ORDER_TYPE, input.orderType, `${context}.orderType`),
@@ -1044,6 +1049,10 @@ export function packageTakerOrderBytes(
     );
     if (order.timeInForce === 'GTC') {
       writer.writeU64(order.settlementLeaseUntilValue as bigint, `${context}.settlementLeaseUntilValue`);
+    }
+    if (order.strategyOrderHash !== undefined) {
+      writer.writeU8(1, `${context}.strategyBindingVersion`);
+      encodeCommitmentHash(writer, order.strategyOrderHash, `${context}.strategyOrderHash`);
     }
   });
 }

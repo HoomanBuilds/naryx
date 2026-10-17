@@ -825,6 +825,16 @@ test("EVM owners authorize, amend, and cancel native package-book orders with ch
     const orderId = prepared.packageOrderId;
     assert.equal(orderId, toHex(packageTakerOrderHash(packageOrder)));
     assert.equal(packageOrder.limitPriceTicks, 101n);
+    strategies.set(id(7_104), { ...strategies.get(id(7_101)) as Record<string, unknown>, orderHashHex: id(7_104) });
+    const repeated = await get("/v1/package-book/orders/prepare", post({
+      strategyOrderHash: id(7_104), side: "ASK", limitPriceTicks: "101",
+    }));
+    assert.equal(repeated.status, 200, repeated.text);
+    assert.notEqual((repeated.body as { packageOrderId: string }).packageOrderId, orderId);
+    const mismatch = await get("/v1/package-book/orders/authorization", post({
+      order: packageOrder, settlementCommitment: { ...settlementCommitment, strategyOrderHash: id(7_104) },
+    }));
+    assert.equal(mismatch.status, 400);
 
     const challengeResponse = await get("/v1/package-book/orders/authorization", post({
       order: packageOrder,

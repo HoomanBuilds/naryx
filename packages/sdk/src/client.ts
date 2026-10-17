@@ -3116,9 +3116,9 @@ export class NaryxClient {
     sign: OrderSigner,
   ): Promise<PackageReopeningOrderSubmission> {
     if (typeof sign !== 'function') throw new TypeError('an order signer is required');
-    const provisional: PackageTakerOrderInput = { ...draft, orderId: '00'.repeat(32) };
+    const provisional: PackageTakerOrderInput = { ...draft, strategyOrderHash: settlementDraft.strategyOrderHash, orderId: '00'.repeat(32) };
     const orderId = toHex(packageTakerOrderHash(provisional));
-    const order: PackageTakerOrderInput = Object.freeze({ ...draft, orderId });
+    const order: PackageTakerOrderInput = Object.freeze({ ...provisional, orderId });
     const settlementCommitment = packageSettlementCommitment({
       version: 1,
       ...settlementDraft,
@@ -3174,9 +3174,9 @@ export class NaryxClient {
     sign: OrderSigner,
   ): Promise<PackageBookOrderSubmission> {
     if (typeof sign !== 'function') throw new TypeError('an order signer is required');
-    const provisional: PackageTakerOrderInput = { ...draft, orderId: '00'.repeat(32) };
+    const provisional: PackageTakerOrderInput = { ...draft, strategyOrderHash: settlementDraft.strategyOrderHash, orderId: '00'.repeat(32) };
     const orderId = toHex(packageTakerOrderHash(provisional));
-    const order: PackageTakerOrderInput = Object.freeze({ ...draft, orderId });
+    const order: PackageTakerOrderInput = Object.freeze({ ...provisional, orderId });
     const settlementCommitment = packageSettlementCommitment({
       version: 1,
       ...settlementDraft,
