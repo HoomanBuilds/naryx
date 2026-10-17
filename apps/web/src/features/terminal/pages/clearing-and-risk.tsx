@@ -76,7 +76,7 @@ function short(value: string): string {
 function accountHealth(account: ClearingAccount, domain: VerifiedNativeClearingDomain, mark: ClearingMark | null, nowMs: bigint): AccountHealth {
   const { policy } = domain;
   if (mark === null) return { kind: "no-mark" };
-  if (mark.observedAtMs > nowMs || nowMs - mark.observedAtMs > policy.markMaximumStalenessMs
+  if (mark.observedAtMs > nowMs || nowMs > mark.validUntilMs || nowMs - mark.observedAtMs > policy.markMaximumStalenessMs
     || account.positionAtoms % policy.packageQuantityIncrementAtoms !== ZERO) return { kind: "stale" };
   const increments = account.positionAtoms / policy.packageQuantityIncrementAtoms;
   const equityAtoms = account.collateralQuoteAtoms + account.cashBalanceQuoteAtoms + increments * mark.priceTicks * policy.priceTickQuoteAtoms;
