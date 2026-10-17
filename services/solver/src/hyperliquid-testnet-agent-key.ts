@@ -26,7 +26,7 @@ function externalAbsolutePath(value: string): string {
 export function loadHyperliquidTestnetAgentSigner(
   pathValue: string,
   expectedAgentAddress: string,
-): HyperliquidServerSigner {
+): ReturnType<typeof privateKeyToAccount> & Pick<HyperliquidServerSigner, 'signerScope'> {
   if (!ADDRESS.test(expectedAgentAddress)) {
     throw new Error('expected Hyperliquid Testnet agent address must be lowercase');
   }
@@ -75,7 +75,7 @@ export function loadHyperliquidTestnetAgentSigner(
     return Object.freeze({
       ...account,
       signerScope: HYPERLIQUID_SERVER_SIGNER_SCOPE,
-    }) as HyperliquidServerSigner;
+    });
   } finally {
     bytes.fill(0);
   }
