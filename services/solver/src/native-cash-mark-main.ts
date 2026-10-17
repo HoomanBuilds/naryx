@@ -90,6 +90,6 @@ try {
         process.stderr.write(JSON.stringify({ marketId: binding.marketId, reason }) + '\n');
       }
     }
-    await setTimeout(30_000, undefined, { signal: controller.signal }).catch(() => {});
+    await setTimeout(5_000, undefined, { signal: controller.signal }).catch(() => {});
   }
 } finally { journal.close(); }
