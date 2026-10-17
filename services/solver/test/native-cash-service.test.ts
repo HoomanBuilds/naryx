@@ -199,6 +199,13 @@ test('native cash HTTP preserves tagged integer terms and refuses forwarded call
     const book = await fetch(`${origin}/v1/native-cash/markets/${request.marketId}/book`);
     assert.equal(book.status, 200);
     assert.deepEqual(parseProtocolJson(await book.text()), { version: 1, result: { bidQuantity: 1n } });
+    f.port.observe = async (quote, tx) => { throw new NativeCashAwaitingFinality(tx, quote.digest); };
+    const pending = await fetch(`${origin}/v1/native-cash/quotes/${request.requestId}/settlement`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: stringifyProtocolJson({ transactionHash: hash }) });
+    assert.equal(pending.status, 409);
+    assert.deepEqual(await pending.json(), { error: 'Trade included. Server-side reconciliation will record the receipt after finality.',
+      code: 'AWAITING_FINALITY', backgroundReconciliation: true });
+    assert.deepEqual(await service.reconcilePending(), { checked: 1, finalized: 0 });
     assert.equal((await fetch(`${origin}/v1/native-cash/markets/unknown/account`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: stringifyProtocolJson({ owner, accountId: 'wallet-user' }) })).status, 409);
     for (const headers of [{ Origin: 'https://example.com' }, { 'X-Forwarded-For': '127.0.0.1' }, { Forwarded: 'for=127.0.0.1' }]) {
       assert.equal((await fetch(`${origin}/v1/native-cash/markets`, { headers })).status, 403);

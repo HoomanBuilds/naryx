@@ -4,7 +4,7 @@ import { isAbsolute } from 'node:path';
 import { parseProtocolJson, stringifyProtocolJson } from '@naryx/protocol-types';
 import { EvmNativeCashRangeAdapter, NATIVE_CASH_RANGE_ABI, NATIVE_CASH_HOUSE_ABI, observeNativeCashMatch,
   type EvmNativeCashRangeBinding, type EvmNativeClearingTransitionReadPort } from '@naryx/adapter-evm';
-import { nativeCashContractAuthorization } from '@naryx/adapter-evm';
+import { nativeCashContractAuthorization, NativeCashAwaitingFinality } from '@naryx/adapter-evm';
 import { createPublicClient, getAddress, http, keccak256, parseAbi, stringToHex, type Hex } from 'viem';
 import { loadEvmStrategySolverKey } from './evm-strategy-execution-authorization.js';
 import { NativeCashService, type NativeCashMarketPort, type NativeCashQuoteRequest } from './native-cash-service.js';
@@ -188,6 +188,10 @@ export function createNativeCashTestnetHandler(runtime: Pick<Awaited<ReturnType<
         value: 0n, functionName: 'executeMatch', ownerSignatureRequired: true,
         prepareCalldata: 'Sign the returned typedData, then pass the match and both owner signatures to executeMatch.' } });
     } catch (error) {
+      if (error instanceof NativeCashAwaitingFinality) {
+        send(409, { error: 'Trade included. Server-side reconciliation will record the receipt after finality.',
+          code: 'AWAITING_FINALITY', backgroundReconciliation: true }); return;
+      }
       if (error instanceof Error && error.message.startsWith('Native cash quote refused:')) {
         process.stderr.write(JSON.stringify({ event: 'NATIVE_CASH_QUALIFICATION_REFUSED', reason: error.message }) + '\n');
       }
