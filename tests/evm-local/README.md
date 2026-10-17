@@ -37,6 +37,17 @@ recovery reserve. All transactions together, including ETH top-ups, reserve at m
 network. Exact token approvals are used. Signed transactions and hashes are saved before broadcasting;
 resuming reuses the recorded transaction instead of repeating a mint or deposit.
 
-This runner does not unpause entries, create an API clearing ledger, publish continuous liquidity,
-or claim that native cash-settled package exposure executes external option legs. Those require
-separate finalized reconciliation and activation. Keep the owner-only evidence file outside Git.
+After funding, `--step mark --broadcast` publishes an explicitly controlled testnet mark, not an
+external options-market oracle. It also signs the matching offchain observation. If necessary the
+approved gas source funds the dedicated mark keeper within the same cumulative cap.
+
+Once the published mark block is finalized, `--step reconcile --broadcast --admin-url
+http://127.0.0.1:18807` records the actual funded accounts through the API, using a private SSH forward
+to its loopback listener. Each deposit is reconciled against its own historical finalized block.
+The authority signature authenticates the mark; account backing receipts prove account state,
+not the truth of a market price. Executions separately require exact onchain mark identity.
+
+The runner does not unpause entries, publish continuous liquidity, or claim that native cash-settled
+package exposure executes external option legs. Those require separate activation. Keep the
+owner-only evidence file outside Git. Resuming reconciliation checks existing canonical ledger
+state before sending another control command.
