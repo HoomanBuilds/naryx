@@ -104,8 +104,22 @@ package commitments without preparing another trade. Expired orders remain obser
 an uncertain request that never reached submission can be durably fenced as not submitted.
 New execution still requires fresh preparation, account binding, and authority checks.
 
-Self-service API-wallet enrollment and historical shared-position migration are not implemented.
-Accounts must be provisioned explicitly in the external registry. Before enabling a registered
+Self-service testnet enrollment is optional and disabled by default. Set
+`NARYX_HYPERLIQUID_TESTNET_ENROLLMENT_ENABLED=true` in both API and solver, and configure an
+external owner-only enrollment directory plus a separate owner-only 32-byte encryption-key file.
+The terminal requests an owner-signed enrollment, then a finite Hyperliquid Testnet API-wallet
+approval using the official SDK signing schema. New API keys are AES-256-GCM encrypted at rest.
+An uncertain approval is observed rather than automatically broadcast again. Fresh venue checks
+require a funded Standard account, approved spot assets, isolated margin in supported markets,
+no supported-market positions or orders, and no other active API wallet. Users configure and
+fund those testnet accounts themselves. The service does not deposit or withdraw on their behalf.
+
+Enrolled accounts and signed enrollment evidence are stored in SQLite and restored on startup.
+Successful enrollment registers a separate runtime without restarting the service. The combined
+bootstrap and enrolled cohort is capped at 64 accounts. This is not unrestricted public activation
+or a claim that every token and margin mode is supported. Historical shared-position migration
+is not implemented. Existing accounts may still be provisioned in the bootstrap registry.
+Before enabling a registered
 account, verify its owner approval, funding, and a real owner-account execution. An unregistered
 owner remains unable to submit through the executor.
 

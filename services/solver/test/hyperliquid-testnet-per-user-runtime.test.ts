@@ -107,6 +107,11 @@ test('isolates user lanes and rechecks ownership before preflight with no fallba
       await assert.rejects(pool.executor.execute(request), new RegExp(`preflight-${owner}`));
     }
     assert.deepEqual(preflights, [ownerA, ownerB]);
+    const hotAccount = account(`0x${'66'.repeat(20)}`, '7');
+    await Promise.all([pool.registerAccount(hotAccount), pool.registerAccount(hotAccount)]);
+    assert.equal(pool.hasAccount(hotAccount.owner), true);
+    assert.equal(configurations.length, 3);
+    await assert.rejects(pool.registerAccount({ ...hotAccount, agentAddress: account(ownerA, '8').agentAddress }), /identity cannot change/);
     await assert.rejects(pool.operator.releaseLane({ attemptId: attemptB, disposition: 'FINAL', reason: 'TEST' }),
       new RegExp(`release-${ownerB}`));
     const unknown = `strategy-hl-${'cc'.repeat(24)}`;
@@ -118,7 +123,7 @@ test('isolates user lanes and rechecks ownership before preflight with no fallba
       /do not match/);
     assert.deepEqual(preflights, [ownerA, ownerB]);
   } finally { pool.close(); }
-  assert.deepEqual(closed, [ownerA, ownerB]);
+  assert.deepEqual(closed, [ownerA, ownerB, `0x${'66'.repeat(20)}`]);
 });
 
 test('closes previously loaded accounts if a later account fails to initialize', async () => {

@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { hyperliquidTestnetAccountMode } from './hyperliquid-testnet-account-binding.js';
 import { loadHyperliquidTestnetPerUserRuntime, loadHyperliquidTestnetUserAccounts } from './hyperliquid-testnet-per-user-runtime.js';
+import { HyperliquidTestnetEnrollmentService, hyperliquidTestnetEnrollmentVenue } from './hyperliquid-testnet-enrollment.js';
+import { createHyperliquidEnrollmentHandler } from './hyperliquid-testnet-enrollment-http.js';
 import { SqliteEvmStrategyAuthorizationJournal } from './evm-strategy-authorization-journal.js';
 import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
@@ -791,11 +793,31 @@ if (executorEnabled) {
     if (path === undefined || path === '') {
       throw new Error('NARYX_HYPERLIQUID_TESTNET_USER_ACCOUNTS is required for per-user execution');
     }
+    const accounts = loadHyperliquidTestnetUserAccounts(path);
     const runtime = await loadHyperliquidTestnetPerUserRuntime({
-      environment: process.env, accounts: loadHyperliquidTestnetUserAccounts(path), attempts,
+      environment: process.env, accounts, attempts,
     });
-    executorRuntime = runtime;
-    executorServer = createHyperliquidTestnetExecutorServer(runtime.executor, runtime.operator);
+    const enrollmentEnabled = explicitBoolean(process.env.NARYX_HYPERLIQUID_TESTNET_ENROLLMENT_ENABLED,
+      'NARYX_HYPERLIQUID_TESTNET_ENROLLMENT_ENABLED');
+    if (enrollmentEnabled && (process.env.NARYX_HYPERLIQUID_TESTNET_EXPECTED_LEVERAGE_MODE !== 'isolated'
+      || process.env.NARYX_HYPERLIQUID_TESTNET_EXPECTED_PORTFOLIO_MARGIN_ENABLED !== 'false')) {
+      throw new Error('testnet enrollment requires the isolated Standard account authority policy');
+    }
+    const enrollment = enrollmentEnabled ? new HyperliquidTestnetEnrollmentService({
+        environment: 'TESTNET',
+        directory: absolutePath(process.env.NARYX_HYPERLIQUID_TESTNET_ENROLLMENT_DIRECTORY ?? '', 'enrollment directory'),
+        encryptionKeyPath: absolutePath(process.env.NARYX_HYPERLIQUID_TESTNET_AGENT_ENCRYPTION_KEY_PATH ?? '', 'agent encryption key'),
+        bootstrapAccounts: accounts, hasAccount: runtime.hasAccount, registerAccount: runtime.registerAccount,
+        venue: hyperliquidTestnetEnrollmentVenue(
+          (process.env.NARYX_HYPERLIQUID_TESTNET_ALLOWED_PERPETUAL_COINS ?? '').split(','),
+          Number(process.env.NARYX_HYPERLIQUID_TESTNET_AUTHORITY_INCIDENT_BUFFER_MS),
+          (process.env.NARYX_HYPERLIQUID_TESTNET_ALLOWED_SPOT_TOKEN_INDICES ?? '').split(',').map(Number),
+        ),
+      }) : undefined;
+    await enrollment?.restore();
+    executorRuntime = { close() { enrollment?.close(); runtime.close(); } };
+    executorServer = createHyperliquidTestnetExecutorServer(runtime.executor, runtime.operator,
+      enrollment === undefined ? undefined : createHyperliquidEnrollmentHandler(enrollment));
   } else {
     const keyPath = process.env.NARYX_HYPERLIQUID_TESTNET_AGENT_KEY_PATH;
     const expectedAgent = process.env.NARYX_HYPERLIQUID_TESTNET_AGENT_ADDRESS;

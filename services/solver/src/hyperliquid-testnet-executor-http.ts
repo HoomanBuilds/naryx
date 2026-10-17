@@ -1525,13 +1525,17 @@ export function createHyperliquidTestnetExecutorRequestHandler(
 export function createHyperliquidTestnetExecutorServer(
   factory?: HyperliquidTestnetExecutorRuntimeFactory | HyperliquidTestnetExecutorPort,
   operator?: HyperliquidTestnetLaneOperator,
+  enrollmentHandler?: (request: IncomingMessage, response: ServerResponse) => Promise<boolean>,
 ) {
   const handler = createHyperliquidTestnetExecutorRequestHandler(
     typeof factory === 'function' ? createHyperliquidTestnetExecutor(factory) : factory,
     operator,
   );
   return createServer((request, response) => {
-    handler(request, response).catch(() => {
+    (async () => {
+      if (isLoopbackAddress(request.socket.remoteAddress) && await enrollmentHandler?.(request, response)) return;
+      await handler(request, response);
+    })().catch(() => {
       if (!response.headersSent) {
         reject(response, 500, 'INTERNAL_ERROR', 'request handling failed');
       } else {

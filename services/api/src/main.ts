@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { isAbsolute, resolve } from "node:path";
 import { createPrivateTerminalServer, loadPrivateTerminalServerConfig } from "./http-server.js";
 import { loadMakerControlProxy } from "./maker-control-proxy.js";
+import { createHyperliquidEnrollmentProxy } from "./hyperliquid-testnet-enrollment-proxy.js";
 import { loadPublicMarketRuntime } from "./public-market-runtime.js";
 import { SqliteInternalOrderStore } from "./internal-order-store.js";
 import { createLocalAtomicOrderRuntime } from "./local-atomic-order-context.js";
@@ -1237,6 +1238,8 @@ const server = createPrivateTerminalServer(
   // A dedicated public listener keeps the public API off the private terminal server entirely;
   // keeper executor routes are loopback-only and never ride the public listener.
   privateServerRoutes(
+    explicitlyEnabled('NARYX_HYPERLIQUID_TESTNET_ENROLLMENT_ENABLED')
+      ? createHyperliquidEnrollmentProxy(process.env.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ORIGIN ?? '') : undefined,
     makerControlProxy,
     publicMarket?.internalHandler,
     publicMarket?.listener === undefined ? publicMarket?.handler : undefined,

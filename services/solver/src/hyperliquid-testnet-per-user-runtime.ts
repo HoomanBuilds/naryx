@@ -90,6 +90,8 @@ export async function loadHyperliquidTestnetPerUserRuntime(input: Readonly<{
 }>): Promise<Readonly<{
   executor: HyperliquidTestnetExecutorPort;
   operator: HyperliquidTestnetLaneOperator;
+  registerAccount(account: HyperliquidTestnetUserAccount): Promise<void>;
+  hasAccount(owner: string): boolean;
   close(): void;
 }>> {
   if (input.environment.NARYX_HYPERLIQUID_TESTNET_ENVIRONMENT !== undefined
@@ -98,12 +100,23 @@ export async function loadHyperliquidTestnetPerUserRuntime(input: Readonly<{
   }
   const accounts = parseHyperliquidTestnetUserAccounts({ version: 1, environment: 'TESTNET', accounts: input.accounts });
   const runtimes = new Map<string, Readonly<{
+    account: HyperliquidTestnetUserAccount;
     runtime: LoadedHyperliquidTestnetExecutorRuntime;
     executor: HyperliquidTestnetExecutorPort;
   }>>();
-  const close = () => { for (const entry of runtimes.values()) entry.runtime.close(); };
-  try {
-    for (const account of accounts) {
+  let closed = false;
+  const close = () => { closed = true; for (const entry of runtimes.values()) entry.runtime.close(); };
+  const addAccount = async (account: HyperliquidTestnetUserAccount) => {
+      if (closed) throw new Error('per-user Hyperliquid runtime is closed');
+      parseHyperliquidTestnetUserAccounts({ version: 1, environment: 'TESTNET', accounts: [account] });
+      const existing = runtimes.get(account.owner);
+      if (existing !== undefined) {
+        if (Object.keys(existing.account).some(key => existing.account[key as keyof HyperliquidTestnetUserAccount]
+          !== account[key as keyof HyperliquidTestnetUserAccount])) throw new Error('registered account identity cannot change');
+        return;
+      }
+      parseHyperliquidTestnetUserAccounts({ version: 1, environment: 'TESTNET',
+        accounts: [...runtimes.values()].map(entry => entry.account).concat(account) });
       const boundAccount = Object.freeze({
         masterAccount: account.owner, tradingAccount: account.owner, accountKind: 'MASTER' as const,
       });
@@ -119,32 +132,32 @@ export async function loadHyperliquidTestnetPerUserRuntime(input: Readonly<{
         NARYX_HYPERLIQUID_TESTNET_JOURNAL_DB: account.journalPath,
         NARYX_HYPERLIQUID_TESTNET_SIGNER_LEASE_ID: account.signerLeaseId,
       }, {
-        signer: (input.loadSigner ?? loadHyperliquidTestnetAgentSigner)(account.agentKeyPath, account.agentAddress),
-        attempts: {
-          async resolve(attemptId) {
-            const attempt = await input.attempts.resolve(attemptId);
-            if (attempt !== undefined) requireHyperliquidTestnetAccountBinding(attempt, boundAccount);
-            return attempt;
-          },
-        },
+        signer: (input.loadSigner ?? loadHyperliquidTestnetAgentSigner)(account.agentKeyPath, account.agentAddress,
+          input.environment.NARYX_HYPERLIQUID_TESTNET_AGENT_ENCRYPTION_KEY_PATH),
+        attempts: { async resolve(attemptId) {
+          const attempt = await input.attempts.resolve(attemptId);
+          if (attempt !== undefined) requireHyperliquidTestnetAccountBinding(attempt, boundAccount);
+          return attempt;
+        } },
       });
-      let executor: HyperliquidTestnetExecutorPort | undefined;
       try {
-        executor = createHyperliquidTestnetExecutor(runtime.runtimeFactory);
-      } catch (error) {
-        runtime.close();
-        throw error;
-      }
-      if (executor === undefined) {
-        runtime.close();
-        throw new Error('per-user Hyperliquid execution runtime is unavailable');
-      }
-      runtimes.set(account.owner, Object.freeze({ runtime, executor }));
-    }
+        const executor = createHyperliquidTestnetExecutor(runtime.runtimeFactory);
+        if (executor === undefined || closed) throw new Error('per-user Hyperliquid execution runtime is unavailable');
+        runtimes.set(account.owner, Object.freeze({ account, runtime, executor }));
+      } catch (error) { runtime.close(); throw error; }
+  };
+  try {
+    for (const account of accounts) await addAccount(account);
   } catch (error) {
     close();
     throw error;
   }
+  let registration = Promise.resolve();
+  const registerAccount = (account: HyperliquidTestnetUserAccount) => {
+    const pending = registration.then(() => addAccount(account));
+    registration = pending.catch(() => {});
+    return pending;
+  };
   const select = async (attemptId: string, identityOnly = false) => {
     const binding = identityOnly && input.attempts.resolveAccountBinding !== undefined
       ? await input.attempts.resolveAccountBinding(attemptId)
@@ -173,6 +186,8 @@ export async function loadHyperliquidTestnetPerUserRuntime(input: Readonly<{
   return Object.freeze({
     executor: Object.freeze(executor),
     operator: Object.freeze(operator),
+    registerAccount,
+    hasAccount: (owner: string) => runtimes.has(owner),
     close,
   });
 }

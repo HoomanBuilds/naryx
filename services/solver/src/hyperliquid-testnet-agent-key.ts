@@ -1,4 +1,5 @@
-import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
 import {
@@ -26,6 +27,7 @@ function externalAbsolutePath(value: string): string {
 export function loadHyperliquidTestnetAgentSigner(
   pathValue: string,
   expectedAgentAddress: string,
+  encryptionKeyPath?: string,
 ): ReturnType<typeof privateKeyToAccount> & Pick<HyperliquidServerSigner, 'signerScope'> {
   if (!ADDRESS.test(expectedAgentAddress)) {
     throw new Error('expected Hyperliquid Testnet agent address must be lowercase');
@@ -60,7 +62,25 @@ export function loadHyperliquidTestnetAgentSigner(
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
       throw new Error('Hyperliquid Testnet agent key file is malformed');
     }
-    const record = value as Record<string, unknown>;
+    let record = value as Record<string, unknown>;
+    if (record.version === 2) {
+      if (encryptionKeyPath === undefined || record.environment !== 'TESTNET'
+        || Object.keys(record).sort().join(',') !== 'ciphertext,environment,iv,tag,version'
+        || typeof record.iv !== 'string' || !/^[0-9a-f]{24}$/.test(record.iv)
+        || typeof record.tag !== 'string' || !/^[0-9a-f]{32}$/.test(record.tag)
+        || typeof record.ciphertext !== 'string' || !/^[0-9a-f]{132}$/.test(record.ciphertext)) {
+        throw new Error('encrypted Hyperliquid Testnet agent key is invalid');
+      }
+      const encryptionKey = readEncryptionKey(encryptionKeyPath);
+      let plaintext: Buffer | undefined;
+      try {
+        const decipher = createDecipheriv('aes-256-gcm', encryptionKey, Buffer.from(record.iv, 'hex'));
+        decipher.setAAD(Buffer.from('Naryx Hyperliquid TESTNET agent v2'));
+        decipher.setAuthTag(Buffer.from(record.tag, 'hex'));
+        plaintext = Buffer.concat([decipher.update(Buffer.from(record.ciphertext, 'hex')), decipher.final()]);
+        record = { version: 1, environment: 'TESTNET', privateKey: plaintext.toString('utf8') };
+      } finally { encryptionKey.fill(0); plaintext?.fill(0); }
+    }
     const keys = Object.keys(record).sort();
     if (keys.length !== 3 || keys[0] !== 'environment' || keys[1] !== 'privateKey'
       || keys[2] !== 'version' || record.version !== 1 || record.environment !== 'TESTNET'
@@ -79,4 +99,30 @@ export function loadHyperliquidTestnetAgentSigner(
   } finally {
     bytes.fill(0);
   }
+}
+
+function readEncryptionKey(pathValue: string): Buffer {
+  const path = externalAbsolutePath(pathValue);
+  const status = lstatSync(path);
+  if (!status.isFile() || status.isSymbolicLink() || realpathSync(path) !== path
+    || status.size !== 32 || (status.mode & 0o077) !== 0 || (status.mode & 0o400) === 0
+    || (status.mode & 0o111) !== 0
+    || typeof process.getuid === 'function' && status.uid !== process.getuid()) {
+    throw new Error('agent encryption key must be an external owner-only 32-byte file');
+  }
+  return readFileSync(path);
+}
+
+export function writeEncryptedHyperliquidTestnetAgentKey(pathValue: string, privateKey: `0x${string}`, encryptionKeyPath: string): void {
+  const path = externalAbsolutePath(pathValue);
+  if (!PRIVATE_KEY.test(privateKey) || /^0x0+$/.test(privateKey)) throw new Error('invalid Testnet agent key');
+  const encryptionKey = readEncryptionKey(encryptionKeyPath);
+  try {
+    const iv = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', encryptionKey, iv);
+    cipher.setAAD(Buffer.from('Naryx Hyperliquid TESTNET agent v2'));
+    const ciphertext = Buffer.concat([cipher.update(privateKey, 'utf8'), cipher.final()]);
+    writeFileSync(path, JSON.stringify({ version: 2, environment: 'TESTNET', iv: iv.toString('hex'),
+      ciphertext: ciphertext.toString('hex'), tag: cipher.getAuthTag().toString('hex') }), { mode: 0o600, flag: 'wx' });
+  } finally { encryptionKey.fill(0); }
 }
