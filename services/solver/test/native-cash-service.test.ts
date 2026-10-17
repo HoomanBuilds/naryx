@@ -90,6 +90,21 @@ test('interrupted signing never retries a signature and holds a conservative lea
   } finally { service.close(); rmSync(f.dir, { recursive: true }); }
 });
 
+test('unqualified accounts cannot acquire the maker lease or block a funded quote', async () => {
+  const f = fixture(); const service = f.service();
+  const quote = f.port.quote;
+  f.port.quote = async input => {
+    if (input.accountId === 'unfunded-account') throw new Error('Unfunded account');
+    return quote(input);
+  };
+  try {
+    await assert.rejects(service.requestQuote({ ...request, requestId: 'unfunded-request', accountId: 'unfunded-account' }), /Unfunded/);
+    assert.equal(service.quote('unfunded-request'), undefined);
+    await service.requestQuote(request);
+    assert.equal(f.counts().signCount, 1);
+  } finally { service.close(); rmSync(f.dir, { recursive: true }); }
+});
+
 test('wrong maker signatures, invalid quantities and unverifiable receipts fail closed', async () => {
   const f = fixture(); const service = f.service();
   try {
