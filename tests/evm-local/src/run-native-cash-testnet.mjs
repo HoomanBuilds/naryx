@@ -272,12 +272,23 @@ async function main() {
         trade.requestId = `native-cash-${record.network}-${action}-${Date.now()}`; save();
       }
       if (!trade.signed) {
-        const response = await service('/v1/native-cash/quotes', { requestId: trade.requestId,
-          marketId: `${record.network}-eth-cash-range-v1`, owner: actors.trader, accountId,
-          side: action === 'entry' ? 'BUY' : 'SELL', quantityAtoms: 1n });
-        trade.signed = response.result; save();
+        try {
+          const response = await service('/v1/native-cash/quotes', { requestId: trade.requestId,
+            marketId: `${record.network}-eth-cash-range-v1`, owner: actors.trader, accountId,
+            side: action === 'entry' ? 'BUY' : 'SELL', quantityAtoms: 1n });
+          trade.signed = response.result; save();
+        } catch (error) {
+          let existing;
+          try { existing = await service(`/v1/native-cash/quotes/${trade.requestId}`); } catch {}
+          if (existing?.result) { trade.signed = existing.result; save(); }
+          else {
+            trade.rejectedRequests ??= []; trade.rejectedRequests.push(trade.requestId);
+            trade.requestId = `native-cash-${record.network}-${action}-${Date.now()}`; save(); throw error;
+          }
+        }
       }
       const { quote, makerSignature } = trade.signed;
+      assert.ok(quote.match.expiry > (await client.getBlock()).timestamp + 5n, 'Stored quote expired; rerun to obtain a fresh quote');
       assert.equal(quote.chainId, chain.id); assert.equal(quote.clearingHouse, record.house);
       assert.equal(quote.marketId, `${record.network}-eth-cash-range-v1`);
       assert.equal(quote.owner, actors.trader); assert.equal(quote.makerOwner, actors.maker);
