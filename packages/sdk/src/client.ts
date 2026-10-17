@@ -254,6 +254,8 @@ import {
   type SettlementPremiumSurface,
 } from '@naryx/protocol-types';
 import { verifyTypedData, type Hex } from 'viem';
+import { reviewNativeCashMarket, reviewNativeCashAccount, reviewNativeCashQuote, reviewNativeCashTrade,
+  type NativeCashMarket, type NativeCashQuoteRequest } from './native-cash.js';
 
 const MAX_RESPONSE_CHARS = 2_097_152;
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -2413,10 +2415,47 @@ export class NaryxClient {
       throw new NaryxEvidenceError('response is not valid protocol JSON');
     }
     if (response.status !== 200) {
-      const error = record(record(parsed, 'error response').error, 'error');
+      const payload = record(parsed, 'error response');
+      if (typeof payload.error === 'string') throw new NaryxApiError(response.status, 'REQUEST_REFUSED', payload.error);
+      const error = record(payload.error, 'error');
       throw new NaryxApiError(response.status, String(error.code), String(error.message));
     }
     return parsed;
+  }
+
+  async getNativeCashMarkets() {
+    const body = record(await this.#request('GET', '/v1/native-cash/markets'), 'native cash markets');
+    if (body.version !== 1) throw new NaryxEvidenceError('Unsupported native cash response.');
+    return Object.freeze(list(body.markets, 'native cash markets').map(reviewNativeCashMarket));
+  }
+
+  async getNativeCashAccount(market: NativeCashMarket, owner: string, accountId: string) {
+    reviewNativeCashMarket(market);
+    const body = record(await this.#request('POST', `/v1/native-cash/markets/${checkId(market.marketId, 'market')}/account`, { owner, accountId }), 'native cash account');
+    if (body.version !== 1) throw new NaryxEvidenceError('Unsupported native cash response.');
+    return reviewNativeCashAccount(body.result, market, owner, accountId);
+  }
+
+  async requestNativeCashQuote(market: NativeCashMarket, request: NativeCashQuoteRequest) {
+    reviewNativeCashMarket(market);
+    const body = record(await this.#request('POST', '/v1/native-cash/quotes', request), 'native cash quote');
+    if (body.version !== 1) throw new NaryxEvidenceError('Unsupported native cash response.');
+    return reviewNativeCashQuote(body.result, market, request, BigInt(Math.floor(Date.now() / 1000)));
+  }
+
+  async getNativeCashTrades(market: NativeCashMarket) {
+    const body = record(await this.#request('GET', `/v1/native-cash/markets/${checkId(market.marketId, 'market')}/trades`), 'native cash trades');
+    if (body.version !== 1 || body.activityClass !== 'OWNER_SIGNED_TESTNET_EXECUTION') throw new NaryxEvidenceError('Unsupported native cash activity.');
+    return Object.freeze(list(body.trades, 'native cash trades').map(value => reviewNativeCashTrade(value, market)));
+  }
+
+  async observeNativeCashSettlement(market: NativeCashMarket, requestId: string, transactionHash: string) {
+    if (!/^0x[0-9a-f]{64}$/i.test(transactionHash)) throw new NaryxEvidenceError('Invalid native cash transaction hash.');
+    const body = record(await this.#request('POST', `/v1/native-cash/quotes/${checkId(requestId, 'request')}/settlement`, { transactionHash }), 'native cash settlement');
+    if (body.version !== 1) throw new NaryxEvidenceError('Unsupported native cash response.');
+    const receipt = reviewNativeCashTrade(body.result, market);
+    if (receipt.transactionHash.toLowerCase() !== transactionHash.toLowerCase()) throw new NaryxEvidenceError('Native cash settlement transaction differs.');
+    return receipt;
   }
 
   /** Lists native package clearing domains after recomputing every policy and state hash. */

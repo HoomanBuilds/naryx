@@ -170,3 +170,7 @@ export {
   type PrivateRfqEnvelopeHeaderInput,
   type NaryxRfqHpkeKeyPair,
 } from './private-rfq-crypto.js';
+export { nativeCashAccountKey, nativeCashWalletAccountId, nativeCashAccountTransaction, nativeCashMatchTransaction,
+  reviewNativeCashMarket, reviewNativeCashAccount, reviewNativeCashQuote, reviewNativeCashTrade,
+  type NativeCashMarket, type NativeCashAccount, type NativeCashQuoteRequest, type NativeCashSignedQuote,
+  type NativeCashMatch, type NativeCashTrade, type NativeCashTransaction } from './native-cash.js';

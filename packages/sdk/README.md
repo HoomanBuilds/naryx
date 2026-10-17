@@ -6,9 +6,19 @@ May depend on `packages/protocol-types` and type-only imports from `packages/ada
 
 Must not depend on a concrete adapter package, a service, `apps/web`, or `tests`.
 
-Keeping the SDK thin is what makes the reference integration meaningful: an external integrator must be able to enter and exit a package without any terminal-specific code. If a future slice proves the SDK needs local domain transaction construction, that is a reviewed amendment to the repository architecture, not an ad hoc import.
+Keeping the SDK thin is what makes the reference integration meaningful: an external integrator must be able to enter and exit a package without terminal-specific code. The local transaction-construction boundary is restricted to reviewed, fixed wallet calls such as strategy funding and native cash account operations. It never imports a concrete adapter or exposes arbitrary execution.
 
 ## Current slice
+
+### Native cash markets
+
+`NaryxClient` exposes `getNativeCashMarkets`, `getNativeCashAccount`, `requestNativeCashQuote`, `getNativeCashTrades`, and `observeNativeCashSettlement`. These are separate from routed-package settlement. The recognized market class is testnet-only `EVM_NATIVE_CASH_RANGE_V1` on Base Sepolia and Arbitrum Sepolia; it creates cash exposure, not external spot, perpetual, or option positions.
+
+`nativeCashAccountTransaction` builds only the fixed open, exact approval, deposit, flat-account cash normalization, and withdrawal calls. Funding and withdrawal actions are capped at 100 test collateral tokens per call. `nativeCashMatchTransaction` encodes the reviewed owner and maker signatures in their correct long/short order. Neither helper signs or broadcasts. The caller must simulate, verify its connected wallet and network, obtain the user's signature, and submit through that wallet. The SDK uses standard ABI and EIP-712 libraries and never imports a venue adapter.
+
+Quote review binds the selected market, domain manifest, policy, owner account, maker, side, quantity, fee ceiling, price, expiry, typed-data digest, and maker signature. Account reads are chain-qualified server observations. Finalized receipt feeds remain service-verified evidence, not an independent browser light-client proof. Keep a submitted transaction hash and reconcile its settlement; never repeat execution because finality or database recording is delayed.
+
+### Package execution and evidence
 
 `NaryxClient` covers every public v1 route: registries (domains, instruments, package templates, solvers), strategy series and execution classes, package markets (listing, depth, tape, candles, executable index, implied provenance), allocation evidence, and the computation routes (order validation, route-decision replay, route comparison, clearing simulation, de-risk validation). It accepts only an HTTPS endpoint or HTTP on a loopback host, bounds response size, requires protocol JSON, and validates every field it returns. It holds no key and signs nothing.
 
