@@ -858,6 +858,30 @@ test('prices a generalized Hyperliquid cash-and-carry package from live fee and 
     assert.deepEqual(loaded?.adapterSupport.map((support) => support.legFamily), [
       'SPOT_SWAP', 'PERP_OPEN',
     ]);
+    assert.ok(loaded);
+    await assert.rejects(loaded.pricing.quote({
+      documents,
+      currentTime: { unit: 'HYPERLIQUID_UNIX_MILLISECONDS', value: 1_000n },
+    }), /require the owner account/);
+    const user = `0x${'12'.repeat(20)}`;
+    const feeAccounts: string[] = [];
+    const perUser = loadHyperliquidTestnetGeneralizedQuoteLane(laneEnvironment, [preparationLane], {
+      nonceSource: { next: () => 2n }, currentTimeMs: () => 1_000n,
+      market: { ...market, userFees: async (account) => {
+        feeAccounts.push(account);
+        return market.userFees(account);
+      } },
+    });
+    const userGraph = packageGraph({ ...graph, owner: user, strategyAccountRefs: [user] });
+    const userOrder = strategyPackageOrder({ ...order, owner: user, settlementAccount: user,
+      graphHash: packageGraphHash(userGraph) });
+    await perUser!.pricing.quote({
+      documents: { ...documents, order: userOrder, graph: userGraph,
+        orderHashHex: Buffer.from(strategyPackageOrderHash(userOrder)).toString('hex'),
+        graphHashHex: Buffer.from(packageGraphHash(userGraph)).toString('hex') },
+      currentTime: { unit: 'HYPERLIQUID_UNIX_MILLISECONDS', value: 1_000n },
+    });
+    assert.deepEqual(feeAccounts, [user]);
     const lanes = loadHyperliquidTestnetGeneralizedQuoteLanes(
       { ...laneEnvironment, NARYX_HYPERLIQUID_TESTNET_GENERALIZED_QUOTE_CONFIGS: configPath },
       [preparationLane],

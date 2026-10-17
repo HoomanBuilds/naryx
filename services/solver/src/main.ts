@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
+import { hyperliquidTestnetAccountMode } from './hyperliquid-testnet-account-binding.js';
+import { loadHyperliquidTestnetPerUserRuntime, loadHyperliquidTestnetUserAccounts } from './hyperliquid-testnet-per-user-runtime.js';
 import { SqliteEvmStrategyAuthorizationJournal } from './evm-strategy-authorization-journal.js';
 import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
@@ -699,6 +701,9 @@ const residualExecutionEnabled = explicitBoolean(
 );
 let residualRuntime: HyperliquidNettingResidualLoadedRuntime | undefined;
 if (residualExecutionEnabled) {
+  if (hyperliquidTestnetAccountMode(process.env) !== 'SHARED_TEST_FIXTURE') {
+    throw new Error('shared-account Hyperliquid netting requires SHARED_TEST_FIXTURE, not per-user settlement');
+  }
   const keyPath = process.env.NARYX_HYPERLIQUID_TESTNET_AGENT_KEY_PATH;
   const expectedAgent = process.env.NARYX_HYPERLIQUID_TESTNET_AGENT_ADDRESS;
   if (keyPath === undefined || keyPath.length === 0) {
@@ -764,7 +769,7 @@ const executorEnabled = explicitBoolean(
   process.env.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED,
   'NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ENABLED',
 );
-let executorRuntime: LoadedHyperliquidTestnetExecutorRuntime | undefined;
+let executorRuntime: Pick<LoadedHyperliquidTestnetExecutorRuntime, 'close'> | undefined;
 let executorServer: Server | undefined;
 let executorPort: number | undefined;
 if (executorEnabled) {
@@ -776,33 +781,41 @@ if (executorEnabled) {
   if (executorPort === listenPort) {
     throw new Error('Hyperliquid Testnet executor port must differ from the quote port');
   }
-  const keyPath = process.env.NARYX_HYPERLIQUID_TESTNET_AGENT_KEY_PATH;
-  const expectedAgent = process.env.NARYX_HYPERLIQUID_TESTNET_AGENT_ADDRESS;
-  if (keyPath === undefined || keyPath.length === 0) {
-    throw new Error('NARYX_HYPERLIQUID_TESTNET_AGENT_KEY_PATH is required');
+  const attempts = strategyPreparationService === undefined
+    ? new HttpHyperliquidTestnetTrustedAttemptProvider({ apiOrigin })
+    : new HttpHyperliquidTestnetCompositeAttemptProvider({
+        apiOrigin, packages: strategyPackageProvider, preparations: strategyPreparationService,
+      });
+  if (hyperliquidTestnetAccountMode(process.env) === 'PER_USER') {
+    const path = process.env.NARYX_HYPERLIQUID_TESTNET_USER_ACCOUNTS;
+    if (path === undefined || path === '') {
+      throw new Error('NARYX_HYPERLIQUID_TESTNET_USER_ACCOUNTS is required for per-user execution');
+    }
+    const runtime = await loadHyperliquidTestnetPerUserRuntime({
+      environment: process.env, accounts: loadHyperliquidTestnetUserAccounts(path), attempts,
+    });
+    executorRuntime = runtime;
+    executorServer = createHyperliquidTestnetExecutorServer(runtime.executor, runtime.operator);
+  } else {
+    const keyPath = process.env.NARYX_HYPERLIQUID_TESTNET_AGENT_KEY_PATH;
+    const expectedAgent = process.env.NARYX_HYPERLIQUID_TESTNET_AGENT_ADDRESS;
+    if (keyPath === undefined || keyPath.length === 0) {
+      throw new Error('NARYX_HYPERLIQUID_TESTNET_AGENT_KEY_PATH is required');
+    }
+    if (expectedAgent === undefined || expectedAgent.length === 0) {
+      throw new Error('NARYX_HYPERLIQUID_TESTNET_AGENT_ADDRESS is required');
+    }
+    const hyperliquidSigner = loadHyperliquidTestnetAgentSigner(keyPath, expectedAgent);
+    const runtime = await loadHyperliquidTestnetExecutorRuntime({
+      ...process.env,
+      NARYX_HYPERLIQUID_TESTNET_EXECUTION_ENABLED: 'true',
+    }, { attempts, signer: hyperliquidSigner });
+    executorRuntime = runtime;
+    if (runtime.runtimeFactory === undefined) {
+      throw new Error('Hyperliquid Testnet executor runtime is unavailable');
+    }
+    executorServer = createHyperliquidTestnetExecutorServer(runtime.runtimeFactory, runtime);
   }
-  if (expectedAgent === undefined || expectedAgent.length === 0) {
-    throw new Error('NARYX_HYPERLIQUID_TESTNET_AGENT_ADDRESS is required');
-  }
-  const hyperliquidSigner = loadHyperliquidTestnetAgentSigner(keyPath, expectedAgent);
-  executorRuntime = await loadHyperliquidTestnetExecutorRuntime({
-    ...process.env,
-    NARYX_HYPERLIQUID_TESTNET_EXECUTION_ENABLED: 'true',
-  }, {
-    attempts: strategyPreparationService === undefined
-      ? new HttpHyperliquidTestnetTrustedAttemptProvider({ apiOrigin })
-      : new HttpHyperliquidTestnetCompositeAttemptProvider({
-          apiOrigin,
-          packages: strategyPackageProvider,
-          preparations: strategyPreparationService,
-        }),
-    signer: hyperliquidSigner,
-  });
-  if (executorRuntime.runtimeFactory === undefined) {
-    throw new Error('Hyperliquid Testnet executor runtime is unavailable');
-  }
-  // The loopback release-lane route is the operator surface of the runtime's journaled lane release.
-  executorServer = createHyperliquidTestnetExecutorServer(executorRuntime.runtimeFactory, executorRuntime);
 }
 
 // Arbitrum Sepolia async executor: disabled unless explicitly enabled. Only the solver key is loaded,

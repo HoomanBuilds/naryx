@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
+import { hyperliquidTestnetAccountMode } from './hyperliquid-testnet-account-binding.js';
 import {
   adapterRef,
   assetRef,
@@ -32,6 +33,7 @@ import {
 } from './hyperliquid-testnet-quote-runtime.js';
 import type { HyperliquidStrategyPreparationLane } from './hyperliquid-strategy-preparation.js';
 import type { GeneralizedStrategyQuoteLane } from './strategy-quote-context-registry.js';
+import type { GeneralizedStrategyPricingPort } from './strategy-quote-service.js';
 
 export const HYPERLIQUID_TESTNET_QUOTE_ENABLED_ENV =
   'NARYX_HYPERLIQUID_TESTNET_QUOTE_ENABLED';
@@ -323,6 +325,33 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
   if ((fundingSpread || hedgeMigration) && counterPerpetual === undefined) {
     throw new Error('generalized Hyperliquid two-market quote config requires counterPerpetual');
   }
+  const pricingForAccount = (account: `0x${string}`) => {
+    const pricing = { ...commonPricing, tradingAccount: account };
+    return cashCarry
+      ? createHyperliquidTestnetGeneralizedCashCarryPricing({
+        ...pricing,
+        holdingDurationMs: laneSettings.holdingDurationMs,
+        expectedExitBasisBps: laneSettings.expectedExitBasisBps,
+        spot: configured.spot,
+      })
+      : fundingSpread
+        ? createHyperliquidTestnetGeneralizedFundingSpreadPricing({
+          ...pricing,
+          expectedHoldingDurationMs: laneSettings.holdingDurationMs,
+          reversalThresholdPpm: laneSettings.reversalThresholdPpm,
+          longPerpetual: configured.perpetual,
+          shortPerpetual: counterPerpetual!,
+        })
+        : hedgeMigration
+          ? createHyperliquidTestnetGeneralizedHedgeMigrationPricing({
+            ...pricing, sourcePerpetual: configured.perpetual, destinationPerpetual: counterPerpetual!,
+          })
+          : deltaRebalance
+            ? createHyperliquidTestnetGeneralizedDeltaRebalancePricing(pricing)
+            : createHyperliquidTestnetGeneralizedTreasuryHedgePricing(pricing);
+  };
+  const accountMode = hyperliquidTestnetAccountMode(env);
+  const sharedPricing = accountMode === 'SHARED_TEST_FIXTURE' ? pricingForAccount(tradingAccount) : undefined;
   return Object.freeze({
     laneId: laneSettings.laneId,
     environment: matchingLanes[0]!.environment,
@@ -487,30 +516,18 @@ export function loadHyperliquidTestnetGeneralizedQuoteLane(
         })]),
     solverId: configured.solverId,
     solverCapabilityManifestHash: configured.solverCapabilityManifestHash,
-    pricing: cashCarry
-      ? createHyperliquidTestnetGeneralizedCashCarryPricing({
-        ...commonPricing,
-        holdingDurationMs: laneSettings.holdingDurationMs,
-        expectedExitBasisBps: laneSettings.expectedExitBasisBps,
-        spot: configured.spot,
-      })
-      : fundingSpread
-        ? createHyperliquidTestnetGeneralizedFundingSpreadPricing({
-          ...commonPricing,
-          expectedHoldingDurationMs: laneSettings.holdingDurationMs,
-          reversalThresholdPpm: laneSettings.reversalThresholdPpm,
-          longPerpetual: configured.perpetual,
-          shortPerpetual: counterPerpetual!,
-        })
-        : hedgeMigration
-          ? createHyperliquidTestnetGeneralizedHedgeMigrationPricing({
-            ...commonPricing,
-            sourcePerpetual: configured.perpetual,
-            destinationPerpetual: counterPerpetual!,
-          })
-          : deltaRebalance
-            ? createHyperliquidTestnetGeneralizedDeltaRebalancePricing(commonPricing)
-          : createHyperliquidTestnetGeneralizedTreasuryHedgePricing(commonPricing),
+    pricing: {
+      async quote(input: Parameters<GeneralizedStrategyPricingPort['quote']>[0]) {
+        if (sharedPricing !== undefined) return sharedPricing.quote(input);
+        const { owner, settlementAccount } = input.documents.order;
+        if (!ADDRESS.test(owner) || owner !== settlementAccount
+          || input.documents.graph.strategyAccountRefs.length !== 1
+          || input.documents.graph.strategyAccountRefs[0] !== owner) {
+          throw new Error('per-user Hyperliquid quotes require the owner account in the signed order and graph');
+        }
+        return pricingForAccount(owner as `0x${string}`).quote(input);
+      },
+    },
     currentTime: async () => Object.freeze({
       unit: 'HYPERLIQUID_UNIX_MILLISECONDS' as const,
       value: clock(),

@@ -668,6 +668,12 @@ export function loadPublicMarketRuntime(
         "NARYX_HYPERLIQUID_TESTNET_NETTING_EXECUTION_ENABLED must be true or false.",
       );
     }
+    if (hyperliquidNettingExecutionSetting === "true"
+      && environment.NARYX_HYPERLIQUID_TESTNET_ACCOUNT_MODE !== "SHARED_TEST_FIXTURE") {
+      throw new PublicMarketConfigError(
+        "Shared-account Hyperliquid netting is restricted to SHARED_TEST_FIXTURE; per-user accounts cannot share residual settlement.",
+      );
+    }
     const baseNettingExecutionSetting = environment.NARYX_BASE_SEPOLIA_NETTING_EXECUTION_ENABLED
       ?? "false";
     if (baseNettingExecutionSetting !== "true" && baseNettingExecutionSetting !== "false") {

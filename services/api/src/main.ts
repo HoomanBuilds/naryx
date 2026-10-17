@@ -611,6 +611,8 @@ if (hyperliquidRuntimeEnabled && hyperliquidExecutorClientEnabled) {
       }),
       tradingAccount: orderContext.tradingAccount,
       limits: hyperliquidConfig?.omnibus,
+      accountMode: process.env.NARYX_HYPERLIQUID_TESTNET_ACCOUNT_MODE === "SHARED_TEST_FIXTURE"
+        ? "SHARED_TEST_FIXTURE" : "PER_USER",
       quoteAsset: orderContext.quoteAsset,
       spotLotAtoms: hyperliquidTestnetSpotLotAtoms(hyperliquidConfig!),
     });
@@ -1031,9 +1033,14 @@ if (hyperliquidNativeStrategyProfilePath !== undefined && hyperliquidNativeStrat
     hyperliquidNativeStrategyProfiles = loadHyperliquidNativeStrategyProfiles(
       absolutePath(hyperliquidNativeStrategyProfilePath, "NARYX_HYPERLIQUID_NATIVE_STRATEGY_ORDER_PROFILES"),
     );
+    const accountMode = process.env.NARYX_HYPERLIQUID_TESTNET_ACCOUNT_MODE ?? "PER_USER";
+    if (accountMode !== "PER_USER" && accountMode !== "SHARED_TEST_FIXTURE") {
+      throw new Error("NARYX_HYPERLIQUID_TESTNET_ACCOUNT_MODE must be PER_USER or SHARED_TEST_FIXTURE");
+    }
     hyperliquidNativeStrategyOrders = createHyperliquidNativeStrategyOrderPort({
       profiles: hyperliquidNativeStrategyProfiles,
       intake: publicMarket.strategyOrderIntake,
+      accountMode,
     });
   } catch (error) {
     hyperliquidNativeStrategyProfiles = [];

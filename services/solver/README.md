@@ -48,6 +48,58 @@ The routes reject browser-originated requests. They cannot place or replace leve
 
 ### Hyperliquid Testnet quote runtime
 
+#### Per-user account isolation
+
+`NARYX_HYPERLIQUID_TESTNET_ACCOUNT_MODE=PER_USER` is the default execution mode. Native
+strategy creation binds both the order settlement account and graph account reference to the
+signing owner. Generalized quote pricing reads that owner's fee schedule rather than the
+operator fixture's schedule. Execution requires the same signed owner and settlement account
+at selection and again inside the selected account's execution lane.
+
+With the executor enabled, `NARYX_HYPERLIQUID_TESTNET_USER_ACCOUNTS` names an external JSON file:
+
+```json
+{
+  "version": 1,
+  "environment": "TESTNET",
+  "accounts": [
+    {
+      "owner": "0x1111111111111111111111111111111111111111",
+      "agentAddress": "0x2222222222222222222222222222222222222222",
+      "agentKeyPath": "/var/lib/naryx/keys/user-a-agent.json",
+      "journalPath": "/var/lib/naryx/hyperliquid/user-a.sqlite",
+      "signerLeaseId": "user-a-testnet-v1"
+    }
+  ]
+}
+```
+
+These are placeholders, not deployed accounts. Each owner must fund their own Hyperliquid
+Testnet account and approve their own separate API wallet. Each key file uses the existing
+external Testnet signer format and permission checks. Owner addresses, agent addresses, key
+paths, journal paths, and signer leases must be unique. V1 supports owner master accounts, not
+subaccounts. The configuration supports at most 64 explicitly provisioned accounts, including
+an empty list that refuses all execution. It contains key paths, never private keys. Preserve
+each journal across restarts; do not reuse the historical shared fixture journal for a new user.
+
+Each account has independent signing, durable nonces, submission serialization, authority
+fences, reconciliation, and bounded recovery. Unknown owners and mismatched accounts fail
+closed with no shared-account fallback. The same market allowlists and size gates still apply.
+The venue's API-wallet approval grants trading authority; Naryx's market restrictions are
+enforced by its execution service, not a claim that Hyperliquid implements arbitrary per-agent
+market restrictions. The owner's private key is never supplied to this service.
+
+`SHARED_TEST_FIXTURE` is an explicit operator-test compatibility mode only. Shared-account
+netting execution is refused in per-user mode: cancelling obligations between different owners
+cannot settle their independent HyperCore accounts. It requires a separately qualified funded
+clearing or novation mechanism. Historical shared-account evidence is not per-user settlement.
+
+This account-isolation slice does not implement self-service API-wallet enrollment, migrate
+historical shared positions, or replace the legacy cash-and-carry terminal's omnibus account
+setup. Those paths must be migrated before claiming general customer self-custody support.
+Do not activate the per-user runtime against customer traffic before owner approval, funding,
+the matching terminal workflow, and a real owner-account execution have been verified.
+
 The generalized strategy quote lane reuses the same reviewed market config and requires exactly one
 matching generalized preparation manifest. It supports `cash-and-carry-v1`,
 `treasury-inventory-hedge-v1`, and `perpetual-funding-spread-v1` under the configured execution-class
@@ -57,8 +109,8 @@ SDK, computes exact integer fees, margin, residuals, and package outcomes, compi
 signs the fee-complete quote, and stores idempotency durably. A funding spread requires a distinct
 `counterPerpetual` binding in the reviewed quote config. Static holding duration, reversal threshold,
 and cash-and-carry exit basis are explicit estimate inputs. They do not authorize execution or
-replace signed order limits. Because execution uses a shared cross-margin account, funding-spread
-quotes report zero package-attributable liquidation distance instead of inventing an isolated value.
+replace signed order limits. Funding-spread quotes report zero package-attributable liquidation
+distance instead of assigning an account-wide margin distance to an individual package.
 
 The ordinary signed quote listener dispatches canonical `hypercore:testnet` entry orders to a separate reference cash-and-carry quote runtime when it is enabled. The runtime emits only `BATCHED_IOC_WITH_RECOVERY` routes with `HYPERCORE_BATCHED_IOC`, exact configured versioned market references, millisecond expiry, the order's explicit `EXACT_NET` or `BOUNDED_NET` residual policy, and zero protocol, solver, and builder fees. It performs no venue write, agent signing, or execution.
 

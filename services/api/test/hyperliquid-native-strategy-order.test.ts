@@ -169,6 +169,8 @@ test('native strategy HTTP creation returns the exact admitted objects for owner
     assert.equal(toHex(strategyPackageOrderHash(body.order)), body.orderHash);
     assert.equal(toHex(packageGraphHash(body.graph)), body.graphHash);
     assert.equal(body.order.economicQuantity.atoms, 200000n);
+    assert.equal(body.order.settlementAccount, OWNER);
+    assert.deepEqual(body.graph.strategyAccountRefs, [OWNER]);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
@@ -990,6 +992,7 @@ test("settling a native execution again after its receipt is recorded succeeds a
       strategyAttempts: strategies,
       strategyReceipts: strategies,
       tradingAccount: "hypercore-testnet-account",
+      accountMode: "PER_USER",
       limits,
       quoteAsset,
       spotLotAtoms: 1n,

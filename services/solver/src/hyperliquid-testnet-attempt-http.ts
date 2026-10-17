@@ -455,6 +455,12 @@ implements HyperliquidTestnetTrustedAttemptProvider {
       }
       return validateHyperliquidTestnetRuntimeAttempt(attemptId, Object.freeze({
         attemptId,
+        ...(/^0x[0-9a-f]{40}$/.test(documents.order.owner)
+          && /^0x[0-9a-f]{40}$/.test(documents.order.settlementAccount)
+          ? { accountBinding: Object.freeze({
+            owner: documents.order.owner,
+            settlementAccount: documents.order.settlementAccount,
+          }) } : {}),
         authority: Object.freeze({
           requiredUntilMs,
           baseAssetDecimals: runtime.baseAsset.decimals,

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { hyperliquidTestnetAccountMode, requireHyperliquidTestnetAccountBinding } from './hyperliquid-testnet-account-binding.js';
 import { getWalletAddress } from '@nktkas/hyperliquid/signing';
 import {
   HyperliquidExecutionPlanner,
@@ -840,6 +841,7 @@ export async function loadHyperliquidTestnetExecutorRuntime(
   }
   const expectedAgent = address(environment, 'NARYX_HYPERLIQUID_TESTNET_AGENT_ADDRESS');
   const expectedAccount = account(environment);
+  const accountMode = hyperliquidTestnetAccountMode(environment);
   const journalPath = required(environment, 'NARYX_HYPERLIQUID_TESTNET_JOURNAL_DB');
   const signerLeaseId = required(environment, 'NARYX_HYPERLIQUID_TESTNET_SIGNER_LEASE_ID');
   const keeperOrigin = required(environment, 'NARYX_HYPERLIQUID_TESTNET_KEEPER_ORIGIN');
@@ -971,6 +973,7 @@ export async function loadHyperliquidTestnetExecutorRuntime(
       attempts,
       lane,
       async preflight(attempt: HyperliquidTestnetAttemptHandoff): Promise<HyperliquidTestnetAccountInventory> {
+        if (accountMode === 'PER_USER') requireHyperliquidTestnetAccountBinding(attempt, expectedAccount);
         const snapshot = 'authority' in attempt
           ? await authorityPreflight.qualifyUntil(attempt.authority.requiredUntilMs)
           : await authorityPreflight.qualify(attempt.admission);

@@ -234,6 +234,7 @@ test('composes a native generalized attempt only for the trusted market assets',
       getByQuote: async () => ({
         orderHashHex: orderHash, graphHashHex: graphHash, quoteHashHex: quoteHash, routeHashHex: routeHash,
         order: {
+          owner: `0x${'11'.repeat(20)}`, settlementAccount: `0x${'11'.repeat(20)}`,
           expiryUnit: 'HYPERLIQUID_UNIX_MILLISECONDS', expiryValue: 950_000n,
           seriesManifestHash: commitmentHash(seriesHash),
           executionClassManifestHash: commitmentHash(executionHash),
@@ -255,6 +256,9 @@ test('composes a native generalized attempt only for the trusted market assets',
   assert.ok(resolved && 'authority' in resolved);
   assert.equal(resolved.authority.baseAssetDecimals, 5);
   assert.equal(resolved.authority.requiredUntilMs, 950_000n);
+  assert.deepEqual(resolved.accountBinding, {
+    owner: `0x${'11'.repeat(20)}`, settlementAccount: `0x${'11'.repeat(20)}`,
+  });
   assert.equal(resolved.strategy.plan, strategyPlan);
 });
 

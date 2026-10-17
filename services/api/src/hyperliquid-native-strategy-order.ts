@@ -477,8 +477,13 @@ function alignedQuantity(atoms: bigint, assetDecimals: number, sizeDecimals: num
 export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
   profiles: readonly HyperliquidNativeStrategyProfile[];
   intake: StrategyOrderIntakePort;
+  accountMode?: 'PER_USER' | 'SHARED_TEST_FIXTURE';
   currentTimeMs?: () => number;
 }>): HyperliquidNativeStrategyOrderPort {
+  if (input.accountMode !== undefined && input.accountMode !== 'PER_USER'
+    && input.accountMode !== 'SHARED_TEST_FIXTURE') {
+    fail("INVALID_CONFIGURATION", "Native strategy account mode is invalid.");
+  }
   if (input.profiles.length === 0) fail("INVALID_CONFIGURATION", "At least one native strategy profile is required.");
   const profiles = new Map(input.profiles.map((profile) => [profile.profileId, profile]));
   if (profiles.size !== input.profiles.length) fail("INVALID_CONFIGURATION", "Native strategy profile IDs repeat.");
@@ -518,6 +523,8 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
         fail("INVALID_REQUEST", "Native strategy order request fields are invalid.");
       }
       const request = fields as unknown as HyperliquidNativeStrategyOrderRequest;
+      const settlementAccount = input.accountMode === 'SHARED_TEST_FIXTURE'
+        ? undefined : request.owner;
       const profile = profiles.get(request.profileId);
       if (profile === undefined) fail("PROFILE_NOT_FOUND", "Native strategy profile was not found.");
       if (!OWNER.test(request.owner) || (request.lifecycleAction !== "ENTRY"
@@ -645,7 +652,7 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
         executionClassManifestHash: profile.executionClassManifestHash,
         lifecycleAction: request.lifecycleAction,
         owner: request.owner,
-        strategyAccountRefs: [profile.settlementAccount],
+        strategyAccountRefs: [settlementAccount ?? profile.settlementAccount],
         legs: graphLegs,
         dependencyEdges: [],
         executionGroups: [{
@@ -694,7 +701,7 @@ export function createHyperliquidNativeStrategyOrderPort(input: Readonly<{
         quoteConventionId: definition.quoteConventionId,
         riskClassId: definition.riskClassId,
         owner: request.owner,
-        settlementAccount: profile.settlementAccount,
+        settlementAccount: settlementAccount ?? profile.settlementAccount,
         lifecycleAction: request.lifecycleAction,
         settlementClass: "BATCHED_IOC_WITH_RECOVERY",
         packageOrderType: "MARKETABLE_LIMIT",

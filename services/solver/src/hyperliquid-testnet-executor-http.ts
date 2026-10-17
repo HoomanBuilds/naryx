@@ -292,6 +292,7 @@ export interface HyperliquidTestnetTrustedAttemptProvider {
 
 interface HyperliquidTestnetAttemptHandoffBase {
   readonly attemptId: string;
+  readonly accountBinding?: Readonly<{ owner: string; settlementAccount: string }>;
   readonly seriesManifestHash: string;
   readonly executionClassManifestHash: string;
   readonly market: Readonly<{
@@ -533,6 +534,7 @@ export function validateHyperliquidTestnetRuntimeAttempt(
     'attemptId', 'executionClassManifestHash', 'limits', 'market',
     'selectedAtMs', 'seriesManifestHash',
   ];
+  if ('accountBinding' in value) baseKeys.push('accountBinding');
   const nativeShape = 'authority' in value;
   const strategyShape = 'strategy' in value;
   const expectedKeys = nativeShape
@@ -541,6 +543,15 @@ export function validateHyperliquidTestnetRuntimeAttempt(
   requireCondition(hasExactKeys(value, expectedKeys),
     'INVALID_ATTEMPT', 'attempt provider fields are invalid');
   const input = value as unknown as HyperliquidTestnetAttemptHandoff;
+  if ('accountBinding' in value) {
+    requireCondition(isRecord(input.accountBinding)
+      && hasExactKeys(input.accountBinding, ['owner', 'settlementAccount'])
+      && typeof input.accountBinding.owner === 'string'
+      && /^0x[0-9a-f]{40}$/.test(input.accountBinding.owner)
+      && typeof input.accountBinding.settlementAccount === 'string'
+      && /^0x[0-9a-f]{40}$/.test(input.accountBinding.settlementAccount),
+    'INVALID_ATTEMPT', 'attempt account binding is invalid');
+  }
   requireCondition(input.attemptId === expectedAttemptId, 'ATTEMPT_IDENTITY_MISMATCH',
     'resolved attempt identity does not match the request');
   requireCondition(isRecord(input.market) && isRecord(input.limits),
@@ -1508,11 +1519,11 @@ export function createHyperliquidTestnetExecutorRequestHandler(
 }
 
 export function createHyperliquidTestnetExecutorServer(
-  factory?: HyperliquidTestnetExecutorRuntimeFactory,
+  factory?: HyperliquidTestnetExecutorRuntimeFactory | HyperliquidTestnetExecutorPort,
   operator?: HyperliquidTestnetLaneOperator,
 ) {
   const handler = createHyperliquidTestnetExecutorRequestHandler(
-    createHyperliquidTestnetExecutor(factory),
+    typeof factory === 'function' ? createHyperliquidTestnetExecutor(factory) : factory,
     operator,
   );
   return createServer((request, response) => {

@@ -298,6 +298,7 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
   >;
   tradingAccount: string;
   limits: HyperliquidOmnibusLimits | undefined;
+  accountMode?: 'PER_USER' | 'SHARED_TEST_FIXTURE';
   /** The asset the omnibus notional cap is denominated in. */
   quoteAsset: AssetRef;
   /** Base atoms per spot size unit; an exit sells the package spot floored to it. */
@@ -328,7 +329,8 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
           "The package owner must sign the generalized package authorization before execution.",
         );
       }
-      if (admission.order.settlementAccount !== options.tradingAccount) {
+      if (admission.order.settlementAccount !== (options.accountMode === 'PER_USER'
+        ? admission.order.owner : options.tradingAccount)) {
         throw new HyperliquidTestnetTerminalValidationError(
           "SETTLEMENT_ACCOUNT_MISMATCH",
           "The generalized order does not settle in the configured trading account.",
@@ -336,7 +338,8 @@ export function createHyperliquidTestnetExecutionGuard(options: Readonly<{
       }
       return { ...binding, admission };
     }
-    if (binding.order === null || binding.order.settlementAccount !== options.tradingAccount) {
+    if (binding.order === null || binding.order.settlementAccount !== (options.accountMode === 'PER_USER'
+      ? binding.order.owner : options.tradingAccount)) {
       throw new HyperliquidTestnetTerminalValidationError(
         "SETTLEMENT_ACCOUNT_MISMATCH",
         "The order does not settle in the configured trading account.",
