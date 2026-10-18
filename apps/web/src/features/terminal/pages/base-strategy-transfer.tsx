@@ -60,10 +60,16 @@ export function BaseStrategyTransfer({ baseUrl, initialStrategyId, onEvidence }:
       localStorage.removeItem(storageKey); setPending(null);
       throw new Error("The transfer transaction reverted. The account was not transferred.");
     }
-    const next = await fetchContext();
-    if (next.strategyAccount.toLowerCase() !== sent.account.toLowerCase()) throw new Error("The transfer account changed. Check the transaction before continuing.");
-    const actualOwner = sent.action === "accept" ? next.owner : next.pendingOwner;
-    if (actualOwner.toLowerCase() !== sent.expectedOwner.toLowerCase()) throw new Error("The confirmed account state differs from the requested transfer. Inspect the transaction before continuing.");
+    let matched = false;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const next = await fetchContext();
+      if (next.strategyAccount.toLowerCase() !== sent.account.toLowerCase()) throw new Error("The transfer account changed. Check the transaction before continuing.");
+      const actualOwner = sent.action === "accept" ? next.owner : next.pendingOwner;
+      if (actualOwner.toLowerCase() === sent.expectedOwner.toLowerCase()) { matched = true; break; }
+      setNotice("Transaction confirmed. Waiting for the account read to catch up. Do not resubmit.");
+      if (attempt < 9) await new Promise(resolve => setTimeout(resolve, 1_500));
+    }
+    if (!matched) throw new Error("The transaction confirmed, but the account read does not match yet. Check the transaction, then use Check pending transaction without resubmitting.");
     localStorage.removeItem(storageKey); setPending(null);
     if (sent.action === "accept") {
       setAcceptedHash(sent.hash);
