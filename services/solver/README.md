@@ -132,7 +132,8 @@ clearing or novation mechanism. Historical shared-account evidence is not per-us
 `hyperliquid-pooled-collateral-store.ts`, `hyperliquid-pool-funding.ts`,
 `hyperliquid-pool-funding-reads.ts`, and `hyperliquid-pool-withdrawal.ts` implement a
 separate testnet custody boundary. `hyperliquid-pool-main.ts` hosts its operator-only
-runtime independently of `main.ts`, the public API, and the terminal. It is disabled
+runtime independently of `main.ts`. Its signed browser operations are separately proxied by the
+public API; epoch execution remains operator-only. It is disabled
 by default. Existing per-user accounts are not migrated or pooled.
 Consent creates a claim in Naryx's ledger, not an owner-specific HyperCore position.
 
@@ -203,7 +204,10 @@ The systemd unit uses an exclusive process lock and listens only on loopback por
 and forwarded requests are refused. Commands cover enrollment, observed deposits,
 signed epochs, advancement, close, recovery, and signed withdrawal preparation,
 submission, evidence completion, and unsubmitted-expiry release. Responses use the
-existing protocol JSON codec. This is not a public custodial product or frontend integration.
+existing protocol JSON codec. The Portfolio shared-pool panel uses separate signed browser
+endpoints for approved owners' consent, balance, deposit reconciliation and withdrawals.
+It cannot authorize an epoch, access the operator token, or operate another owner's claim.
+This is not public custody enrollment.
 
 The dedicated AWS test cohort completed a funded round trip on October 17, 2026:
 three observed deposits backed 20 mock USDC; two signed owners held opposing BTC
@@ -212,8 +216,8 @@ restart while open, closed once, and reconciled 19.990344 mock USDC exactly. All
 owner withdrawals completed, leaving zero pool cash, liabilities, positions, and
 pending operations. This is controlled testnet evidence, not organic volume.
 
-This operator-only cohort is not public custody enrollment, cross-account HyperCore
-novation, or a terminal feature. Do not use ledger `settleEpoch` inputs from public
+This dedicated cohort is not public custody enrollment or cross-account HyperCore
+novation. Do not use ledger `settleEpoch` inputs from public
 requests or enable shared trading through the existing per-user route. Repeating the
 test requires approved funding and new signed epoch authority; idle service health
 does not mean there is continuously funded pool capacity.

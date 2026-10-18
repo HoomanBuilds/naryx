@@ -199,7 +199,7 @@ Status checked 2026-10-18:
 | --- | --- | --- |
 | 1. Standing liquidity for routed strategies | Open. Funded native cash books are live, but represent different instruments. | Funded routed quotes, an actual matching execution, and reconciled inventory. Do not copy cash liquidity into routed books. |
 | 2. Cross-chain execution activation | Open. Submission journaling exists; coordinator startup and filled-position compensation are not activated. | A successful multi-domain execution and a failed-side recovery that reconciles already-filled positions without duplicate submission. |
-| 3. Hyperliquid pooled-mode terminal integration | Browser controls deployed. The funded operator cycle passed; browser navigation passed. | Authenticated browser account actions and their reconciled records. A new funded browser cycle needs separate funding approval because the completed pool was fully withdrawn. |
+| 3. Hyperliquid pooled-mode terminal integration | Closed for the approved dedicated cohort. Both owners completed authenticated browser deposit/withdrawal cycles on 2026-10-18. | UI, database and venue agreed after reload: zero pool cash, liabilities and pending operations. Receipt evidence below. Epoch trading remains operator-only; this is not public custody enrollment. |
 | 4. Strategy ownership transfers | Open. The public strategy book has no venue-transfer evidence verifier. | Both owners' consent plus verified transfer of the underlying positions, reconciled in the strategy book. Database reassignment alone is not a transfer. |
 | 5. Threshold-encryption backend | Backend and solver participation deployed; a real beacon opening was verified. | Preserve this completed backend evidence. Any claim of terminal-integrated encrypted trading also needs an encrypted auction award and settlement; current terminal auctions remain ordinary commit/reveal. |
 | 6. Operational wiring and documentation | Runbook corrected, incident endpoint wired, bounded oracle maintenance deployed. Solana qualification evidence remains unavailable. | A valid qualification journal backed by current release evidence. Do not manufacture a healthy status from a matching code watchlist. |
@@ -247,9 +247,12 @@ capabilities require a separate task. Do not claim that this bounded verificatio
 
 Latest read-only website pass, 2026-10-18: Trade, Markets, Portfolio, Activity, Network and Makers
 returned HTTP 200 with no uncaught browser exceptions at 1440px. This was disconnected navigation,
-not authenticated transaction verification. Routed depth was empty. The Arbitrum standing-book
-endpoint returned HTTP 409 on Markets and Portfolio before a subsequent read returned valid
-five-unit bid and ask quotes; its intermittent availability remains open under items 1 and 6.
+not authenticated transaction verification. Routed depth was empty. The intermittent Arbitrum
+native cash standing-book refusal was traced to a fresh oracle price arriving before the clearing
+mark updater. Fix `5888323c` now waits within a bounded deadline after all qualification checks,
+without serving stale quotes or weakening contract guards. Both native cash books returned HTTP
+200 with funded five-unit bid and ask quotes after the AWS deployment. This fixes that availability
+defect, not the missing routed-strategy liquidity in item 1.
 All nine checked Naryx AWS services were active, but health remained degraded because one configured
 Solana incident scope had no qualification journal. These findings do not close the action matrix.
 
@@ -268,9 +271,27 @@ strategy support is specific to a registered template and deployment, not every 
   positions were zero. It remains restricted to dedicated test accounts. The signed owner API is
   deployed; balance reads have been verified separately for both traders and the sponsor.
   Its Portfolio controls are included in the static frontend deployed on 2026-10-18 after the
-  hosting block cleared. Browser navigation passed; no additional pool funding or trading was
-  performed as part of the frontend deployment.
+  hosting block cleared. Following separate funding approval, both dedicated traders completed
+  sequential 2 mock-USDC deposit/withdrawal cycles through `naryx.xyz/portfolio`. Wallet-signed
+  account reads, deposit crediting, withdrawal authorization, submission and receipt reconciliation
+  all returned HTTP 200, with no uncaught browser errors. Each reload preserved zero owner balance;
+  the final venue and database both held zero pool cash, liabilities and pending operations. No
+  trades were submitted in this browser cycle. Transfer signing remained outside the browser;
+  the browser used a restricted test-wallet provider with real owner signatures, not a wallet
+  extension. This proves the application/provider flow, not compatibility with every wallet UI.
+  A separate rejected-signature check sent no execute request and displayed no account balance;
+  a subsequent accepted signature recovered the normal account view without a page reload.
   Re-funding requires separate approval; a healthy empty service is not funded liquidity.
+
+  | Dedicated owner | Deposit receipt | Withdrawal receipt |
+  | --- | --- | --- |
+  | `0x68306408c1cf9baf22e2f3c6d79e87d496e63f8f` | `0x5216d6896cd5c56e5390042bfb533c010100ee6f07d8e440f5df81dc2bd99f58` | `0x1682d440fe7401fd17fc042bfb5851010200ec26997720cfba4b7f93bd77dbe7` |
+  | `0x4bd0926b35b9df531d79ed480f47b8a425f498a8` | `0x845e27b8c2ce920f85d7042bfb5c870101003f9e5dc1b0e12826d30b81c26bfa` | `0x091e6cade9914ae90a98042bfb60280111008493849469bbace71800a89524d3` |
+
+  Each deposit and withdrawal was 2 mock USDC with no transfer fee. The pool never exceeded
+  2 mock USDC during this cycle. Source wallets ended at 6 and 6.990344 mock USDC respectively.
+  Durable operation journals use the `browser-cycle-20261018-owner-1` and
+  `browser-cycle-20261018-owner-2` prefixes under the existing pool operator journal directory.
 - Arbitrum: GMX execution depends on GMX's testnet keepers (they executed 122 of 143 orders in the
   week to 2026-10-02). The GMX fee and gas keys the solver reads return live values. A request GMX
   cancels, or one still pending after its venue deadline, is recovered by the solver through the

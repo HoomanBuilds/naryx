@@ -171,6 +171,15 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
   The native mark journal conservatively charges both the transferred value and maximum gas
   against its existing allowance. Insufficient-gas failures now have an explicit log message.
   Check the public standing book's `validUntil` and actual bid/ask capacity, not just systemd.
+- Native cash standing-book reads tolerate a qualified oracle/clearing mark update window.
+  After checking pinned code, bindings, freshness, bounds and fees, a price mismatch retries
+  up to five observations with one-second spacing and an eight-second response deadline.
+  Concurrent requests share only an in-flight read, never cached executable quotes. Remaining
+  refreshes return `503 MARK_REFRESHING`; a stalled read returns `503 BOOK_READ_TIMEOUT`.
+  Other validation failures still refuse the book. Deployed on 2026-10-18 from `5888323c`;
+  Base and Arbitrum returned funded five-unit bid/ask books afterward. Historical Arbitrum
+  block `320301345` reproduced the refresh condition without changing contract validation.
+  The rollback archive is `/srv/naryx/backups/standing-book-refresh-20261018/runtime-before.tgz`.
 - Encrypted solver openings: enable `NARYX_SEALED_AUCTION_THRESHOLD_ENABLED=true` in the solver
   environment only after deploying the threshold-capable API and solver together. Preserve the
   private-delivery and solver-auction SQLite journals in the rollback backup. The solver requires
@@ -186,6 +195,12 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
   the restricted proxy and timed threshold openings. Restart only `naryx-api` afterward.
   Wait for `/health` after a controller restart before running this probe. A restart acknowledgement
   alone does not mean the listener is ready. Keep the private-delivery SQLite backup for rollback.
+  On 2026-10-18 both approved trader wallets completed sequential 2 mock-USDC browser
+  deposit/withdrawal cycles, including signed reads and post-reload checks. The venue and
+  database ended with zero pool cash, liabilities and pending operations. The GO-LIVE record
+  contains all four transfer hashes. Preserve the `browser-cycle-20261018-owner-1` and
+  `browser-cycle-20261018-owner-2` operator journals: an existing deposit intent is observed,
+  never resent. This check authorized no epoch trade and no new standing pool funding.
 - Health: `curl https://api.<your domain>/internal/healthz`; point an uptime monitor (for example a
   Route 53 health check) at it.
 - Incident visibility: run `sudo -u naryx node /srv/naryx/app/deployments/tools/wire-keeper-status.mjs --root /srv/naryx`
