@@ -193,7 +193,7 @@ export function PortfolioView() {
       <div className={styles.pageHead}>
         <div>
           <h1>Portfolio</h1>
-          <p>Balances on each test network, open packages, and the accounts that sign for them. Balances are read directly from each network. The only signature this page asks for is a free test USDC claim, from your own wallet.</p>
+          <p>Balances, open packages, and your trading accounts across test networks. Balance reads need no signature. Claims, approvals, cash-market trades, and optional test-pool actions each require your explicit wallet approval.</p>
         </div>
       </div>
 

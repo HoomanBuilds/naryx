@@ -4587,7 +4587,9 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
       order: body.order,
       traderAuthorization: "OWNER_EVM_SIGNATURE_REQUIRED",
       solverQuoting: "REQUIRED",
-      note: "Exit order stored. The owner signs it before the shared testnet account executes it.",
+      note: context.authorizationMode === "OWNER_SIGNED_PER_USER_ACCOUNT"
+        ? "Exit order stored. Sign to execute it in your enrolled testnet trading account."
+        : "Exit order stored. Sign to execute it in the shared testnet account.",
     }, context, request.owner, request.idempotencyKey);
   }
 

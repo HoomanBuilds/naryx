@@ -120,7 +120,7 @@ export function OrderBook({ feed }: { feed: MarketFeed }) {
       asks: withAsks,
       spread: bestBid === undefined || bestAsk === undefined ? undefined : bestAsk - bestBid,
       mid: bestBid === undefined || bestAsk === undefined ? undefined : (bestAsk + bestBid) / 2,
-      bidShare: bidTotal + askTotal === 0 ? 50 : (bidTotal / (bidTotal + askTotal)) * 100,
+      bidShare: bidTotal + askTotal === 0 ? null : (bidTotal / (bidTotal + askTotal)) * 100,
     };
   }, [book, step]);
 
@@ -205,14 +205,20 @@ export function OrderBook({ feed }: { feed: MarketFeed }) {
               </div>
             ) : null}
           </div>
-          <div className={styles.ratioBar} aria-label={`Direct depth ${bidShare.toFixed(0)} percent bids`}>
-            <span className={styles.up}>B {bidShare.toFixed(0)}%</span>
-            <div className={styles.ratioTrack}>
-              <i className={styles.ratioBid} style={{ width: `${bidShare}%` }} />
-              <i className={styles.ratioAsk} style={{ width: `${100 - bidShare}%` }} />
+          {bidShare === null ? (
+            <div className={styles.ratioBar} aria-label="Direct depth unavailable">
+              <span className={styles.dimCell}>No direct resting depth</span>
             </div>
-            <span className={styles.down}>{(100 - bidShare).toFixed(0)}% S</span>
-          </div>
+          ) : (
+            <div className={styles.ratioBar} aria-label={`Direct depth ${bidShare.toFixed(0)} percent bids`}>
+              <span className={styles.up}>B {bidShare.toFixed(0)}%</span>
+              <div className={styles.ratioTrack}>
+                <i className={styles.ratioBid} style={{ width: `${bidShare}%` }} />
+                <i className={styles.ratioAsk} style={{ width: `${100 - bidShare}%` }} />
+              </div>
+              <span className={styles.down}>{(100 - bidShare).toFixed(0)}% S</span>
+            </div>
+          )}
         </div>
       ) : view === "ladder" ? (
         <div key="ladder" className={styles.viewFade}>
