@@ -1,7 +1,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { bytesEqual, parseProtocolJson, toHex, crossDomainPlanHash, crossDomainCompensationAction, commitmentHash } from '@naryx/protocol-types';
-import { getAddress, type Address } from 'viem';
+import { getAddress, keccak256, stringToHex, type Address } from 'viem';
 import { CrossDomainExecutionCoordinator } from './cross-domain-execution-coordinator.js';
 import { SqliteCrossDomainJobStore, validateCrossDomainJob, type CrossDomainJob } from './cross-domain-job-store.js';
 import { CrossDomainWorker } from './cross-domain-worker.js';
@@ -60,7 +60,7 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
   const store = new SqliteCrossDomainJobStore(config.jobDatabasePath);
   const ports: ReturnType<typeof createViemEvmFirmReservationCrossDomainPort>[] = [];
   try {
-    const lanes: { item: LaneConfiguration; lane: EvmRecoverableCrossDomainLane; driver: EvmCrossDomainExecutionDriver }[] = [];
+    const lanes: { item: LaneConfiguration; lane: EvmRecoverableCrossDomainLane; driver: EvmCrossDomainExecutionDriver; port: typeof ports[number] }[] = [];
     for (const item of config.lanes) {
       const chain = item.lane.chainReference;
       requireCondition(chain === 84_532n || chain === 421_614n, 'only Base and Arbitrum Sepolia are enabled');
@@ -81,7 +81,7 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
         resolve: async (hash, domainId) => authorization(hash, domainId)?.entry,
         resolveRecovery: async (hash, domainId) => authorization(hash, domainId)?.recovery,
       });
-      lanes.push({ item, lane, driver: new EvmCrossDomainExecutionDriver(lane, item.compensationProfile) });
+      lanes.push({ item, lane, driver: new EvmCrossDomainExecutionDriver(lane, item.compensationProfile), port });
     }
     const journal = new HttpCrossDomainCoordinationJournal(config.apiOrigin);
     const coordinator = new CrossDomainExecutionCoordinator(journal, lanes.map(l => l.driver));
@@ -93,6 +93,12 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
         requireCondition(domain?.kind === 'EVM_MULTI_STRATEGY_ACCOUNT' && auth !== undefined, 'runtime does not cover job');
         requireCondition(domain.domain.domainManifestVersion === item.lane.domain.domainManifestVersion
           && bytesEqual(domain.domain.domainManifestHash, item.lane.domain.domainManifestHash), 'unqualified domain manifest');
+        requireCondition(domain.envelope.execution.domainIdHash === keccak256(stringToHex(domain.domain.domainId))
+          && domain.envelope.execution.domainManifestVersion === domain.domain.domainManifestVersion
+          && domain.envelope.execution.domainManifestHash === `0x${toHex(domain.domain.domainManifestHash)}`
+          && domain.envelope.execution.orderHash === `0x${toHex(job.execution.orderHash)}`
+          && domain.envelope.execution.quoteHash === `0x${toHex(job.execution.quoteHash)}`
+          && domain.envelope.execution.routeHash === `0x${toHex(job.execution.routeHash)}`, 'account execution binds another domain or route');
         requireCondition(item.allowedOwners.some(a => getAddress(a) === getAddress(auth.entry.owner))
           && item.allowedAccounts.some(a => getAddress(a) === getAddress(domain.envelope.account))
           && getAddress(domain.envelope.execution.solver) === getAddress(item.signerAddress), 'job is outside the dedicated test cohort');
@@ -101,6 +107,28 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
       }
     };
     for (const hash of store.active()) checkCohort(store.get(hash)!);
+    const admit = async (job: CrossDomainJob) => {
+      checkCohort(job);
+      const planHash = toHex(crossDomainPlanHash(job.bundle.plan));
+      if (store.get(planHash) !== undefined) return { planHash, admittedPlanHash: store.admit(job) };
+      requireCondition(BigInt(Math.floor(Date.now() / 1_000)) < job.bundle.plan.prepareDeadline, 'job preparation expired');
+      for (const { item, port } of lanes) {
+        const domainId = item.lane.domain.domainId;
+        const auth = job.authorizations.find(a => a.domainId === domainId)!;
+        const lane = new EvmRecoverableCrossDomainLane(item.lane, port, {
+          resolve: async () => auth.entry, resolveRecovery: async () => auth.recovery,
+        });
+        const input: EvmCrossDomainLaneInput = { planHash, plan: job.bundle.plan,
+          planLeg: job.bundle.plan.legs.find(l => l.domain.domainId === domainId)!,
+          compensation: crossDomainCompensationAction(job.bundle.compensations.find(c => c.domain.domainId === domainId)!),
+          execution: job.execution.domains.find(d => d.domain.domainId === domainId)!,
+          events: [], action: { kind: 'PREPARE', domainId }, phase: 'PREPARE' };
+        new EvmCrossDomainExecutionDriver(lane, item.compensationProfile).validateInput(input);
+        await lane.validateAdmission(input);
+      }
+      requireCondition(BigInt(Math.floor(Date.now() / 1_000)) < job.bundle.plan.prepareDeadline, 'job expired during admission');
+      return { planHash, admittedPlanHash: store.admit(job) };
+    };
     return {
       worker: new CrossDomainWorker(store, coordinator, {
         validate: checkCohort,
@@ -126,13 +154,10 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
         },
       }),
       pollIntervalMs: config.pollIntervalMs,
+      admit,
+      status: (hash: string) => store.status(hash),
       async enqueue(path: string) {
-        const job = readBounded(path) as CrossDomainJob;
-        checkCohort(job);
-        const planHash = toHex(crossDomainPlanHash(job.bundle.plan));
-        requireCondition(BigInt(Math.floor(Date.now() / 1_000)) < job.bundle.plan.prepareDeadline, 'job preparation expired');
-        // Admission persists signed intent only. Drivers validate signatures and live reservations before any commit.
-        return { planHash, admittedPlanHash: store.admit(job) };
+        return admit(readBounded(path) as CrossDomainJob);
       },
       close() { for (const port of ports) port.close(); store.close(); },
     };

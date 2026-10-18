@@ -1,4 +1,5 @@
 import { loadCrossDomainRuntime } from './cross-domain-runtime.js';
+import { createCrossDomainServer } from './cross-domain-server.js';
 
 const runtime = await loadCrossDomainRuntime(process.env);
 if (runtime === undefined) throw new Error('Cross-domain runtime is disabled.');
@@ -8,6 +9,15 @@ if (args.length === 2 && args[0] === '--enqueue') {
   finally { runtime.close(); }
 } else {
   if (args.length !== 0) { runtime.close(); throw new Error('Usage: cross-domain-main.js [--enqueue /absolute/job.json]'); }
+  const port = process.env.NARYX_CROSS_DOMAIN_PORT;
+  if (port !== undefined && (!/^\d+$/.test(port) || Number(port) < 1024 || Number(port) > 65535)) {
+    runtime.close(); throw new Error('Invalid cross-domain loopback port.');
+  }
+  const server = port === undefined ? undefined : createCrossDomainServer(runtime);
+  if (server !== undefined) await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(Number(port), '127.0.0.1', () => { server.off('error', reject); resolve(); });
+  });
   let stopping = false;
   const interval = setInterval(() => { void runtime.worker.tick().catch(() => {
     process.stderr.write('Cross-domain worker failed; durable account fences remain in place.\n');
@@ -16,6 +26,7 @@ if (args.length === 2 && args[0] === '--enqueue') {
     if (stopping) return;
     stopping = true;
     clearInterval(interval);
+    if (server !== undefined) await new Promise<void>(resolve => server.close(() => resolve()));
     await runtime.worker.drain();
     runtime.close();
   };

@@ -67,6 +67,16 @@ export class EvmRecoverableCrossDomainLane implements EvmCrossDomainExecutionLan
   chainId() { return this.port.chainId(); }
   currentTime() { return this.port.currentTime(); }
 
+  async validateAdmission(input: EvmCrossDomainLaneInput): Promise<void> {
+    requireCondition(input.phase === 'PREPARE', 'admission must not dispatch execution');
+    const authorization = await this.authorizations.resolve(input.planHash, this.domain.domainId);
+    requireCondition(authorization !== undefined && getAddress(await this.port.accountOwner(this.#execution(input).account)) === getAddress(authorization.owner),
+      'entry signer does not own the account');
+    requireCondition(await this.#recovery(input) !== undefined, 'signed recovery is missing');
+    const prepared = await this.#entry.start(this.#entryInput(input));
+    requireCondition(prepared.status === 'FINALIZED', 'entry authorization or funded reservation is not ready');
+  }
+
   async start(input: EvmCrossDomainLaneInput): Promise<EvmCrossDomainPhaseResult> {
     const recovery = await this.#recovery(input);
     if (recovery === undefined) return PENDING;

@@ -114,6 +114,13 @@ export class SqliteCrossDomainJobStore {
       .map(row => row.plan_hash);
   }
 
+  status(planHash: string): Readonly<{ planHash: string; status: string; updatedAtMs: number }> | undefined {
+    requireCondition(/^[0-9a-f]{64}$/.test(planHash), 'invalid plan hash');
+    const row = this.#db.prepare('SELECT status, updated_at_ms FROM cross_domain_jobs WHERE plan_hash = ?').get(planHash) as
+      { status: string; updated_at_ms: number } | undefined;
+    return row === undefined ? undefined : { planHash, status: row.status, updatedAtMs: row.updated_at_ms };
+  }
+
   record(planHash: string, status: 'ACTIVE' | 'TERMINAL' | 'ESCALATION_REQUIRED', error?: string): void {
     this.#db.transaction(() => {
       const update = this.#db.prepare('UPDATE cross_domain_jobs SET status = ?, last_error = ?, updated_at_ms = ? WHERE plan_hash = ? AND status = ?')

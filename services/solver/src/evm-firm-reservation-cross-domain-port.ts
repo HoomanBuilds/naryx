@@ -33,6 +33,7 @@ const RESERVATION_BOOK_ABI = parseAbi([
 ]);
 const STRATEGY_ACCOUNT_ABI = [...NARYX_MULTI_STRATEGY_ACCOUNT_STATE_ABI, ...parseAbi([
   'function nextNonce() view returns (uint256)',
+  'function owner() view returns (address)',
 ])];
 const OCCUPANCY_KEY_PARAMETERS = parseAbiParameters('address solver,address strategyAccount');
 const EXECUTION_EVENT_ABI = parseAbi([
@@ -197,6 +198,7 @@ export function createViemEvmFirmReservationCrossDomainPort(input: Readonly<{
   return Object.freeze({
     close: () => submissions.close(),
     chainId: async () => BigInt(await publicClient.getChainId()),
+    accountOwner: async (account: Address) => getAddress(await finalizedRead({ address: account, abi: STRATEGY_ACCOUNT_ABI, functionName: 'owner' }) as Address),
     currentTime: async () => (await publicClient.getBlock({ blockTag: 'latest' })).timestamp,
     finalizedTime: async () => (await publicClient.getBlock({ blockTag: 'finalized' })).timestamp,
     recoveryAdapterState: async (policy: EvmRecoveryAdapterPolicy) => {

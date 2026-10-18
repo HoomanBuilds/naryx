@@ -140,7 +140,7 @@ export class EvmCrossDomainExecutionDriver implements CrossDomainExecutionDriver
   }
 
   async advance(input: Readonly<CrossDomainDriverAdvanceInput>): Promise<CrossDomainEvent | undefined> {
-    this.#validateInput(input);
+    this.validateInput(input);
     requireCondition(await this.#lane.chainId() === this.#lane.chainReference, 'RPC chain identity differs from the lane');
     const now = await this.#lane.currentTime();
     requireCondition(now >= 0n, 'lane time is negative');
@@ -204,7 +204,7 @@ export class EvmCrossDomainExecutionDriver implements CrossDomainExecutionDriver
     });
   }
 
-  #validateInput(input: CrossDomainDriverAdvanceInput): void {
+  validateInput(input: CrossDomainDriverAdvanceInput): void {
     requireCondition(input.plan.planVersion !== 2 || (this.#lane.supportsCommitRecovery === true
       && this.#lane.reconcileCommit !== undefined), 'recoverable plans require a filled-position recovery lane');
     requireCondition(input.plan.environment === 'testnet' && input.plan.timeUnit === 'EVM_UNIX_SECONDS',

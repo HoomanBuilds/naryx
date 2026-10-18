@@ -412,6 +412,7 @@ async function recoverableSetup() {
   const observed = new Map<string, EvmCrossDomainSubmissionObservation>();
   const base = new Port();
   const port: EvmRecoverableCrossDomainPort = Object.assign(base, {
+    accountOwner: async () => owner.address,
     finalizedTime: async () => base.now,
     observeSubmission: async (id: string) => observed.get(id) ?? { status: 'ABSENT' as const },
     recoveryAdapterState: async () => ({ codeHash: hex('d'), account: accountAddress, packageId: entry.execution.packageId,
@@ -465,6 +466,20 @@ test('version-two recovery reverses a filled package and requires finalized clos
   f.observed.set(`${f.input.planHash}:COMPENSATE`, closeEvidence);
   assert.equal((await f.lane().start(f.input)).status, 'FINALIZED');
   assert.equal(f.base.submitted.length, 1);
+});
+
+test('admission requires live ownership and both authorizations before any submission', async () => {
+  const f = await recoverableSetup();
+  const input = { ...f.input, phase: 'PREPARE' as const, action: { kind: 'PREPARE' as const, domainId: domain.domainId } };
+  await f.lane().validateAdmission(input);
+  const lane = f.lane();
+  const accountOwner = lane.port.accountOwner;
+  Object.assign(lane.port, { accountOwner: async () => address('f') });
+  await assert.rejects(lane.validateAdmission(input), /does not own/);
+  Object.assign(lane.port, { accountOwner });
+  const tampered = { ...input, execution: { ...f.input.execution, envelope: { ...f.entry,
+    calls: f.entry.calls.map(call => ({ ...call, gasLimit: call.gasLimit + 1n })) } } };
+  await assert.rejects(lane.validateAdmission(tampered), /signatures recover/);
 });
 
 test('full reversal derives the loss bound and rejects partial, uncovered and unknown legs', async () => {

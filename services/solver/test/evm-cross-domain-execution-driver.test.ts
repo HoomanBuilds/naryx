@@ -143,6 +143,18 @@ function driver(lane: Lane): EvmCrossDomainExecutionDriver {
   });
 }
 
+test('admission can validate route metadata without dispatching a lane action', () => {
+  const lane = new Lane();
+  lane.start = async () => { throw new Error('admission must not dispatch'); };
+  const executionDriver = driver(lane);
+  const prepared = input({ kind: 'PREPARE', domainId: domain.domainId });
+  executionDriver.validateInput(prepared);
+  assert.throws(() => executionDriver.validateInput({ ...prepared,
+    execution: { ...execution, routeSettlementClass: 'ATOMIC_POSTCONDITION' } }), /not cross-domain/);
+  assert.throws(() => executionDriver.validateInput({ ...prepared,
+    compensation: { ...compensation, executorClassVersion: 2 } }), /executor class differs/);
+});
+
 test('maps a testnet EVM lane submission and its exact finality evidence into coordination events', async () => {
   const lane = new Lane();
   const first = await driver(lane).advance(input({ kind: 'PREPARE', domainId: domain.domainId }));

@@ -1,5 +1,7 @@
 import {
   encodeEvmMultiStrategyAccountExecution,
+  evmMultiStrategyCallsHash,
+  evmMultiStrategyExecutionHash,
   isCanonicalEvmSignature,
 } from '@naryx/adapter-evm';
 import type { DomainRef } from '@naryx/protocol-types';
@@ -351,9 +353,12 @@ export class EvmFirmReservationCrossDomainLane implements EvmCrossDomainExecutio
     'authorization differs from the prepared execution');
     requireCondition(isCanonicalEvmSignature(authorization.ownerSignature)
       && isCanonicalEvmSignature(authorization.solverSignature), 'authorization signatures are not canonical');
+    const domain = { name: 'Naryx Multi Strategy Account', version: '1', chainId: Number(this.chainReference), verifyingContract: envelope.account };
+    const message = { executionHash: evmMultiStrategyExecutionHash(envelope.execution), callsHash: evmMultiStrategyCallsHash(envelope.calls) };
+    const fields = [{ name: 'executionHash', type: 'bytes32' }, { name: 'callsHash', type: 'bytes32' }] as const;
     const [owner, solver] = await Promise.all([
-      recoverTypedDataAddress({ ...envelope.ownerTypedData, signature: authorization.ownerSignature }),
-      recoverTypedDataAddress({ ...envelope.solverTypedData, signature: authorization.solverSignature }),
+      recoverTypedDataAddress({ domain, message, types: { OwnerExecution: fields }, primaryType: 'OwnerExecution', signature: authorization.ownerSignature }),
+      recoverTypedDataAddress({ domain, message, types: { SolverExecution: fields }, primaryType: 'SolverExecution', signature: authorization.solverSignature }),
     ]);
     requireCondition(getAddress(owner) === getAddress(authorization.owner)
       && getAddress(solver) === getAddress(envelope.execution.solver), 'authorization signatures recover to other accounts');

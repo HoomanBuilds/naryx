@@ -15,6 +15,7 @@ export type EvmCrossDomainSubmissionObservation = Readonly<
 >;
 
 export interface EvmRecoverableCrossDomainPort extends EvmFirmReservationCrossDomainPort {
+  accountOwner(account: Address): Promise<Address>;
   finalizedTime(): Promise<bigint>;
   observeSubmission(operationId: string, account: Address): Promise<EvmCrossDomainSubmissionObservation>;
   recoveryAdapterState(policy: EvmRecoveryAdapterPolicy): Promise<EvmRecoveryAdapterState>;
