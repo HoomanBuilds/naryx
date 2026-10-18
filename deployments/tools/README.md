@@ -182,6 +182,78 @@ Before it finishes, the generator loads every output through the services' own c
 
 Temporary SQLite stores for the API checks live in a fresh system temp directory and are deleted afterwards.
 
+## Isolated EVM recovery deployment
+
+`deploy-evm-recovery.mjs` deploys the existing generation-bound recovery contracts into a separate
+Base Sepolia or Arbitrum Sepolia cohort. It never changes the old accounts, adapter registries or
+domain manifests. This is controlled test derivative infrastructure, not a public venue deployment.
+
+Required operator inputs:
+
+- `NARYX_RECOVERY_RELEASE_DIR`: a new private absolute directory outside this checkout.
+- `BASE_SEPOLIA_RPC_URL` and `ARBITRUM_SEPOLIA_RPC_URL`: endpoints whose returned chain IDs must match.
+- `NARYX_RECOVERY_DEPLOYER_ACCOUNT`, `NARYX_RECOVERY_PROPOSER_ACCOUNT`, and
+  `NARYX_RECOVERY_EXECUTOR_ACCOUNT`: local Foundry keystore names. Governance addresses must match
+  the existing multi-strategy release; `NARYX_RECOVERY_DEPLOYER_ADDRESS` binds the funding signer.
+- `FOUNDRY_PASSWORD`: supplied through an ignored local environment, never in committed commands.
+- `NARYX_RECOVERY_OWNER_ADDRESS`: the approved dedicated test account owner.
+- `NARYX_RECOVERY_BROADCAST=true`: explicit broadcast opt-in. Without it the deployment refuses writes.
+
+Build the contract artifacts once before deployment. Run each phase for each network, waiting for
+the contract's 60-second delay before either activation phase:
+
+```bash
+node deployments/tools/deploy-evm-recovery.mjs base-sepolia deploy
+node deployments/tools/deploy-evm-recovery.mjs base-sepolia propose-domain
+# After the onchain delay:
+node deployments/tools/deploy-evm-recovery.mjs base-sepolia activate-domain
+node deployments/tools/deploy-evm-recovery.mjs base-sepolia configure
+# After the onchain delay:
+node deployments/tools/deploy-evm-recovery.mjs base-sepolia activate
+node deployments/tools/deploy-evm-recovery.mjs base-sepolia inspect
+```
+
+The keystore password is passed to Foundry through a mode-600 transient file in the private release
+directory and removed immediately after unlocking. It is not placed in command-line arguments.
+
+Repeat with `arbitrum-sepolia`. Keep deployer and governance signers exclusive during these writes;
+restore any deliberately stopped oracle updater timers immediately afterward. Rerunning a phase
+reconciles its journaled transaction hashes and refuses changed payloads. Never delete that journal
+to retry a failed transaction. It contains signed transaction bytes and must stay private.
+
+Risk policies register each exact adapter subject as a dependency. An older release with generic
+dependency IDs requires `propose-risk-dependencies`, the governance delay, then
+`activate-risk-dependencies`. These phases publish a new policy version and do not reinterpret
+already signed policy hashes. The configuration generator refuses a policy that omits a subject.
+
+The deployment reserves at most 0.003 test ETH per chain, including the 0.0003 test ETH it sends
+to that chain's fresh dedicated solver. This is a per-release limit, not permission to exceed an
+operator's cumulative budget. No quote tokens are minted or deposited by this script.
+
+After both activations, generate AWS configuration using read-only chain checks:
+
+```bash
+node deployments/tools/configure-evm-recovery.mjs
+```
+
+It verifies 16 deployed code hashes per chain, domain identity, adapter controls, active risk/fee
+policies and solver gas balances. Outputs in the private release directory are
+`cross-domain-runtime.json`, `executor-manifest.json` and `activation-observations.json`.
+The runtime is consumed by `services/solver/dist/cross-domain-main.js`; it uses a loopback API,
+separate submission journals, and a 0.00025 test ETH gas budget per solver. Its 10 mock-USDC entry
+limit does not fund an account or authorize a trade. Owners must still sign exact entries and
+full recoveries before a job can be admitted. Installing it does not enable public website
+materialization for the new domain manifests.
+
+On AWS, install both dedicated solver key files using the paths in the generated runtime,
+owned by `naryx` with mode 600. Install the runtime under `/srv/naryx/release/recovery` and create
+`/srv/naryx/release/env/cross-domain.env` with `NARYX_CROSS_DOMAIN_ENABLED=true`,
+`NARYX_CROSS_DOMAIN_CONFIG` pointing to that runtime, and the two RPC variables
+`NARYX_BASE_SEPOLIA_RPC_URL` and `NARYX_ARBITRUM_SEPOLIA_RPC_URL`. Create
+`/srv/naryx/data/cross-domain` owned by `naryx`, then enable `naryx-cross-domain.service`.
+Preserve its database and journals across all future releases. Startup is not proof of an
+executed recovery or a substitute for release qualification.
+
 ## Self-check
 
 ```bash
