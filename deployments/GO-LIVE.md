@@ -2,7 +2,8 @@
 
 Deploying contracts is one step of nine. A lane is live only when its contracts are deployed and
 activated through delayed governance, its operator wallets are funded, the generated service config
-loads against the live chain, all four services run, and `/internal/healthz` reports the lane live.
+loads against the live chain, and its deployed user flows satisfy the completion target below.
+A `LIVE` runtime in `/internal/healthz` proves runtime availability, not that every feature works.
 Mainnet stays out of scope: every script, token, and service refuses mainnet chain ids and genesis.
 
 Hosting: the web app on Vercel, and the API, solver, keeper, and indexers on one AWS instance behind
@@ -205,6 +206,52 @@ Status checked 2026-10-18:
 
 Independent maker recruitment and additional roadmap capabilities are not new items in this
 completion scope. Report their limitations separately without reopening completed work.
+
+### Finish line: usable shipped website
+
+Target: the existing Naryx website works end to end on testnet, including the original six items
+above. The scope baseline is commit `3037ee1d`. This is a release acceptance record, not runtime
+configuration. Do not add features, chains, templates or redesigns unrelated to a failing shipped
+flow. Newly discovered defects belong to their existing page and completion item, not a new phase.
+
+| Shipped surface | Required result |
+| --- | --- |
+| Trade | Chain and market selection, charts, depth, quote comparison, RFQ, auctions, order entry, cancellation and supported lifecycle actions work. Every enabled template/action has an explicit supported-domain check. Wallet refusal, expiry and insufficient balance leave no false fill or stranded local pending state. |
+| Markets | Search, watchlists, comparison, market details, registry reads, curves, scanner, paper desk and graph studio work against their stated data. Routed liquidity and native cash liquidity remain distinct. Paper results never appear as real trades. |
+| Portfolio | Wallet balances and faucets work; deposits, collateral, positions, exits, strategy lifecycle, transfers and approved pool controls reconcile with authoritative state. One wallet cannot read private account data or operate another wallet's positions. |
+| Activity | Orders, cancellations, auctions, fills, fees, receipts, exports and recovery status match backend and chain/venue evidence. Refresh and reconnect preserve the result without duplicate execution. |
+| Makers | Published levels, backed capacity, reservations, fills, quote refresh, cancellation and kill controls agree with the actual maker state. Empty or expired levels are never advertised as executable. |
+| Network | Runtime health, qualification, settlement class, solver evidence and incidents describe the actual deployed controls. A running process does not override missing qualification evidence. |
+| Landing and shared shell | Links reach the correct pages; wallet connection and network changes work; market names and layouts remain readable. No broken navigation, clipped execution controls or misleading live claims. |
+
+Completion requires all of the following:
+
+1. Each currently enabled action is recorded as passed, blocked or not applicable for its actual
+   template, domain and account mode. Hidden wallet-dependent controls are included. Route reuse
+   permits shared low-level evidence, but does not prove an untested template's execution.
+2. Funded execution checks use approved test accounts and limits. UI state, persisted API records
+   and finalized chain or authoritative venue outcomes agree, including fees and resulting balances.
+   Actual empty accounts and zero activity are valid; fabricated depth, receipts or PnL are not.
+3. The affected failure paths are checked once: rejected signature, stale quote, insufficient
+   funds, duplicate submission and relevant recovery. Repeat only a failed flow or a flow affected
+   by a subsequent fix, not the whole test suite after every edit.
+4. Each fix reaches the relevant AWS service or static frontend deployment. One final browser
+   pass checks the shipped action matrix, plus a controlled restart/reconnect check for changed
+   pending-execution paths. No known blocking defect or unreconciled test operation remains.
+5. All six original items have evidence-based closure, or an explicit release-scope decision.
+   Disabling a broken control protects users but does not complete its underlying feature.
+   Missing funding or external authority is reported as a specific blocker, not silently waived.
+
+After these conditions pass, stop this completion sprint. Optional polish and additional roadmap
+capabilities require a separate task. Do not claim that this bounded verification proves zero bugs.
+
+Latest read-only website pass, 2026-10-18: Trade, Markets, Portfolio, Activity, Network and Makers
+returned HTTP 200 with no uncaught browser exceptions at 1440px. This was disconnected navigation,
+not authenticated transaction verification. Routed depth was empty. The Arbitrum standing-book
+endpoint returned HTTP 409 on Markets and Portfolio before a subsequent read returned valid
+five-unit bid and ask quotes; its intermittent availability remains open under items 1 and 6.
+All nine checked Naryx AWS services were active, but health remained degraded because one configured
+Solana incident scope had no qualification journal. These findings do not close the action matrix.
 
 ## Verified testnet scope and remaining limitations
 
