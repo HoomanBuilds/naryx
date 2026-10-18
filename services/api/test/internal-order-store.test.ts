@@ -14,15 +14,71 @@ import {
 } from "@naryx/protocol-types";
 import {
   createCanonicalEntryOrder,
+  createCanonicalExitOrder,
   InternalOrderConflictError,
   InternalOrderStoreError,
   SqliteInternalOrderStore,
   type ActiveOrderContext,
   type ActiveOrderContextProvider,
 } from "../src/index.js";
+import { persistSolanaDevnetExitRequest } from "../src/solana-devnet-exit-request.js";
 
 const BASE_HASH = "22".repeat(32);
 const QUOTE_HASH = "33".repeat(32);
+
+test("Solana exit retries retain the original priced order across oracle changes, races and restart", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-exit-retry-"));
+  const dbPath = join(scratch, "orders.db");
+  let orders = new SqliteInternalOrderStore(dbPath);
+  const context = activeContext();
+  const request = { contextId: context.contextId, owner: "owner-1", settlementAccount: "owner-1",
+    sizeAtoms: 1_000_000_000n, slippageBps: 10, idempotencyKey: "solana-exit-retry-0001", currentClock: 1_000_500n };
+  let price = 140_000_000n;
+  let calls = 0;
+  const create = async (idempotencyKey = request.idempotencyKey) => {
+    calls += 1;
+    const order = createCanonicalExitOrder(() => context, {
+      ...request, idempotencyKey, entryReceiptHash: new Uint8Array(32).fill(7), positionSizeAtoms: request.sizeAtoms,
+      positionEntryNotionalAtoms: 150_000_000n, minSpotQuoteOutAtoms: price, minExitQuoteOutcomeAtoms: price,
+    });
+    price += 1n;
+    return { order, request: { ...request, idempotencyKey } };
+  };
+  const args = { ...request, domain: context.domain, create };
+  try {
+    const [first, racing] = await Promise.all([
+      persistSolanaDevnetExitRequest({ ...args, orders }), persistSolanaDevnetExitRequest({ ...args, orders }),
+    ]);
+    assert.equal(first.created, true);
+    assert.equal(racing.created, false);
+    assert.equal(racing.record.orderHashHex, first.record.orderHashHex);
+    assert.equal(racing.quantityAtoms, request.sizeAtoms);
+    assert.equal(calls, 2);
+    const racingKey = "solana-exit-racing-0002";
+    const successful = persistSolanaDevnetExitRequest({ ...args, idempotencyKey: racingKey, orders, create: async () => {
+      return create(racingKey);
+    } });
+    const failing = persistSolanaDevnetExitRequest({ ...args, idempotencyKey: racingKey, orders, create: async () => {
+      await successful;
+      throw new Error("position closed during retry");
+    } });
+    assert.equal((await failing).record.orderHashHex, (await successful).record.orderHashHex);
+    await assert.rejects(persistSolanaDevnetExitRequest({ ...args, idempotencyKey: "solana-exit-no-winner", orders,
+      create: async () => { throw new Error("oracle unavailable"); } }), /oracle unavailable/);
+    orders.close();
+    orders = new SqliteInternalOrderStore(dbPath);
+    const replay = await persistSolanaDevnetExitRequest({ ...args, orders, create: async () => { throw new Error("position already closed"); } });
+    assert.equal(replay.record.orderBase64, first.record.orderBase64);
+    assert.equal(replay.created, false);
+    for (const changed of [{ owner: "owner-2" }, { slippageBps: 11 }, { contextId: "different-context" },
+      { domain: { ...context.domain, domainManifestVersion: 2 } }]) {
+      await assert.rejects(persistSolanaDevnetExitRequest({ ...args, ...changed, orders }), InternalOrderConflictError);
+    }
+  } finally {
+    orders.close();
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
 
 function activeContext(): ActiveOrderContext {
   const base = assetRef("svm:testnet:sol", BASE_HASH, 9);

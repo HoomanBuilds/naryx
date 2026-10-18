@@ -40,6 +40,7 @@ import {
 } from "./solana-devnet-test-perp.js";
 import { SOLANA_DEVNET_GENESIS_HASH } from "./terminal-execution.js";
 import type { InternalOrderClockPort } from "./terminal-orders.js";
+import { persistSolanaDevnetExitRequest } from "./solana-devnet-exit-request.js";
 
 const CONTEXT_ID = /^[A-Za-z0-9:_.-]{1,128}$/;
 const BPS = 10_000n;
@@ -794,6 +795,18 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
     if (!Number.isSafeInteger(request.slippageBps) || request.slippageBps < 1 || request.slippageBps > config.maxSlippageBps) {
       fail("slippage is out of bounds");
     }
+    return persistSolanaDevnetExitRequest({
+      orders: input.orders,
+      contextId: config.contextId,
+      domain: manifest.domain,
+      owner,
+      slippageBps: request.slippageBps,
+      idempotencyKey: request.idempotencyKey,
+      create: async () => buildExitOrder(request, owner),
+    });
+  }
+
+  async function buildExitOrder(request: SolanaDevnetExitOrderRequest, owner: string) {
     const derived = deriveSolanaDevnetTraderAccounts({
       owner, strategyIdHex: manifest.testPerp.strategyIdHex, market: manifest.testPerp.market,
       coreProgram: core, perpAdapterProgram: perpAdapter, perpVenueProgram: perpVenue, baseMint, quoteMint,
@@ -845,7 +858,7 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
       currentClock: slot,
     });
     const order = createCanonicalExitOrder(contexts, exitRequest);
-    const stored = input.orders.createOrGet({
+    return {
       order,
       request: Object.freeze({
         contextId: config.contextId,
@@ -856,8 +869,7 @@ export async function createSolanaDevnetOrderRuntime(input: Readonly<{
         idempotencyKey: request.idempotencyKey,
         currentClock: slot,
       }),
-    });
-    return Object.freeze({ ...stored, quantityAtoms: limits.quantityAtoms });
+    };
   }
 
   const handleExitOrder = (request: IncomingMessage, response: ServerResponse): void => {
