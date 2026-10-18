@@ -647,9 +647,9 @@ test("native receipt hydration uses the finalized prepared transaction and exact
       },
     } as never });
   final = 99n;
-  await assert.rejects(resolve(receiptHash.slice(2)), /not canonical and finalized/);
+  await assert.rejects(resolve(receiptHash.slice(2)), { code: "RECEIPT_NOT_FINAL" });
   final = 100n; canonicalBlock = false;
-  await assert.rejects(resolve(receiptHash.slice(2)), /not canonical and finalized/);
+  await assert.rejects(resolve(receiptHash.slice(2)), { code: "RECEIPT_MISMATCH" });
   canonicalBlock = true; raw.strategyAccount = address(99);
   await assert.rejects(resolve(receiptHash.slice(2)), /does not match/);
   raw.strategyAccount = canonical.order.settlementAccount;

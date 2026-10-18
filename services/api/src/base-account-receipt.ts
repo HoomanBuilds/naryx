@@ -3,6 +3,7 @@ import { cashCarrySeriesBindingV1, cashCarrySeriesBindingV1Hash, cashCarrySeries
 import { createPublicClient, decodeEventLog, getAddress, http, keccak256, type Hex, type PublicClient } from "viem";
 import type { BaseSepoliaAtomicDeploymentConfiguration } from "./base-sepolia-atomic-context-provider.js";
 import type { SqlitePreparedEvmTestnetAtomicStore } from "./evm-testnet-prepared-store.js";
+import { StrategyOpenPreparationError } from "./strategy-open-preparation.js";
 
 export type BaseAccountReceipt = Pick<PackageReceiptInput, "environment" | "domain" | "owner" | "templateId" | "templateVersion"
   | "action" | "settlementClass" | "terminalState" | "finalityStatus" | "quantity"
@@ -43,9 +44,11 @@ export function createBaseAccountReceiptResolver(input: {
     const transaction = await client.getTransactionReceipt({ hash: source.transactionHash as Hex });
     const finalized = await client.getBlock({ blockTag: "finalized" });
     const block = await client.getBlock({ blockNumber: transaction.blockNumber });
-    if (transaction.status !== "success" || finalized.number === null || transaction.blockNumber > finalized.number
-      || transaction.blockHash !== block.hash || transaction.blockNumber.toString() !== source.blockNumber) {
-      throw new Error("The account receipt is not canonical and finalized.");
+    if (transaction.status !== "success" || transaction.blockHash !== block.hash || transaction.blockNumber.toString() !== source.blockNumber) {
+      throw new StrategyOpenPreparationError("RECEIPT_MISMATCH", "The account receipt is not canonical.");
+    }
+    if (finalized.number === null || transaction.blockNumber > finalized.number) {
+      throw new StrategyOpenPreparationError("RECEIPT_NOT_FINAL", "Base has confirmed the trade but has not finalized its block yet. Wait for finality before recording or transferring the strategy.");
     }
     const verifier = getAddress(deployment.packageVerifier.address), account = getAddress(order.settlementAccount);
     const events = transaction.logs.filter(log => {
