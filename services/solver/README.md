@@ -38,6 +38,17 @@ With none of them configured the listener starts with `runtime=NONE` and every q
 
 The sealed auction participant uses the authenticated API feed rather than guessing auction hashes. Its cursor, quote hash, net outcome, and 32-byte salt are stored in a separate full-synchronous SQLite journal before the commitment is sent. Exact commit and reveal retries are idempotent at the relay, so a response lost between network acceptance and local acknowledgement can be retried without adding another event. An auction is not entered unless its signed quote remains valid through the settlement deadline. Slot-timed auctions are refused because this process has no authoritative slot clock for the cross-domain relay.
 
+### Durable cross-domain EVM submission
+
+Cross-domain EVM submission uses an owner-only SQLite journal outside the checkout. Each domain
+requires a dedicated sender and an explicit gas budget including prior expenditure. The journal
+persists the operation, nonce and signed transaction before broadcast, reserves its maximum gas
+cost, and retries only the same bytes. A pending outcome fences other submissions from that sender;
+only canonical finalized receipts release that fence. Reverts retain their gas reservation and
+cannot silently become replacement transactions. Changing the payload, signer, chain or initial
+budget refuses the journal. No new cross-domain execution service is activated by this component;
+committed-position compensation still needs its own qualified path.
+
 ### Maker emergency controls
 
 EVM native strategy runtimes also require `NARYX_EVM_STRATEGY_AUTHORIZATION_DB`, an absolute durable SQLite path outside the checkout. After owner authorization succeeds, the solver journals the exact execution snapshot before returning signed calldata. Receipt observation reads this snapshot instead of recreating an entry against already-mutated positions. Missing authorization evidence fails closed. Preserve this database across deployments and restarts.

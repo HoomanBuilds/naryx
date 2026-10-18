@@ -72,6 +72,7 @@ export interface EvmFirmReservationCrossDomainPort {
   packageState(account: Address, packageId: Hex): Promise<EvmAtomicPackageState>;
   packageReceipt(account: Address, receiptHash: Hex): Promise<EvmAtomicPackageReceipt>;
   submit(input: Readonly<{
+    operationId: string;
     to: Address;
     data: Hex;
     gas: bigint;
@@ -213,6 +214,7 @@ export class EvmFirmReservationCrossDomainLane implements EvmCrossDomainExecutio
     requireCondition(reservation.state === 'LIVE' && reservation.expiry > now
       && this.#reservationMatches(input, execution, reservation), 'firm reservation is no longer executable');
     await this.#port.submit({
+      operationId: `${input.planHash}:COMMIT`,
       to: authorization.to,
       data: authorization.data,
       gas: this.#config.commitGasLimit,
@@ -265,6 +267,7 @@ export class EvmFirmReservationCrossDomainLane implements EvmCrossDomainExecutio
     requireCondition(this.#config.maximumCompensationCostQuoteAtoms <= input.compensation.maximumCostQuoteAtoms,
       'reviewed compensation cost exceeds the signed cap');
     await this.#port.submit({
+      operationId: `${input.planHash}:COMPENSATE`,
       to: this.#config.reservationBook,
       data,
       gas: this.#config.compensationGasLimit,

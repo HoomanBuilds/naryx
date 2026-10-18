@@ -7,6 +7,8 @@ import {
   keccak256,
   parseAbi,
   parseAbiParameters,
+  TransactionNotFoundError,
+  TransactionReceiptNotFoundError,
   type Address,
   type Hex,
   type LocalAccount,
@@ -20,6 +22,7 @@ import type {
   EvmFirmReservationRecord,
   EvmFirmReservationState,
 } from './evm-firm-reservation-cross-domain-lane.js';
+import { EvmCrossDomainSubmissionJournal } from './evm-cross-domain-submission-journal.js';
 
 const RESERVATION_BOOK_ABI = parseAbi([
   'function reservation(bytes32 reservationId) view returns (((bytes32 domainIdHash,uint32 manifestVersion,bytes32 manifestHash) domain,string solverId,address solver,address reclaimOwner,address strategyAccount,uint256 packageNonce,bytes32 orderHash,uint256 reservationNonce,bytes32 quoteHash,bytes32 routeHash,uint256 baseAtoms,uint256 quoteAtoms,uint64 expiry,address consumer,bytes32 consumerCodeHash,uint8 state))',
@@ -108,11 +111,56 @@ export function createViemEvmFirmReservationCrossDomainPort(input: Readonly<{
   rpcUrl: string;
   chainReference: 84_532n | 421_614n;
   account: LocalAccount;
-}>): EvmFirmReservationCrossDomainPort {
+  submissionJournalPath: string;
+  maximumGasBudgetWei: bigint;
+  alreadySpentWei: bigint;
+}>): EvmFirmReservationCrossDomainPort & { close(): void } {
+  requireCondition(input.chainReference === 84_532n || input.chainReference === 421_614n,
+    'only Base Sepolia and Arbitrum Sepolia are allowed');
   requireCondition(/^https?:\/\//.test(input.rpcUrl), 'RPC URL must be HTTP or HTTPS');
   const chain = input.chainReference === 84_532n ? baseSepolia : arbitrumSepolia;
   const publicClient = createPublicClient({ chain, transport: http(input.rpcUrl) });
   const walletClient = createWalletClient({ account: input.account, chain, transport: http(input.rpcUrl) });
+  const submissions = new EvmCrossDomainSubmissionJournal({
+    path: input.submissionJournalPath, chainId: chain.id, signer: input.account.address,
+    maximumGasBudgetWei: input.maximumGasBudgetWei, alreadySpentWei: input.alreadySpentWei,
+    port: {
+      chainId: () => publicClient.getChainId(),
+      pendingNonce: () => publicClient.getTransactionCount({ address: input.account.address, blockTag: 'pending' }),
+      sign: request => walletClient.signTransaction({ account: input.account, chain, type: 'eip1559',
+        chainId: chain.id, nonce: request.nonce, to: getAddress(request.to), data: request.data,
+        value: 0n, gas: request.gas, maxFeePerGas: request.maximumFeePerGasWei,
+        maxPriorityFeePerGas: request.maximumFeePerGasWei }),
+      broadcast: async raw => {
+        const hash = keccak256(raw);
+        try { return await publicClient.sendRawTransaction({ serializedTransaction: raw }); }
+        catch (error) {
+          try {
+            const found = await publicClient.getTransaction({ hash });
+            requireCondition(found.hash === hash, 'RPC found another transaction');
+            return hash;
+          } catch (lookupError) {
+            if (!(lookupError instanceof TransactionNotFoundError)) throw lookupError;
+            throw error;
+          }
+        }
+      },
+      finalized: async hash => {
+        try {
+          const receipt = await publicClient.getTransactionReceipt({ hash });
+          const head = await publicClient.getBlock({ blockTag: 'finalized' });
+          if (head.number < receipt.blockNumber) return undefined;
+          const block = await publicClient.getBlock({ blockNumber: receipt.blockNumber });
+          requireCondition(block.hash === receipt.blockHash && receipt.transactionHash === hash,
+            'transaction receipt is not canonical');
+          return receipt.status === 'success' ? 'SUCCESS' : 'REVERTED';
+        } catch (error) {
+          if (error instanceof TransactionReceiptNotFoundError) return undefined;
+          throw error;
+        }
+      },
+    },
+  });
   const finalizedRead = (request: Readonly<{
     address: Address;
     abi: typeof RESERVATION_BOOK_ABI | typeof STRATEGY_ACCOUNT_ABI;
@@ -127,6 +175,7 @@ export function createViemEvmFirmReservationCrossDomainPort(input: Readonly<{
   } as never);
 
   return Object.freeze({
+    close: () => submissions.close(),
     chainId: async () => BigInt(await publicClient.getChainId()),
     currentTime: async () => (await publicClient.getBlock({ blockTag: 'latest' })).timestamp,
     codeHash: async (address: Address) => {
@@ -167,21 +216,6 @@ export function createViemEvmFirmReservationCrossDomainPort(input: Readonly<{
       functionName: 'receipt',
       args: [receiptHash],
     })),
-    submit: async (request: Parameters<EvmFirmReservationCrossDomainPort['submit']>[0]) => {
-      requireCondition(BigInt(await publicClient.getChainId()) === input.chainReference,
-        'RPC chain identity differs before write');
-      requireCondition(request.gas > 0n && request.maximumFeePerGasWei > 0n,
-        'transaction gas bounds are invalid');
-      return walletClient.sendTransaction({
-        account: input.account,
-        chain,
-        to: getAddress(request.to),
-        data: request.data,
-        value: 0n,
-        gas: request.gas,
-        maxFeePerGas: request.maximumFeePerGasWei,
-        maxPriorityFeePerGas: request.maximumFeePerGasWei,
-      });
-    },
+    submit: (request: Parameters<EvmFirmReservationCrossDomainPort['submit']>[0]) => submissions.submit(request),
   });
 }
