@@ -84,7 +84,7 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
       const lane = new EvmRecoverableCrossDomainLane(item.lane, port, {
         resolve: async (hash, domainId) => authorization(hash, domainId)?.entry,
         resolveRecovery: async (hash, domainId) => authorization(hash, domainId)?.recovery,
-      });
+      }, account => calendar?.recoveryAdapters(item.lane.domain.domainId, account));
       lanes.push({ item, account, lane, driver: new EvmCrossDomainExecutionDriver(lane, item.compensationProfile), port });
     }
     const journal = new HttpCrossDomainCoordinationJournal(config.apiOrigin);
@@ -103,14 +103,15 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
           && domain.envelope.execution.orderHash === `0x${toHex(job.execution.orderHash)}`
           && domain.envelope.execution.quoteHash === `0x${toHex(job.execution.quoteHash)}`
           && domain.envelope.execution.routeHash === `0x${toHex(job.execution.routeHash)}`, 'account execution binds another domain or route');
-        requireCondition(item.allowedOwners.some(a => getAddress(a) === getAddress(auth.entry.owner))
-          && item.allowedAccounts.some(a => getAddress(a) === getAddress(domain.envelope.account))
+        requireCondition(((item.allowedOwners.some(a => getAddress(a) === getAddress(auth.entry.owner))
+          && item.allowedAccounts.some(a => getAddress(a) === getAddress(domain.envelope.account)))
+          || calendar?.ownsAccount(domain.domain.domainId, auth.entry.owner, domain.envelope.account))
           && getAddress(domain.envelope.execution.solver) === getAddress(item.signerAddress), 'job is outside the dedicated test cohort');
-        const reversal = validateEvmFullReversal(domain.envelope, auth.recovery.envelope, item.lane.recoveryAdapters);
+        const reversal = validateEvmFullReversal(domain.envelope, auth.recovery.envelope,
+          calendar?.recoveryAdapters(domain.domain.domainId, domain.envelope.account) ?? item.lane.recoveryAdapters);
         requireCondition(reversal.maximumEntryQuoteAtoms <= item.maximumEntryQuoteAtoms, 'job exceeds funded entry cap');
       }
     };
-    for (const hash of store.active()) checkCohort(store.get(hash)!);
     const admit = async (job: CrossDomainJob) => {
       checkCohort(job);
       const planHash = toHex(crossDomainPlanHash(job.bundle.plan));
@@ -121,7 +122,7 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
         const auth = job.authorizations.find(a => a.domainId === domainId)!;
         const lane = new EvmRecoverableCrossDomainLane(item.lane, port, {
           resolve: async () => auth.entry, resolveRecovery: async () => auth.recovery,
-        });
+        }, account => calendar?.recoveryAdapters(domainId, account));
         const input: EvmCrossDomainLaneInput = { planHash, plan: job.bundle.plan,
           planLeg: job.bundle.plan.legs.find(l => l.domain.domainId === domainId)!,
           compensation: crossDomainCompensationAction(job.bundle.compensations.find(c => c.domain.domainId === domainId)!),
@@ -152,8 +153,9 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
         requireCondition(domain?.kind === 'EVM_MULTI_STRATEGY_ACCOUNT' && recovery !== undefined, 'draft does not cover the runtime');
         requireCondition(domain.domain.domainManifestVersion === item.lane.domain.domainManifestVersion
           && bytesEqual(domain.domain.domainManifestHash, item.lane.domain.domainManifestHash)
-          && item.allowedOwners.some(owner => getAddress(owner) === getAddress(draft.owner))
-          && item.allowedAccounts.some(account => getAddress(account) === getAddress(domain.envelope.account))
+          && ((item.allowedOwners.some(owner => getAddress(owner) === getAddress(draft.owner))
+          && item.allowedAccounts.some(account => getAddress(account) === getAddress(domain.envelope.account)))
+          || calendar?.ownsAccount(domain.domain.domainId, getAddress(draft.owner), domain.envelope.account))
           && getAddress(domain.envelope.execution.solver) === getAddress(item.signerAddress), 'draft is outside the approved test cohort');
         requireCondition(await port.chainId() === item.lane.chainReference
           && await port.codeHash(domain.envelope.account) === item.lane.strategyAccountCodeHash
@@ -164,7 +166,8 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
           && recovery.executorClassVersion === item.compensationProfile.executorClassVersion
           && bytesEqual(commitmentHash(recovery.executorClassManifestHash), commitmentHash(item.compensationProfile.executorClassManifestHash)),
         'draft recovery class differs from the runtime');
-        const reversal = validateEvmFullReversal(domain.envelope, recovery.recovery, item.lane.recoveryAdapters);
+        const reversal = validateEvmFullReversal(domain.envelope, recovery.recovery,
+          calendar?.recoveryAdapters(domain.domain.domainId, domain.envelope.account) ?? item.lane.recoveryAdapters);
         requireCondition(reversal.maximumEntryQuoteAtoms <= item.maximumEntryQuoteAtoms
           && reversal.maximumLossQuoteAtoms <= recovery.maximumRecoveryCostQuoteAtoms
           && recovery.maximumRecoveryCostQuoteAtoms <= item.lane.maximumCompensationCostQuoteAtoms, 'draft exceeds the approved limits');
@@ -207,8 +210,10 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
         },
         admit, status: hash => store.status(hash), now: () => BigInt(Math.floor(Date.now() / 1_000)),
       });
+    for (const hash of store.active()) checkCohort(store.get(hash)!);
     return {
       walletApprovals,
+      calendarOnboarding: (owner: string) => calendar?.onboarding(owner),
       calendarProfile: calendar?.profile,
       calendarMarket: () => calendar?.market(),
       calendarDocuments: (orderHash: string) => calendar?.documents(orderHash),

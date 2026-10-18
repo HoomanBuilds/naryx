@@ -18,12 +18,18 @@ import { validateCrossDomainWalletDraft, type CrossDomainWalletDraft } from './c
 import type { EvmRecoverableCrossDomainPort } from './evm-cross-domain-recovery-port.js';
 import type { EvmRecoverableCrossDomainLaneConfig } from './evm-recoverable-cross-domain-lane.js';
 import type { EvmCrossDomainCompensationProfile } from './evm-cross-domain-execution-driver.js';
+import type { EvmRecoveryAdapterPolicy } from './evm-full-reversal-policy.js';
 
 const ZERO = `0x${'0'.repeat(64)}` as Hex;
 const REGISTRY_ABI = parseAbi([
   'function activeAdapter(bytes32) view returns (((bytes32 domainIdHash,uint32 manifestVersion,bytes32 manifestHash) domain,(bytes32 subjectId,uint32 manifestVersion,bytes32 manifestHash) identity,uint8 mode,address adapter,bytes32 expectedCodeHash,bytes32 adapterClassId,uint32 adapterClassVersion,(bytes32 templateId,uint32 templateVersion,bytes32 templateManifestHash) template,(bytes32 classId,uint32 classVersion) settlementClass,(address token,bytes32 expectedCodeHash) baseAsset,(address token,bytes32 expectedCodeHash) quoteAsset,uint256 maximumGasLimit),(uint8 state,uint256 maximumApprovalAtoms,uint256 maximumGrossNotionalAtoms))',
 ]);
 const ADAPTER_ABI = parseAbi(['function instrument() view returns(address)', 'function expiry() view returns(uint32)']);
+const FACTORY_ABI = parseAbi([
+  'function accountOf(address) view returns(address)', 'function isAccount(address) view returns(bool)',
+  'function adapterOf(address,bytes32) view returns(address)', 'function validateInstance(address,address,bytes32) view returns(bool)',
+  'function create(address)', 'function create(address,bytes32)',
+]);
 const TOKEN_ABI = parseAbi([
   'function decimals() view returns(uint8)', 'function balanceOf(address) view returns(uint256)',
   'function allowance(address,address) view returns(uint256)', 'function approve(address,uint256) returns(bool)',
@@ -104,6 +110,63 @@ export function createCrossDomainCalendarRuntime(input: {
   db.pragma('journal_mode = WAL'); db.pragma('synchronous = FULL');
   db.exec('CREATE TABLE IF NOT EXISTS canonical_calendars (order_hash TEXT PRIMARY KEY, request_key TEXT UNIQUE NOT NULL, draft_json TEXT NOT NULL, documents_json TEXT NOT NULL) STRICT');
   db.exec('CREATE TABLE IF NOT EXISTS canonical_calendar_exits (order_hash TEXT NOT NULL, domain_id TEXT NOT NULL, envelope_json TEXT, receipt_hash TEXT, PRIMARY KEY(order_hash,domain_id)) STRICT');
+  db.exec('CREATE TABLE IF NOT EXISTS calendar_accounts (domain_id TEXT NOT NULL, owner TEXT NOT NULL, account TEXT NOT NULL, adapter TEXT NOT NULL, code_hash TEXT NOT NULL, PRIMARY KEY(domain_id,owner), UNIQUE(domain_id,account)) STRICT');
+
+  function storedContext(context: typeof contexts[number], owner: Address) {
+    if (getAddress(context.release.owner) === getAddress(owner)) return context;
+    const row = db.prepare('SELECT account, adapter, code_hash FROM calendar_accounts WHERE domain_id=? AND owner=?')
+      .get(context.release.domain.domainId, owner.toLowerCase()) as { account: Address; adapter: Address; code_hash: Hex } | undefined;
+    requireCondition(row, 'set up your strategy accounts on both chains first');
+    return { ...context, release: { ...context.release, owner, account: row.account },
+      instance: { address: row.adapter, codeHash: row.code_hash },
+      adapterPolicy: { ...context.adapterPolicy, address: row.adapter, codeHash: row.code_hash } };
+  }
+  const ownerContexts = (owner: Address) => contexts.map(context => storedContext(context, owner));
+  async function onboarding(ownerValue: string) {
+    requireCondition(/^0x(?!0{40}$)[0-9a-fA-F]{40}$/.test(ownerValue), 'valid wallet required');
+    const owner = getAddress(ownerValue);
+    const chains = await Promise.all(contexts.map(async context => {
+      const { client, lane, release: r, factory } = context;
+      const accountFactory = r.contracts.accountFactory!;
+      requireCondition(await client.getChainId() === r.chainId
+        && await lane.port.codeHash(accountFactory.address) === accountFactory.runtimeCodeHash
+        && await lane.port.codeHash(factory.address) === factory.runtimeCodeHash, 'factory or chain identity changed');
+      const account = await client.readContract({ address: accountFactory.address, abi: FACTORY_ABI, functionName: 'accountOf', args: [owner] });
+      const adapter = await client.readContract({ address: factory.address, abi: FACTORY_ABI, functionName: 'adapterOf', args: [account, r.packageId] });
+      const [accountCode, adapterCode, balance] = await Promise.all([
+        client.getCode({ address: account }), client.getCode({ address: adapter }),
+        client.readContract({ address: context.adapterPolicy.quoteToken, abi: TOKEN_ABI, functionName: 'balanceOf', args: [account] }),
+      ]);
+      const transactions: { kind: string; to: Address; data: Hex; value: string }[] = [];
+      if (!accountCode || accountCode === '0x') transactions.push({ kind: 'CREATE_ACCOUNT', to: accountFactory.address,
+        data: encodeFunctionData({ abi: FACTORY_ABI, functionName: 'create', args: [owner] }), value: '0' });
+      else requireCondition(keccak256(accountCode) === r.accountCodeHash
+        && await client.readContract({ address: accountFactory.address, abi: FACTORY_ABI, functionName: 'isAccount', args: [account] })
+        && getAddress(await lane.port.accountOwner(account)) === owner, 'account does not belong to this wallet');
+      if (!adapterCode || adapterCode === '0x') transactions.push({ kind: 'CREATE_ADAPTER', to: factory.address,
+        data: encodeFunctionData({ abi: FACTORY_ABI, functionName: 'create', args: [account, r.packageId] }), value: '0' });
+      else {
+        requireCondition(accountCode && accountCode !== '0x'
+          && await client.readContract({ address: factory.address, abi: FACTORY_ABI, functionName: 'validateInstance', args: [adapter, account, r.packageId] }),
+        'adapter is not registered by the approved factory');
+        const codeHash = keccak256(adapterCode);
+        const existing = db.prepare('SELECT account, adapter, code_hash FROM calendar_accounts WHERE domain_id=? AND owner=?')
+          .get(r.domain.domainId, owner.toLowerCase()) as { account: string; adapter: string; code_hash: string } | undefined;
+        requireCondition(!existing || (getAddress(existing.account) === getAddress(account)
+          && getAddress(existing.adapter) === getAddress(adapter) && existing.code_hash === codeHash), 'registered account identity changed');
+        db.prepare('INSERT OR IGNORE INTO calendar_accounts VALUES (?,?,?,?,?)')
+          .run(r.domain.domainId, owner.toLowerCase(), getAddress(account), getAddress(adapter), codeHash);
+      }
+      const required = 2n * CALENDAR_COLLATERAL;
+      if (balance < required) transactions.push({ kind: 'FUND_ACCOUNT', to: context.adapterPolicy.quoteToken,
+        data: encodeFunctionData({ abi: parseAbi(['function transfer(address,uint256) returns(bool)']), functionName: 'transfer', args: [account, required - balance] }), value: '0' });
+      return { domainId: r.domain.domainId, chainId: r.chainId, account, adapter,
+        quoteToken: context.adapterPolicy.quoteToken, requiredQuoteAtoms: required.toString(), balanceQuoteAtoms: balance.toString(),
+        ready: transactions.length === 0, transactions };
+    }));
+    return { owner, marketId: profile.marketId, preparationAccount: chains.find(c => c.chainId === 84532)!.account,
+      ready: chains.every(c => c.ready), chains };
+  }
 
   async function observe(context: typeof contexts[number], requireFlat: boolean): Promise<CalendarDomainObservation> {
     const { client, release: r, lane, factory, instance, binding, adapterPolicy, role } = context;
@@ -195,7 +258,20 @@ export function createCrossDomainCalendarRuntime(input: {
   const hasBudget = () => budget().every(b => b.remainingWei >= b.requiredWei);
   return {
     profile,
-    market: () => ({ ...profile, executionBudgetAvailable: hasBudget(), gasAllowances: budget().map(b => ({
+    onboarding,
+    recoveryAdapters(domainId: string, account: Address): readonly EvmRecoveryAdapterPolicy[] | undefined {
+      const context = contexts.find(c => c.release.domain.domainId === domainId);
+      if (!context) return undefined;
+      const row = db.prepare('SELECT adapter, code_hash FROM calendar_accounts WHERE domain_id=? AND account=?')
+        .get(domainId, getAddress(account)) as { adapter: Address; code_hash: Hex } | undefined;
+      return row ? [{ ...context.adapterPolicy, address: row.adapter, codeHash: row.code_hash }] : undefined;
+    },
+    ownsAccount(domainId: string, owner: Address, account: Address) {
+      const row = db.prepare('SELECT account FROM calendar_accounts WHERE domain_id=? AND owner=?')
+        .get(domainId, owner.toLowerCase()) as { account: Address } | undefined;
+      return row !== undefined && getAddress(row.account) === getAddress(account);
+    },
+    market: () => ({ ...profile, access: 'SELF_SERVICE_TESTNET', executionBudgetAvailable: hasBudget(), gasAllowances: budget().map(b => ({
       domainId: b.domainId, remainingWei: b.remainingWei.toString(), requiredWei: b.requiredWei.toString() })) }),
     close() { db.close(); },
     async inspect() {
@@ -217,11 +293,11 @@ export function createCrossDomainCalendarRuntime(input: {
         && typeof request.expiresAt === 'string' && /^[0-9]{1,12}$/.test(request.expiresAt)
         && typeof request.signature === 'string' && /^0x[0-9a-fA-F]{130}$/.test(request.signature), 'unsupported market or request fields');
       const owner = getAddress(request.owner);
-      requireCondition(contexts.every(c => getAddress(c.release.owner) === owner), 'owner is outside the funded test cohort');
+      const selected = ownerContexts(owner);
       const now = BigInt(Math.floor(Date.now() / 1_000));
       requireCondition(BigInt(request.expiresAt) > now && BigInt(request.expiresAt) <= now + 300n, 'preparation request expired');
       const recovered = await recoverTypedDataAddress({
-        domain: { name: 'Naryx Cross-chain Preparation', version: '1', chainId: 84_532, verifyingContract: profile.preparationAccount },
+        domain: { name: 'Naryx Cross-chain Preparation', version: '1', chainId: 84_532, verifyingContract: selected.find(c => c.role === 'near-future')!.release.account },
         primaryType: 'PrepareCalendar', types: { PrepareCalendar: [
           { name: 'owner', type: 'address' }, { name: 'marketId', type: 'string' },
           { name: 'requestId', type: 'string' }, { name: 'expiresAt', type: 'uint256' },
@@ -233,7 +309,7 @@ export function createCrossDomainCalendarRuntime(input: {
       const prior = db.prepare('SELECT draft_json FROM canonical_calendars WHERE request_key = ?').get(requestKey) as { draft_json: string } | undefined;
       if (prior) return parseProtocolJson(prior.draft_json) as CrossDomainWalletDraft;
       requireCondition(hasBudget(), 'worker allowance must cover entry, full recovery and inventory release before preparing');
-      const observations = await Promise.all(contexts.map(c => observe(c, true)));
+      const observations = await Promise.all(selected.map(c => observe(c, true)));
       const prepared = await prepareCanonicalCalendar({ owner, requestId: request.requestId,
         now: BigInt(Math.floor(Date.now() / 1_000)), observations, signer });
       validateCrossDomainWalletDraft(prepared.draft);
@@ -244,7 +320,7 @@ export function createCrossDomainCalendarRuntime(input: {
     async validate(draft: CrossDomainWalletDraft) {
       const row = db.prepare('SELECT draft_json FROM canonical_calendars WHERE order_hash = ?').get(toHex(draft.execution.orderHash)) as { draft_json: string } | undefined;
       requireCondition(row && row.draft_json === stringifyProtocolJson(draft), 'preparation is not the stored canonical execution');
-      const observations = await Promise.all(contexts.map(c => observe(c, true)));
+      const observations = await Promise.all(ownerContexts(getAddress(draft.owner)).map(c => observe(c, true)));
       for (const o of observations) {
         const entry = draft.execution.domains.find(d => d.domain.domainId === o.domain.domainId);
         requireCondition(entry?.kind === 'EVM_MULTI_STRATEGY_ACCOUNT' && entry.envelope.execution.nonce === o.nonce,
@@ -260,7 +336,7 @@ export function createCrossDomainCalendarRuntime(input: {
       const orderHash = toHex(draft.execution.orderHash);
       const stored = db.prepare('SELECT draft_json FROM canonical_calendars WHERE order_hash = ?').get(orderHash) as { draft_json: string } | undefined;
       requireCondition(stored?.draft_json === stringifyProtocolJson(draft), 'exit requires a canonical order');
-      const context = contexts.find(c => c.release.domain.domainId === domainId);
+      const context = ownerContexts(getAddress(draft.owner)).find(c => c.release.domain.domainId === domainId);
       const original = draft.lanes.find(l => l.domainId === domainId)?.recovery;
       requireCondition(context && original, 'exit domain is unsupported');
       const { lane, client, instance, adapterPolicy, release: r } = context;
@@ -304,7 +380,7 @@ export function createCrossDomainCalendarRuntime(input: {
       if (!stored) return false;
       requireCondition(stored.draft_json === stringifyProtocolJson(draft), 'reservation draft differs from the canonical execution');
       const documents = parseProtocolJson(stored.documents_json) as { order: { nonce: bigint } };
-      for (const { lane, client, release: r, adapterPolicy } of contexts) {
+      for (const { lane, client, release: r, adapterPolicy } of ownerContexts(getAddress(draft.owner))) {
         requireCondition(await lane.port.chainId() === lane.lane.chainReference
           && await lane.port.codeHash(lane.lane.reservationBook) === lane.lane.reservationBookCodeHash, 'reservation domain or code changed');
         const leg = draft.lanes.find(l => l.domainId === r.domain.domainId)!;

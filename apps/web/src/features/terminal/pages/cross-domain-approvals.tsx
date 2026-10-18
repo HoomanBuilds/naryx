@@ -1,6 +1,7 @@
 "use client";
 
 import { fromProtocolJson } from "@naryx/sdk";
+import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
@@ -21,6 +22,11 @@ type ApprovalView = {
   draft: { owner: string; plan: { prepareDeadline: bigint; compensationDeadline: bigint };
     execution: { domains: { domain: { domainId: string }; envelope: Envelope }[] };
     lanes: { domainId: string; recovery: Envelope; maximumRecoveryCostQuoteAtoms: bigint }[] };
+};
+type CalendarSetup = {
+  owner: string; preparationAccount: string; ready: boolean;
+  chains: { domainId: string; chainId: number; account: string; quoteToken: string; requiredQuoteAtoms: string;
+    balanceQuoteAtoms: string; ready: boolean; transactions: { kind: string; to: string; data: string; value: string }[] }[];
 };
 
 async function request(origin: string, path: string, body?: unknown): Promise<ApprovalView> {
@@ -55,12 +61,15 @@ async function request(origin: string, path: string, body?: unknown): Promise<Ap
 export function CrossDomainApprovals() {
   const { privateApiBaseUrl } = useTerminal();
   const wallet = useEvmWallet();
+  const currentOwner = useRef(wallet.account);
+  useEffect(() => { currentOwner.current = wallet.account; }, [wallet.account]);
   const modal = useWalletModal();
   const [identifier, setIdentifier] = useState("");
   const [draftId, setDraftId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState(false);
   const [closingDomain, setClosingDomain] = useState<string | null>(null);
+  const [setupDomain, setSetupDomain] = useState<string | null>(null);
   const [closeStatus, setCloseStatus] = useState<Record<string, string>>({});
   const lock = useRef(false);
   const [error, setError] = useState<string | null>(null);
@@ -87,6 +96,25 @@ export function CrossDomainApprovals() {
     enabled: privateApiBaseUrl !== null && draftId !== null,
     retry: false, refetchInterval: 10_000,
     queryFn: () => request(privateApiBaseUrl!, `drafts/${draftId}`),
+  });
+  const onboarding = useQuery({
+    queryKey: ["calendar-onboarding", privateApiBaseUrl, wallet.account],
+    enabled: privateApiBaseUrl !== null && wallet.account !== null && wallet.account !== undefined,
+    retry: false, staleTime: 30_000,
+    queryFn: async () => {
+      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/cross-domain/onboarding/${wallet.account}`, {
+        cache: "no-store", signal: AbortSignal.timeout(35_000),
+      });
+      if (!response.ok) throw new Error("Account setup is unavailable. Refresh to retry.");
+      const result = await response.json() as CalendarSetup;
+      if (result.owner.toLowerCase() !== wallet.account?.toLowerCase() || result.chains.length !== 2
+        || new Set(result.chains.map(chain => chain.chainId)).size !== 2
+        || result.chains.some(chain => ![84532, 421614].includes(chain.chainId)
+          || !/^0x[0-9a-fA-F]{40}$/.test(chain.account)
+          || chain.transactions.some(tx => tx.value !== "0" || !/^0x[0-9a-fA-F]{40}$/.test(tx.to)
+            || !/^0x[0-9a-fA-F]+$/.test(tx.data)))) throw new Error("Account setup does not match this wallet.");
+      return result;
+    },
   });
   const value = preparation.data;
   const ownerMatches = value !== undefined && wallet.account?.toLowerCase() === value.draft.owner.toLowerCase();
@@ -121,13 +149,13 @@ export function CrossDomainApprovals() {
   });
   const create = () => run(async () => {
     if (!market.data?.executionBudgetAvailable || !privateApiBaseUrl || !wallet.account
-      || wallet.account.toLowerCase() !== market.data.owner.toLowerCase()) throw new Error("Connect the funded test account to prepare this market.");
+      || !onboarding.data?.ready || onboarding.data.owner.toLowerCase() !== wallet.account.toLowerCase()) throw new Error("Set up and fund your accounts on both chains first.");
     setCreating(true);
     try {
       const input = { owner: wallet.account, marketId: market.data.marketId, requestId: crypto.randomUUID(),
         expiresAt: String(Math.floor(Date.now() / 1_000) + 240) };
       const signature = await wallet.signTypedData("base", {
-        domain: { name: "Naryx Cross-chain Preparation", version: "1", chainId: 84532, verifyingContract: market.data.preparationAccount },
+        domain: { name: "Naryx Cross-chain Preparation", version: "1", chainId: 84532, verifyingContract: onboarding.data.preparationAccount },
         primaryType: "PrepareCalendar", types: { PrepareCalendar: [
           { name: "owner", type: "address" }, { name: "marketId", type: "string" },
           { name: "requestId", type: "string" }, { name: "expiresAt", type: "uint256" },
@@ -136,6 +164,33 @@ export function CrossDomainApprovals() {
       const created = await request(privateApiBaseUrl, "prepare", { ...input, signature });
       setIdentifier(created.draftId); setDraftId(created.draftId); setApprovals({});
     } finally { setCreating(false); }
+  });
+  const setup = (chainId: number) => run(async () => {
+    const owner = wallet.account;
+    if (!owner || !onboarding.data || onboarding.data.owner.toLowerCase() !== owner.toLowerCase()) throw new Error("Connect your wallet first.");
+    const chain = onboarding.data.chains.find(chain => chain.chainId === chainId);
+    if (!chain) throw new Error("Unsupported setup network.");
+    const network = chainId === 84532 ? "base" : "arbitrum";
+    const pendingKey = `naryx:calendar-setup:${owner.toLowerCase()}:${chainId}`;
+    setSetupDomain(chain.domainId);
+    try {
+      const pending = sessionStorage.getItem(pendingKey);
+      let hash = pending;
+      if (!hash) {
+        const refreshed = await onboarding.refetch();
+        const current = refreshed.data;
+        if (refreshed.error || currentOwner.current?.toLowerCase() !== owner.toLowerCase()
+          || current?.owner.toLowerCase() !== owner.toLowerCase()) throw new Error("Refresh your account setup before continuing.");
+        const transaction = current.chains.find(chain => chain.chainId === chainId)?.transactions[0];
+        if (!transaction) return;
+        hash = await wallet.sendTransaction(network, { to: transaction.to, data: transaction.data, value: "0" });
+        sessionStorage.setItem(pendingKey, hash);
+      }
+      const success = await wallet.waitForReceipt(network, hash);
+      sessionStorage.removeItem(pendingKey);
+      if (!success) throw new Error("Setup transaction reverted. Refresh and try again.");
+      await onboarding.refetch();
+    } finally { setSetupDomain(null); }
   });
   const close = (domainId: string) => run(async () => {
     if (!value || !privateApiBaseUrl || !ownerMatches || value.job?.status !== "TERMINAL") throw new Error("Wait for coordinator reconciliation before closing.");
@@ -194,11 +249,28 @@ export function CrossDomainApprovals() {
     <div className={`${styles.cardBody} ${styles.lifecycleForm}`}>
       <p>Prepare a package, then approve entry and bounded recovery on each chain. Execution is coordinated, not cross-chain atomic.</p>
       {market.data && <div className={styles.lifecycleForm}>
-        <p>Calendar spread: buy the near future on Base and sell the far future on Arbitrum. The funded test cohort uses 0.0001 base units and 1 mock USDC collateral per chain, with a maximum recovery loss of 0.10 mock USDC per chain. Mock tokens have no cash value.</p>
+        <p>Calendar spread: buy the near future on Base and sell the far future on Arbitrum. Each wallet uses its own accounts, with 0.0001 base units and 1 mock USDC collateral per chain. Keep 2 mock USDC in each account for collateral and recovery margin. Maximum recovery loss is 0.10 mock USDC per chain. Mock tokens have no cash value.</p>
         <p>Preparation only signs a request. No trade is sent until all four execution approvals are submitted. Existing solver inventory is reserved within its testnet gas budget.</p>
         {!market.data.executionBudgetAvailable && <p role="status">New entries are paused until the worker gas allowances cover entry and full recovery.</p>}
         {!wallet.account ? <button className={styles.ghost} disabled={busy} onClick={() => modal.open()}>Connect wallet</button>
-          : wallet.account.toLowerCase() !== market.data.owner.toLowerCase() ? <p>This market is limited to its funded test account.</p>
+          : !onboarding.data?.ready ? <div>
+            <p>Set up your wallet-owned accounts. You pay testnet gas and supply your own test tokens.</p>
+            <p>Need collateral? Claim free test USDC in <Link href="/portfolio">Portfolio</Link>, then return here.</p>
+            {onboarding.isFetching && <p role="status">Loading your accounts...</p>}
+            {onboarding.error && <p role="alert">{onboarding.error.message}</p>}
+            {onboarding.data?.chains.map(chain => {
+              const network = chain.chainId === 84532 ? "base" : "arbitrum";
+              const step = chain.transactions[0]?.kind;
+              return <div key={chain.chainId}>
+                <p>{network === "base" ? "Base Sepolia" : "Arbitrum Sepolia"}: {chain.ready ? "Ready" : step === "CREATE_ACCOUNT" ? "Create your account" : step === "CREATE_ADAPTER" ? "Create your strategy adapter" : "Fund with 2 mock USDC"}</p>
+                {!chain.ready && (!wallet.onChain(network)
+                  ? <button className={styles.ghost} disabled={busy || wallet.switching} onClick={() => void run(() => wallet.switchNetwork(network))}>Switch to {network === "base" ? "Base" : "Arbitrum"}</button>
+                  : <button className={styles.ghost} disabled={busy || wallet.awaitingWallet} onClick={() => void setup(chain.chainId)}>
+                    {setupDomain === chain.domainId ? "Waiting for confirmation..." : step === "CREATE_ACCOUNT" ? "Create account" : step === "CREATE_ADAPTER" ? "Create adapter" : "Fund account"}</button>)}
+              </div>;
+            })}
+            <button className={styles.ghost} disabled={busy || onboarding.isFetching} onClick={() => void onboarding.refetch()}>Refresh accounts</button>
+          </div>
             : !wallet.onChain("base") ? <button className={styles.ghost} disabled={busy || wallet.switching}
               onClick={() => void wallet.switchNetwork("base")}>Switch to Base Sepolia</button>
             : <button className={styles.ghost} disabled={busy || !market.data.executionBudgetAvailable || (value !== undefined && !expired && value.state !== "EXPIRED")}

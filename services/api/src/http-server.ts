@@ -559,8 +559,9 @@ export function createPrivateTerminalRequestHandler(
 
     const approvalMatch = /^\/internal\/terminal\/cross-domain\/drafts\/([0-9a-f]{64})$/.exec(url.pathname);
     const canonicalMatch = /^\/internal\/terminal\/cross-domain\/orders\/([0-9a-f]{64})$/.exec(url.pathname);
+    const calendarOnboardingMatch = /^\/internal\/terminal\/cross-domain\/onboarding\/(0x[0-9a-fA-F]{40})$/.exec(url.pathname);
     if (url.pathname === '/internal/terminal/cross-domain/market'
-      || url.pathname === '/internal/terminal/cross-domain/prepare' || url.pathname === '/internal/terminal/cross-domain/exit' || canonicalMatch !== null) {
+      || url.pathname === '/internal/terminal/cross-domain/prepare' || url.pathname === '/internal/terminal/cross-domain/exit' || canonicalMatch !== null || calendarOnboardingMatch !== null) {
       if (crossDomainApprovals === undefined) {
         reject(response, 503, 'CROSS_DOMAIN_APPROVAL_UNAVAILABLE', 'Cross-chain preparation is not enabled.'); return;
       }
@@ -571,10 +572,11 @@ export function createPrivateTerminalRequestHandler(
       }
       try {
         const result = exiting ? await crossDomainApprovals.exit(await readJson(request)) : preparing ? await crossDomainApprovals.prepare(await readJson(request))
-          : canonicalMatch !== null ? await crossDomainApprovals.documents(canonicalMatch[1]!) : await crossDomainApprovals.market();
+          : calendarOnboardingMatch !== null ? await crossDomainApprovals.onboarding(calendarOnboardingMatch[1]!)
+            : canonicalMatch !== null ? await crossDomainApprovals.documents(canonicalMatch[1]!) : await crossDomainApprovals.market();
         sendJson(response, result.status, result.body);
       } catch {
-        reject(response, 409, 'CROSS_DOMAIN_PREPARATION_REFUSED', 'Preparation failed. Check the funded test account, signature and current market state.');
+        reject(response, 409, 'CROSS_DOMAIN_PREPARATION_REFUSED', 'Preparation failed. Check your account funding, signature and current market state.');
       }
       return;
     }

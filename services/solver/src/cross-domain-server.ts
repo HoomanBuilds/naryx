@@ -9,6 +9,7 @@ export function createCrossDomainServer(runtime: {
   walletApprovals?: CrossDomainWalletAdmission | undefined;
   calendarProfile?: unknown;
   calendarMarket?: () => unknown;
+  calendarOnboarding?: (owner: string) => Promise<unknown> | undefined;
   calendarDocuments?: (orderHash: string) => unknown;
   prepareCalendar?: (value: unknown) => Promise<unknown>;
   calendarExit?: (value: unknown) => Promise<unknown>;
@@ -29,6 +30,14 @@ export function createCrossDomainServer(runtime: {
     }
     if (request.method === 'GET' && request.url === '/wallet/market') {
       reply(runtime.calendarProfile === undefined ? 503 : 200, runtime.calendarMarket?.() ?? { error: 'Canonical market is disabled.' }); return;
+    }
+    const onboardingMatch = /^\/wallet\/onboarding\/(0x[0-9a-fA-F]{40})$/.exec(request.url ?? '');
+    if (request.method === 'GET' && onboardingMatch) {
+      try {
+        const result = await runtime.calendarOnboarding?.(onboardingMatch[1]!);
+        reply(result === undefined ? 503 : 200, result ?? { error: 'Calendar onboarding is unavailable.' });
+      } catch { reply(409, { error: 'Account setup unavailable. Check your wallet and the testnet connection.' }); }
+      return;
     }
     const documentsMatch = /^\/wallet\/orders\/([0-9a-f]{64})$/.exec(request.url ?? '');
     if (request.method === 'GET' && documentsMatch !== null) {

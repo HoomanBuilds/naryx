@@ -18,6 +18,10 @@ export class CrossDomainApprovalClient {
   }
 
   market() { return this.#request('/wallet/market'); }
+  onboarding(owner: string) {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(owner)) throw new Error('Invalid wallet address.');
+    return this.#request(`/wallet/onboarding/${owner}`);
+  }
 
   async exit(value: unknown) {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Invalid exit request.');

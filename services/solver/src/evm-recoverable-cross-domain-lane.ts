@@ -51,11 +51,13 @@ export class EvmRecoverableCrossDomainLane implements EvmCrossDomainExecutionLan
   readonly config: EvmRecoverableCrossDomainLaneConfig;
   readonly port: EvmRecoverableCrossDomainPort;
   readonly authorizations: EvmCrossDomainRecoveryAuthorizations;
+  readonly resolveRecoveryAdapters: ((account: `0x${string}`) => readonly EvmRecoveryAdapterPolicy[] | undefined) | undefined;
 
   constructor(
     config: EvmRecoverableCrossDomainLaneConfig,
     port: EvmRecoverableCrossDomainPort,
     authorizations: EvmCrossDomainRecoveryAuthorizations,
+    resolveRecoveryAdapters?: (account: `0x${string}`) => readonly EvmRecoveryAdapterPolicy[] | undefined,
   ) {
     requireCondition(config.maximumCompensationCostQuoteAtoms >= 0n, 'recovery loss limit is invalid');
     requireCondition(config.reservationReleaseGasLimit === undefined || (config.reservationReleaseGasLimit > 0n
@@ -63,6 +65,7 @@ export class EvmRecoverableCrossDomainLane implements EvmCrossDomainExecutionLan
     this.config = Object.freeze({ ...config, recoveryAdapters: Object.freeze(config.recoveryAdapters.map(p => Object.freeze({ ...p }))) });
     this.port = port;
     this.authorizations = authorizations;
+    this.resolveRecoveryAdapters = resolveRecoveryAdapters;
     this.domain = config.domain;
     this.chainReference = config.chainReference;
     // Reservation release returns inventory without spending quote tokens; gas is bounded separately.
@@ -211,7 +214,8 @@ export class EvmRecoverableCrossDomainLane implements EvmCrossDomainExecutionLan
     requireCondition(getAddress(owner) === getAddress(authorization.owner), 'recovery signer is not the entry owner');
     const data = encodeEvmMultiStrategyAccountRecovery(recovery);
     requireCondition(keccak256(data) === hex(input.compensation.actionPayloadHash), 'recovery differs from the signed compensation commitment');
-    const reversal = validateEvmFullReversal(entry, recovery.envelope, this.config.recoveryAdapters);
+    const reversal = validateEvmFullReversal(entry, recovery.envelope,
+      this.resolveRecoveryAdapters?.(entry.account) ?? this.config.recoveryAdapters);
     requireCondition(reversal.maximumLossQuoteAtoms <= this.config.maximumCompensationCostQuoteAtoms
       && reversal.maximumLossQuoteAtoms <= input.compensation.maximumCostQuoteAtoms,
       'recovery cost exceeds the signed cap');
