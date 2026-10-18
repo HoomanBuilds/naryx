@@ -50,10 +50,11 @@ export function createPoolBrowserCommands(services: Services, clock = Date.now) 
   return async (command: string, body: unknown): Promise<unknown> => {
     if (command === 'config') {
       fields(body, []);
-      return { environment: 'TESTNET', custody: store.binding.version === 2 ? 'CUSTODIAL_TESTNET_POOL_V2' : 'CUSTODIAL_TESTNET_POOL_V1', poolAccount: store.binding.poolAccount,
+      return { environment: 'TESTNET', custody: `CUSTODIAL_TESTNET_POOL_V${store.binding.version}`, poolAccount: store.binding.poolAccount,
         bindingHash: poolBindingHash(store.binding), policyHash: store.binding.policyHash,
         maximumTotalQuoteAtoms: store.binding.maximumTotalQuoteAtoms, quoteDecimals: 6,
-        access: store.binding.version === 2 ? 'PUBLIC_TESTNET' : 'DEDICATED_TEST_ACCOUNTS',
+        ...(store.binding.version === 3 ? { maximumOwnerQuoteAtoms: store.binding.maximumOwnerQuoteAtoms } : {}),
+        access: store.binding.version !== 1 ? 'PUBLIC_TESTNET' : 'DEDICATED_TEST_ACCOUNTS',
         availableQuoteAtoms: store.binding.maximumTotalQuoteAtoms > store.totalQuoteAtoms()
           ? store.binding.maximumTotalQuoteAtoms - store.totalQuoteAtoms() : 0n };
     }
@@ -68,7 +69,7 @@ export function createPoolBrowserCommands(services: Services, clock = Date.now) 
     }
     if (command === 'epoch-submit') {
       fields(body, ['plan', 'authorizations']);
-      if (store.binding.version !== 2 || !services.epochs) throw new Error('Public pooled execution is unavailable');
+      if (store.binding.version === 1 || !services.epochs) throw new Error('Public pooled execution is unavailable');
       await services.epochs.prepare(body.plan as HyperliquidPoolEpochPlan,
         body.authorizations as Parameters<HyperliquidPoolEpochService['prepare']>[1]);
       return { status: 'AUTHORIZED', operationId: (body.plan as HyperliquidPoolEpochPlan).id };
@@ -108,7 +109,12 @@ export function createPoolBrowserCommands(services: Services, clock = Date.now) 
     switch (action) {
       case 'member': {
         const member = store.members().find(item => item.owner === owner);
+        const poolRemaining = store.binding.maximumTotalQuoteAtoms - store.totalQuoteAtoms();
+        const ownerRemaining = store.binding.version === 3
+          ? store.binding.maximumOwnerQuoteAtoms! - (member?.balanceQuoteAtoms ?? 0n) : poolRemaining;
+        const remaining = ownerRemaining < poolRemaining ? ownerRemaining : poolRemaining;
         return { owner, enrolled: member !== undefined, balanceQuoteAtoms: member?.balanceQuoteAtoms ?? 0n,
+          ...(store.binding.version === 3 ? { availableDepositQuoteAtoms: remaining > 0n ? remaining : 0n } : {}),
           poolBusy: store.pending() !== undefined, observedAtMs: clock(), operations: store.ownerFundingOperations(owner) };
       }
       case 'deposit':

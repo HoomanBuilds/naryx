@@ -8,7 +8,7 @@ const ID = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 const MAX_ATOMS = (1n << 128n) - 1n;
 
 export interface HyperliquidPoolBinding {
-  readonly version: 1 | 2;
+  readonly version: 1 | 2 | 3;
   readonly environment: 'TESTNET';
   readonly domain: DomainRef;
   readonly poolAccount: `0x${string}`;
@@ -17,6 +17,7 @@ export interface HyperliquidPoolBinding {
   readonly collateralTokenId: `0x${string}`;
   readonly dedicatedTestOwners: readonly `0x${string}`[];
   readonly maximumTotalQuoteAtoms: bigint;
+  readonly maximumOwnerQuoteAtoms?: bigint;
 }
 
 export interface HyperliquidPoolMember {
@@ -49,12 +50,16 @@ export class HyperliquidPooledCollateralStore {
 
   constructor(path: string, binding: HyperliquidPoolBinding) {
     check(path === ':memory:' || isAbsolute(path), 'database path must be absolute');
-    check((binding.version === 1 || binding.version === 2) && binding.environment === 'TESTNET'
+    check((binding.version === 1 || binding.version === 2 || binding.version === 3) && binding.environment === 'TESTNET'
       && binding.domain.domainId === 'hypercore:testnet' && ADDRESS.test(binding.poolAccount)
       && HASH.test(binding.policyHash) && !/^0x0+$/.test(binding.policyHash)
       && binding.quoteAsset.decimals === 6 && /^0x[0-9a-f]{32}$/.test(binding.collateralTokenId), 'invalid testnet binding');
     amount(binding.maximumTotalQuoteAtoms, true);
-    check(Array.isArray(binding.dedicatedTestOwners) && (binding.version === 2 ? binding.dedicatedTestOwners.length === 0 : binding.dedicatedTestOwners.length > 0)
+    if (binding.version === 3) {
+      amount(binding.maximumOwnerQuoteAtoms!, true);
+      check(binding.maximumOwnerQuoteAtoms! <= binding.maximumTotalQuoteAtoms, 'owner funding cap exceeds pool cap');
+    } else check(binding.maximumOwnerQuoteAtoms === undefined, 'owner cap requires version 3 custody consent');
+    check(Array.isArray(binding.dedicatedTestOwners) && (binding.version !== 1 ? binding.dedicatedTestOwners.length === 0 : binding.dedicatedTestOwners.length > 0)
       && binding.dedicatedTestOwners.length <= 64
       && new Set(binding.dedicatedTestOwners).size === binding.dedicatedTestOwners.length
       && binding.dedicatedTestOwners.every(owner => ADDRESS.test(owner) && owner !== binding.poolAccount),
@@ -102,7 +107,7 @@ export class HyperliquidPooledCollateralStore {
 
   acceptsOwner(owner: string): boolean {
     return ADDRESS.test(owner) && owner !== this.binding.poolAccount
-      && (this.binding.version === 2 || this.binding.dedicatedTestOwners.includes(owner as `0x${string}`));
+      && (this.binding.version !== 1 || this.binding.dedicatedTestOwners.includes(owner as `0x${string}`));
   }
 
   members(): readonly HyperliquidPoolMember[] {
@@ -238,7 +243,7 @@ export class HyperliquidPooledCollateralStore {
       check(row === undefined || row.consent === consentHash, 'custody consent changed');
       if (row !== undefined) return;
       this.#idle();
-      check(this.members().length < (this.binding.version === 2 ? 10_000 : 64), 'owner capacity reached');
+      check(this.members().length < (this.binding.version !== 1 ? 10_000 : 64), 'owner capacity reached');
       this.#db.prepare('INSERT INTO pool_members VALUES (?, ?, ?)').run(owner, consentHash, '0');
     }).immediate();
   }
@@ -252,9 +257,11 @@ export class HyperliquidPooledCollateralStore {
       this.#idle();
       const member = this.#member(input.owner);
       const backed = this.totalQuoteAtoms() + input.receivedQuoteAtoms;
-      check(this.binding.version === 2 ? backed <= verifiedFlatEquityQuoteAtoms : backed === verifiedFlatEquityQuoteAtoms,
+      check(this.binding.version !== 1 ? backed <= verifiedFlatEquityQuoteAtoms : backed === verifiedFlatEquityQuoteAtoms,
         'deposit backing changed before commit');
       check(this.totalQuoteAtoms() + input.receivedQuoteAtoms <= this.binding.maximumTotalQuoteAtoms, 'pool funding cap exceeded');
+      if (this.binding.version === 3) check(member.balanceQuoteAtoms + input.receivedQuoteAtoms <= this.binding.maximumOwnerQuoteAtoms!,
+        'owner funding cap exceeded');
       this.#evidence(input.transferHash, input.id);
       this.#balance(input.owner, member.balanceQuoteAtoms + input.receivedQuoteAtoms);
       this.#db.prepare("INSERT INTO pool_operations VALUES (?, 'DEPOSIT', 'COMPLETE', ?, NULL)").run(input.id, payload);
@@ -282,6 +289,7 @@ export class HyperliquidPooledCollateralStore {
         amount(row.maximumLossQuoteAtoms, true);
         check(HASH.test(row.authorizationHash) && !/^0x0+$/.test(row.authorizationHash), 'missing owner epoch authorization');
         check(row.maximumLossQuoteAtoms <= this.#member(row.owner).balanceQuoteAtoms, 'owner loss reservation exceeds funded balance');
+        if (this.binding.version === 3) check(row.maximumLossQuoteAtoms <= this.binding.maximumOwnerQuoteAtoms!, 'owner loss reservation exceeds risk cap');
       }
       for (const hash of input.context?.sourceOrderHashes ?? []) {
         this.#db.prepare('INSERT INTO pool_epoch_sources VALUES (?, ?)').run(hash, input.id);

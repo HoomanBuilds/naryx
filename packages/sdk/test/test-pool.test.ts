@@ -2,6 +2,22 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { testPoolConfig, testPoolRequest, testPoolConsent, testPoolWithdrawal, verifyTestPoolChallenge } from '../src/test-pool.js';
 
+test('public pool capacity is bounded, versioned and does not limit profit withdrawals', () => {
+  const config = { environment: 'TESTNET', custody: 'CUSTODIAL_TESTNET_POOL_V3',
+    poolAccount: `0x${'11'.repeat(20)}`, bindingHash: `0x${'22'.repeat(32)}`, policyHash: `0x${'33'.repeat(32)}`,
+    maximumTotalQuoteAtoms: 100_000_000_000n, maximumOwnerQuoteAtoms: 1_000_000_000n, quoteDecimals: 6 } as const;
+  const parsed = testPoolConfig(config);
+  assert.equal(testPoolConsent(parsed, `0x${'44'.repeat(20)}`).message.custodyMode, config.custody);
+  for (const maximumOwnerQuoteAtoms of [undefined, 0n, -1n, config.maximumTotalQuoteAtoms + 1n]) {
+    assert.throws(() => testPoolConfig({ ...config, maximumOwnerQuoteAtoms }), /Invalid/);
+  }
+  assert.throws(() => testPoolConfig({ ...config, maximumTotalQuoteAtoms: 1n << 128n }), /Invalid/);
+  assert.throws(() => testPoolConfig({ ...config, custody: 'CUSTODIAL_TESTNET_POOL_V2' }), /Invalid/);
+  assert.throws(() => testPoolConfig({ ...config, availableQuoteAtoms: -1n }), /Invalid/);
+  assert.equal(testPoolWithdrawal(parsed, { id: 'profit', owner: `0x${'44'.repeat(20)}`,
+    debitQuoteAtoms: config.maximumOwnerQuoteAtoms + 1n, expiresAtMs: 1_000_000 }).message.debitQuoteAtoms, 1_000_000_001n);
+});
+
 test('pool signing review refuses substituted authority, body, amount and test environment', () => {
   const config = testPoolConfig({ environment: 'TESTNET', custody: 'CUSTODIAL_TESTNET_POOL_V1',
     poolAccount: `0x${'11'.repeat(20)}`, bindingHash: `0x${'22'.repeat(32)}`, policyHash: `0x${'33'.repeat(32)}`,

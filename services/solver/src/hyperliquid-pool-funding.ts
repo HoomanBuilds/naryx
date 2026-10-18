@@ -33,13 +33,14 @@ export function poolBindingHash(binding: HyperliquidPoolBinding): `0x${string}` 
     policyHash: binding.policyHash, quoteAssetId: binding.quoteAsset.assetId,
     quoteAssetManifestHash: binding.quoteAsset.assetManifestHash, quoteDecimals: binding.quoteAsset.decimals,
     collateralTokenId: binding.collateralTokenId, dedicatedTestOwners: [...binding.dedicatedTestOwners].sort(),
-    maximumTotalQuoteAtoms: binding.maximumTotalQuoteAtoms })));
+    maximumTotalQuoteAtoms: binding.maximumTotalQuoteAtoms,
+    ...(binding.version === 3 ? { maximumOwnerQuoteAtoms: binding.maximumOwnerQuoteAtoms } : {}) })));
 }
 
 export function poolConsentTypedData(binding: HyperliquidPoolBinding, owner: `0x${string}`) {
   return { domain: domain(binding), types: { PoolConsent: TYPES.PoolConsent }, primaryType: 'PoolConsent' as const,
     message: { owner, pool: binding.poolAccount, bindingHash: poolBindingHash(binding),
-      policyHash: binding.policyHash, custodyMode: binding.version === 2 ? 'CUSTODIAL_TESTNET_POOL_V2' : 'CUSTODIAL_TESTNET_POOL_V1' } };
+      policyHash: binding.policyHash, custodyMode: `CUSTODIAL_TESTNET_POOL_V${binding.version}` } };
 }
 
 export interface PoolWithdrawalRequest {
@@ -136,7 +137,7 @@ export class HyperliquidPoolFundingService {
     const flat = await this.#flat();
     const backed = this.#store.totalQuoteAtoms() + transfer.receivedQuoteAtoms;
     check(flat.requestedAtMs >= transfer.timeMs
-      && (this.#store.binding.version === 2 ? flat.equityQuoteAtoms >= backed : flat.equityQuoteAtoms === backed),
+      && (this.#store.binding.version !== 1 ? flat.equityQuoteAtoms >= backed : flat.equityQuoteAtoms === backed),
     'deposit is not fully backed by the observed pool equity');
     this.#store.creditDeposit({ id: input.id, owner: input.owner,
       receivedQuoteAtoms: transfer.receivedQuoteAtoms, transferHash: transfer.hash }, flat.equityQuoteAtoms);

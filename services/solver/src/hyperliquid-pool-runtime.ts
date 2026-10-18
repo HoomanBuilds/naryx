@@ -61,7 +61,7 @@ export async function loadHyperliquidPoolRuntime(environment: NodeJS.ProcessEnv)
   if (config.version !== 1 || config.environment !== 'TESTNET'
     || Object.keys(config).sort().join(',') !== 'agentAddress,agentKeyPath,binding,custodyKeyPath,databasePath,encryptionKeyPath,entryConfigPath,environment,exitConfigPath,journalPath,keeperOrigin,markets,operatorTokenPath,version'
     || config.agentAddress === config.binding.poolAccount || config.binding.dedicatedTestOwners.includes(config.agentAddress)
-    || config.binding.maximumTotalQuoteAtoms > 100_000_000n) throw new Error('Invalid dedicated test pool configuration');
+    || config.binding.version !== 3 && config.binding.maximumTotalQuoteAtoms > 100_000_000n) throw new Error('Invalid dedicated test pool configuration');
   const databasePath = outsideRepository(config.databasePath);
   const journalPath = outsideRepository(config.journalPath);
   if (databasePath === journalPath) throw new Error('Custody and execution journals need separate files');

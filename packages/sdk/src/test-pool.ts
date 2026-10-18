@@ -3,21 +3,29 @@ import { stringifyProtocolJson } from '@naryx/protocol-types';
 
 export interface TestPoolConfig {
   readonly environment: 'TESTNET';
-  readonly custody: 'CUSTODIAL_TESTNET_POOL_V1' | 'CUSTODIAL_TESTNET_POOL_V2';
+  readonly custody: 'CUSTODIAL_TESTNET_POOL_V1' | 'CUSTODIAL_TESTNET_POOL_V2' | 'CUSTODIAL_TESTNET_POOL_V3';
   readonly poolAccount: `0x${string}`;
   readonly bindingHash: `0x${string}`;
   readonly policyHash: `0x${string}`;
   readonly maximumTotalQuoteAtoms: bigint;
+  readonly maximumOwnerQuoteAtoms?: bigint;
+  readonly availableQuoteAtoms?: bigint;
   readonly quoteDecimals: 6;
 }
 
 export function testPoolConfig(value: unknown): TestPoolConfig {
   const config = value as TestPoolConfig;
-  if (!config || config.environment !== 'TESTNET' || !['CUSTODIAL_TESTNET_POOL_V1', 'CUSTODIAL_TESTNET_POOL_V2'].includes(config.custody)
+  if (!config || config.environment !== 'TESTNET' || !['CUSTODIAL_TESTNET_POOL_V1', 'CUSTODIAL_TESTNET_POOL_V2', 'CUSTODIAL_TESTNET_POOL_V3'].includes(config.custody)
     || !/^0x(?!0{40}$)[0-9a-f]{40}$/.test(config.poolAccount)
     || ![config.bindingHash, config.policyHash].every(hash => /^0x(?!0{64}$)[0-9a-f]{64}$/.test(hash))
     || config.quoteDecimals !== 6 || typeof config.maximumTotalQuoteAtoms !== 'bigint'
-    || config.maximumTotalQuoteAtoms <= 0n || config.maximumTotalQuoteAtoms > 100_000_000n) throw new Error('Invalid test pool configuration');
+    || config.maximumTotalQuoteAtoms <= 0n || config.maximumTotalQuoteAtoms >= (1n << 128n)
+    || (config.custody === 'CUSTODIAL_TESTNET_POOL_V3'
+      ? typeof config.maximumOwnerQuoteAtoms !== 'bigint' || config.maximumOwnerQuoteAtoms <= 0n
+        || config.maximumOwnerQuoteAtoms > config.maximumTotalQuoteAtoms
+      : config.maximumTotalQuoteAtoms > 100_000_000n || config.maximumOwnerQuoteAtoms !== undefined)
+    || (config.availableQuoteAtoms !== undefined && (typeof config.availableQuoteAtoms !== 'bigint'
+      || config.availableQuoteAtoms < 0n || config.availableQuoteAtoms > config.maximumTotalQuoteAtoms))) throw new Error('Invalid test pool configuration');
   return config;
 }
 

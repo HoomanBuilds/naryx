@@ -125,7 +125,7 @@ function validatePlan(binding: HyperliquidPoolBinding, plan: HyperliquidPoolEpoc
     && new Set(plan.mandates.map(row => row.owner)).size === plan.mandates.length, 'distinct owner mandates are required');
   for (const mandate of plan.mandates) {
     check(ADDRESS.test(mandate.owner) && mandate.owner !== binding.poolAccount
-      && (binding.version === 2 || binding.dedicatedTestOwners.includes(mandate.owner))
+      && (binding.version !== 1 || binding.dedicatedTestOwners.includes(mandate.owner))
       && (mandate.role === 'TRADER' || mandate.role === 'RECOVERY_SPONSOR')
       && typeof mandate.maximumLossQuoteAtoms === 'bigint' && mandate.maximumLossQuoteAtoms > 0n && mandate.maximumLossQuoteAtoms <= MAX
       && typeof mandate.maximumFeeQuoteAtoms === 'bigint' && mandate.maximumFeeQuoteAtoms >= 0n
