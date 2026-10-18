@@ -376,6 +376,25 @@ reconciliation of an existing attempt. HIP-3 contexts are read from their named 
 
 `@nktkas/hyperliquid` is pinned at `0.33.3` for its maintained TypeScript order codec, L1 signing, and request transport. The release is MIT licensed, requires Node `>=22.12.0`, and has npm integrity `sha512-fvnEw/2ejN14ZZVXA+nFQ9YgfFNjCI1yLliYyUboC6hr3Gwd/RwC4Ox90K4e8tkKWqkVpOcLRQ30p0nTeK4NBQ==`. `npm audit --omit=dev` reports zero vulnerabilities. The service imports the SDK order function, signing abstraction, and exchange request transport; it does not implement signing or wire codecs.
 
+## Cross-domain wallet approvals
+
+The separate `dist/cross-domain-main.js` worker accepts operator-staged unsigned preparations
+only when `NARYX_CROSS_DOMAIN_WALLET_ENABLED=true`, in addition to the existing runtime activation.
+`POST /wallet/drafts` is loopback-only and takes the exact `CrossDomainWalletDraft` transport.
+It verifies the pinned Base and Arbitrum Sepolia accounts, owners, domain manifests, nonce,
+entry caps and exact recovery before persisting the draft. It does not build a canonical public
+order or fund inventory. Existing owner/account allowlists and gas caps remain unchanged.
+
+`GET /wallet/drafts/{draftId}` returns unsigned permissions and status, never stored signatures.
+`POST /wallet/authorize` takes `{ draftId, signatures: [{ domainId, entry, recovery }] }`.
+Both chain-specific entry and recovery signatures must belong to the owner before the solver
+signs. The worker waits for the exact pre-funded reservations before durable admission.
+Approved drafts survive restart in `<jobDatabasePath>.wallet.sqlite`; expired preparations
+release only unused reservations and remain pending until release is confirmed.
+
+Only read and authorize routes are proxied to the terminal. Raw job admission and draft staging
+remain private. These are coordinated, recoverable operations, not atomic cross-chain trades.
+
 ## SQLite dependency
 
 `better-sqlite3` is pinned at `13.0.3` for its synchronous transaction and SQLite durability controls on Node 22. It is MIT licensed, maintained through the pinned August 2026 release, and has npm integrity `sha512-RbOBxmLBG8uvFUc15X9+9SFemKcQ0WBuISBVkpuiaUB2qblC8UWlHEjdWVoZ8AdhSwmoEgsiXKfopX0CQxaACQ==`. `@types/better-sqlite3` is pinned at `9.6.0` for build-time types only. `npm audit --omit=dev` reports zero vulnerabilities.

@@ -11,6 +11,7 @@ import { EvmRecoverableCrossDomainLane, type EvmRecoverableCrossDomainLaneConfig
 import { createViemEvmFirmReservationCrossDomainPort } from './evm-firm-reservation-cross-domain-port.js';
 import { loadEvmStrategySolverKey } from './evm-strategy-execution-authorization.js';
 import { validateEvmFullReversal } from './evm-full-reversal-policy.js';
+import { CrossDomainWalletAdmission, validateCrossDomainWalletDraft, type CrossDomainWalletDraft } from './cross-domain-wallet-admission.js';
 
 interface LaneConfiguration {
   readonly rpcEnvironmentVariable: string;
@@ -60,7 +61,7 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
   const store = new SqliteCrossDomainJobStore(config.jobDatabasePath);
   const ports: ReturnType<typeof createViemEvmFirmReservationCrossDomainPort>[] = [];
   try {
-    const lanes: { item: LaneConfiguration; lane: EvmRecoverableCrossDomainLane; driver: EvmCrossDomainExecutionDriver; port: typeof ports[number] }[] = [];
+    const lanes: { item: LaneConfiguration; account: ReturnType<typeof loadEvmStrategySolverKey>; lane: EvmRecoverableCrossDomainLane; driver: EvmCrossDomainExecutionDriver; port: typeof ports[number] }[] = [];
     for (const item of config.lanes) {
       const chain = item.lane.chainReference;
       requireCondition(chain === 84_532n || chain === 421_614n, 'only Base and Arbitrum Sepolia are enabled');
@@ -82,7 +83,7 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
         resolve: async (hash, domainId) => authorization(hash, domainId)?.entry,
         resolveRecovery: async (hash, domainId) => authorization(hash, domainId)?.recovery,
       });
-      lanes.push({ item, lane, driver: new EvmCrossDomainExecutionDriver(lane, item.compensationProfile), port });
+      lanes.push({ item, account, lane, driver: new EvmCrossDomainExecutionDriver(lane, item.compensationProfile), port });
     }
     const journal = new HttpCrossDomainCoordinationJournal(config.apiOrigin);
     const coordinator = new CrossDomainExecutionCoordinator(journal, lanes.map(l => l.driver));
@@ -130,7 +131,71 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
       requireCondition(BigInt(Math.floor(Date.now() / 1_000)) < job.bundle.plan.prepareDeadline, 'job expired during admission');
       return { planHash, admittedPlanHash: store.admit(job) };
     };
+    requireCondition(environment.NARYX_CROSS_DOMAIN_WALLET_ENABLED === undefined
+      || environment.NARYX_CROSS_DOMAIN_WALLET_ENABLED === 'false'
+      || environment.NARYX_CROSS_DOMAIN_WALLET_ENABLED === 'true', 'invalid wallet approval flag');
+    const checkDraft = async (value: unknown): Promise<CrossDomainWalletDraft> => {
+      const draft = value as CrossDomainWalletDraft;
+      validateCrossDomainWalletDraft(draft);
+      for (const { item, port } of lanes) {
+        const domain = draft.execution.domains.find(domain => domain.domain.domainId === item.lane.domain.domainId);
+        const recovery = draft.lanes.find(lane => lane.domainId === item.lane.domain.domainId);
+        requireCondition(domain?.kind === 'EVM_MULTI_STRATEGY_ACCOUNT' && recovery !== undefined, 'draft does not cover the runtime');
+        requireCondition(domain.domain.domainManifestVersion === item.lane.domain.domainManifestVersion
+          && bytesEqual(domain.domain.domainManifestHash, item.lane.domain.domainManifestHash)
+          && item.allowedOwners.some(owner => getAddress(owner) === getAddress(draft.owner))
+          && item.allowedAccounts.some(account => getAddress(account) === getAddress(domain.envelope.account))
+          && getAddress(domain.envelope.execution.solver) === getAddress(item.signerAddress), 'draft is outside the approved test cohort');
+        requireCondition(await port.chainId() === item.lane.chainReference
+          && await port.codeHash(domain.envelope.account) === item.lane.strategyAccountCodeHash
+          && getAddress(await port.accountOwner(domain.envelope.account)) === getAddress(draft.owner)
+          && await port.accountNextNonce(domain.envelope.account) === domain.envelope.execution.nonce,
+        'draft account code, owner or nonce changed');
+        requireCondition(recovery.executorClassId === item.compensationProfile.executorClassId
+          && recovery.executorClassVersion === item.compensationProfile.executorClassVersion
+          && bytesEqual(commitmentHash(recovery.executorClassManifestHash), commitmentHash(item.compensationProfile.executorClassManifestHash)),
+        'draft recovery class differs from the runtime');
+        const reversal = validateEvmFullReversal(domain.envelope, recovery.recovery, item.lane.recoveryAdapters);
+        requireCondition(reversal.maximumEntryQuoteAtoms <= item.maximumEntryQuoteAtoms
+          && reversal.maximumLossQuoteAtoms <= recovery.maximumRecoveryCostQuoteAtoms
+          && recovery.maximumRecoveryCostQuoteAtoms <= item.lane.maximumCompensationCostQuoteAtoms, 'draft exceeds the approved limits');
+      }
+      return draft;
+    };
+    const walletApprovals = environment.NARYX_CROSS_DOMAIN_WALLET_ENABLED !== 'true' ? undefined
+      : new CrossDomainWalletAdmission(`${config.jobDatabasePath}.wallet.sqlite`, {
+        prepare: checkDraft,
+        signSolver: async envelope => {
+          const lane = lanes.find(lane => getAddress(lane.account.address) === getAddress(envelope.execution.solver));
+          requireCondition(lane !== undefined, 'solver is not configured');
+          return lane.account.signTypedData(envelope.solverTypedData);
+        },
+        validate: async (draft, job) => { await checkDraft(draft); checkCohort(job); },
+        async reserve(_id, _draft, job) {
+          // Public approval never funds inventory. The operator must pre-fund each exact reservation.
+          for (const { item, port } of lanes) {
+            const leg = job.bundle.plan.legs.find(leg => leg.domain.domainId === item.lane.domain.domainId)!;
+            if ((await port.reservation(item.lane.reservationBook, `0x${toHex(commitmentHash(leg.inventoryReservationId))}`)).state !== 'LIVE') return false;
+          }
+          return true;
+        },
+        async release(_id, _draft, job) {
+          let released = true;
+          for (const { lane, port } of lanes) {
+            const domainId = lane.domain.domainId;
+            const input: EvmCrossDomainLaneInput = { planHash: validateCrossDomainJob(job), plan: job.bundle.plan,
+              planLeg: job.bundle.plan.legs.find(leg => leg.domain.domainId === domainId)!,
+              compensation: crossDomainCompensationAction(job.bundle.compensations.find(action => action.domain.domainId === domainId)!),
+              execution: job.execution.domains.find(domain => domain.domain.domainId === domainId)!,
+              events: [], action: { kind: 'PREPARE', domainId }, phase: 'PREPARE' };
+            if (!await lane.settleUnusedReservation(input) || !await port.reconcilePending()) released = false;
+          }
+          return released;
+        },
+        admit, status: hash => store.status(hash), now: () => BigInt(Math.floor(Date.now() / 1_000)),
+      });
     return {
+      walletApprovals,
       worker: new CrossDomainWorker(store, coordinator, {
         validate: checkCohort,
         async reconcileTerminal(job, result) {
@@ -161,7 +226,7 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
       async enqueue(path: string) {
         return admit(readBounded(path) as CrossDomainJob);
       },
-      close() { for (const port of ports) port.close(); store.close(); },
+      close() { walletApprovals?.close(); for (const port of ports) port.close(); store.close(); },
     };
   } catch (error) {
     for (const port of ports) port.close();

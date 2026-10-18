@@ -5,6 +5,7 @@ import {
   type OwnerPackageOutcomeReader,
 } from "./terminal-packages.js";
 import { forwardedByProxy } from "./internal-http.js";
+import type { CrossDomainApprovalClient } from './cross-domain-approval-client.js';
 import { recordFinalizedEvmStrategy } from './evm-strategy-reconciliation.js';
 import { isAllowedTerminalOrigin, parseTerminalOrigins, type TerminalOrigins } from "./terminal-origin.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -412,7 +413,6 @@ function hasOrderPorts(ports: InternalOrderPorts | undefined): ports is Internal
     ports.store !== undefined &&
     ports.clock !== undefined;
 }
-
 export function createPrivateTerminalRequestHandler(
   config: PrivateTerminalServerConfig,
   executionPorts: PrivateTerminalExecutionPorts = {},
@@ -455,6 +455,7 @@ export function createPrivateTerminalRequestHandler(
   solanaStrategyExecutionObservation?: SolanaStrategyExecutionObservationPort,
   nettingAllocationAuthorization?: NettingAllocationAuthorizationPort,
   dependencyIncidentStatus?: DependencyIncidentStatusPort,
+  crossDomainApprovals?: CrossDomainApprovalClient,
 ) {
   /**
    * `commit` records the approval and counts it against the caps; it runs only where the owner's
@@ -553,6 +554,27 @@ export function createPrivateTerminalRequestHandler(
       }
       response.statusCode = 204;
       response.end();
+      return;
+    }
+
+    const approvalMatch = /^\/internal\/terminal\/cross-domain\/drafts\/([0-9a-f]{64})$/.exec(url.pathname);
+    if (approvalMatch !== null || url.pathname === '/internal/terminal/cross-domain/authorize') {
+      if (crossDomainApprovals === undefined) {
+        reject(response, 503, 'CROSS_DOMAIN_APPROVAL_UNAVAILABLE', 'Cross-chain wallet approval is not enabled.');
+        return;
+      }
+      if ((approvalMatch !== null && request.method !== 'GET') || (approvalMatch === null && request.method !== 'POST') || url.search !== '') {
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'Unsupported cross-chain approval operation.');
+        return;
+      }
+      try {
+        const result = approvalMatch === null
+          ? await crossDomainApprovals.authorize(await readJson(request))
+          : await crossDomainApprovals.get(approvalMatch[1]!);
+        sendJson(response, result.status, result.body);
+      } catch {
+        reject(response, 409, 'CROSS_DOMAIN_APPROVAL_REFUSED', 'Approval failed. Check the preparation, connected wallet and signatures before retrying.');
+      }
       return;
     }
 
@@ -3084,6 +3106,7 @@ export function createPrivateTerminalServer(
   solanaStrategyExecutionObservation?: SolanaStrategyExecutionObservationPort,
   nettingAllocationAuthorization?: NettingAllocationAuthorizationPort,
   dependencyIncidentStatus?: DependencyIncidentStatusPort,
+  crossDomainApprovals?: CrossDomainApprovalClient,
 ) {
   const handler = createPrivateTerminalRequestHandler(
     config,
@@ -3127,6 +3150,7 @@ export function createPrivateTerminalServer(
     solanaStrategyExecutionObservation,
     nettingAllocationAuthorization,
     dependencyIncidentStatus,
+    crossDomainApprovals,
   );
   return createServer((request, response) => {
     // WHATWG URL parsing turns a backslash into a path separator, so a raw path a proxy matched as

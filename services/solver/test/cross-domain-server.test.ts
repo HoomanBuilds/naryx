@@ -14,6 +14,7 @@ test('loopback job intake rejects browser callers and invalid jobs without admit
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   try {
     assert.equal((await fetch(`${origin}/health`)).status, 200);
+    assert.equal((await fetch(`${origin}/wallet/drafts/${hash}`)).status, 503);
     const post = (body: string, headers = {}) => fetch(`${origin}/jobs`, { method: 'POST', body, headers: { 'content-type': 'application/json', ...headers } });
     assert.equal((await post('{"version":1}', { origin: 'https://example.com' })).status, 403);
     assert.equal(calls, 0);

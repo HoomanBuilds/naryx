@@ -19,7 +19,17 @@ if (args.length === 2 && args[0] === '--enqueue') {
     server.listen(Number(port), '127.0.0.1', () => { server.off('error', reject); resolve(); });
   });
   let stopping = false;
-  const interval = setInterval(() => { void runtime.worker.tick().catch(() => {
+  let polling: Promise<void> | undefined;
+  const tick = () => {
+    if (polling !== undefined) return polling;
+    polling = (async () => {
+      try { await runtime.walletApprovals?.tick(); }
+      catch { process.stderr.write('Cross-domain wallet approval is pending; execution worker continues.\n'); }
+      await runtime.worker.tick();
+    })().finally(() => { polling = undefined; });
+    return polling;
+  };
+  const interval = setInterval(() => { void tick().catch(() => {
     process.stderr.write('Cross-domain worker failed; durable account fences remain in place.\n');
   }); }, runtime.pollIntervalMs);
   const stop = async () => {
@@ -27,10 +37,11 @@ if (args.length === 2 && args[0] === '--enqueue') {
     stopping = true;
     clearInterval(interval);
     if (server !== undefined) await new Promise<void>(resolve => server.close(() => resolve()));
+    await polling?.catch(() => {});
     await runtime.worker.drain();
     runtime.close();
   };
   process.once('SIGTERM', () => { void stop(); });
   process.once('SIGINT', () => { void stop(); });
-  await runtime.worker.tick();
+  await tick();
 }

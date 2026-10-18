@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { CrossDomainApprovalClient } from './cross-domain-approval-client.js';
 import { isAbsolute, resolve } from "node:path";
 import { createPrivateTerminalServer, loadPrivateTerminalServerConfig } from "./http-server.js";
 import { loadMakerControlProxy } from "./maker-control-proxy.js";
@@ -1322,6 +1323,8 @@ const server = createPrivateTerminalServer(
   solanaStrategyExecutionObservation,
   nettingAllocationAuthorization,
   dependencyIncidentStatus,
+  process.env.NARYX_CROSS_DOMAIN_APPROVAL_ORIGIN === undefined ? undefined
+    : new CrossDomainApprovalClient(process.env.NARYX_CROSS_DOMAIN_APPROVAL_ORIGIN),
 );
 
 const publicServer = publicMarket?.listener === undefined

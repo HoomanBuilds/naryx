@@ -192,6 +192,18 @@ is restricted to the pool's dedicated test cohort and a wallet signature binding
 Operator epoch preparation, execution and close are not public browser endpoints. Funding is a
 separate action; enabling these routes neither deposits funds nor makes an empty pool liquid.
 
+## Cross-domain wallet approval proxy
+
+`NARYX_CROSS_DOMAIN_APPROVAL_ORIGIN` optionally enables two terminal routes:
+`GET /internal/terminal/cross-domain/drafts/{draftId}` and
+`POST /internal/terminal/cross-domain/authorize`. The origin must be a fixed loopback HTTP
+endpoint, with no credentials, path or query. Requests cannot select an upstream URL, stage
+drafts or submit raw worker jobs. Owner signatures, account allowlists and exact execution
+bounds are enforced by the cross-domain worker. The API has no owner signing key.
+
+This supports review and authorization of operator-prepared testnet packages. It is not
+self-service canonical cross-chain order creation, and does not activate additional markets.
+
 ## Timed threshold auction openings
 
 With `NARYX_THRESHOLD_AUCTIONS_ENABLED=true` and the durable private-delivery store configured,

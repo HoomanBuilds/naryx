@@ -52,6 +52,8 @@ import { EXACT_SPOT_PARAMETERS, RECOVERABLE_PERP_ENTRY_PARAMETERS, RECOVERABLE_P
 import { SqliteCrossDomainJobStore, validateCrossDomainJob, type CrossDomainJob } from '../src/cross-domain-job-store.js';
 import { CrossDomainWorker } from '../src/cross-domain-worker.js';
 import { loadCrossDomainRuntime } from '../src/cross-domain-runtime.js';
+import { CrossDomainWalletAdmission, authorizeCrossDomainWalletDraft, validateCrossDomainWalletDraft,
+  type CrossDomainWalletDraft, type CrossDomainWalletAdmissionPort } from '../src/cross-domain-wallet-admission.js';
 
 const RELEASE_ABI = parseAbi(['function releaseExpired(bytes32 reservationId)']);
 const hash = (byte: string): string => byte.repeat(64);
@@ -658,6 +660,124 @@ async function durableJobFixture() {
   };
   return job;
 }
+
+async function walletDraftFixture() {
+  const job = await durableJobFixture();
+  const domains = job.execution.domains.map(domain => {
+    assert.equal(domain.kind, 'EVM_MULTI_STRATEGY_ACCOUNT');
+    if (domain.kind !== 'EVM_MULTI_STRATEGY_ACCOUNT') throw new Error('fixture');
+    const changeDomain = (envelope: EvmMultiStrategyAccountEnvelope) => {
+      const execution = { ...envelope.execution, domainIdHash: keccak256(stringToHex(domain.domain.domainId)),
+        domainManifestVersion: domain.domain.domainManifestVersion,
+        deadline: envelope.execution.operation === 1 ? job.bundle.plan.commitDeadline : job.bundle.plan.compensationDeadline,
+        domainManifestHash: `0x${toHex(domain.domain.domainManifestHash)}` as Hex };
+      const executionHash = evmMultiStrategyExecutionHash(execution);
+      const message = { executionHash, callsHash: envelope.callsHash };
+      const chainId = Number(domain.domain.domainId.slice(7));
+      const ownerTypedData = { ...envelope.ownerTypedData, domain: { ...envelope.ownerTypedData.domain, chainId }, message };
+      const solverTypedData = { ...envelope.solverTypedData, domain: { ...envelope.solverTypedData.domain, chainId }, message };
+      return { ...envelope, execution, executionHash, ownerTypedData, solverTypedData,
+        ownerDigest: hashTypedData(ownerTypedData), solverDigest: hashTypedData(solverTypedData) };
+    };
+    const recovery = job.authorizations.find(auth => auth.domainId === domain.domain.domainId)!.recovery.envelope;
+    return { domain: { ...domain, legIds: job.bundle.plan.legs.find(leg => leg.domain.domainId === domain.domain.domainId)!.legIds,
+      envelope: changeDomain(domain.envelope) }, recovery: changeDomain(recovery) };
+  });
+  const { legs: _legs, ...draftPlan } = job.bundle.plan;
+  const { crossDomainPlanHash: _hash, ...draftExecution } = job.execution;
+  const draft: CrossDomainWalletDraft = { version: 1, owner: owner.address,
+    execution: { ...draftExecution, domains: domains.map(item => item.domain) }, plan: draftPlan,
+    lanes: domains.map(item => {
+      const compensation = job.bundle.compensations.find(action => action.domain.domainId === item.domain.domain.domainId)!;
+      const leg = job.bundle.plan.legs.find(leg => leg.domain.domainId === item.domain.domain.domainId)!;
+      return { domainId: item.domain.domain.domainId, inventoryReservationId: `0x${toHex(commitmentHash(leg.inventoryReservationId))}`,
+        interimExposureQuoteAtoms: leg.interimExposureQuoteAtoms, recovery: item.recovery,
+        maximumRecoveryCostQuoteAtoms: compensation.maximumCostQuoteAtoms, executorClassId: compensation.executorClassId,
+        executorClassVersion: compensation.executorClassVersion, executorClassManifestHash: compensation.executorClassManifestHash };
+    }) };
+  const signatures = await Promise.all(domains.map(async item => ({ domainId: item.domain.domain.domainId,
+    entry: await owner.signTypedData(item.domain.envelope.ownerTypedData), recovery: await owner.signTypedData(item.recovery.ownerTypedData) })));
+  return { draft, signatures };
+}
+
+test('wallet approval binds both chain signatures before solver authorization and rejects tampering', async () => {
+  const { draft, signatures } = await walletDraftFixture();
+  let signed = 0;
+  const sign = async (envelope: EvmMultiStrategyAccountEnvelope) => { signed++; return solver.signTypedData(envelope.solverTypedData); };
+  validateCrossDomainWalletDraft(draft);
+  const request = { draftId: hash('1'), signatures };
+  await assert.rejects(authorizeCrossDomainWalletDraft(draft, { ...request,
+    signatures: [signatures[0]!, { ...signatures[1]!, entry: signatures[0]!.entry }] }, sign), /another owner/);
+  assert.equal(signed, 0);
+  await assert.rejects(authorizeCrossDomainWalletDraft(draft, { ...request, signatures: [signatures[0]!, signatures[0]!] }, sign), /missing or repeated/);
+  assert.equal(signed, 0);
+  const tampered = { ...draft, plan: { ...draft.plan, quoteHash: hash('f') } };
+  assert.throws(() => validateCrossDomainWalletDraft(tampered), /another execution/);
+  const changedSolver = structuredClone(draft);
+  const firstDomain = changedSolver.execution.domains[0]!;
+  assert.ok(firstDomain.kind === 'EVM_MULTI_STRATEGY_ACCOUNT');
+  Object.assign(firstDomain.envelope, { solverTypedData: { ...firstDomain.envelope.solverTypedData,
+    message: { ...firstDomain.envelope.solverTypedData.message, executionHash: hex('f') } } });
+  await assert.rejects(authorizeCrossDomainWalletDraft(changedSolver, request, sign), /solver typed data/);
+  assert.equal(signed, 0);
+  const job = await authorizeCrossDomainWalletDraft(draft, request, sign);
+  assert.equal(signed, 2);
+  assert.equal(validateCrossDomainJob(job), toHex(crossDomainPlanHash(job.bundle.plan)));
+});
+
+test('wallet approvals persist across restart, wait for inventory and reconcile admission without duplicating', async () => {
+  const { draft, signatures } = await walletDraftFixture();
+  const folder = mkdtempSync(join(tmpdir(), 'naryx-wallet-approval-'));
+  let ready = false, admissions = 0, now = 50n;
+  const jobs = new Set<string>();
+  const port: CrossDomainWalletAdmissionPort = {
+    prepare: async () => draft, signSolver: envelope => solver.signTypedData(envelope.solverTypedData),
+    validate: async () => {}, reserve: async () => ready, release: async () => true,
+    admit: async job => { admissions++; const planHash = validateCrossDomainJob(job); jobs.add(planHash); return { planHash, admittedPlanHash: planHash }; },
+    status: hash => jobs.has(hash) ? { status: 'ACTIVE' } : undefined, now: () => now,
+  };
+  let service = new CrossDomainWalletAdmission(join(folder, 'drafts.sqlite'), port);
+  try {
+    const prepared = (await service.prepare({ nonce: 1 }))!;
+    assert.equal((await service.prepare({ nonce: 1 }))!.draftId, prepared.draftId);
+    await service.authorize({ draftId: prepared.draftId, signatures });
+    assert.equal(service.get(prepared.draftId)!.state, 'RESERVING');
+    await service.tick(); assert.equal(admissions, 0);
+    service.close(); service = new CrossDomainWalletAdmission(join(folder, 'drafts.sqlite'), port);
+    ready = true; await service.tick(); await service.tick();
+    assert.equal(admissions, 1);
+    assert.equal(service.get(prepared.draftId)!.state, 'ADMITTED');
+    await service.authorize({ draftId: prepared.draftId, signatures });
+    assert.equal(admissions, 1);
+    now = 400n;
+    await assert.rejects(service.prepare({ nonce: 2 }), /expired/);
+  } finally { service.close(); rmSync(folder, { recursive: true, force: true }); }
+});
+
+test('expired wallet approvals keep reservations pending until release is confirmed', async () => {
+  const { draft, signatures } = await walletDraftFixture();
+  const folder = mkdtempSync(join(tmpdir(), 'naryx-wallet-expiry-'));
+  let now = 50n, released = false, releases = 0;
+  const service = new CrossDomainWalletAdmission(join(folder, 'drafts.sqlite'), {
+    prepare: async () => draft, signSolver: envelope => solver.signTypedData(envelope.solverTypedData),
+    validate: async () => {}, reserve: async () => false,
+    release: async () => { releases++; return released; },
+    admit: async () => { throw new Error('Expired preparation must not execute'); },
+    status: () => undefined, now: () => now,
+  });
+  try {
+    const prepared = (await service.prepare({ nonce: 1 }))!;
+    await service.authorize({ draftId: prepared.draftId, signatures });
+    now = draft.plan.prepareDeadline;
+    await service.tick();
+    assert.equal(service.get(prepared.draftId)!.state, 'RELEASING');
+    await assert.rejects(service.authorize({ draftId: prepared.draftId, signatures }), /expired/);
+    released = true;
+    await service.tick(); await service.tick();
+    assert.equal(service.get(prepared.draftId)!.state, 'EXPIRED');
+    assert.equal(releases, 2);
+  } finally { service.close(); rmSync(folder, { recursive: true, force: true }); }
+});
 
 test('durable job intake is immutable, fences accounts and retains escalation fences across restart', async () => {
   const folder = mkdtempSync(join(tmpdir(), 'naryx-cross-domain-jobs-'));
