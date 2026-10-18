@@ -44,6 +44,14 @@ const RECOVERY_ADAPTER_ABI = parseAbi([
   'function packageId() view returns (bytes32)',
   'function assertDeployment() view',
 ]);
+const DERIVATIVE_RECOVERY_ABI = parseAbi([
+  'function generation() view returns (uint64)',
+  'function entryPayloadHash() view returns (bytes32)',
+  'function entrySizeWad() view returns (int128)',
+  'function position() view returns ((int128 balance,int128 size,uint128 entryNotional,uint128 entrySocialLossIndex,int128 entryFundingIndex))',
+  'function marginGate() view returns (address)',
+]);
+const RECOVERY_RESERVE_ABI = parseAbi(['function reserveOf(address account) view returns (uint256)']);
 const RESERVATION_STATES: readonly EvmFirmReservationState[] = Object.freeze([
   'NONE', 'FUNDED', 'LIVE', 'CONSUMED', 'RELEASED',
 ]);
@@ -203,7 +211,23 @@ export function createViemEvmFirmReservationCrossDomainPort(input: Readonly<{
       requireCondition(code !== undefined && code !== '0x', 'recovery adapter has no code');
       const deployment = { codeHash: keccak256(code), account: getAddress(metadata[0]), classId: metadata[1],
         classVersion: metadata[2], baseToken: getAddress(metadata[3]), quoteToken: getAddress(metadata[4]), packageId };
-      return deployment;
+      let derivative;
+      if (policy.kind === 'RECOVERABLE_PERP' || policy.kind === 'RECOVERABLE_FUTURE') {
+        const request = { address: policy.address, abi: DERIVATIVE_RECOVERY_ABI, blockNumber: head.number };
+        const [generation, entryPayloadHash, entrySizeWad, position, gate] = await Promise.all([
+          publicClient.readContract({ ...request, functionName: 'generation' }),
+          publicClient.readContract({ ...request, functionName: 'entryPayloadHash' }),
+          publicClient.readContract({ ...request, functionName: 'entrySizeWad' }),
+          publicClient.readContract({ ...request, functionName: 'position' }),
+          publicClient.readContract({ ...request, functionName: 'marginGate' }),
+        ]);
+        const reserveAtoms = await publicClient.readContract({ address: gate, abi: RECOVERY_RESERVE_ABI,
+          functionName: 'reserveOf', args: [policy.address], blockNumber: head.number });
+        derivative = { generation, entryPayloadHash, entrySizeWad, sizeWad: position.size, balanceWad: position.balance,
+          entryNotionalWad: position.entryNotional, reserveAtoms };
+      }
+      requireCondition((await publicClient.getBlock({ blockNumber: head.number })).hash === head.hash, 'recovery state block changed');
+      return { ...deployment, ...(derivative === undefined ? {} : { derivative }) };
     },
     observeSubmission: async (operationId: string, account: Address) => {
       const observed = await submissions.observe(operationId);

@@ -26,6 +26,7 @@ import {
   hashTypedData,
   keccak256,
   parseAbi,
+  parseAbiParameters,
   stringToHex,
   type Address,
   type Hex,
@@ -44,7 +45,9 @@ import {
 } from '../src/index.js';
 import { EvmRecoverableCrossDomainLane } from '../src/evm-recoverable-cross-domain-lane.js';
 import type { EvmCrossDomainSubmissionObservation, EvmRecoverableCrossDomainPort } from '../src/evm-cross-domain-recovery-port.js';
-import { EXACT_SPOT_PARAMETERS, validateEvmFullReversal, validateEvmRecoveryAdapterState } from '../src/evm-full-reversal-policy.js';
+import { EXACT_SPOT_PARAMETERS, RECOVERABLE_PERP_ENTRY_PARAMETERS, RECOVERABLE_PERP_CLOSE_PARAMETERS,
+  validateEvmFullReversal, validateEvmRecoveryAdapterState, validateEvmDerivativeRecoveryState,
+  type EvmRecoveryAdapterPolicy, type EvmRecoveryAdapterState } from '../src/evm-full-reversal-policy.js';
 import { SqliteCrossDomainJobStore, validateCrossDomainJob, type CrossDomainJob } from '../src/cross-domain-job-store.js';
 import { CrossDomainWorker } from '../src/cross-domain-worker.js';
 import { loadCrossDomainRuntime } from '../src/cross-domain-runtime.js';
@@ -515,6 +518,55 @@ test('recovery refuses unqualified derivative classes and changed deployments', 
   assert.throws(() => validateEvmRecoveryAdapterState(policy, { ...state, classId: keccak256(stringToHex('naryx.evm.perp-exact')) }, f.entry), /deployment/);
   assert.throws(() => validateEvmRecoveryAdapterState(policy, { ...state, codeHash: hex('0') }, f.entry), /deployment/);
   assert.throws(() => validateEvmFullReversal(f.entry, f.recovery.envelope, [{ ...policy, kind: 'PERP' as never }]), /unsupported adapter class/);
+});
+
+test('derivative recovery binds the entry generation, complete position and collateral loss limit', async () => {
+  const f = await recoverableSetup();
+  const policy: EvmRecoveryAdapterPolicy = { ...f.config.recoveryAdapters[0]!, kind: 'RECOVERABLE_PERP' };
+  const identity = { packageId: f.entry.execution.packageId, orderHash: f.entry.execution.orderHash,
+    quoteHash: f.entry.execution.quoteHash, routeHash: f.entry.execution.routeHash };
+  const opening = { ...identity,
+    expectedPrePositionHash: keccak256(encodeAbiParameters(parseAbiParameters('int128,int128,uint128,uint128,int128'), [0n, 0n, 0n, 0n, 0n])),
+    tradeArgs: [hex('1'), hex('2')] as const, expectedPostSizeWad: -10n,
+    minimumPostBalanceWad: 200n, maximumPostBalanceWad: 200n,
+    minimumPostEntryNotionalWad: 10n, maximumPostEntryNotionalWad: 10n,
+    expectedReserveBeforeAtoms: 0n, minimumReserveAfterAtoms: 300n, maximumReserveAfterAtoms: 300n,
+    collateralInAtoms: 500n, collateralOutAtoms: 0n, withdrawAll: false, minimumCollateralOutAtoms: 0n, maximumCollateralOutAtoms: 0n };
+  const entryPayload = encodeAbiParameters(RECOVERABLE_PERP_ENTRY_PARAMETERS, [1, 1n, opening]);
+  const close = { ...identity, generation: 1n, entryPayloadHash: keccak256(entryPayload), expectedSizeWad: -10n,
+    tradeArgs: [hex('1'), hex('3')] as const, minimumCollateralOutAtoms: 497n, maximumCollateralOutAtoms: 600n };
+  const entry = { ...f.entry, calls: [{ ...f.entry.calls[0]!, payload: entryPayload, approvalAtoms: 500n, riskIncreasing: true }] };
+  const recovery = { ...f.recovery.envelope, calls: [{ ...f.recovery.envelope.calls[0]!, approvalAtoms: 0n,
+    payload: encodeAbiParameters(RECOVERABLE_PERP_CLOSE_PARAMETERS, [2, close]) }] };
+  const validate = (change = {}) => validateEvmFullReversal(entry, { ...recovery, calls: [{ ...recovery.calls[0]!,
+    payload: encodeAbiParameters(RECOVERABLE_PERP_CLOSE_PARAMETERS, [2, { ...close, ...change }]) }] }, [policy]);
+  const reversal = validate();
+  assert.equal(reversal.maximumEntryQuoteAtoms, 502n);
+  assert.equal(reversal.maximumLossQuoteAtoms, 5n);
+  assert.equal(reversal.spotBaseDeltas.size, 0);
+  for (const change of [{ generation: 2n }, { entryPayloadHash: hex('f') }]) assert.throws(() => validate(change), /exact entry/);
+  assert.throws(() => validate({ expectedSizeWad: -9n }), /exact entry size/);
+  assert.throws(() => validate({ minimumCollateralOutAtoms: 0n }), /proceeds/);
+  assert.throws(() => validateEvmFullReversal(entry, { ...recovery, calls: [{ ...recovery.calls[0]!, approvalAtoms: 1n }] }, [policy]), /approval/);
+  assert.throws(() => validateEvmFullReversal({ ...entry, calls: [{ ...entry.calls[0]!, payload: `${entryPayload}00` }] }, recovery, [policy]), /noncanonical/);
+  const state: EvmRecoveryAdapterState = { ...policy, account: accountAddress, packageId: identity.packageId,
+    classId: keccak256(stringToHex('naryx.evm.perp-recoverable')), classVersion: 1,
+    derivative: { generation: 0n, entryPayloadHash: hex('0'), entrySizeWad: 0n, sizeWad: 0n, balanceWad: 0n, entryNotionalWad: 0n, reserveAtoms: 0n } };
+  const binding = reversal.derivatives.get(policy.address)!;
+  validateEvmRecoveryAdapterState(policy, state, entry);
+  validateEvmDerivativeRecoveryState(binding, state);
+  assert.throws(() => validateEvmDerivativeRecoveryState(binding, state, true), /flatten/);
+  const active = { ...state, derivative: { ...state.derivative!, generation: 1n, entryPayloadHash: close.entryPayloadHash,
+    entrySizeWad: -10n, sizeWad: -10n, balanceWad: 190n, entryNotionalWad: 10n, reserveAtoms: 300n } };
+  validateEvmDerivativeRecoveryState(binding, active);
+  assert.throws(() => validateEvmDerivativeRecoveryState(binding, active, true), /flatten/);
+  const closed = { ...state, derivative: { ...state.derivative!, generation: 1n } };
+  validateEvmDerivativeRecoveryState(binding, closed, true);
+  assert.throws(() => validateEvmDerivativeRecoveryState(binding, { ...closed, derivative: { ...closed.derivative, reserveAtoms: 1n } }, true), /flatten/);
+  assert.throws(() => validateEvmDerivativeRecoveryState(binding, { ...closed, derivative: { ...closed.derivative, generation: 2n } }), /unrelated/);
+  assert.throws(() => validateEvmRecoveryAdapterState(policy, { ...state, classId: keccak256(stringToHex('naryx.evm.perp-exact')) }, entry), /deployment/);
+  validateEvmRecoveryAdapterState({ ...policy, kind: 'RECOVERABLE_FUTURE' }, { ...state,
+    classId: keccak256(stringToHex('naryx.evm.future-recoverable')) }, entry);
 });
 
 test('unknown commits remain fenced; absent commits need finalized expiry before releasing inventory', async () => {

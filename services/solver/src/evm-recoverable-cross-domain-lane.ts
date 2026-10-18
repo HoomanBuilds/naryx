@@ -10,7 +10,7 @@ import {
 } from './evm-firm-reservation-cross-domain-lane.js';
 import type { EvmRecoverableCrossDomainPort, EvmCrossDomainSubmissionObservation } from './evm-cross-domain-recovery-port.js';
 import type { EvmCrossDomainExecutionLane, EvmCrossDomainLaneInput, EvmCrossDomainFinalityInput, EvmCrossDomainPhaseResult } from './evm-cross-domain-execution-driver.js';
-import { validateEvmFullReversal, validateEvmRecoveryAdapterState, type EvmFullReversal, type EvmRecoveryAdapterPolicy } from './evm-full-reversal-policy.js';
+import { validateEvmFullReversal, validateEvmRecoveryAdapterState, validateEvmDerivativeRecoveryState, type EvmFullReversal, type EvmRecoveryAdapterPolicy } from './evm-full-reversal-policy.js';
 
 const ZERO = `0x${'0'.repeat(64)}` as Hex;
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
@@ -196,7 +196,10 @@ export class EvmRecoverableCrossDomainLane implements EvmCrossDomainExecutionLan
       && reversal.maximumLossQuoteAtoms <= input.compensation.maximumCostQuoteAtoms,
       'recovery cost exceeds the signed cap');
     for (const policy of reversal.adapters) {
-      validateEvmRecoveryAdapterState(policy, await this.port.recoveryAdapterState(policy), entry);
+      const state = await this.port.recoveryAdapterState(policy);
+      validateEvmRecoveryAdapterState(policy, state, entry);
+      const derivative = reversal.derivatives.get(getAddress(policy.address));
+      if (derivative !== undefined) validateEvmDerivativeRecoveryState(derivative, state);
     }
     return { ...recovery, data, callsHash, reversal };
   }
@@ -242,7 +245,10 @@ export class EvmRecoverableCrossDomainLane implements EvmCrossDomainExecutionLan
       const netQuote = entryEvidence.tokenDeltas.get(quoteToken)! + known.tokenDeltas.get(quoteToken)!;
       requireCondition(netQuote >= -recovery.reversal.maximumLossQuoteAtoms, 'realized recovery loss exceeds enforced bounds');
       for (const policy of recovery.reversal.adapters) {
-        validateEvmRecoveryAdapterState(policy, await this.port.recoveryAdapterState(policy), entry);
+        const state = await this.port.recoveryAdapterState(policy);
+        validateEvmRecoveryAdapterState(policy, state, entry);
+        const derivative = recovery.reversal.derivatives.get(getAddress(policy.address));
+        if (derivative !== undefined) validateEvmDerivativeRecoveryState(derivative, state, true);
       }
       if (!await this.settleUnusedReservation(input)) return PENDING;
       return { status: 'FINALIZED', evidenceHash, atValue };
