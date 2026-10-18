@@ -198,7 +198,7 @@ Status checked 2026-10-18:
 | Item | Current state | Evidence needed to close |
 | --- | --- | --- |
 | 1. Standing liquidity for routed strategies | Closed for the enabled Solana cash-and-carry maker lane. Actual entry/exit and inventory reconciliation completed on 2026-10-18. | Evidence below. This does not advertise native cash liquidity as routed liquidity or activate additional routed maker lanes. |
-| 2. Cross-chain execution activation | Recovery deployments, delayed registry/policy activation and the capped AWS worker are running on both EVM testnets. The operator recovery cycle closed as `RECOVERED_FLAT`: Arbitrum entered, Base reverted within its signed bounds, Arbitrum closed, both reservation refunds finalized, and all account locks were released. | Public order-to-job materialization and multi-domain wallet authorization remain open. The completed operator job is not a canonical public quote and does not prove website execution. |
+| 2. Cross-chain execution activation | Recovery deployments, delayed registry/policy activation and the capped AWS worker are running on both EVM testnets. The operator recovery cycle closed as `RECOVERED_FLAT`. The public read/authorize boundary and Network wallet approval panel are deployed for operator-staged, pre-funded exact preparations. | Canonical public order-to-job materialization remains open because the current order builder assumes one template registration while these deployments have separate per-chain registrations. The completed operator job does not prove website execution; no funded browser cycle was run for the new approval panel. |
 | 3. Hyperliquid pooled-mode terminal integration | Closed for the approved dedicated cohort. Both owners completed authenticated browser deposit/withdrawal cycles on 2026-10-18. | UI, database and venue agreed after reload: zero pool cash, liabilities and pending operations. Receipt evidence below. Epoch trading remains operator-only; this is not public custody enrollment. |
 | 4. Strategy ownership transfers | Closed for the Base cash-and-carry account path. The seller proposed and the buyer accepted through live Portfolio, acceptance finalized, dual-signed strategy-book novation succeeded, and the new owner's exit finalized. Book closure and collateral withdrawals reconciled with an empty strategy account. | Evidence below. This does not claim transferable positions on other venues or compatibility with every wallet extension. |
 | 5. Threshold-encryption backend | Backend and solver participation deployed; a real beacon opening was verified. | Preserve this completed backend evidence. Any claim of terminal-integrated encrypted trading also needs an encrypted auction award and settlement; current terminal auctions remain ordinary commit/reveal. |
@@ -398,8 +398,8 @@ strategy support is specific to a registered template and deployment, not every 
   Base's 3 mock USDC collateral was unchanged. No second funded cycle was started.
   Submission-journal reconciliation now runs at startup and before job closure, so finalized
   reservation refunds do not remain labelled pending after the coordination has completed.
-  Public canonical order materialization and multi-domain wallet entry/recovery authorization
-  remain separate work.
+  Multi-domain wallet entry/recovery authorization is now deployed as described below.
+  Public canonical order materialization remains separate work.
 
   | Recovery cycle action | Testnet transaction |
   | --- | --- |
@@ -435,6 +435,40 @@ strategy support is specific to a registered template and deployment, not every 
   Account: `0x04F5d46111a7D57374D2DD501Be5Ca0Bb19f3319`.
   The closed strategy record is
   `strategy-dccee7f18509e003b3cf68665c85cdace2ad404bedcb3fab5a68da970f03119a`.
+
+## Cross-chain wallet approval release
+
+Commits `3f63106f` and `50033809` add durable wallet approval and its Network panel.
+The AWS API and cross-domain worker were updated without changing contract identities,
+owner/account allowlists, funding limits or the other services. The worker has
+`NARYX_CROSS_DOMAIN_WALLET_ENABLED=true`; the API forwards only draft reads and signature
+submission to its fixed loopback origin. Operators alone can stage unsigned preparations.
+
+Each owner approves entry and bounded recovery separately for Base Sepolia and Arbitrum
+Sepolia. All four owner signatures are verified before solver authorization. Approved
+preparations persist through restart, await the exact funded reservations, and enter the
+existing durable worker. Expired unused reservations remain pending until release is confirmed.
+There is no new funding or allowance path, unrestricted solver signing, or mainnet operation.
+
+Static deployment `dpl_EKoSsjcHZkvu9fpcuDJ8GvNA58NE` is promoted to `naryx.xyz`.
+The build lists static pages only, with no request-time frontend functions. A read-only browser
+check on Network returned HTTP 200, no uncaught page errors, no horizontal overflow at 1440px,
+and the expected not-found message for an unknown preparation. API checks returned 404 for
+an unknown draft, 409 for malformed authorization, and 404 for public draft creation.
+The worker reports wallet approval available; both restarted services have zero automatic
+restarts. Public health is ready across the four configured runtimes, and Solana qualification
+remains explicitly owner-approved testnet evidence.
+
+Validation: 24 focused solver/recovery checks and one API proxy check passed, along with
+API/solver builds, web typecheck and the two affected components' lint checks. No new funded
+trade ran. The previous operator job remains terminal, and the new wallet database has no
+staged preparations. These checks prove deployment and rejection behavior, not a successful
+browser-signed cross-chain execution.
+
+The remaining public-flow gap is canonical order preparation against the separately registered
+per-chain templates. Its implementation must bind the actual canonical order, graph, quote and
+registered domain semantics. Reusing opaque operator-test commitments or loosening the compiler's
+template checks is not a valid fix. This is part of item 2, not a newly added launch requirement.
 
 ## Recovery deployment identities
 
