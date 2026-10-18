@@ -100,6 +100,18 @@ export class EvmCrossDomainSubmissionJournal {
 
   close(): void { this.#db.close(); }
 
+  async observe(operationId: string): Promise<Readonly<{ hash: Hex | null; status: 'PENDING' | 'SUCCESS' | 'REVERTED' }> | undefined> {
+    await this.#assertChain();
+    const row = this.#get(operationId);
+    if (row === undefined) return undefined;
+    if (row.hash === null) return Object.freeze({ hash: null, status: 'PENDING' });
+    requireCondition(row.raw !== null && keccak256(row.raw) === row.hash, 'durable transaction is corrupt');
+    if (row.status !== 'PENDING') return Object.freeze({ hash: row.hash, status: row.status });
+    const status = await this.#port.finalized(row.hash);
+    if (status !== undefined) this.#resolve(operationId, status);
+    return Object.freeze({ hash: row.hash, status: status ?? 'PENDING' });
+  }
+
   async submit(requestInput: CrossDomainSubmission): Promise<Hex> {
     const request = requestJson(requestInput);
     const input = Object.freeze({ ...requestInput });

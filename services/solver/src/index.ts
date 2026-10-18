@@ -1336,6 +1336,13 @@ export {
   createViemEvmFirmReservationCrossDomainPort,
 } from './evm-firm-reservation-cross-domain-port.js';
 export {
+  EvmRecoverableCrossDomainLane,
+  type EvmRecoverableCrossDomainLaneConfig,
+  type EvmCrossDomainRecoveryAuthorization,
+  type EvmCrossDomainRecoveryAuthorizations,
+} from './evm-recoverable-cross-domain-lane.js';
+export type { EvmRecoveryAdapterPolicy } from './evm-full-reversal-policy.js';
+export {
   createSolanaStrategyDomainCompiler,
   createEvmStrategyDomainCompiler,
   createHyperliquidStrategyDomainCompiler,

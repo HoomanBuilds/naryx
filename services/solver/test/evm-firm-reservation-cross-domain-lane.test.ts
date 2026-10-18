@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   encodeEvmMultiStrategyAccountExecution,
+  encodeEvmMultiStrategyAccountRecovery,
+  evmMultiStrategyExecutionHash,
+  evmMultiStrategyCallsHash,
   type EvmMultiStrategyAccountEnvelope,
 } from '@naryx/adapter-evm';
 import {
@@ -15,6 +18,7 @@ import {
 } from '@naryx/protocol-types';
 import {
   encodeFunctionData,
+  encodeAbiParameters,
   hashTypedData,
   keccak256,
   parseAbi,
@@ -34,6 +38,9 @@ import {
   type EvmFirmReservationRecord,
   type PreparedStrategyDomainTransport,
 } from '../src/index.js';
+import { EvmRecoverableCrossDomainLane } from '../src/evm-recoverable-cross-domain-lane.js';
+import type { EvmCrossDomainSubmissionObservation, EvmRecoverableCrossDomainPort } from '../src/evm-cross-domain-recovery-port.js';
+import { EXACT_SPOT_PARAMETERS, validateEvmFullReversal, validateEvmRecoveryAdapterState } from '../src/evm-full-reversal-policy.js';
 
 const RELEASE_ABI = parseAbi(['function releaseExpired(bytes32 reservationId)']);
 const hash = (byte: string): string => byte.repeat(64);
@@ -137,11 +144,12 @@ async function fixture() {
     target: address('6'),
     stage: 0,
     riskIncreasing: true,
-    approvalToken: address('7'),
-    approvalAtoms: 1_000n,
+    approvalToken: address('5'),
+    approvalAtoms: 500n,
     grossNotionalAtoms: 1_000n,
     gasLimit: 500_000n,
-    payload: '0x12345678' as Hex,
+    payload: encodeAbiParameters(EXACT_SPOT_PARAMETERS, [{ packageId: execution.packageId, orderHash: execution.orderHash,
+      quoteHash: execution.quoteHash, routeHash: execution.routeHash, action: 1, baseAtoms: 1_000n, quoteBoundAtoms: 500n }]),
   }] as const;
   const typedDomain = {
     name: 'Naryx Multi Strategy Account',
@@ -149,7 +157,7 @@ async function fixture() {
     chainId: 84_532,
     verifyingContract: accountAddress,
   } as const;
-  const message = { executionHash: hex('b'), callsHash: hex('c') } as const;
+  const message = { executionHash: evmMultiStrategyExecutionHash(execution), callsHash: evmMultiStrategyCallsHash(calls) } as const;
   const ownerTypedData = {
     domain: typedDomain,
     primaryType: 'OwnerExecution',
@@ -366,4 +374,164 @@ test('reservation release cannot be presented as a filled-position reversal', as
   await assert.rejects(() => lane.start({ ...request, phase: 'COMPENSATE',
     compensation: { ...request.compensation, actionKind: 'REVERSE_FILLED_LEGS' } }), /cannot reverse filled legs/);
   assert.equal(port.submitted.length, 0);
+});
+
+async function recoverableSetup() {
+  const built = await fixture();
+  assert.equal(built.transport.kind, 'EVM_MULTI_STRATEGY_ACCOUNT');
+  if (built.transport.kind !== 'EVM_MULTI_STRATEGY_ACCOUNT') throw new Error('fixture kind');
+  const entry = built.transport.envelope;
+  const execution = { ...entry.execution, operation: 7, previousStateHash: entry.execution.nextStateHash,
+    nextStateHash: hex('0'), nonce: 1n, deadline: 301n, solver: address('0'),
+    fees: { policyVersion: 0, policyManifestHash: hex('0'), token: address('0'), protocolFeeAtoms: 0n, solverFeeAtoms: 0n } };
+  const calls = entry.calls.map(call => ({ ...call, riskIncreasing: false, approvalToken: address('7'), approvalAtoms: 1_000n,
+    payload: encodeAbiParameters(EXACT_SPOT_PARAMETERS, [{ packageId: execution.packageId, orderHash: execution.orderHash,
+      quoteHash: execution.quoteHash, routeHash: execution.routeHash, action: 2, baseAtoms: 1_000n, quoteBoundAtoms: 497n }]) }));
+  const message = { executionHash: evmMultiStrategyExecutionHash(execution), callsHash: evmMultiStrategyCallsHash(calls) };
+  const ownerTypedData = { ...entry.ownerTypedData, message };
+  const envelope = { ...entry, execution, calls, ...message, ownerTypedData, ownerDigest: hashTypedData(ownerTypedData) };
+  const recovery = { envelope, ownerSignature: await owner.signTypedData(ownerTypedData) };
+  const data = encodeEvmMultiStrategyAccountRecovery(recovery);
+  const action = crossDomainCompensationAction({ ...compensation, actionKind: 'REVERSE_FILLED_LEGS', actionPayloadHash: keccak256(data) });
+  const recoverablePlan = { ...plan, planVersion: 2 as const,
+    legs: [{ ...plan.legs[0]!, compensationActionHash: crossDomainCompensationActionHash(action) }, plan.legs[1]!] };
+  const planHash = toHex(crossDomainPlanHash(recoverablePlan));
+  const observed = new Map<string, EvmCrossDomainSubmissionObservation>();
+  const base = new Port();
+  const port: EvmRecoverableCrossDomainPort = Object.assign(base, {
+    finalizedTime: async () => base.now,
+    observeSubmission: async (id: string) => observed.get(id) ?? { status: 'ABSENT' as const },
+    recoveryAdapterState: async () => ({ codeHash: hex('d'), account: accountAddress, packageId: entry.execution.packageId,
+      classId: keccak256(stringToHex('naryx.evm.spot-exact')), classVersion: 1, baseToken: address('7'), quoteToken: address('5') }),
+  });
+  const config = { domain, chainReference: 84_532n, reservationBook: bookAddress,
+    reservationBookCodeHash: bookCodeHash, strategyAccountCodeHash: accountCodeHash,
+    commitGasLimit: 2_000_000n, compensationGasLimit: 2_000_000n,
+    maximumFeePerGasWei: 1n, maximumCompensationCostQuoteAtoms: 5n,
+    recoveryAdapters: [{ address: address('6'), codeHash: hex('d'), kind: 'SPOT' as const, baseToken: address('7'), quoteToken: address('5') }] };
+  const lane = () => new EvmRecoverableCrossDomainLane(config, port, {
+    resolve: async () => built.authorization, resolveRecovery: async () => recovery,
+  });
+  const input = { planHash, plan: recoverablePlan, planLeg: recoverablePlan.legs[0]!, compensation: action,
+    execution: built.transport, events: [], phase: 'COMPENSATE' as const,
+    action: { kind: 'COMPENSATE' as const, domainId: domain.domainId } };
+  const success = (envelope: EvmMultiStrategyAccountEnvelope, calldata: Hex): EvmCrossDomainSubmissionObservation => ({
+    status: 'SUCCESS', transactionHash: hex('f'), to: accountAddress, data: calldata,
+    receipt: { ...envelope.execution, callsHash: evmMultiStrategyCallsHash(envelope.calls) },
+    tokenDeltas: new Map([[address('7'), envelope.execution.operation === 1 ? 1_000n : -1_000n],
+      [address('5'), envelope.execution.operation === 1 ? -502n : 497n]]),
+  });
+  return { base, observed, lane, input, entry, recovery, data, success, config, authorization: built.authorization };
+}
+
+test('version-two recovery reverses a filled package and requires finalized close evidence after restart', async () => {
+  const f = await recoverableSetup();
+  f.base.now = 220n;
+  f.base.nonce = 1n;
+  f.base.packageStateValue = { active: true, stateHash: hex('7'), lastReceiptHash: receiptHash };
+  f.base.reservationValue = { ...f.base.reservationValue, state: 'CONSUMED' };
+  f.observed.set(`${f.input.planHash}:COMMIT`, f.success(f.entry, f.authorization.data));
+  const submitted = await f.lane().start(f.input);
+  assert.equal(submitted.status, 'OBSERVED');
+  assert.equal(f.base.submitted[0]?.data, f.data);
+  assert.equal(f.base.submitted[0]?.to, accountAddress);
+  f.observed.set(`${f.input.planHash}:COMPENSATE`, { status: 'PENDING' });
+  assert.equal((await f.lane().start(f.input)).status, 'PENDING');
+  assert.equal(f.base.submitted.length, 1);
+  f.observed.set(`${f.input.planHash}:COMPENSATE`, f.success(f.recovery.envelope, f.data));
+  await assert.rejects(f.lane().start(f.input), /did not close/);
+  f.base.nonce = 2n;
+  f.base.packageStateValue = { active: false, stateHash: hex('0'), lastReceiptHash: hex('0') };
+  const closeEvidence = f.success(f.recovery.envelope, f.data);
+  assert.equal(closeEvidence.status, 'SUCCESS');
+  if (closeEvidence.status !== 'SUCCESS') throw new Error('fixture evidence');
+  f.observed.set(`${f.input.planHash}:COMPENSATE`, { ...closeEvidence, tokenDeltas: new Map([[address('7'), -999n], [address('5'), 497n]]) });
+  await assert.rejects(f.lane().start(f.input), /full spot quantity/);
+  f.observed.set(`${f.input.planHash}:COMPENSATE`, { ...closeEvidence, tokenDeltas: new Map([[address('7'), -1_000n], [address('5'), 496n]]) });
+  await assert.rejects(f.lane().start(f.input), /realized recovery loss/);
+  f.observed.set(`${f.input.planHash}:COMPENSATE`, closeEvidence);
+  assert.equal((await f.lane().start(f.input)).status, 'FINALIZED');
+  assert.equal(f.base.submitted.length, 1);
+});
+
+test('full reversal derives the loss bound and rejects partial, uncovered and unknown legs', async () => {
+  const f = await recoverableSetup();
+  const envelope = f.recovery.envelope;
+  const validate = (value = envelope, policies = f.config.recoveryAdapters) => validateEvmFullReversal(f.entry, value, policies);
+  assert.equal(validate().maximumLossQuoteAtoms, 5n);
+  assert.throws(() => validate({ ...envelope, calls: [] }), /every entry leg/);
+  assert.throws(() => validate(envelope, []), /unqualified/);
+  assert.throws(() => validate({ ...envelope, calls: [envelope.calls[0]!, envelope.calls[0]!] }), /every entry leg/);
+  const payload = (baseAtoms: bigint, quoteBoundAtoms: bigint) => encodeAbiParameters(EXACT_SPOT_PARAMETERS, [{
+    packageId: envelope.execution.packageId, orderHash: envelope.execution.orderHash,
+    quoteHash: envelope.execution.quoteHash, routeHash: envelope.execution.routeHash, action: 2, baseAtoms, quoteBoundAtoms,
+  }]);
+  assert.throws(() => validate({ ...envelope, calls: [{ ...envelope.calls[0]!, payload: payload(999n, 497n) }] }), /entire exact/);
+  assert.throws(() => validate({ ...envelope, calls: [{ ...envelope.calls[0]!, payload: payload(1_000n, 0n) }] }), /proceeds/);
+  assert.equal(validate({ ...envelope, calls: [{ ...envelope.calls[0]!, payload: payload(1_000n, 496n) }] }).maximumLossQuoteAtoms, 6n);
+  f.config.maximumCompensationCostQuoteAtoms = 4n;
+  await assert.rejects(f.lane().start(f.input), /recovery cost/);
+  assert.equal(f.base.submitted.length, 0);
+});
+
+test('recovery preserves immutable risk policy and series identity', async () => {
+  const f = await recoverableSetup();
+  const risk = f.recovery.envelope.execution.risk;
+  for (const change of [{ policyVersion: risk.policyVersion + 1 }, { policyManifestHash: hex('f') },
+    { series: { ...risk.series, seriesId: hex('f') } }, { series: { ...risk.series, manifestVersion: 2 } },
+    { series: { ...risk.series, manifestHash: hex('f') } }]) {
+    f.recovery.envelope.execution.risk = { ...risk, ...change };
+    await assert.rejects(f.lane().start(f.input), /exact close/);
+  }
+  assert.equal(f.base.submitted.length, 0);
+});
+
+test('owner recovery rejects nonzero fee policy fields before entering', async () => {
+  const f = await recoverableSetup();
+  const fees = f.recovery.envelope.execution.fees;
+  for (const change of [{ policyVersion: 1 }, { policyManifestHash: hex('1') }, { token: address('5') }]) {
+    f.recovery.envelope.execution.fees = { ...fees, ...change };
+    await assert.rejects(f.lane().start({ ...f.input, phase: 'PREPARE' }), /exact close/);
+  }
+  assert.equal(f.base.submitted.length, 0);
+});
+
+test('recovery refuses unqualified derivative classes and changed deployments', async () => {
+  const f = await recoverableSetup();
+  const policy = f.config.recoveryAdapters[0]!;
+  const state = { ...policy, account: accountAddress, packageId: f.entry.execution.packageId,
+    classId: keccak256(stringToHex('naryx.evm.spot-exact')), classVersion: 1 };
+  validateEvmRecoveryAdapterState(policy, state, f.entry);
+  assert.throws(() => validateEvmRecoveryAdapterState(policy, { ...state, classId: keccak256(stringToHex('naryx.evm.perp-exact')) }, f.entry), /deployment/);
+  assert.throws(() => validateEvmRecoveryAdapterState(policy, { ...state, codeHash: hex('0') }, f.entry), /deployment/);
+  assert.throws(() => validateEvmFullReversal(f.entry, f.recovery.envelope, [{ ...policy, kind: 'PERP' as never }]), /unsupported adapter class/);
+});
+
+test('unknown commits remain fenced; absent commits need finalized expiry before releasing inventory', async () => {
+  const f = await recoverableSetup();
+  assert.equal((await f.lane().reconcileCommit(f.input)).status, 'PENDING');
+  f.base.now = 251n;
+  f.observed.set(`${f.input.planHash}:COMMIT`, { status: 'PENDING' });
+  assert.equal((await f.lane().start(f.input)).status, 'PENDING');
+  assert.equal(f.base.submitted.length, 0);
+  f.observed.delete(`${f.input.planHash}:COMMIT`);
+  assert.equal((await f.lane().reconcileCommit(f.input)).status, 'DEFINITIVE_COMMIT_FAILURE');
+  assert.equal((await f.lane().start(f.input)).status, 'OBSERVED');
+  assert.equal(f.base.submitted[0]?.data, releaseData);
+  assert.equal((await f.lane().start(f.input)).status, 'FINALIZED');
+});
+
+test('recovery rejects altered payload, risk increase, wrong owner and wrong state without submission', async () => {
+  const f = await recoverableSetup();
+  await assert.rejects(f.lane().start({ ...f.input, compensation: { ...f.input.compensation, actionPayloadHash: hex('0') as never } }), /commitment/);
+  const original = f.recovery.ownerSignature;
+  f.recovery.ownerSignature = await solver.signTypedData(f.recovery.envelope.ownerTypedData);
+  await assert.rejects(f.lane().start(f.input), /not the entry owner/);
+  f.recovery.ownerSignature = original;
+  f.recovery.envelope.calls[0]!.riskIncreasing = true;
+  await assert.rejects(f.lane().start(f.input), /calls or signature/);
+  f.recovery.envelope.calls[0]!.riskIncreasing = false;
+  f.recovery.envelope.execution.previousStateHash = hex('9');
+  await assert.rejects(f.lane().start(f.input), /exact close/);
+  assert.equal(f.base.submitted.length, 0);
 });

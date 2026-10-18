@@ -146,6 +146,10 @@ export function evmMultiStrategyExecutionHash(execution: EvmMultiStrategyExecuti
   return keccak256(encodeAbiParameters(EXECUTION_PARAMETERS, [execution]));
 }
 
+export function evmMultiStrategyCallsHash(calls: readonly EvmMultiStrategyCall[]): Hex {
+  return keccak256(encodeAbiParameters(CALL_PARAMETERS, [calls]));
+}
+
 export interface EvmNettingAllocationEnvelope {
   readonly envelope: EvmMultiStrategyAccountEnvelope;
   readonly authorizationHash: Hex;
@@ -404,7 +408,7 @@ export function compileEvmMultiStrategyAccountEnvelope(input: Readonly<{
     deadline: input.deadline,
   });
   const executionHash = evmMultiStrategyExecutionHash(execution);
-  const callsHash = keccak256(encodeAbiParameters(CALL_PARAMETERS, [calls]));
+  const callsHash = evmMultiStrategyCallsHash(calls);
   const domain = Object.freeze({ name: 'Naryx Multi Strategy Account', version: '1', chainId: input.chainId, verifyingContract: account });
   const message = Object.freeze({ executionHash, callsHash });
   const ownerTypedData: EvmMultiStrategyOwnerTypedData = Object.freeze({

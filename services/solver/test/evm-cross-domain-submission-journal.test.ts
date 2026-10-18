@@ -63,6 +63,23 @@ test('restart after ambiguous broadcast resends identical bytes without another 
   await assert.rejects(f.journal().submit({ ...f.request, operationId: `${'b'.repeat(64)}:COMMIT` }), /budget is exhausted/);
 });
 
+test('read-only reconciliation preserves unknown submissions and never signs or resends', async t => {
+  const f = fixture(t);
+  assert.equal(await f.journal().observe(f.request.operationId), undefined);
+  assert.equal(f.signed(), 0);
+  const hash = await f.journal().submit(f.request);
+  f.restart();
+  assert.deepEqual(await f.journal().observe(f.request.operationId), { hash, status: 'PENDING' });
+  f.receipts.set(hash, 'REVERTED');
+  assert.deepEqual(await f.journal().observe(f.request.operationId), { hash, status: 'REVERTED' });
+  f.restart();
+  assert.deepEqual(await f.journal().observe(f.request.operationId), { hash, status: 'REVERTED' });
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.signed(), 1);
+  f.chain(1);
+  await assert.rejects(f.journal().observe(f.request.operationId), /chain identity/);
+});
+
 test('concurrent and cross-process submissions cannot reuse a pending signer or its nonce', async t => {
   const f = fixture(t);
   const second = new EvmCrossDomainSubmissionJournal(f.config);
