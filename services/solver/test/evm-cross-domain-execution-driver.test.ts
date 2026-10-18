@@ -183,3 +183,20 @@ test('rejects mainnet lanes, wrong RPC chains, and changed finality evidence', a
     /finality evidence differs/,
   );
 });
+
+test('accepts a block mined during a lane call but refuses future evidence and clock regression', async () => {
+  const lane = new Lane();
+  lane.start = async () => {
+    lane.now = 51n;
+    return { status: 'FINALIZED', evidenceHash: hash('f'), atValue: 51n };
+  };
+  const action = input({ kind: 'PREPARE', domainId: domain.domainId });
+  assert.equal((await driver(lane).advance(action))?.atValue, 51n);
+  lane.start = async () => ({ status: 'FINALIZED', evidenceHash: hash('f'), atValue: 52n });
+  await assert.rejects(() => driver(lane).advance(action), /lane evidence time is invalid/);
+  lane.start = async () => {
+    lane.now = 49n;
+    return { status: 'FINALIZED', evidenceHash: hash('f'), atValue: 49n };
+  };
+  await assert.rejects(() => driver(lane).advance(action), /lane evidence time is invalid/);
+});

@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import {
   crossDomainPlanHash,
   fromProtocolJson,
@@ -21,7 +22,8 @@ function loopbackOrigin(endpoint: string): string {
   } catch {
     throw new Error('coordination endpoint must be an absolute URL');
   }
-  const loopback = url.hostname === 'localhost' || url.hostname === '[::1]' || url.hostname.startsWith('127.');
+  const loopback = url.hostname === 'localhost' || url.hostname === '[::1]'
+    || (isIP(url.hostname) === 4 && url.hostname.startsWith('127.'));
   if (url.protocol !== 'http:' || !loopback || url.username !== '' || url.password !== ''
     || url.pathname !== '/' || url.search !== '' || url.hash !== '') {
     throw new Error('coordination endpoint must be a loopback HTTP origin');

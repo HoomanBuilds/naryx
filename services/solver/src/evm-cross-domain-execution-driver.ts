@@ -165,7 +165,9 @@ export class EvmCrossDomainExecutionDriver implements CrossDomainExecutionDriver
       result = await this.#lane.start({ ...input, phase });
     }
     if (result.status === 'PENDING') return undefined;
-    requireCondition(result.atValue >= 0n && result.atValue <= now, 'lane evidence time is invalid');
+    const observedThrough = await this.#lane.currentTime();
+    requireCondition(observedThrough >= now && result.atValue >= 0n && result.atValue <= observedThrough,
+      'lane evidence time is invalid');
     const evidenceHash = commitmentHash(result.evidenceHash, 'lane evidence hash');
     if (pendingEvidence !== undefined) {
       requireCondition(bytesEqual(evidenceHash, pendingEvidence), 'finality evidence differs from the submitted evidence');

@@ -61,6 +61,12 @@ cannot silently become replacement transactions. Changing the payload, signer, c
 budget refuses the journal. No new cross-domain execution service is activated by this component;
 committed-position compensation still needs its own qualified path.
 
+Preparation requires the reservation to outlive the commit deadline and expire before the
+compensation deadline. The reservation lane accepts only inventory release, never a claim to
+reverse an executed position. Evidence timestamps are checked against chain time sampled after
+the lane call: a block can arrive during RPC validation. Coordination journal URLs accept only
+loopback IP literals or localhost, not hostnames beginning with `127.`.
+
 ### Maker emergency controls
 
 EVM native strategy runtimes also require `NARYX_EVM_STRATEGY_AUTHORIZATION_DB`, an absolute durable SQLite path outside the checkout. After owner authorization succeeds, the solver journals the exact execution snapshot before returning signed calldata. Receipt observation reads this snapshot instead of recreating an entry against already-mutated positions. Missing authorization evidence fails closed. Preserve this database across deployments and restarts.
@@ -308,7 +314,11 @@ Executor variables: `NARYX_ARBITRUM_SEPOLIA_EXECUTOR_CONFIG` (absolute protocol 
 
 Exit (`src/arbitrum-sepolia-exit.ts`) uses the same quote configuration. An `EXIT` order on `eip155:421614` is quoted only after the chain shows the owner account's active package with an executed full short of exactly the order quantity and matching spot inventory, and no exit already in progress. The spot leg is priced at the smaller of the Uniswap pool and reference price less the pool fee, rounded down, and the quoter's `quoteExactInputSingle` proceeds for exactly that sale, which is refused when the quoter reverts or the sale would end at the price limit; the perpetual output is collateral plus entry notional less close notional (rounded up) and the larger position fee (rounded up). The route is a spot `SELL` at that floor and a reduce-only perpetual `BUY` limited at the reference widened by `perpSlippageBps`, with a single `CANCEL_OPEN_ORDERS` recovery slot. The executor needs `exitController` (lowercase, equal to the factory's `exitController()`) and `exitCallbackGasLimit` in its configuration; without them exit routes answer `503 EXIT_UNAVAILABLE`. `POST /internal/solver/arbitrum-sepolia/prepare-exit` (`{ attemptId }`) journals the unsigned `ExitAuthorization` (receiver and spot proceeds go to the owner, `fullCloseSizeUsd` is the live short size, `minOutputAmount` is the signed perpetual minimum in GMX 30-decimal USD, `acceptablePrice` is the signed perpetual ceiling, the decrease execution fee uses `DECREASE_ORDER_GAS_LIMIT`, and the solver is the fee payer and cancellation receiver) after checking `exitDigest` against the controller, and `POST /internal/solver/arbitrum-sepolia/authorize-exit` (`{ attemptId, ownerSignature }`) journals the owner's EIP-712 signature after recovering it to the owner. `execute` then sends `submitFullClose` once from the solver key with the execution fee, takes the request key from `ExitSubmitted`, and afterwards sends at most one each of `finalizeExecutedExit`, `requestCancellationOrReconciliation` (only after `cancelAfter`), and `processReconciliation`. It reports `SETTLED` with the journaled `finalPackageReceipt`, `CANCELLED` when GMX cancelled the close and the package stays open, `VENUE_PENDING` while the keeper is pending, and `RECOVERY_REQUIRED` for frozen, conflicting, or reverted follow-up states. An expired authorization or changed chain state before submission marks the attempt `FAILED` with no write.
 
-Limitation: the coordinator requires the owner's EIP-712 signature over every reservation, and the deployment has exactly one `GmxV2IsolatedAccount` with one owner. Until a per-user isolated account factory and a wallet-signed reservation step exist, only that dedicated testnet owner can trade, and its key is held by the executor process as a dedicated testnet account gate. No reviewed Arbitrum Sepolia Uniswap V3 pool against the GMX collateral token is pinned yet, so the spot port and live entry also remain blocked by the deployment runbook.
+Arbitrum activation requires the registered isolated account factory, spot port, live price bounds
+and the owner's reservation signature and funding. The executor holds no owner key. The deployed
+testnet route has entry and recovery evidence; later entries can still be refused for adverse GMX
+price impact, insufficient margin or stale prices. Consult the current release and GO-LIVE records
+for that deployment, rather than treating SDK support as an execution guarantee.
 
 ## Hyperliquid SDK dependency
 

@@ -74,3 +74,11 @@ test('persists plans and events through loopback while replaying snapshots from 
     `GET /v1/coordinations/${planHash}`,
   ]);
 });
+
+test('coordination refuses hostnames that resemble a loopback address', () => {
+  for (const origin of ['http://127.example.com', 'http://127.0.0.1.example.com', 'http://192.168.1.1', 'http://127.0.0.1/private']) {
+    assert.throws(() => new HttpCrossDomainCoordinationJournal(origin), /loopback HTTP origin/);
+  }
+  assert.doesNotThrow(() => new HttpCrossDomainCoordinationJournal('http://127.0.0.2:8787'));
+  assert.doesNotThrow(() => new HttpCrossDomainCoordinationJournal('http://[::1]:8787'));
+});

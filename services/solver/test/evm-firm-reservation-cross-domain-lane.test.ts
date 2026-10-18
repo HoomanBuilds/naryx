@@ -219,7 +219,7 @@ class Port implements EvmFirmReservationCrossDomainPort {
     routeHash: hex('c'),
     baseAtoms: 1_000n,
     quoteAtoms: 500n,
-    expiry: 60n,
+    expiry: 250n,
     state: 'LIVE',
   };
   packageStateValue: EvmAtomicPackageState = {
@@ -304,7 +304,7 @@ async function setup() {
     execution: built.transport,
     events,
   });
-  return { driver, input, port };
+  return { driver, input, port, lane };
 }
 
 function eventSummary(event: CrossDomainEvent | undefined) {
@@ -331,7 +331,7 @@ test('prepares and finalizes one firm atomic EVM package entry', async () => {
 
 test('releases only the exact expired reservation during compensation', async () => {
   const { driver, input, port } = await setup();
-  port.now = 61n;
+  port.now = 251n;
   port.reservationValue = {
     ...port.reservationValue,
     quoteHash: hex('0'),
@@ -348,4 +348,22 @@ test('releases only the exact expired reservation during compensation', async ()
   assert.equal(port.submitted.length, 1);
   assert.equal(port.submitted[0]?.to, bookAddress);
   assert.equal(port.submitted[0]?.data, releaseData);
+});
+
+test('preparation requires reservation coverage through commit and a bounded release window', async () => {
+  const { driver, input, port } = await setup();
+  for (const expiry of [plan.commitDeadline, plan.compensationDeadline]) {
+    port.reservationValue = { ...port.reservationValue, expiry };
+    const result = await driver.advance(input({ kind: 'PREPARE', domainId: domain.domainId }));
+    assert.equal(result?.kind, 'PREPARE_FAILED');
+  }
+  assert.equal(port.submitted.length, 0);
+});
+
+test('reservation release cannot be presented as a filled-position reversal', async () => {
+  const { lane, input, port } = await setup();
+  const request = input({ kind: 'COMPENSATE', domainId: domain.domainId });
+  await assert.rejects(() => lane.start({ ...request, phase: 'COMPENSATE',
+    compensation: { ...request.compensation, actionKind: 'REVERSE_FILLED_LEGS' } }), /cannot reverse filled legs/);
+  assert.equal(port.submitted.length, 0);
 });

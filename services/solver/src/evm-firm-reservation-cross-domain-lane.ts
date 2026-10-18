@@ -176,6 +176,8 @@ export class EvmFirmReservationCrossDomainLane implements EvmCrossDomainExecutio
     const valid = this.#reservationMatches(input, execution, reservation)
       && reservation.state === 'LIVE'
       && reservation.expiry > now
+      && reservation.expiry > input.plan.commitDeadline
+      && reservation.expiry < input.plan.compensationDeadline
       && sameHash(
         await this.#port.liveReservationId(
           this.#config.reservationBook,
@@ -299,6 +301,8 @@ export class EvmFirmReservationCrossDomainLane implements EvmCrossDomainExecutio
   }
 
   #atomicExecution(input: EvmCrossDomainLaneInput): EvmAtomicPreparedExecution {
+    requireCondition(input.compensation.actionKind === 'RELEASE_RESERVED_INVENTORY',
+      'lane cannot reverse filled legs or cancel external executions');
     requireCondition(input.execution.kind === 'EVM_MULTI_STRATEGY_ACCOUNT',
       'lane requires an EVM multi-strategy account execution');
     requireCondition(input.execution.envelope.execution.operation === 1
