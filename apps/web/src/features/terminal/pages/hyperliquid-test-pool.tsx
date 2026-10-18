@@ -11,6 +11,7 @@ import styles from "./pages.module.css";
 import cash from "./native-cash.module.css";
 
 type Member = { owner: string; enrolled: boolean; balanceQuoteAtoms: bigint; poolBusy: boolean; observedAtMs: number;
+  availableDepositQuoteAtoms?: bigint;
   operations: { id: string; kind: string; state: string }[] };
 
 async function request(baseUrl: string, command: string, body: unknown): Promise<unknown> {
@@ -26,7 +27,7 @@ async function request(baseUrl: string, command: string, body: unknown): Promise
 
 export function HyperliquidTestPool({ baseUrl }: { baseUrl: string | null }) {
   const query = useQuery({ queryKey: ["test-pool-config", baseUrl], enabled: baseUrl !== null, retry: false,
-    staleTime: 60_000, queryFn: async () => testPoolConfig(await request(baseUrl!, "config", {})) });
+    staleTime: 30_000, refetchInterval: 30_000, queryFn: async () => testPoolConfig(await request(baseUrl!, "config", {})) });
   if (!baseUrl || !query.data) return null;
   return <PoolAccount key={`${baseUrl}:${query.data.bindingHash}`} baseUrl={baseUrl} config={query.data} />;
 }
@@ -84,7 +85,7 @@ function PoolAccount({ baseUrl, config }: { baseUrl: string; config: TestPoolCon
     } finally { lock.current = false; setBusy(null); }
   };
   const withdrawal = async () => {
-    if (!owner || !/^(?:0|[1-9][0-9]{0,2})(?:\.[0-9]{1,6})?$/.test(amount)) throw new Error("Enter a positive test USDC amount with at most six decimals.");
+    if (!owner || !/^(?:0|[1-9][0-9]{0,38})(?:\.[0-9]{1,6})?$/.test(amount)) throw new Error("Enter a positive test USDC amount with at most six decimals.");
     const debitQuoteAtoms = parseUnits(amount, 6);
     if (!account || debitQuoteAtoms <= BigInt(0) || debitQuoteAtoms > account.balanceQuoteAtoms) throw new Error("Amount exceeds your last verified pool balance.");
     const body = { id: `withdraw-${crypto.randomUUID()}`, owner, debitQuoteAtoms, expiresAtMs: Date.now() + 600_000 };
@@ -106,10 +107,13 @@ function PoolAccount({ baseUrl, config }: { baseUrl: string; config: TestPoolCon
   return <section className={styles.card} aria-labelledby="test-pool-title">
     <div className={styles.cardHead}><h2 id="test-pool-title">Shared test pool</h2><span>Hyperliquid Testnet</span></div>
     <div className={cash.body}>
-      <p className={cash.terms}>{config.custody === "CUSTODIAL_TESTNET_POOL_V2" ? "Open testnet enrollment with signed custody consent." : "Optional custodial mode for approved test wallets."} Naryx controls the pooled account; your balance is a claim in its ledger, not a separate venue position. Your normal trading account is unchanged. Do not send real funds. Pooled trading requires separately signed mandates from all participating owners.</p>
+      <p className={cash.terms}>{config.custody !== "CUSTODIAL_TESTNET_POOL_V1" ? "Open testnet enrollment with signed custody consent." : "Optional custodial mode for approved test wallets."} Naryx controls the pooled account; your balance is a claim in its ledger, not a separate venue position. Your normal trading account is unchanged. Do not send real funds. Pooled trading requires separately signed mandates from all participating owners.</p>
       <dl className={cash.metrics}>
         <div><dt>Pool account</dt><dd><button type="button" title={config.poolAccount} onClick={() => void navigator.clipboard.writeText(config.poolAccount).catch(() => setMessage("Could not copy the pool address."))}>{shortAddress(config.poolAccount)}</button></dd></div>
         <div><dt>Pool cap</dt><dd>{formatUnits(config.maximumTotalQuoteAtoms, 6)} test USDC</dd></div>
+        {config.maximumOwnerQuoteAtoms !== undefined && <div><dt>Per-wallet cap</dt><dd>{formatUnits(config.maximumOwnerQuoteAtoms, 6)} test USDC</dd></div>}
+        {config.availableQuoteAtoms !== undefined && <div><dt>Pool deposit room</dt><dd>{formatUnits(config.availableQuoteAtoms, 6)} test USDC</dd></div>}
+        {account?.availableDepositQuoteAtoms !== undefined && <div><dt>Your last verified deposit room</dt><dd>{formatUnits(config.availableQuoteAtoms !== undefined && config.availableQuoteAtoms < account.availableDepositQuoteAtoms ? config.availableQuoteAtoms : account.availableDepositQuoteAtoms, 6)} test USDC</dd></div>}
         <div><dt>Your last verified balance</dt><dd>{account ? `${formatUnits(account.balanceQuoteAtoms, 6)} test USDC` : "Sign to view"}</dd></div>
         <div><dt>Account status</dt><dd>{account ? account.poolBusy ? "Operation in progress" : account.enrolled ? "Enrolled" : "Consent required" : "Not verified"}</dd></div>
       </dl>
@@ -130,7 +134,7 @@ function PoolAccount({ baseUrl, config }: { baseUrl: string; config: TestPoolCon
           <button type="button" className={styles.actionBtn} disabled={disabled || account.poolBusy || account.balanceQuoteAtoms === BigInt(0)} onClick={() => void run("Authorizing withdrawal...", withdrawal)}>Review withdrawal</button>
         </div>
         <details className={cash.review}><summary>Reconcile a testnet transfer</summary>
-          <p className={cash.terms}>Use the Hyperliquid Testnet transfer record. Deposits are credited only after both venue ledgers match. Check the pool cap before sending test funds. Pending withdrawals lock new pool operations until reconciled.</p>
+          <p className={cash.terms}>Use the Hyperliquid Testnet transfer record. Deposits are credited only after both venue ledgers match. Refresh your deposit room before sending test funds; capacity is shared, not reserved. Do not exceed either funding cap. Profits above a cap remain withdrawable. Pending withdrawals lock new pool operations until reconciled.</p>
           <div className={cash.controls}>
             <label>Transfer hash<input value={transferHash} onChange={event => setTransferHash(event.target.value.trim().toLowerCase())} placeholder="0x..." /></label>
             <label>Transfer timestamp (ms)<input inputMode="numeric" value={transferTime} onChange={event => setTransferTime(event.target.value.trim())} /></label>
@@ -152,7 +156,7 @@ function PoolAccount({ baseUrl, config }: { baseUrl: string; config: TestPoolCon
             })}>Release expired request</button>
           </div>)}
         </details>
-        {config.custody === "CUSTODIAL_TESTNET_POOL_V2" && <details className={cash.review}><summary>Submit a signed pooled strategy</summary>
+        {config.custody !== "CUSTODIAL_TESTNET_POOL_V1" && <details className={cash.review}><summary>Submit a signed pooled strategy</summary>
           <p className={cash.terms}>Import a protocol-encoded epoch plan and all owner authorizations. The plan must include two funded traders and a consenting recovery sponsor. Every participant signs the exact plan and their loss and fee limits. Naryx reconciles and closes the epoch automatically; this does not authorize future trades.</p>
           <textarea aria-label="Signed pooled strategy" value={epochPayload} maxLength={262144} rows={5}
             onChange={event => setEpochPayload(event.target.value)} placeholder={'{"plan": {...}, "authorizations": [...]}'} />
