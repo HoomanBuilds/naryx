@@ -97,7 +97,7 @@ function recoveryEvent(input: ManualRecoveryEvent): ManualRecoveryEvent {
 
 function crossDomainEvent(input: CrossDomainEvent): CrossDomainEvent {
   if (typeof input !== "object" || input === null) throw new CoordinationStoreError("INVALID_EVENT", "An event is an object.");
-  if (input.kind === "PREPARE_FAILED") return { kind: input.kind, domainId: input.domainId, evidenceHash: input.evidenceHash, atValue: input.atValue };
+  if (input.kind === "PREPARE_FAILED" || input.kind === "COMMIT_FAILED") return { kind: input.kind, domainId: input.domainId, evidenceHash: input.evidenceHash, atValue: input.atValue };
   if (input.kind === "PREPARED" || input.kind === "COMMITTED" || input.kind === "COMPENSATED") {
     return { kind: input.kind, domainId: input.domainId, evidenceHash: input.evidenceHash, finality: input.finality, atValue: input.atValue };
   }

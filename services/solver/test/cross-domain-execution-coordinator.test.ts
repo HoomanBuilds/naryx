@@ -200,3 +200,35 @@ test('compensates prepared inventory after another domain reports a definitive p
   assert.equal(done.status, 'TERMINAL');
   assert.equal(done.state.terminalState, 'RECOVERED_FLAT');
 });
+
+test('pending and duplicate commit observations do not starve another domain recovery', async () => {
+  for (const duplicate of [false, true]) {
+  const recoveries = compensations.map(value => ({ ...value, actionKind: 'REVERSE_FILLED_LEGS' as const }));
+  const recoverable = { ...plan, planVersion: 2, legs: plan.legs.map((leg, i) => ({ ...leg,
+    compensationActionHash: crossDomainCompensationActionHash(recoveries[i]!),
+  })) };
+  const planHash = toHex(crossDomainPlanHash(recoverable));
+  const journal = new MemoryJournal();
+  await journal.registerPlan(recoverable);
+  for (const value of [event('PREPARED', arbitrum.domainId, 20n), event('PREPARED', base.domainId, 30n), event('COMMITTED', base.domainId, 40n)]) {
+    await journal.appendEvent(planHash, value);
+  }
+  const observed: CrossDomainEvent = { kind: 'COMMITTED', domainId: arbitrum.domainId,
+    evidenceHash: hash('e'), atValue: 50n, finality: 'OBSERVED' };
+  if (duplicate) await journal.appendEvent(planHash, observed);
+  journal.now = 201n;
+  let reads = 0;
+  const coordinator = new CrossDomainExecutionCoordinator(journal, [
+    { domain: arbitrum, advance: async request => { assert.equal(request.action.kind, 'RECONCILE_COMMIT'); reads++; return duplicate ? { ...observed, atValue: 201n } : undefined; } },
+    driver(base, [event('COMPENSATED', base.domainId, 202n)]),
+  ]);
+  const result = await coordinator.advance({ plan: recoverable, compensations: recoveries }, {
+    ...execution(), crossDomainPlanHash: crossDomainPlanHash(recoverable),
+  });
+  assert.equal(reads, 1);
+  assert.equal(result.event?.kind, 'COMPENSATED');
+  assert.equal(result.state.domains[base.domainId], 'COMPENSATED');
+  assert.equal(result.state.terminalState, undefined);
+  assert.equal((await journal.snapshot(planHash)).events.length, duplicate ? 5 : 4);
+  }
+});

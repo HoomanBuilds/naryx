@@ -14,6 +14,7 @@ import {
   manualRecoveryIncidentHash,
   toProtocolJson,
   type CrossDomainPlanInput,
+  type CrossDomainEvent,
   type ManualRecoveryIncidentInput,
 } from "@naryx/protocol-types";
 import { createCoordinationInternalHandler, createPublicApiHandler, SqliteCoordinationStore, SqlitePackageExchangeStore } from "../src/index.js";
@@ -42,6 +43,30 @@ const plan: CrossDomainPlanInput = {
     { domain: domainRef("eip155:84532", 1, "22".repeat(32)), legIds: ["perp"], inventoryReservationId: "32".repeat(32), interimExposureQuoteAtoms: 500n, compensationActionHash: "42".repeat(32) },
   ],
 };
+
+test("v2 preserves partial-commit recovery evidence across a database restart", () => {
+  const dir = mkdtempSync(join(tmpdir(), "naryx-coordination-v2-"));
+  const path = join(dir, "coordination.sqlite");
+  let store = new SqliteCoordinationStore(path, { environment: "testnet" });
+  try {
+    const { planHash } = store.registerPlan({ ...plan, planVersion: 2 });
+    const events: CrossDomainEvent[] = [
+      { kind: "PREPARED", domainId: "svm:testnet", evidenceHash: "51".repeat(32), finality: "FINALIZED", atValue: 1_000n },
+      { kind: "PREPARED", domainId: "eip155:84532", evidenceHash: "52".repeat(32), finality: "FINALIZED", atValue: 1_010n },
+      { kind: "COMMITTED", domainId: "svm:testnet", evidenceHash: "53".repeat(32), finality: "FINALIZED", atValue: 1_020n },
+      { kind: "COMMIT_FAILED", domainId: "eip155:84532", evidenceHash: "54".repeat(32), atValue: 1_201n },
+    ];
+    for (const event of events) store.appendCrossDomainEvent(planHash, event);
+    store.close();
+    store = new SqliteCoordinationStore(path, { environment: "testnet" });
+    assert.equal(store.coordination(planHash, () => 1_202n)?.state.phase, "ABORTING");
+    assert.equal(store.coordination(planHash, () => 1_202n)?.events.at(-1)?.kind, "COMMIT_FAILED");
+    for (const [i, domainId] of ["svm:testnet", "eip155:84532"].entries()) {
+      store.appendCrossDomainEvent(planHash, { kind: "COMPENSATED", domainId, evidenceHash: "55".repeat(32), finality: "FINALIZED", atValue: 1_210n + BigInt(i) });
+    }
+    assert.equal(store.coordination(planHash, () => 1_400n)?.state.terminalState, "RECOVERED_FLAT");
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
 
 test("coordinations and recovery incidents replay through the kernel, and only signed approvals from named approvers count", async () => {
   const dir = mkdtempSync(join(tmpdir(), "naryx-coordination-"));

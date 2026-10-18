@@ -1,5 +1,6 @@
 import {
   bytesEqual,
+  commitmentHash,
   crossDomainExecutionBundle,
   crossDomainPlanHash,
   replayCrossDomainCoordination,
@@ -69,11 +70,11 @@ function eventAllowed(
   event: CrossDomainEvent,
 ): boolean {
   if (action.kind === 'PREPARE') return event.kind === 'PREPARED' || event.kind === 'PREPARE_FAILED';
-  if (action.kind === 'COMMIT') return event.kind === 'COMMITTED';
+  if (action.kind === 'COMMIT' || action.kind === 'RECONCILE_COMMIT') return event.kind === 'COMMITTED' || event.kind === 'COMMIT_FAILED';
   if (action.kind === 'COMPENSATE') return event.kind === 'COMPENSATED';
   const domainStatus = state.domains[action.domainId];
   if (domainStatus === 'PREPARING') return event.kind === 'PREPARED' || event.kind === 'PREPARE_FAILED';
-  if (domainStatus === 'COMMITTING') return event.kind === 'COMMITTED';
+  if (domainStatus === 'COMMITTING') return event.kind === 'COMMITTED' || event.kind === 'COMMIT_FAILED';
   if (domainStatus === 'COMPENSATING') return event.kind === 'COMPENSATED';
   return false;
 }
@@ -137,33 +138,32 @@ export class CrossDomainExecutionCoordinator {
     if (snapshot.state.terminalState !== undefined) {
       return Object.freeze({ planHash, status: 'TERMINAL', state: snapshot.state });
     }
-    const action = snapshot.state.nextActions[0];
-    requireCondition(action !== undefined, 'cross-domain coordination has no terminal state or next action');
-    if (action.kind === 'ESCALATE') {
-      return Object.freeze({ planHash, status: 'ESCALATION_REQUIRED', state: snapshot.state, action });
+    const actions = snapshot.state.nextActions;
+    requireCondition(actions.length > 0, 'cross-domain coordination has no terminal state or next action');
+    const escalation = actions.find(action => action.kind === 'ESCALATE');
+    if (escalation !== undefined) return Object.freeze({ planHash, status: 'ESCALATION_REQUIRED', state: snapshot.state, action: escalation });
+    // Old plans retain sequential advancement; recovery plans must not starve a filled side.
+    for (const action of plan.planVersion === 2 ? actions : actions.slice(0, 1)) {
+      requireCondition(action.kind !== 'ESCALATE', 'escalation cannot execute');
+      const driver = this.#drivers.find((candidate) => candidate.domain.domainId === action.domainId)!;
+      const planLeg = planInput.legs.find((candidate) => candidate.domain.domainId === action.domainId)!;
+      const compensation = bundle.compensations.find((candidate) => candidate.domain.domainId === action.domainId)!;
+      const domainExecution = execution.domains.find((candidate) => candidate.domain.domainId === action.domainId)!;
+      const event = await driver.advance({ planHash, action, plan: planInput, planLeg, compensation,
+        execution: domainExecution, events: snapshot.events });
+      if (event === undefined) continue;
+      requireCondition(event.domainId === action.domainId, 'domain driver returned evidence for another domain');
+      requireCondition(eventAllowed(action, snapshot.state, event), `domain driver returned ${event.kind} evidence for ${action.kind}`);
+      const previous = [...snapshot.events].reverse().find(value => value.kind === event.kind && value.domainId === event.domainId);
+      if (plan.planVersion === 2 && previous !== undefined
+        && bytesEqual(commitmentHash(previous.evidenceHash), commitmentHash(event.evidenceHash))
+        && ('finality' in previous ? previous.finality : undefined) === ('finality' in event ? event.finality : undefined)) continue;
+      replayCrossDomainCoordination(planInput, [...snapshot.events, event], event.atValue);
+      await this.#journal.appendEvent(planHash, event);
+      const after = await this.#checkedSnapshot(planHash, planInput);
+      return Object.freeze({ planHash, status: 'ADVANCED', state: after.state, action, event });
     }
-    const driver = this.#drivers.find((candidate) => candidate.domain.domainId === action.domainId)!;
-    const planLeg = planInput.legs.find((candidate) => candidate.domain.domainId === action.domainId)!;
-    const compensation = bundle.compensations.find((candidate) => candidate.domain.domainId === action.domainId)!;
-    const domainExecution = execution.domains.find((candidate) => candidate.domain.domainId === action.domainId)!;
-    const event = await driver.advance({
-      planHash,
-      action,
-      plan: planInput,
-      planLeg,
-      compensation,
-      execution: domainExecution,
-      events: snapshot.events,
-    });
-    if (event === undefined) {
-      return Object.freeze({ planHash, status: 'PENDING', state: snapshot.state, action });
-    }
-    requireCondition(event.domainId === action.domainId, 'domain driver returned evidence for another domain');
-    requireCondition(eventAllowed(action, snapshot.state, event), `domain driver returned ${event.kind} evidence for ${action.kind}`);
-    replayCrossDomainCoordination(planInput, [...snapshot.events, event], event.atValue);
-    await this.#journal.appendEvent(planHash, event);
-    const after = await this.#checkedSnapshot(planHash, planInput);
-    return Object.freeze({ planHash, status: 'ADVANCED', state: after.state, action, event });
+    return Object.freeze({ planHash, status: 'PENDING', state: snapshot.state, action: actions[0]! });
   }
 
   async #checkedSnapshot(

@@ -24,7 +24,7 @@ export type EvmCrossDomainPhase = 'PREPARE' | 'COMMIT' | 'COMPENSATE';
 export type EvmCrossDomainPhaseResult = Readonly<
   | { status: 'PENDING' }
   | {
-      status: 'DEFINITIVE_PREPARE_FAILURE';
+      status: 'DEFINITIVE_PREPARE_FAILURE' | 'DEFINITIVE_COMMIT_FAILURE';
       evidenceHash: Uint8Array | string;
       atValue: bigint;
     }
@@ -51,6 +51,8 @@ export interface EvmCrossDomainExecutionLane {
   currentTime(): Promise<bigint>;
   start(input: Readonly<EvmCrossDomainLaneInput>): Promise<EvmCrossDomainPhaseResult>;
   awaitFinality(input: Readonly<EvmCrossDomainFinalityInput>): Promise<EvmCrossDomainPhaseResult>;
+  readonly supportsCommitRecovery?: true;
+  reconcileCommit?(input: Readonly<EvmCrossDomainLaneInput>): Promise<EvmCrossDomainPhaseResult>;
 }
 
 export interface EvmCrossDomainCompensationProfile {
@@ -90,8 +92,8 @@ function phaseForAwait(input: CrossDomainDriverAdvanceInput): Readonly<{
   evidenceHash: CommitmentHash;
 }> {
   const event = [...input.events].reverse().find((candidate) => candidate.domainId === input.action.domainId
-    && candidate.kind !== 'PREPARE_FAILED' && candidate.finality !== 'FINALIZED');
-  requireCondition(event !== undefined && event.kind !== 'PREPARE_FAILED', 'no pending domain evidence is available');
+    && 'finality' in candidate && candidate.finality !== 'FINALIZED');
+  requireCondition(event !== undefined && 'finality' in event, 'no pending domain evidence is available');
   return Object.freeze({
     phase: event.kind === 'PREPARED' ? 'PREPARE' : event.kind === 'COMMITTED' ? 'COMMIT' : 'COMPENSATE',
     kind: event.kind,
@@ -147,7 +149,13 @@ export class EvmCrossDomainExecutionDriver implements CrossDomainExecutionDriver
     let expectedKind: 'PREPARED' | 'COMMITTED' | 'COMPENSATED';
     let result: EvmCrossDomainPhaseResult;
     let pendingEvidence: CommitmentHash | undefined;
-    if (input.action.kind === 'AWAIT_FINALITY') {
+    if (input.action.kind === 'RECONCILE_COMMIT') {
+      requireCondition(input.plan.planVersion === 2 && this.#lane.reconcileCommit !== undefined,
+        'lane cannot reconcile a committed position');
+      phase = 'COMMIT';
+      expectedKind = 'COMMITTED';
+      result = await this.#lane.reconcileCommit({ ...input, phase });
+    } else if (input.action.kind === 'AWAIT_FINALITY') {
       const pending = phaseForAwait(input);
       phase = pending.phase;
       expectedKind = pending.kind;
@@ -182,6 +190,11 @@ export class EvmCrossDomainExecutionDriver implements CrossDomainExecutionDriver
         atValue: result.atValue,
       });
     }
+    if (result.status === 'DEFINITIVE_COMMIT_FAILURE') {
+      requireCondition(input.plan.planVersion === 2 && phase === 'COMMIT'
+        && this.#lane.supportsCommitRecovery === true, 'lane cannot prove a definitive commit failure');
+      return Object.freeze({ kind: 'COMMIT_FAILED', domainId: this.domain.domainId, evidenceHash, atValue: result.atValue });
+    }
     return Object.freeze({
       kind: expectedKind,
       domainId: this.domain.domainId,
@@ -192,6 +205,8 @@ export class EvmCrossDomainExecutionDriver implements CrossDomainExecutionDriver
   }
 
   #validateInput(input: CrossDomainDriverAdvanceInput): void {
+    requireCondition(input.plan.planVersion !== 2 || (this.#lane.supportsCommitRecovery === true
+      && this.#lane.reconcileCommit !== undefined), 'recoverable plans require a filled-position recovery lane');
     requireCondition(input.plan.environment === 'testnet' && input.plan.timeUnit === 'EVM_UNIX_SECONDS',
       'plan environment or clock is unsupported');
     requireCondition(input.planHash === toHex(crossDomainPlanHash(input.plan)), 'plan hash is invalid');

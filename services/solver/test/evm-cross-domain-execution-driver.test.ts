@@ -200,3 +200,22 @@ test('accepts a block mined during a lane call but refuses future evidence and c
   };
   await assert.rejects(() => driver(lane).advance(action), /lane evidence time is invalid/);
 });
+
+test('v2 refuses release-only lanes and reconciles through a read-only capability', async () => {
+  const lane = new Lane();
+  const action = input({ kind: 'RECONCILE_COMMIT', domainId: domain.domainId });
+  const recoverable = { ...action.plan, planVersion: 2 };
+  const request = { ...action, plan: recoverable, planHash: toHex(crossDomainPlanHash(recoverable)) };
+  await assert.rejects(() => driver(lane).advance(request), /filled-position recovery lane/);
+  let writes = 0;
+  lane.start = async () => { writes++; return { status: 'PENDING' }; };
+  lane.now = 201n;
+  const capable = Object.assign(lane, {
+    supportsCommitRecovery: true as const,
+    reconcileCommit: async (): Promise<EvmCrossDomainPhaseResult> => ({ status: 'DEFINITIVE_COMMIT_FAILURE', evidenceHash: hash('f'), atValue: lane.now }),
+  });
+  assert.equal((await driver(capable).advance(request))?.kind, 'COMMIT_FAILED');
+  assert.equal(writes, 0);
+  await assert.rejects(() => driver(capable).advance({ ...request, action: { kind: 'COMMIT', domainId: domain.domainId } }), /deadline has passed/);
+  await assert.rejects(() => driver(capable).advance(action), /cannot reconcile/);
+});

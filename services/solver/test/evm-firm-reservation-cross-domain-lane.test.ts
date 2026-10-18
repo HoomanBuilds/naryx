@@ -310,7 +310,7 @@ async function setup() {
 function eventSummary(event: CrossDomainEvent | undefined) {
   return {
     kind: event?.kind,
-    finality: event === undefined || event.kind === 'PREPARE_FAILED' ? undefined : event.finality,
+    finality: event !== undefined && 'finality' in event ? event.finality : undefined,
   };
 }
 
