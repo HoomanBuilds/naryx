@@ -29,6 +29,7 @@ function observations(): CalendarDomainObservation[] {
       accountingToken: a(11), grossQuoteAtoms: 0n, netQuoteAtoms: 0n, marginQuoteAtoms: 0n, reservedRecoveryQuoteAtoms: 0n,
       observationAgeMs: 0n, timeToUnwindMs: 3_600_000n, dependencyExposures: [{ dependencyId: h(`adapter-${chain}`), grossQuoteAtoms: 0n }] },
     feePolicyVersion: 1, feePolicyManifestHash: h('fees'), reservationId: async order => h(`reservation-${chain}-${order}`),
+    reservationBook: { address: a(i + 14), codeHash: h('book'), maximumTtlSeconds: 21_600n, maximumBaseAtoms: 10n ** 15n },
     executorClassId: 'evm-recoverable-package-v1', executorClassVersion: 1, executorClassManifestHash: h('executor'),
   }));
 }
@@ -76,8 +77,13 @@ test('projection changes alter canonical commitments; mismatched owner, domain a
   for (const mutation of [
     { owner: a(99) }, { generation: (1n << 64n) - 1n },
     { domain: domainRef('eip155:1', 3, h('mainnet')) }, { maturity: now + 28_800n },
+    { reservationBook: { ...observations()[0]!.reservationBook, maximumTtlSeconds: 3_600n } },
+    { reservationBook: { ...observations()[0]!.reservationBook, maximumBaseAtoms: 99_999_999_999_999n } },
   ]) {
     const source = observations(); source[0] = { ...source[0]!, ...mutation };
     await assert.rejects(prepareCanonicalCalendar({ ...input, observations: source }), /refused/);
   }
+  const boundary = observations();
+  boundary[0] = { ...boundary[0]!, reservationBook: { ...boundary[0]!.reservationBook, maximumTtlSeconds: 14_640n } };
+  await prepareCanonicalCalendar({ ...input, observations: boundary });
 });

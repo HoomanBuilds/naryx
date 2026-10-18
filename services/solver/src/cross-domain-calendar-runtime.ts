@@ -33,6 +33,8 @@ const BOOK_ABI = parseAbi([
   'function reservationId(string,uint32,bytes32,string,bytes32,uint256) pure returns(bytes32)',
   'function reserve(((bytes32 domainIdHash,uint32 manifestVersion,bytes32 manifestHash) domain,string solverId,address solver,address reclaimOwner,address strategyAccount,uint256 packageNonce,bytes32 orderHash,uint256 reservationNonce,uint256 baseAtoms,uint256 quoteAtoms,uint64 expiry,address consumer,bytes32 consumerCodeHash) terms) returns(bytes32)',
   'function finalizeReservation(bytes32,bytes32,bytes32)',
+  'function maximumTtlSeconds() view returns(uint64)',
+  'function maximumBaseAtomsPerReservation() view returns(uint256)',
 ]);
 interface ReleaseRecord {
   environment: string; activationState: string; chainId: number; owner: Address; account: Address; accountCodeHash: Hex;
@@ -108,7 +110,7 @@ export function createCrossDomainCalendarRuntime(input: {
     requireCondition(await client.getChainId() === r.chainId, 'RPC chain identity differs');
     const block = await client.getBlock({ blockTag: 'latest' });
     requireCondition(BigInt(Math.floor(Date.now() / 1_000)) - block.timestamp <= 60n, 'RPC head is stale');
-    const [active, owner, nonce, adapterState, state, balance, instrument, maturity, paused] = await Promise.all([
+    const [active, owner, nonce, adapterState, state, balance, instrument, maturity, paused, maximumTtlSeconds, maximumBaseAtoms] = await Promise.all([
       client.readContract({ address: r.contracts.adapterRegistry!.address, abi: REGISTRY_ABI, functionName: 'activeAdapter', args: [binding.identity.subjectId], blockNumber: block.number }),
       lane.port.accountOwner(r.account), lane.port.accountNextNonce(r.account), lane.port.recoveryAdapterState(adapterPolicy),
       lane.port.packageState(r.account, r.packageId),
@@ -116,6 +118,8 @@ export function createCrossDomainCalendarRuntime(input: {
       client.readContract({ address: instance.address, abi: ADAPTER_ABI, functionName: 'instrument', blockNumber: block.number }),
       client.readContract({ address: instance.address, abi: ADAPTER_ABI, functionName: 'expiry', blockNumber: block.number }),
       client.readContract({ address: r.contracts.protocolConfig!.address, abi: CONFIG_ABI, functionName: 'entryPaused', blockNumber: block.number }),
+      client.readContract({ address: lane.lane.reservationBook, abi: BOOK_ABI, functionName: 'maximumTtlSeconds', blockNumber: block.number }),
+      client.readContract({ address: lane.lane.reservationBook, abi: BOOK_ABI, functionName: 'maximumBaseAtomsPerReservation', blockNumber: block.number }),
     ]);
     const [registered, control] = active;
     requireCondition(!paused && control.state === 0 && control.maximumApprovalAtoms >= CALENDAR_COLLATERAL
@@ -174,6 +178,8 @@ export function createCrossDomainCalendarRuntime(input: {
         series, accountingToken: adapterPolicy.quoteToken, grossQuoteAtoms: 0n, netQuoteAtoms: 0n, marginQuoteAtoms: 0n, reservedRecoveryQuoteAtoms: 0n,
         observationAgeMs: 0n, timeToUnwindMs: 3_600_000n, dependencyExposures: r.dependencies.map(d => ({ ...d, grossQuoteAtoms: 0n })) },
       feePolicyVersion: r.feePolicy.version, feePolicyManifestHash: r.feePolicy.manifestHash,
+      reservationBook: { address: lane.lane.reservationBook, codeHash: lane.lane.reservationBookCodeHash,
+        maximumTtlSeconds, maximumBaseAtoms },
       reservationId: (orderHash, reservationNonce) => client.readContract({ address: lane.lane.reservationBook, abi: BOOK_ABI,
         functionName: 'reservationId', args: [domain.domainId, domain.domainManifestVersion, r.domain.domainManifestHash,
           'registered-cross-domain-calendar-v1', orderHash, reservationNonce] }),

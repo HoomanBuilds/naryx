@@ -23,6 +23,7 @@ const SCALE = 1_000_000_000_000n;
 export const CALENDAR_QUANTITY = 100_000_000_000_000n;
 export const CALENDAR_COLLATERAL = 1_000_000n;
 export const CALENDAR_RECOVERY_LOSS = 100_000n;
+export const CALENDAR_RESERVATION_WINDOW = 14_640n;
 
 export function calendarCommitment(value: unknown) {
   return commitmentHash(createHash('sha256').update('NARYX/registered-calendar/v1\0')
@@ -55,6 +56,8 @@ export interface CalendarDomainObservation {
   readonly risk: EvmStrategyRiskTerms;
   readonly feePolicyVersion: number;
   readonly feePolicyManifestHash: Hex;
+  readonly reservationBook: { readonly address: Address; readonly codeHash: Hex;
+    readonly maximumTtlSeconds: bigint; readonly maximumBaseAtoms: bigint };
   readonly reservationId: (orderHash: Hex, nonce: bigint) => Promise<Hex>;
   readonly executorClassId: string;
   readonly executorClassVersion: number;
@@ -75,6 +78,7 @@ export function calendarProjection(observation: CalendarDomainObservation) {
     baseToken: observation.baseToken.toLowerCase(), quoteToken: observation.quoteToken.toLowerCase(),
     instrument: observation.instrument.toLowerCase(), instrumentCodeHash: observation.instrumentCodeHash,
     role: observation.role, maturity: observation.maturity,
+    reservationBook: observation.reservationBook,
   };
 }
 
@@ -122,6 +126,9 @@ export async function prepareCanonicalCalendar(input: {
   requireCondition(near.maturity < far.maturity && near.maturity > input.now + 28_800n, 'maturities are expired or reversed');
   requireCondition(/^[a-zA-Z0-9._:-]{16,96}$/.test(input.requestId) && input.now > 0n, 'invalid request identity or time');
   for (const observation of observations) {
+    requireCondition(observation.reservationBook.maximumTtlSeconds >= CALENDAR_RESERVATION_WINDOW
+      && observation.reservationBook.maximumBaseAtoms >= CALENDAR_QUANTITY,
+    'reservation book cannot cover the bounded preparation and commitment window');
     requireCondition(observation.owner.toLowerCase() === input.owner.toLowerCase()
       && observation.generation >= 0n && observation.generation < (1n << 64n) - 1n
       && observation.nonce >= 0n && observation.nonce < (1n << 256n) - 1n,
