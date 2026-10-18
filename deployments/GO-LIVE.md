@@ -198,11 +198,11 @@ Status checked 2026-10-18:
 | Item | Current state | Evidence needed to close |
 | --- | --- | --- |
 | 1. Standing liquidity for routed strategies | Closed for the enabled Solana cash-and-carry maker lane. Actual entry/exit and inventory reconciliation completed on 2026-10-18. | Evidence below. This does not advertise native cash liquidity as routed liquidity or activate additional routed maker lanes. |
-| 2. Cross-chain execution activation | Open. The durable coordinator and full spot reversal are implemented. Generation-bound perp/future recovery contracts and solver reconciliation are implemented; their new registry/factory deployments and AWS runtime configuration remain pending. | Deploy and register the separate recovery adapters, configure the capped worker, and record actual multi-domain execution and filled-position recovery evidence without duplicate submission. |
+| 2. Cross-chain execution activation | Recovery deployments, delayed registry/policy activation and capped AWS worker configuration completed on both EVM testnets on 2026-10-18. The worker is running with an empty job queue. No new trade or recovery was executed. | Public order-to-job integration and quote funding for the isolated cohort, followed by actual multi-domain execution and filled-position recovery evidence. Deployment alone does not close this item. |
 | 3. Hyperliquid pooled-mode terminal integration | Closed for the approved dedicated cohort. Both owners completed authenticated browser deposit/withdrawal cycles on 2026-10-18. | UI, database and venue agreed after reload: zero pool cash, liabilities and pending operations. Receipt evidence below. Epoch trading remains operator-only; this is not public custody enrollment. |
 | 4. Strategy ownership transfers | Backend evidence verifier and wallet-confirmed Portfolio workflow deployed for the Base strategy-account lane. A dedicated account is funded; its entry was refused by the signed spread limit before any trade. The funded transfer round-trip remains unverified. | Both owners' consent plus finalized underlying account ownership transfer, reconciled in the strategy book. Database reassignment alone is not a transfer. |
 | 5. Threshold-encryption backend | Backend and solver participation deployed; a real beacon opening was verified. | Preserve this completed backend evidence. Any claim of terminal-integrated encrypted trading also needs an encrypted auction award and settlement; current terminal auctions remain ordinary commit/reveal. |
-| 6. Operational wiring and documentation | Runbook corrected, incident endpoint wired, bounded oracle maintenance deployed. Solana qualification evidence remains unavailable. | A valid qualification journal backed by current release evidence. Do not manufacture a healthy status from a matching code watchlist. |
+| 6. Operational wiring and documentation | Runbook corrected, incident endpoint wired, bounded oracle maintenance deployed. All five Solana code hashes matched on 2026-10-18, but the configured release decision remains NOT_READY with no evidence or funded-operation hashes and no incident journal. This is why API health is degraded. | A valid qualification journal backed by current release evidence, including the required security-review attestation. Do not manufacture a healthy status from a matching code watchlist. |
 
 Independent maker recruitment and additional roadmap capabilities are not new items in this
 completion scope. Report their limitations separately without reopening completed work.
@@ -364,14 +364,36 @@ strategy support is specific to a registered template and deployment, not every 
   before signing and reconcile the exact finalized transaction after restart. Full reversal
   requires exact spot quantities or a derivative close bound to its entry generation and payload,
   bounded collateral loss, zero remaining derivative position and reserve, and finalized receipts.
-  The existing immutable adapter registries do not recognize the new recoverable classes. New
-  registry/account-factory deployment and delayed registration are required before their use;
-  existing exact adapters and user accounts are unchanged. The cross-domain systemd unit is
-  installed but disabled until its qualified testnet configuration exists.
+  On 2026-10-18 separate registry/account factories, recoverable perpetual and dated-future
+  adapters, spot adapters, reservation books, and delayed fee/risk registrations were deployed
+  and activated on Base and Arbitrum Sepolia. Domain manifest version 3 binds these new account
+  deployments; existing accounts and signed version-2 manifests are unchanged. Sixteen deployed
+  code hashes per chain matched before configuration was installed. Each dedicated solver received
+  0.0003 test ETH, with a worker gas budget of 0.00025 test ETH per chain.
+  Risk policy version 2 corrects the initial generic dependency into all five exact adapter
+  subject IDs on each chain. Both upgrades passed delayed governance before any job was admitted;
+  the configuration exporter now checks every dependency cap against the deployed registry.
+  The AWS cross-domain worker is enabled and running with a separate durable job database,
+  allowlisted owner/accounts, and a 10 mock-USDC entry cap per chain. This is an operator-admitted
+  recovery cohort using controlled test derivative venues, not activation of every website strategy
+  or a claim of atomic cross-chain settlement. No recovery job or new trade was submitted during
+  this deployment. Public strategy materialization, cohort quote funding and live recovery evidence
+  remain activation prerequisites for that user flow.
 - Base strategy-account transfer verification now checks both wallet consents, the exact account,
   its finalized ownership transition and receipt-backed strategy lifecycle. The Portfolio UI
   proposes and accepts transfers through the owners' wallets; it does not transfer an account by
   changing a database owner. This is scoped Base support, not generic novation of every venue.
+  The earlier funded transfer cycle has not completed: entry was refused by the signed spread
+  guard before any position opened. Deployment does not establish that transfer cycle as verified.
+  No extra trade or browser test was run during the recovery deployment.
+
+## Recovery deployment identities
+
+The separate recovery account factories are `0x210757cdcace99077fa81157e6224c2899cc4698`
+on Base Sepolia and `0x12f45b20600d4d7ac7f82a6ccf63188d013c7814` on Arbitrum Sepolia.
+Their reservation books are `0x8c3e369aaad5b377eacdbbeccb6a292cf05a8bca` and
+`0xe6fb9393541a462702d5b3e5a7b3fc63a5cdef17`, respectively. Detailed transaction observations
+are installed on AWS at `/srv/naryx/release/recovery/activation-observations.json`.
 
 ## Not available yet
 

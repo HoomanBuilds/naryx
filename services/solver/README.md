@@ -84,13 +84,18 @@ not broadcast. The daemon validates its own caps again before each advance. Its 
 authorizations and submission history survive restart; unresolved or manual-intervention outcomes
 keep accounts fenced. Final chain evidence, not an API terminal label alone, releases a fence.
 
-The version-two recovery path currently supports qualified exact spot purchases and their full
-sales only. The owner signs maximum entry spend, minimum recovery proceeds, and a bounded recovery
-window. Finalized receipts and token deltas must prove the entire quantity was reversed within the
-loss cap. Derivative recovery is not enabled. Unused inventory reservations are released only after
+The version-two recovery path supports exact spot purchases and their full sales, plus qualified
+recoverable perpetual and dated-future adapters. A derivative close binds the exact entry generation,
+adapter identity, signed quantity and payload; an ordinary derivative adapter is not interchangeable.
+The owner signs maximum entry spend, minimum recovery proceeds, and a bounded recovery window.
+Finalized receipts, zero residual derivative positions and reserves, and token deltas must prove
+the full reversal within the loss cap. Unused inventory reservations are released only after
 finalized expiry; a reservation is not represented as a guarantee of external pool liquidity.
 The systemd unit is `deployments/aws/systemd/naryx-cross-domain.service`. Implementation or startup
 alone is not live qualification: activation still requires recorded execution and recovery evidence.
+The dedicated Base/Arbitrum Sepolia worker was enabled on AWS on 2026-10-18 against new version-3
+domain deployments. It accepts operator-imported signed jobs only, with separate capped senders.
+It does not convert existing website orders into those jobs or fund their strategy accounts.
 
 ### Maker emergency controls
 

@@ -218,12 +218,33 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
   inventory, caps, funded-operation manifests, security review, and current evidence is required.
   The testnet execution-cap policy is separate from that qualification. The rollback archive is
   `/srv/naryx/backups/20261018-incident-state-guards/code-before.tar.gz`.
+  A fresh read-only observation on 2026-10-18 confirmed all five watched program hashes match.
+  Its report is `/srv/naryx/release/recovery/qualification-observation.json`; it records the absent
+  journal and NOT_READY decision, not a replacement qualification. Current release evidence and
+  the required security-review attestation still need to be assembled and approved.
 - Deploy a new commit: `git pull`, `deployments/aws/build.sh`, regenerate the release if any
   template or deployment changed, then `sudo systemctl restart naryx-api naryx-solver naryx-keeper`.
   The generator refuses a non-empty `--out`, so regenerate as `naryx` into a new directory
   (`--out /srv/naryx/release.next`, same `--data-dir`), then swap it in:
   `mv /srv/naryx/release /srv/naryx/release.prev && mv /srv/naryx/release.next /srv/naryx/release`,
   and restart. The data directory is untouched; keep `release.prev` until the restart is healthy.
+- Cross-domain recovery has its own unit, `naryx-cross-domain.service`, and never reuses the
+  ordinary solver's signing wallet. Deploy and activate the isolated testnet cohort with
+  `deployments/tools/deploy-evm-recovery.mjs`; generate its configuration using
+  `deployments/tools/configure-evm-recovery.mjs`. The latter reads both chains, verifies active
+  policies and deployed code hashes, and writes runtime configuration plus observations outside
+  the checkout. See the recovery section in `deployments/tools/README.md` for operator inputs.
+  Install the runtime at `/srv/naryx/release/recovery/cross-domain-runtime.json`, its two dedicated
+  keys at the paths it specifies, and `env/cross-domain.env` with the enable flag, configuration
+  path and the two testnet RPC variables. Files are owned by `naryx` with mode 600. Preserve
+  `/srv/naryx/data/cross-domain` across restarts and releases; it contains account fences and
+  pending submissions, not disposable cache. Enable only `naryx-cross-domain` after installation.
+  On 2026-10-18 both delayed policy sets were activated and this worker started with no queued
+  jobs. The entry cap is 10 mock USDC per chain, not a claim that those accounts hold quote funds.
+  Existing API, solver and keeper processes were not restarted. Both conformance-oracle timers
+  were restored after deployment. To disable new admission, stop the worker and preserve every
+  journal; inspect pending transactions and positions before any rollback. Stopping a worker
+  does not reverse a committed trade or cancel an already-broadcast transaction.
 - Restore: stop the services, copy a snapshot from S3 into `/srv/naryx/data` (same relative paths),
   start the services.
 - Fund the solver, keeper, and Hyperliquid accounts before they run dry; their balances bound how
