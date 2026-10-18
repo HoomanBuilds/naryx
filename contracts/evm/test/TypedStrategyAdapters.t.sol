@@ -23,6 +23,7 @@ import {ProtocolConfig} from "../src/ProtocolConfig.sol";
 import {SolverRegistry} from "../src/SolverRegistry.sol";
 import {StrategyFeePolicyRegistry} from "../src/StrategyFeePolicyRegistry.sol";
 import {TypedStrategyAdapterRegistry} from "../src/TypedStrategyAdapterRegistry.sol";
+import {RecoverableTypedPerpAdapterFactory} from "../src/RecoverableTypedPerpAdapterFactory.sol";
 
 interface ITypedSpotCallback {
     function uniswapV3SwapCallback(int256 amount0Delta, int256 amount1Delta, bytes calldata data) external;
@@ -494,6 +495,39 @@ contract TypedAdapterPerpVenue is ISynFuturesInstrument, ISynFuturesPositionObse
             assertEq(classId, keccak256("naryx.evm.future-exact"));
             assertEq(classVersion, 1);
             assertTrue(futureFactory.validateInstance(address(futureAdapter), address(account), PACKAGE_ID));
+        }
+
+        function testRecoverableFactoriesRequireDelayedRegistrationAndExactPackageBinding() public {
+            for (uint256 i; i < 2; ++i) {
+                RecoverableTypedPerpAdapterFactory.Deployment memory deployment = abi.decode(
+                    abi.encode(_perpFactoryDeployment()), (RecoverableTypedPerpAdapterFactory.Deployment)
+                );
+                deployment.datedFuture = i == 1;
+                RecoverableTypedPerpAdapterFactory recoveryFactory = new RecoverableTypedPerpAdapterFactory(deployment);
+                address instance = address(recoveryFactory.create(address(account), PACKAGE_ID));
+                assertEq(instance, recoveryFactory.adapterOf(address(account), PACKAGE_ID));
+                assertEq(instance, address(recoveryFactory.create(address(account), PACKAGE_ID)));
+                assertFalse(recoveryFactory.validateInstance(instance, address(account), keccak256("other-package")));
+                vm.expectRevert(RecoverableTypedPerpAdapterFactory.InvalidStrategyAccount.selector);
+                recoveryFactory.create(address(this), PACKAGE_ID);
+                TypedStrategyAdapterRegistry.AdapterBinding memory binding = _spotBinding();
+                binding.identity = TypedStrategyAdapterRegistry.ManifestRef(keccak256(abi.encode("recovery", i)), 1, keccak256("recovery-v1"));
+                binding.adapter = address(recoveryFactory);
+                binding.expectedCodeHash = address(recoveryFactory).codehash;
+                binding.adapterClassId = i == 0 ? keccak256("naryx.evm.perp-recoverable") : keccak256("naryx.evm.future-recoverable");
+                vm.prank(PROPOSER);
+                adapters.proposeRegistration(binding, _control());
+                vm.expectRevert();
+                vm.prank(GOVERNANCE_EXECUTOR);
+                adapters.activateRegistration(binding.identity.subjectId);
+                vm.warp(block.timestamp + 1);
+                vm.prank(GOVERNANCE_EXECUTOR);
+                adapters.activateRegistration(binding.identity.subjectId);
+                vm.prank(address(account));
+                assertEq(adapters.validateCall(binding.identity, _template(), _settlement(),
+                    TypedStrategyAdapterRegistry.CallContext({ target: instance, packageId: PACKAGE_ID, riskIncreasing: true,
+                        approvalToken: address(quote), approvalAtoms: 10 ether, grossNotionalAtoms: 20 ether, gasLimit: 500_000 })), instance);
+            }
         }
 
         function _spotFactoryDeployment() private view returns (UniswapV3TypedSpotAdapterFactory.Deployment memory) {
