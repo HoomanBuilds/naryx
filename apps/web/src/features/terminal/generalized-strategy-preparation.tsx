@@ -6,6 +6,7 @@ import bs58 from "bs58";
 import {
   NaryxClient,
   reviewEvmStrategyFunding,
+  sealedAuctionDeadlines,
   type EvmStrategyFundingReview,
   type DerivedAdvancedOrderView,
   type PreparedAdvancedOrderAttemptView,
@@ -2831,6 +2832,7 @@ export function GeneralizedStrategyPreparationPanel({
   const [selectedAuctionSolverIds, setSelectedAuctionSolverIds] = useState<readonly string[]>([]);
   const [sealedAuction, setSealedAuction] = useState<SealedAuctionReview | null>(null);
   const [sealedAuctionBusy, setSealedAuctionBusy] = useState(false);
+  const sealedAuctionCreationPending = useRef(false);
   const [sealedAuctionAwardBusy, setSealedAuctionAwardBusy] = useState(false);
   const sealedAuctionAwardAttempt = useRef("");
   const sealedAuctionAwardRequest = useRef<AbortController | null>(null);
@@ -2930,9 +2932,8 @@ export function GeneralizedStrategyPreparationPanel({
     recordedPackageOrders,
     [strategyOwner, solanaOwner].filter((owner): owner is string => owner !== null),
   );
-  const auctionValidityFloor = sealedAuctionTimeUnit === "HYPERLIQUID_UNIX_MILLISECONDS"
-    ? BigInt(auctionClockMs + 50_000)
-    : BigInt(Math.floor(auctionClockMs / 1_000) + 50);
+  const auctionValidityFloor = sealedAuctionTimeUnit === null ? BigInt(0)
+    : sealedAuctionDeadlines(sealedAuctionTimeUnit, auctionClockMs).settlementDeadlineValue;
   const eligibleAuctionSolvers = sealedAuctionTimeUnit === null || auctionClockMs === 0 ? [] : auctionSolvers.filter((solver) =>
     solver.environment === "testnet"
     && solver.validityUnit === sealedAuctionTimeUnit
@@ -3061,9 +3062,7 @@ export function GeneralizedStrategyPreparationPanel({
       setAuctionSolvers(solvers);
       setAuctionSolverError(null);
       if (sealedAuctionTimeUnit !== null) {
-        const validityFloor = sealedAuctionTimeUnit === "HYPERLIQUID_UNIX_MILLISECONDS"
-          ? BigInt(Date.now() + 20_000)
-          : BigInt(Math.floor(Date.now() / 1_000) + 20);
+        const validityFloor = sealedAuctionDeadlines(sealedAuctionTimeUnit, Date.now()).settlementDeadlineValue;
         const compatibleSolverIds = solvers.filter((solver) => solver.environment === "testnet"
           && solver.validityUnit === sealedAuctionTimeUnit
           && BigInt(solver.validUntilValue) >= validityFloor
@@ -4752,8 +4751,10 @@ export function GeneralizedStrategyPreparationPanel({
     }
   }
 
-  async function createSealedAuction() {
-    if (publicApiBaseUrl === null || sealedAuctionTimeUnit === null || !HASH.test(orderHash)) return;
+  async function createSealedAuction(clickedAtMs: number) {
+    if (publicApiBaseUrl === null || sealedAuctionTimeUnit === null || !HASH.test(orderHash)
+      || sealedAuctionCreationPending.current) return;
+    sealedAuctionCreationPending.current = true;
     setSealedAuctionBusy(true);
     setError(null);
     setPrivateRfqSession(null);
@@ -4761,14 +4762,8 @@ export function GeneralizedStrategyPreparationPanel({
     try {
       const currentEligible = eligibleAuctionSolvers.filter((solver) => selectedAuctionSolverIds.includes(solver.solverId));
       if (currentEligible.length === 0) throw new Error("Select at least one eligible solver.");
-      const now = sealedAuctionTimeUnit === "HYPERLIQUID_UNIX_MILLISECONDS"
-        ? BigInt(auctionClockMs)
-        : BigInt(Math.floor(auctionClockMs / 1_000));
-      const second = sealedAuctionTimeUnit === "HYPERLIQUID_UNIX_MILLISECONDS" ? BigInt(1_000) : BigInt(1);
-      const shortQuoteWindow = sealedAuctionTimeUnit === "HYPERLIQUID_UNIX_MILLISECONDS";
-      const commitDeadlineValue = now + BigInt(shortQuoteWindow ? 5 : 20) * second;
-      const revealDeadlineValue = now + BigInt(shortQuoteWindow ? 12 : 35) * second;
-      const settlementDeadlineValue = now + BigInt(shortQuoteWindow ? 20 : 50) * second;
+      const { commitDeadlineValue, revealDeadlineValue, settlementDeadlineValue } =
+        sealedAuctionDeadlines(sealedAuctionTimeUnit, clickedAtMs);
       if (privateRfqOrderContext === null || BigInt(privateRfqOrderContext.expiryValue) <= settlementDeadlineValue) {
         throw new Error("This order expires before the auction can settle. Create a fresh order first.");
       }
@@ -4832,6 +4827,7 @@ export function GeneralizedStrategyPreparationPanel({
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Sealed auction creation failed closed.");
     } finally {
+      sealedAuctionCreationPending.current = false;
       setSealedAuctionBusy(false);
     }
   }
@@ -6667,7 +6663,7 @@ export function GeneralizedStrategyPreparationPanel({
               disabled={advancedOrder !== null || publicApiBaseUrl === null || sealedAuctionBusy || !HASH.test(orderHash)
                 || selectedAuctionSolverIds.length === 0
                 || (sealedAuction !== null && sealedAuction.phase !== "CLOSED")}
-              onClick={() => void createSealedAuction()}
+              onClick={() => void createSealedAuction(Date.now())}
             >
               {sealedAuctionBusy ? "Opening sealed solver auction" : "Run sealed solver auction"}
             </button>

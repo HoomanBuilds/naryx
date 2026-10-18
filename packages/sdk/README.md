@@ -72,6 +72,11 @@ Orders and terminal evidence are covered end to end:
 
 No terminal-internal route is wrapped.
 
+`sealedAuctionDeadlines` calculates ordinary commit/reveal auction windows from the click-time
+clock, using seconds for EVM and milliseconds for Hyperliquid. The terminal uses the same
+settlement deadline for solver eligibility and rechecks order and capability expiry before
+submission. These short windows do not enable threshold-encrypted auctions.
+
 `encryptThresholdAuctionOpening` encrypts a sealed quote opening to the pinned drand quicknet
 release round. Pass its commitment and ciphertext to `NaryxSolverClient.commitThresholdOpening`.
 `thresholdAuctionPolicy` reads the server policy, but encryption derives the round from the locally
