@@ -9,6 +9,7 @@ Type=simple
 User=naryx
 Group=naryx
 WorkingDirectory=/srv/naryx/app/services/solver
+Environment=NARYX_CROSS_DOMAIN_PORT=8806
 ExecStart=/usr/bin/node --env-file=/srv/naryx/release/env/cross-domain.env /srv/naryx/app/services/solver/dist/cross-domain-main.js
 Restart=on-failure
 RestartSec=10
