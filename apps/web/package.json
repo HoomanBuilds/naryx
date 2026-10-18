@@ -8,7 +8,6 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
     "lint": "eslint",
     "build:dependencies": "npm ci --prefix ../../packages/protocol-types --no-audit --no-fund && npm run build --prefix ../../packages/protocol-types && npm ci --prefix ../../packages/sdk --no-audit --no-fund && npm run build --prefix ../../packages/sdk",
     "prebuild": "npm run build:dependencies"

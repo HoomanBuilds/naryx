@@ -84,6 +84,14 @@ npx tsc --noEmit
 
 The release build is `npm run build`. Its `prebuild` step builds the local SDK and protocol dependencies. The deployment record is generated outside this app under [`deployments/`](../../deployments/README.md); the browser never reads a deployer or solver secret.
 
+## Static hosting only
+
+`next build` exports the complete site into `out/`. Vercel serves those files through its CDN; API calls, streams, signing preparation, and execution go directly to the AWS services. There are no Vercel API routes, Server Actions, request-time rendering, middleware, or scheduled functions. Image optimization is disabled, and robots and sitemap files are generated at build time. Do not introduce server-side runtime features into this workspace.
+
+`vercel.json` preserves the security headers at the CDN level without invoking a function. Another static host must apply those same headers and resolve extensionless page URLs to their exported HTML files. `next start` is not compatible with static exports and is intentionally not offered as a script; use `npm run dev` for local development or serve `out/` with a static file server for release previews.
+
+This deployment model avoids application Vercel Functions and their Fluid active CPU usage. CDN requests, bandwidth, and build usage are separate. Before promotion, inspect the deployment output and confirm no functions were generated. Existing deployments do not change until the static build is deployed and promoted.
+
 ## Scope of the current release
 
 The interface exposes broad strategy construction and risk views, but each route's live capability depends on exact template, adapter, domain, market, and service activation. Test assets, test liquidity, and controlled walkthrough data must not be represented as organic trading activity. Mainnet write actions are disabled by repository policy.
