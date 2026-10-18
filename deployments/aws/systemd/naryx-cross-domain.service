@@ -1,0 +1,24 @@
+[Unit]
+Description=Naryx capped testnet cross-domain execution worker
+Wants=network-online.target
+After=network-online.target naryx-api.service
+ConditionPathExists=/srv/naryx/release/env/cross-domain.env
+
+[Service]
+Type=simple
+User=naryx
+Group=naryx
+WorkingDirectory=/srv/naryx/app/services/solver
+ExecStart=/usr/bin/node --env-file=/srv/naryx/release/env/cross-domain.env /srv/naryx/app/services/solver/dist/cross-domain-main.js
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+ReadWritePaths=/srv/naryx/data
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

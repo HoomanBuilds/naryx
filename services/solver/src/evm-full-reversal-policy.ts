@@ -23,6 +23,7 @@ export interface EvmRecoveryAdapterState {
 }
 
 export interface EvmFullReversal {
+  readonly maximumEntryQuoteAtoms: bigint;
   readonly maximumLossQuoteAtoms: bigint;
   readonly spotBaseDeltas: ReadonlyMap<Address, bigint>;
   readonly adapters: readonly EvmRecoveryAdapterPolicy[];
@@ -80,7 +81,7 @@ export function validateEvmFullReversal(entry: EvmMultiStrategyAccountEnvelope, 
     spotBaseDeltas.set(base, (spotBaseDeltas.get(base) ?? 0n) + buy.baseAtoms);
     adapters.push(policy);
   }
-  return { maximumLossQuoteAtoms: maximumSpent > minimumReturned ? maximumSpent - minimumReturned : 0n, spotBaseDeltas, adapters };
+  return { maximumEntryQuoteAtoms: maximumSpent, maximumLossQuoteAtoms: maximumSpent > minimumReturned ? maximumSpent - minimumReturned : 0n, spotBaseDeltas, adapters };
 }
 
 export function validateEvmRecoveryAdapterState(policy: EvmRecoveryAdapterPolicy, state: EvmRecoveryAdapterState,

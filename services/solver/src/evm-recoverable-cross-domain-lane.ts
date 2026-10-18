@@ -107,6 +107,30 @@ export class EvmRecoverableCrossDomainLane implements EvmCrossDomainExecutionLan
     return { status: 'DEFINITIVE_COMMIT_FAILURE', evidenceHash, atValue };
   }
 
+  async settleUnusedReservation(input: EvmCrossDomainLaneInput): Promise<boolean> {
+    const entry = this.#execution(input);
+    requireCondition(await this.port.chainId() === this.chainReference
+      && await this.port.codeHash(this.config.reservationBook) === this.config.reservationBookCodeHash, 'reservation deployment changed');
+    const id = hex(input.planLeg.inventoryReservationId);
+    const reservation = await this.port.reservation(this.config.reservationBook, id);
+    if (reservation.state === 'NONE') return true;
+    const original = entry.execution;
+    requireCondition(reservation.domainIdHash === original.domainIdHash
+      && reservation.domainManifestVersion === original.domainManifestVersion
+      && reservation.domainManifestHash === original.domainManifestHash
+      && getAddress(reservation.solver) === getAddress(original.solver)
+      && getAddress(reservation.strategyAccount) === getAddress(entry.account)
+      && reservation.packageNonce === original.nonce && reservation.orderHash === original.orderHash
+      && ((reservation.quoteHash === original.quoteHash && reservation.routeHash === original.routeHash)
+        || (reservation.quoteHash === ZERO && reservation.routeHash === ZERO)), 'reservation differs from terminal job');
+    if (reservation.state === 'CONSUMED' || reservation.state === 'RELEASED') return true;
+    if (await this.port.finalizedTime() <= reservation.expiry) return false;
+    await this.port.submit({ operationId: `${input.planHash}:RELEASE`, to: this.config.reservationBook,
+      data: encodeFunctionData({ abi: RELEASE_ABI, functionName: 'releaseExpired', args: [id] }),
+      gas: this.config.compensationGasLimit, maximumFeePerGasWei: this.config.maximumFeePerGasWei });
+    return false;
+  }
+
   #execution(input: EvmCrossDomainLaneInput) {
     requireCondition(input.plan.planVersion === 2 && input.compensation.actionKind === 'REVERSE_FILLED_LEGS',
       'only version-two filled-position recovery is supported');
@@ -220,6 +244,7 @@ export class EvmRecoverableCrossDomainLane implements EvmCrossDomainExecutionLan
       for (const policy of recovery.reversal.adapters) {
         validateEvmRecoveryAdapterState(policy, await this.port.recoveryAdapterState(policy), entry);
       }
+      if (!await this.settleUnusedReservation(input)) return PENDING;
       return { status: 'FINALIZED', evidenceHash, atValue };
     }
     requireCondition(known.status !== 'REVERTED', 'owner-authorized recovery reverted; account remains fenced');

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   encodeEvmMultiStrategyAccountExecution,
   encodeEvmMultiStrategyAccountRecovery,
@@ -12,6 +15,7 @@ import {
   crossDomainCompensationActionHash,
   crossDomainPlanHash,
   domainRef,
+  hash32,
   toHex,
   type CrossDomainEvent,
   type CrossDomainPlanInput,
@@ -41,6 +45,9 @@ import {
 import { EvmRecoverableCrossDomainLane } from '../src/evm-recoverable-cross-domain-lane.js';
 import type { EvmCrossDomainSubmissionObservation, EvmRecoverableCrossDomainPort } from '../src/evm-cross-domain-recovery-port.js';
 import { EXACT_SPOT_PARAMETERS, validateEvmFullReversal, validateEvmRecoveryAdapterState } from '../src/evm-full-reversal-policy.js';
+import { SqliteCrossDomainJobStore, validateCrossDomainJob, type CrossDomainJob } from '../src/cross-domain-job-store.js';
+import { CrossDomainWorker } from '../src/cross-domain-worker.js';
+import { loadCrossDomainRuntime } from '../src/cross-domain-runtime.js';
 
 const RELEASE_ABI = parseAbi(['function releaseExpired(bytes32 reservationId)']);
 const hash = (byte: string): string => byte.repeat(64);
@@ -215,6 +222,7 @@ class Port implements EvmFirmReservationCrossDomainPort {
   now = 50n;
   nonce = 0n;
   submitted: readonly Readonly<{ to: Address; data: Hex }>[] = [];
+  operationIds: string[] = [];
   reservationValue: EvmFirmReservationRecord = {
     domainIdHash: keccak256(stringToHex(domain.domainId)),
     domainManifestVersion: domain.domainManifestVersion,
@@ -260,11 +268,13 @@ class Port implements EvmFirmReservationCrossDomainPort {
   async packageState(): Promise<EvmAtomicPackageState> { return this.packageStateValue; }
   async packageReceipt(): Promise<EvmAtomicPackageReceipt> { return this.packageReceiptValue; }
   async submit(input: Readonly<{
+    operationId?: string;
     to: Address;
     data: Hex;
     gas: bigint;
     maximumFeePerGasWei: bigint;
   }>): Promise<Hex> {
+    if (input.operationId !== undefined) this.operationIds.push(input.operationId);
     this.submitted = [...this.submitted, { to: input.to, data: input.data }];
     if (input.to.toLowerCase() === accountAddress.toLowerCase()) {
       this.nonce = 1n;
@@ -518,6 +528,7 @@ test('unknown commits remain fenced; absent commits need finalized expiry before
   assert.equal((await f.lane().reconcileCommit(f.input)).status, 'DEFINITIVE_COMMIT_FAILURE');
   assert.equal((await f.lane().start(f.input)).status, 'OBSERVED');
   assert.equal(f.base.submitted[0]?.data, releaseData);
+  assert.equal(f.base.operationIds[0], `${f.input.planHash}:COMPENSATE`);
   assert.equal((await f.lane().start(f.input)).status, 'FINALIZED');
 });
 
@@ -534,4 +545,139 @@ test('recovery rejects altered payload, risk increase, wrong owner and wrong sta
   f.recovery.envelope.execution.previousStateHash = hex('9');
   await assert.rejects(f.lane().start(f.input), /exact close/);
   assert.equal(f.base.submitted.length, 0);
+});
+
+async function durableJobFixture() {
+  const f = await recoverableSetup();
+  const secondDomain = plan.legs[1]!.domain;
+  const secondCompensation = { ...f.input.compensation, domain: secondDomain,
+    inventoryReservationId: plan.legs[1]!.inventoryReservationId, legIds: plan.legs[1]!.legIds };
+  const jobPlan = { ...f.input.plan, legs: [f.input.plan.legs[0]!, { ...f.input.plan.legs[1]!,
+    compensationActionHash: crossDomainCompensationActionHash(secondCompensation) }] };
+  const job: CrossDomainJob = {
+    version: 1, bundle: { plan: jobPlan, compensations: [f.input.compensation, secondCompensation] },
+    execution: { version: 1,
+      identity: { packageId: hash32(hash('2')), templateId: 'test-spot-package', templateVersion: 1,
+        templateManifestHash: hash32(hash('5')), operation: 'ENTRY' },
+      settlementClass: 'CROSS_DOMAIN_PREPOSITIONED', coordination: 'CROSS_DOMAIN_PREPOSITIONED',
+      orderHash: hash32(jobPlan.orderHash), graphHash: hash32(hash('3')), quoteHash: hash32(jobPlan.quoteHash),
+      routeHash: hash32(jobPlan.routeHash), crossDomainPlanHash: crossDomainPlanHash(jobPlan),
+      domains: [f.input.execution, { ...f.input.execution, domain: secondDomain }],
+    },
+    authorizations: [{ domainId: domain.domainId, entry: f.authorization, recovery: f.recovery },
+      { domainId: secondDomain.domainId, entry: { ...f.authorization, domain: secondDomain, chainId: 421_614 }, recovery: f.recovery }],
+  };
+  return job;
+}
+
+test('durable job intake is immutable, fences accounts and retains escalation fences across restart', async () => {
+  const folder = mkdtempSync(join(tmpdir(), 'naryx-cross-domain-jobs-'));
+  let store = new SqliteCrossDomainJobStore(join(folder, 'jobs.sqlite'));
+  try {
+    const job = await durableJobFixture();
+    const hash = store.admit(job);
+    assert.equal(store.admit(job), hash);
+    store.close();
+    store = new SqliteCrossDomainJobStore(join(folder, 'jobs.sqlite'));
+    assert.equal(validateCrossDomainJob(store.get(hash)!), hash);
+    const changedSignature = { ...job, authorizations: job.authorizations.map(a => ({ ...a, entry: { ...a.entry, ownerSignature: hex('f') } })) };
+    assert.throws(() => store.admit(changedSignature), /immutable authorizations/);
+    const anotherPlan = { ...job.bundle.plan, prepareDeadline: job.bundle.plan.prepareDeadline + 1n };
+    const another = { ...job, bundle: { ...job.bundle, plan: anotherPlan },
+      execution: { ...job.execution, crossDomainPlanHash: crossDomainPlanHash(anotherPlan) } };
+    assert.throws(() => store.admit(another), /fenced/);
+    store.record(hash, 'ESCALATION_REQUIRED');
+    assert.equal(store.active().length, 0);
+    assert.throws(() => store.admit(another), /fenced/);
+    assert.throws(() => store.record(hash, 'TERMINAL'), /only active/);
+  } finally { store.close(); rmSync(folder, { recursive: true, force: true }); }
+});
+
+test('worker coalesces ticks, resumes durable jobs and never advances a terminal job', async () => {
+  const folder = mkdtempSync(join(tmpdir(), 'naryx-cross-domain-worker-'));
+  const store = new SqliteCrossDomainJobStore(join(folder, 'jobs.sqlite'));
+  try {
+    const job = await durableJobFixture();
+    const hash = store.admit(job);
+    let attempts = 0;
+    const worker = new CrossDomainWorker(store, { advance: async () => {
+      attempts++;
+      await Promise.resolve();
+      if (attempts === 1) throw new Error('transient endpoint failure');
+      return { planHash: hash, status: 'TERMINAL', state: { terminalState: 'RECOVERED_FLAT' } as never };
+    } }, { validate: () => {}, reconcileTerminal: async () => true });
+    await worker.drain();
+    assert.equal(attempts, 0);
+    await Promise.all([worker.tick(), worker.tick()]);
+    assert.equal(attempts, 1);
+    assert.equal(store.active().length, 1);
+    await worker.tick();
+    assert.equal(store.active().length, 0);
+    await worker.tick();
+    assert.equal(attempts, 2);
+  } finally { store.close(); rmSync(folder, { recursive: true, force: true }); }
+});
+
+test('manual-intervention terminal outcomes never release account fences', async () => {
+  const folder = mkdtempSync(join(tmpdir(), 'naryx-cross-domain-fenced-'));
+  const store = new SqliteCrossDomainJobStore(join(folder, 'jobs.sqlite'));
+  try {
+    const job = await durableJobFixture();
+    const hash = store.admit(job);
+    const worker = new CrossDomainWorker(store, { advance: async () => ({ planHash: hash, status: 'TERMINAL',
+      state: { terminalState: 'MANUAL_INTERVENTION' } as never }) }, { validate: () => {}, reconcileTerminal: async () => true });
+    await worker.tick();
+    assert.equal(store.active().length, 0);
+    const nextPlan = { ...job.bundle.plan, prepareDeadline: 101n };
+    assert.throws(() => store.admit({ ...job, bundle: { ...job.bundle, plan: nextPlan },
+      execution: { ...job.execution, crossDomainPlanHash: crossDomainPlanHash(nextPlan) } }), /fenced/);
+  } finally { store.close(); rmSync(folder, { recursive: true, force: true }); }
+});
+
+test('cross-domain runtime is explicitly disabled by default', async () => {
+  assert.equal(await loadCrossDomainRuntime({}), undefined);
+  assert.equal(await loadCrossDomainRuntime({ NARYX_CROSS_DOMAIN_ENABLED: 'false' }), undefined);
+  await assert.rejects(loadCrossDomainRuntime({ NARYX_CROSS_DOMAIN_ENABLED: 'yes' }), /enable flag/);
+  await assert.rejects(loadCrossDomainRuntime({ NARYX_CROSS_DOMAIN_ENABLED: 'true' }), /missing runtime config/);
+});
+
+test('running workers enforce their own cohort and require chain evidence before clearing fences', async () => {
+  const folder = mkdtempSync(join(tmpdir(), 'naryx-cross-domain-policy-'));
+  const store = new SqliteCrossDomainJobStore(join(folder, 'jobs.sqlite'));
+  try {
+    let calls = 0;
+    let allowed = false;
+    let chainReconciled = false;
+    const job = await durableJobFixture();
+    const hash = store.admit(job);
+    const worker = new CrossDomainWorker(store, { advance: async () => {
+      calls++;
+      return { planHash: hash, status: 'TERMINAL', state: { terminalState: 'NO_EFFECT' } as never };
+    } }, { validate: () => { if (!allowed) throw new Error('unqualified cohort'); },
+      reconcileTerminal: async () => chainReconciled });
+    await worker.tick();
+    assert.equal(calls, 0);
+    allowed = true;
+    await worker.tick();
+    assert.equal(calls, 1);
+    assert.equal(store.active().length, 1);
+    chainReconciled = true;
+    await worker.tick();
+    assert.equal(store.active().length, 0);
+  } finally { store.close(); rmSync(folder, { recursive: true, force: true }); }
+});
+
+test('unused reservations release only after finalized expiry and under a distinct journal operation', async () => {
+  const f = await recoverableSetup();
+  assert.equal(await f.lane().settleUnusedReservation(f.input), false);
+  assert.equal(f.base.submitted.length, 0);
+  f.base.now = 251n;
+  assert.equal(await f.lane().settleUnusedReservation(f.input), false);
+  assert.equal(f.base.submitted[0]?.to, bookAddress);
+  assert.equal(f.base.submitted[0]?.data, releaseData);
+  assert.equal(f.base.operationIds[0], `${f.input.planHash}:RELEASE`);
+  assert.equal(await f.lane().settleUnusedReservation(f.input), true);
+  assert.equal(f.base.submitted.length, 1);
+  f.base.reservationValue = { ...f.base.reservationValue, state: 'LIVE', orderHash: hex('f') };
+  await assert.rejects(f.lane().settleUnusedReservation(f.input), /reservation differs/);
 });

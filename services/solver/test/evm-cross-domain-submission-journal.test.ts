@@ -126,3 +126,20 @@ test('chain, signed payload, budget, and immutable journal identity fail closed'
   assert.throws(() => new EvmCrossDomainSubmissionJournal({ ...f.config, chainId: 1 }), /test chains/);
   assert.throws(() => new EvmCrossDomainSubmissionJournal({ ...f.config, maximumGasBudgetWei: 10_000_000_000_000_001n }), /budget/);
 });
+
+test('expired inventory release is distinct from compensation and restart-safe', async t => {
+  const f = fixture(t, 63_000n);
+  const commit = await f.journal().submit(f.request);
+  f.receipts.set(commit, 'SUCCESS');
+  const compensate = await f.journal().submit({ ...f.request, operationId: `${'a'.repeat(64)}:COMPENSATE` });
+  f.receipts.set(compensate, 'SUCCESS');
+  const release = { ...f.request, operationId: `${'a'.repeat(64)}:RELEASE`, data: '0xabcdef12' as Hex };
+  const hash = await f.journal().submit(release);
+  f.receipts.set(hash, 'SUCCESS');
+  f.restart();
+  assert.equal(await f.journal().submit(release), hash);
+  assert.equal(f.sent.length, 3);
+  assert.equal(f.signed(), 3);
+  await assert.rejects(f.journal().submit({ ...release, data: '0xabcdef13' }), /payload changed/);
+  await assert.rejects(f.journal().submit({ ...release, operationId: `${'a'.repeat(64)}:UNKNOWN` }), /operation identity/);
+});

@@ -62,14 +62,35 @@ persists the operation, nonce and signed transaction before broadcast, reserves 
 cost, and retries only the same bytes. A pending outcome fences other submissions from that sender;
 only canonical finalized receipts release that fence. Reverts retain their gas reservation and
 cannot silently become replacement transactions. Changing the payload, signer, chain or initial
-budget refuses the journal. No new cross-domain execution service is activated by this component;
-committed-position compensation still needs its own qualified path.
+budget refuses the journal.
 
 Preparation requires the reservation to outlive the commit deadline and expire before the
 compensation deadline. The reservation lane accepts only inventory release, never a claim to
 reverse an executed position. Evidence timestamps are checked against chain time sampled after
 the lane call: a block can arrive during RPC validation. Coordination journal URLs accept only
 loopback IP literals or localhost, not hostnames beginning with `127.`.
+
+`cross-domain-main.js` is the separate, disabled-by-default worker. Set
+`NARYX_CROSS_DOMAIN_ENABLED=true` and `NARYX_CROSS_DOMAIN_CONFIG` only for a reviewed two-domain
+Base Sepolia and Arbitrum Sepolia cohort. Its external configuration specifies the allowlisted
+owners and strategy accounts, exact adapter deployments, per-domain quote-atom caps, signer files,
+submission journals, durable job database, loopback coordination API, and gas budgets. Gas is
+capped at 0.01 test ETH per domain, including configured prior expenditure. RPC identity is read
+from the chain before the worker runs.
+
+Import a signed job once using `node dist/cross-domain-main.js --enqueue /absolute/job.json`.
+The job includes the exact entry and recovery authorization on both domains. Importing it does
+not broadcast. The daemon validates its own caps again before each advance. Its account locks,
+authorizations and submission history survive restart; unresolved or manual-intervention outcomes
+keep accounts fenced. Final chain evidence, not an API terminal label alone, releases a fence.
+
+The version-two recovery path currently supports qualified exact spot purchases and their full
+sales only. The owner signs maximum entry spend, minimum recovery proceeds, and a bounded recovery
+window. Finalized receipts and token deltas must prove the entire quantity was reversed within the
+loss cap. Derivative recovery is not enabled. Unused inventory reservations are released only after
+finalized expiry; a reservation is not represented as a guarantee of external pool liquidity.
+The systemd unit is `deployments/aws/systemd/naryx-cross-domain.service`. Implementation or startup
+alone is not live qualification: activation still requires recorded execution and recovery evidence.
 
 ### Maker emergency controls
 

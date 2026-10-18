@@ -50,7 +50,7 @@ function privateDatabasePath(input: string): string {
 }
 
 function requestJson(input: CrossDomainSubmission): string {
-  requireCondition(/^[0-9a-f]{64}:(COMMIT|COMPENSATE)$/.test(input.operationId), 'operation identity is invalid');
+  requireCondition(/^[0-9a-f]{64}:(COMMIT|COMPENSATE|RELEASE)$/.test(input.operationId), 'operation identity is invalid');
   requireCondition(/^0x(?:[0-9a-fA-F]{2}){4,65536}$/.test(input.data), 'calldata is invalid or exceeds its bound');
   requireCondition(typeof input.gas === 'bigint' && input.gas > 0n && input.gas <= 30_000_000n
     && typeof input.maximumFeePerGasWei === 'bigint' && input.maximumFeePerGasWei > 0n
