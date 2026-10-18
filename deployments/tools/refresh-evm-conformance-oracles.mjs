@@ -5,10 +5,22 @@ import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { OracleRefreshJournal, REFRESH_RESERVATION_WEI } from './evm-oracle-refresh-journal.mjs';
+import { loadEvmStrategySolverKey } from '../../services/solver/dist/evm-strategy-execution-authorization.js';
+
+process.umask(0o077);
+let operation = 'configuration';
+process.on('uncaughtException', error => {
+  const errorType = /^[A-Za-z]{1,80}$/.test(error.name) ? error.name : 'Error';
+  console.error(JSON.stringify({ operation, errorType,
+    reason: 'Oracle refresh failed closed. Preserve the journal and inspect onchain state before retrying.' }));
+  process.exit(1);
+});
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const require = createRequire(join(root, 'services/api/package.json'));
-const { createPublicClient, createWalletClient, encodeFunctionData, http, keccak256, parseAbi } = require('viem');
+const { createPublicClient, createWalletClient, encodeFunctionData, http, keccak256, parseAbi, parseTransaction } = require('viem');
+const { estimateL1Fee, estimateOperatorFee } = require('viem/op-stack');
 const { privateKeyToAccount } = require('viem/accounts');
 const { baseSepolia, arbitrumSepolia } = require('viem/chains');
 const { values } = parseArgs({ options: {
@@ -16,6 +28,8 @@ const { values } = parseArgs({ options: {
   broadcast: { type: 'boolean', default: false },
   'refresh-now': { type: 'boolean', default: false },
   account: { type: 'string' },
+  'key-file': { type: 'string' },
+  journal: { type: 'string' },
   'password-env': { type: 'string', default: 'NARYX_ORACLE_KEYSTORE_PASSWORD' },
 } });
 const networks = {
@@ -27,6 +41,9 @@ const { chain, rpc } = networks[values.network];
 if (!rpc) throw new Error('The selected testnet RPC is missing.');
 const client = createPublicClient({ chain, transport: http(rpc) });
 if (await client.getChainId() !== chain.id) throw new Error('RPC chain identity is not the selected testnet.');
+if (values.broadcast && (!values.journal || Boolean(values.account) === Boolean(values['key-file']))) {
+  throw new Error('Broadcast requires a journal and exactly one signing source.');
+}
 const release = JSON.parse(readFileSync(join(root, 'deployments/evm', values.network, 'multi-strategy-release.json'), 'utf8'));
 if (release.chainId !== chain.id || release.environment !== 'testnet' || release.activationState !== 'ACTIVE') {
   throw new Error('The release is not active on this testnet.');
@@ -54,6 +71,7 @@ async function requireCode(address, expected) {
 }
 const oracles = new Map();
 const externalOracles = new Map();
+operation = 'release-verification';
 for (const name of ['perpetual', 'nearFuture', 'farFuture']) {
   const factory = release.contracts[`${name}Factory`];
   const market = release.conformance[`${name}Market`];
@@ -111,6 +129,7 @@ for (const { oracle, maxAge } of externalOracles.values()) {
 }
 let signer;
 for (const { oracle, maxAge } of oracles.values()) {
+  operation = 'round-read';
   const [round, owner, decimals, block] = await Promise.all([
     client.readContract({ address: oracle, abi: oracleAbi, functionName: 'latestRoundData' }),
     client.readContract({ address: oracle, abi: oracleAbi, functionName: 'owner' }),
@@ -118,13 +137,24 @@ for (const { oracle, maxAge } of oracles.values()) {
     client.getBlock(),
   ]);
   const [roundId, answer, , updatedAt, answeredInRound] = round;
-  if (decimals !== 8 || answer <= 0n || updatedAt === 0n || updatedAt > block.timestamp || answeredInRound < roundId) {
+  if (decimals !== 8 || answer <= 0n || roundId <= 0n || updatedAt === 0n || updatedAt > block.timestamp
+    || answeredInRound < roundId || !Number.isSafeInteger(maxAge) || maxAge < 2) {
     throw new Error('The conformance oracle round is invalid.');
   }
   const refreshDue = values['refresh-now'] || block.timestamp - updatedAt >= BigInt(Math.floor(maxAge / 2));
   console.log(JSON.stringify({ network: values.network, oracle, answer: answer.toString(), updatedAt: updatedAt.toString(), maxAgeSeconds: maxAge, refreshDue, broadcast: values.broadcast }));
-  if (!values.broadcast || !refreshDue) continue;
+  if (!values.broadcast) continue;
+  if (oracles.size !== 1) throw new Error('Unattended refresh requires exactly one bound test oracle per network.');
+  const journal = new OracleRefreshJournal(values.journal, chain.id, oracle, owner);
+  try {
+  let pending = journal.pending();
+  if (!refreshDue && !pending) continue;
+  if (!pending) {
+  operation = 'signing';
   if (signer === undefined) {
+    if (values['key-file']) {
+      signer = loadEvmStrategySolverKey(values['key-file'], owner);
+    } else {
     const password = process.env[values['password-env']];
     if (!values.account || !password) throw new Error('Broadcast requires --account and the configured password environment variable.');
     let key;
@@ -137,6 +167,7 @@ for (const { oracle, maxAge } of oracles.values()) {
     }
     signer = privateKeyToAccount(key);
     key = undefined;
+    }
   }
   if (signer.address.toLowerCase() !== owner.toLowerCase()) throw new Error('The signer is not the conformance oracle owner.');
   if (await client.getChainId() !== chain.id) throw new Error('RPC chain changed before broadcast.');
@@ -144,14 +175,62 @@ for (const { oracle, maxAge } of oracles.values()) {
   const gas = await client.estimateGas({ account: signer, to: oracle, data });
   const fees = await client.estimateFeesPerGas();
   const gasLimit = gas * 12n / 10n;
-  if (gasLimit * fees.maxFeePerGas > 1_000_000_000_000_000n) throw new Error('Oracle refresh exceeds the testnet gas budget.');
+  if (gasLimit * fees.maxFeePerGas > REFRESH_RESERVATION_WEI / 2n) throw new Error('Oracle refresh exceeds the testnet gas budget.');
   const wallet = createWalletClient({ account: signer, chain, transport: http(rpc) });
-  const hash = await wallet.sendTransaction({ to: oracle, data, value: 0n, gas: gasLimit, ...fees });
-  const receipt = await client.waitForTransactionReceipt({ hash, confirmations: 2 });
-  if (receipt.status !== 'success') throw new Error('Oracle refresh reverted.');
-  const after = await client.readContract({ address: oracle, abi: oracleAbi, functionName: 'latestRoundData' });
-  if (after[1] !== answer || after[0] <= roundId || after[3] <= updatedAt) {
-    throw new Error('Oracle refresh did not preserve the answer and advance its round and timestamp.');
+  const [latestNonce, pendingNonce] = await Promise.all([
+    client.getTransactionCount({ address: signer.address, blockTag: 'latest' }),
+    client.getTransactionCount({ address: signer.address, blockTag: 'pending' }),
+  ]);
+  if (latestNonce !== pendingNonce) throw new Error('The shared owner has pending transactions; refresh deferred.');
+  const request = await wallet.prepareTransactionRequest({ to: oracle, data, value: 0n, gas: gasLimit, nonce: pendingNonce, ...fees });
+  if (await client.getChainId() !== chain.id) throw new Error('RPC chain changed before signing.');
+  const raw = await wallet.signTransaction(request);
+  pending = await journal.reserve({ raw, answer, round: roundId, updatedAt });
   }
-  console.log(JSON.stringify({ network: values.network, oracle, transactionHash: hash, blockNumber: receipt.blockNumber.toString(), updatedAt: after[3].toString() }));
+  const hash = pending.hash;
+  let knownReceipt;
+  try { knownReceipt = await client.getTransactionReceipt({ hash }); }
+  catch (error) { if (error.name !== 'TransactionReceiptNotFoundError') throw error; }
+  if (!knownReceipt) {
+    operation = 'gas-preflight';
+    if (await client.getChainId() !== chain.id) throw new Error('RPC chain changed before broadcast.');
+    const current = await client.readContract({ address: oracle, abi: oracleAbi, functionName: 'latestRoundData' });
+    if (current[1] !== BigInt(pending.answer) || current[0] !== BigInt(pending.round)
+      || current[3] !== BigInt(pending.updated_at)) throw new Error('Oracle round changed before pending refresh; review required.');
+    const tx = parseTransaction(pending.raw);
+    if (chain.id === baseSepolia.id) {
+      const request = { ...tx, account: owner };
+      const [l1Fee, operatorFee] = await Promise.all([estimateL1Fee(client, request), estimateOperatorFee(client, request)]);
+      if (tx.gas * tx.maxFeePerGas + l1Fee + operatorFee > REFRESH_RESERVATION_WEI / 2n) {
+        throw new Error('Oracle refresh total fee estimate exceeds its reservation headroom.');
+      }
+    }
+    operation = 'submission';
+    try { await client.sendRawTransaction({ serializedTransaction: pending.raw }); }
+    catch (error) { if (!/already known|nonce too low/i.test(error.shortMessage ?? '')) throw error; }
+  }
+  operation = 'receipt-confirmation';
+  const receipt = await client.waitForTransactionReceipt({ hash, confirmations: 2 });
+  if ((await client.getBlock({ blockNumber: receipt.blockNumber })).hash !== receipt.blockHash) throw new Error('Oracle refresh receipt is not canonical.');
+  const after = await client.readContract({ address: oracle, abi: oracleAbi, functionName: 'latestRoundData' });
+  operation = 'fee-reconciliation';
+  const rawReceipt = await client.request({ method: 'eth_getTransactionReceipt', params: [hash] });
+  let ancillaryWei = 0n;
+  if (chain.id === baseSepolia.id) {
+    if (typeof rawReceipt?.l1Fee !== 'string' || !/^0x[0-9a-fA-F]+$/.test(rawReceipt.l1Fee)) {
+      throw new Error('Base receipt is missing its L1 fee evidence.');
+    }
+    const operatorFee = await client.readContract({ address: chain.contracts.gasPriceOracle.address,
+      abi: parseAbi(['function getOperatorFee(uint256 gasUsed) view returns (uint256)']),
+      functionName: 'getOperatorFee', args: [receipt.gasUsed], blockNumber: receipt.blockNumber });
+    ancillaryWei = BigInt(rawReceipt.l1Fee) + operatorFee;
+  }
+  const actualWei = receipt.gasUsed * receipt.effectiveGasPrice + ancillaryWei;
+  const success = receipt.status === 'success' && after[1] === BigInt(pending.answer)
+    && after[0] > BigInt(pending.round) && after[3] > BigInt(pending.updated_at);
+  operation = 'journal-confirmation';
+  journal.resolve(hash, success, actualWei);
+  console.log(JSON.stringify({ network: values.network, oracle, transactionHash: hash, blockNumber: receipt.blockNumber.toString(),
+    updatedAt: after[3].toString(), reservedWei: journal.reserved().toString(), actualWei: actualWei.toString() }));
+  } finally { journal.close(); }
 }

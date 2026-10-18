@@ -142,8 +142,27 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
   both domains: Base `67cfb368842b11dc60bacf04b0df0b9906d5e1ad6aaabb8c6613dbe18514fe8a`,
   Arbitrum `82e2c85c896bbb3e9d25872ba6d6899c6d5062e887d8e385226f6455cc4db2e2`.
   These checks placed no funded strategy trade and do not verify threshold auctions. Check
-  freshness with `deployments/tools/refresh-evm-conformance-oracles.mjs` before operation and
-  refresh before half the heartbeat. No unattended owner-key refresh service is active.
+  freshness with `deployments/tools/refresh-evm-conformance-oracles.mjs` before operation.
+  The `naryx-conformance-oracle@base-sepolia.timer` and
+  `naryx-conformance-oracle@arbitrum-sepolia.timer` units check hourly and refresh after half the
+  heartbeat. Provision the explicitly approved owner key at
+  `/srv/naryx/keys/conformance-oracle-owner.json` (owner `naryx`, mode 600), and the two testnet
+  RPC variables in `/srv/naryx/release/env/conformance-oracles.env`. The key retains its owner's
+  full authority; application restrictions do not narrow the key's cryptographic permissions.
+  Keep it out of application responses, logs, frontend builds, and repository history.
+  Create `/srv/naryx/data/conformance-oracles` with owner `naryx`, mode 700, install the two unit
+  templates, and enable each timer only after a successful bounded refresh and restart check.
+  Preserve both SQLite journals and their WAL files: they enforce the per-network 0.001 test
+  ETH reservation budget and pending-transaction recovery. Base ancillary fees are preflighted
+  with headroom, reconciled after inclusion, and halt on overrun; they are not transaction-capped.
+  Disable the timers before manual
+  owner operations to avoid nonce contention. This service neither updates live-price feeds
+  nor changes any market, deployment, or oracle owner.
+  Both timers were activated on 2026-10-18 after confirmed test refreshes: Base
+  `0x9216170ddf8d2958252b286612a470e745973a3b11834c6bcff7dcd4ad6cdc70`
+  and Arbitrum `0x3e993a20c7e522c4809abcf57698c39cc0513f07721d6c7b1c8b630ee92e05d5`.
+  Base's initial receipt check failed; the next invocation recovered the already-mined hash
+  from its journal without signing another transaction. Both journals recorded confirmation.
 - Encrypted solver openings: enable `NARYX_SEALED_AUCTION_THRESHOLD_ENABLED=true` in the solver
   environment only after deploying the threshold-capable API and solver together. Preserve the
   private-delivery and solver-auction SQLite journals in the rollback backup. The solver requires

@@ -1,0 +1,18 @@
+[Unit]
+Description=Naryx bounded %i conformance oracle refresh
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=naryx
+Group=naryx
+WorkingDirectory=/srv/naryx/app
+ExecStart=/usr/bin/flock --nonblock /srv/naryx/data/conformance-oracles/%i.lock /usr/bin/node --env-file=/srv/naryx/release/env/conformance-oracles.env /srv/naryx/app/deployments/tools/refresh-evm-conformance-oracles.mjs --network %i --key-file=/srv/naryx/keys/conformance-oracle-owner.json --journal=/srv/naryx/data/conformance-oracles/%i.sqlite --broadcast
+TimeoutStartSec=180
+ReadWritePaths=/srv/naryx/data/conformance-oracles
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+UMask=0077
