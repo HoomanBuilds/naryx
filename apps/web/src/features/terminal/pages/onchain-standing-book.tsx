@@ -30,7 +30,7 @@ function StandingSide({ side, level, reference }: { side: "Bid" | "Ask"; level: 
       <span>{side}</span>
       {level === null ? <strong>No current level</strong> : (
         <>
-          <strong className={styles.num}>{new Intl.NumberFormat("en-US").format(price!)} quote atoms / unit</strong>
+          <strong className={styles.num}>Reference {new Intl.NumberFormat("en-US").format(price!)} atoms</strong>
           <small className={styles.num}>{format(level.remainingCapacityUnits)} package units</small>
         </>
       )}
@@ -62,7 +62,7 @@ export function OnchainStandingBook({ baseUrl }: { baseUrl: string | null }) {
       <div className={styles.cardHead}>
         <div>
           <h2 id="onchain-standing-title">Solana cash-and-carry quotes</h2>
-          <p>One current firm level per side from the Devnet solver&apos;s onchain shard.</p>
+          <p>Current maker capacity, bounded by finalized token balances and market limits.</p>
         </div>
         <span className={book === null ? styles.pill : styles.pillOk}>{book === null ? "Unavailable" : "Onchain snapshot"}</span>
       </div>
@@ -78,7 +78,8 @@ export function OnchainStandingBook({ baseUrl }: { baseUrl: string | null }) {
             <StandingSide side="Ask" level={book.ask} reference={book.referencePackagePriceAtoms} />
           </div>
           <p className={styles.standingNote}>
-            Finalized slot {format(book.finalizedSlot)}. Prices are exact quote-token atoms per package unit.
+            Finalized slot {format(book.finalizedSlot)}. The shard reference is not a net strategy price.
+            Request a complete quote for executable pricing; inventory is reserved during preparation.
             This is the cash-and-carry solver shard, not treasury-hedge liquidity or public package-exchange depth.
             Refreshed levels from the same maker are not added together.
           </p>
