@@ -200,8 +200,9 @@ strategy support is specific to a registered template and deployment, not every 
   an open-position service restart, close and all withdrawals. Final cash, liabilities and venue
   positions were zero. It remains restricted to dedicated test accounts. The signed owner API is
   deployed; balance reads have been verified separately for both traders and the sponsor.
-  Its new Portfolio controls are committed but not deployed: the frontend provider blocked the
-  release because the hosting team exceeded fair-use limits. Existing frontend routing is unchanged.
+  Its Portfolio controls are included in the static frontend deployed on 2026-10-18 after the
+  hosting block cleared. Browser navigation passed; no additional pool funding or trading was
+  performed as part of the frontend deployment.
   Re-funding requires separate approval; a healthy empty service is not funded liquidity.
 - Arbitrum: GMX execution depends on GMX's testnet keepers (they executed 122 of 143 orders in the
   week to 2026-10-02). The GMX fee and gas keys the solver reads return live values. A request GMX

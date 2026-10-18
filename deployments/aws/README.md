@@ -118,10 +118,17 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
   to `apps/web`; invoking it from that workspace resolves `apps/web/apps/web` and fails.
   Keep the root `.vercelignore` upload filter: only `apps/web`, `packages/protocol-types`, and
   `packages/sdk` application sources belong in the upload. Use explicit directory exclusions;
-  this CLI skips traversal under a blanket `*` despite nested re-inclusion rules. A deployment without this filter selected about
-  2 GB of local artifacts despite Git ignores and was stopped before completion. Do not rely
+  this CLI skips traversal under a blanket `*` despite nested re-inclusion rules. A deployment
+  without this filter selected about 2 GB of local artifacts despite Git ignores and was stopped
+  before completion. Do not rely
   on Git ignores alone or upload local secrets, caches, contract builds, or backend services.
   Stage with `vercel deploy --prod --skip-domain`, check the staged deployment, then promote it.
+- Static hosting was verified on 2026-10-18 in deployment `dpl_FiQpQ7mvfDxKkLCenu11AKCzCiiE`,
+  promoted to `naryx.xyz`. Vercel reported zero runtime outputs. All seven pages, robots, sitemap,
+  and the 404 response preserved security headers; browser navigation across all six terminal
+  views produced no page errors or failed same-origin assets. The earlier deployment exposed
+  42 lambda route outputs. Historical usage and requests to older deployment URLs are separate;
+  this check is not a claim that other projects or previous deployments consume no resources.
 
 ## 7. Operating
 
