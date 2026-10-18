@@ -198,7 +198,7 @@ Status checked 2026-10-18:
 | Item | Current state | Evidence needed to close |
 | --- | --- | --- |
 | 1. Standing liquidity for routed strategies | Closed for the enabled Solana cash-and-carry maker lane. Actual entry/exit and inventory reconciliation completed on 2026-10-18. | Evidence below. This does not advertise native cash liquidity as routed liquidity or activate additional routed maker lanes. |
-| 2. Cross-chain execution activation | Recovery deployments, delayed registry/policy activation and the capped AWS worker are running on both EVM testnets. The operator recovery cycle closed as `RECOVERED_FLAT`. The public read/authorize boundary and Network wallet approval panel are deployed for operator-staged, pre-funded exact preparations. | Canonical public order-to-job materialization remains open because the current order builder assumes one template registration while these deployments have separate per-chain registrations. The completed operator job does not prove website execution; no funded browser cycle was run for the new approval panel. |
+| 2. Cross-chain execution activation | Recovery contracts and the capped AWS worker are active on both EVM testnets; the operator cycle closed as `RECOVERED_FLAT`. Canonical calendar preparation, four wallet approvals, automatic inventory reservations and reconciled owner exits are now deployed for the dedicated funded cohort. Per-chain registrations remain separately bound. | Implementation and deployment are complete for this bounded calendar market. Chain-backed read-only preparation and the live Network panel passed. A fresh funded browser-signed calendar entry/exit remains unverified under the deployment-first instruction; the older operator cycle is not that evidence. |
 | 3. Hyperliquid pooled-mode terminal integration | Closed for the approved dedicated cohort. Both owners completed authenticated browser deposit/withdrawal cycles on 2026-10-18. | UI, database and venue agreed after reload: zero pool cash, liabilities and pending operations. Receipt evidence below. Epoch trading remains operator-only; this is not public custody enrollment. |
 | 4. Strategy ownership transfers | Closed for the Base cash-and-carry account path. The seller proposed and the buyer accepted through live Portfolio, acceptance finalized, dual-signed strategy-book novation succeeded, and the new owner's exit finalized. Book closure and collateral withdrawals reconciled with an empty strategy account. | Evidence below. This does not claim transferable positions on other venues or compatibility with every wallet extension. |
 | 5. Threshold-encryption backend | Backend and solver participation deployed; a real beacon opening was verified. | Preserve this completed backend evidence. Any claim of terminal-integrated encrypted trading also needs an encrypted auction award and settlement; current terminal auctions remain ordinary commit/reveal. |
@@ -399,7 +399,7 @@ strategy support is specific to a registered template and deployment, not every 
   Submission-journal reconciliation now runs at startup and before job closure, so finalized
   reservation refunds do not remain labelled pending after the coordination has completed.
   Multi-domain wallet entry/recovery authorization is now deployed as described below.
-  Public canonical order materialization remains separate work.
+  Canonical calendar materialization is deployed in the later release recorded below.
 
   | Recovery cycle action | Testnet transaction |
   | --- | --- |
@@ -465,10 +465,69 @@ trade ran. The previous operator job remains terminal, and the new wallet databa
 staged preparations. These checks prove deployment and rejection behavior, not a successful
 browser-signed cross-chain execution.
 
-The remaining public-flow gap is canonical order preparation against the separately registered
-per-chain templates. Its implementation must bind the actual canonical order, graph, quote and
-registered domain semantics. Reusing opaque operator-test commitments or loosening the compiler's
-template checks is not a valid fix. This is part of item 2, not a newly added launch requirement.
+That release left canonical order preparation against the separately registered per-chain
+templates open. The following release implements that same item 2; it does not add launch scope.
+
+## Canonical calendar activation, 2026-10-18
+
+Commits `1ebb0bdc`, `6d1ebd1e` and `7a556b74` implement and deploy the bounded public calendar
+path. The owner signs a preparation request in Network, reviews the exact package, signs entry
+and recovery on each testnet, then submits all four approvals. Only then may the worker reserve
+existing solver inventory and admit execution. The canonical graph, order, signed quote and route
+commitments bind both exact local registrations without replacing either local template identity.
+The dedicated compiler enforces this mapping; the contracts enforce their own local execution,
+authorization, accounting and postconditions. This is not arbitrary cross-chain compilation.
+
+The enabled market buys the near future on Base Sepolia and sells the far future on Arbitrum
+Sepolia, using 0.0001 test base units, 1 mock USDC collateral per chain and a maximum signed
+recovery loss of 0.10 mock USDC per chain. The owner remains the existing funded test cohort,
+not arbitrary public account enrollment. It uses controlled derivative venues, no bridge and
+no mainnet assets. Cross-chain execution is coordinated, not atomic.
+
+After a job is terminal, the owner can request a fresh close authorization for either chain.
+The close retains the original minimum collateral return, accepts profitable returns, and checks
+account identity, package state, nonce and ownership. The wallet submits the transaction; the
+service records closure only after matching finalized package state and a receipt for that order.
+The browser preserves a pending close transaction identifier and reconciles it before retrying.
+
+The user explicitly approved increasing each dedicated worker's lifetime gas allowance from
+250,000,000,000,000 to 500,000,000,000,000 wei (0.0005 test ETH). The migration preserved every
+submission, nonce and reserved-budget entry, kept both historical journals, and transferred no
+funds. The existing overall 0.01 test ETH per-network ceiling is unchanged.
+
+| Testnet | Preserved reserved budget (wei) | Remaining approved budget (wei) | Observed worker balance (wei) |
+| --- | ---: | ---: | ---: |
+| Base Sepolia | 107500000000000 | 392500000000000 | 278524189998363 |
+| Arbitrum Sepolia | 207500000000000 | 292500000000000 | 239132944678000 |
+
+A preparation requires 231250000000000 wei of remaining allowance per chain for entry, recovery
+and inventory operations. Both observed balances also covered that bound. The UI exposes a pause
+when the allowance is insufficient rather than advertising a new executable preparation.
+Observed finalized-head lag was 1,072 seconds on Base and 1,020 seconds on Arbitrum. The earlier
+15-minute preparation window was too short for serialized inventory finality. The corrected
+windows are three hours for preparation, four for commitment and eight for compensation, all
+before the near contract's maturity. Finality, price bounds and recovery-loss limits were not
+weakened. Testnet preparation can therefore take over an hour; this is not instant settlement.
+
+AWS uses immutable executor manifest version 3, hash
+`0x9c4c7621f152f2443f0d7e9cb11f47c0f80134962a7e9821c524d635158a4327`.
+All six recorded module hashes match the deployed files. The earlier executor manifests remain
+preserved. The API and cross-domain worker are active with zero automatic restarts. Public
+`/internal/healthz` reports ready across all four configured runtimes, and the public calendar
+market reports execution budget available. No signed preparations, pending jobs or new trades
+were created by these deployment checks.
+
+Static frontend deployment `dpl_HdUrsFhpqish8KZdaNvdQPuY6vco` is promoted to `naryx.xyz`.
+The build contains static pages only, not request-time Vercel Functions. A real browser read of
+Network displayed the calendar controls, no allowance-pause warning, no uncaught page errors
+and no horizontal overflow at 1440px.
+
+Validation: solver/API builds, 11 focused solver checks, one API proxy check, web typecheck and
+the changed component's lint passed. After the timing correction, the two canonical-builder
+checks passed again, including the maturity boundary. Read-only preparation against actual
+registrations returned `preparationReady: true`, `executionBudgetAvailable: true`,
+`staged: false`, `broadcast: false`. These checks do not claim a fresh funded browser round trip.
+No contract redeployment or mainnet operation occurred in this release.
 
 ## Recovery deployment identities
 
