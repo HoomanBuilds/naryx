@@ -50,7 +50,7 @@ function privateDatabasePath(input: string): string {
 }
 
 function requestJson(input: CrossDomainSubmission): string {
-  requireCondition(/^[0-9a-f]{64}:(COMMIT|COMPENSATE|RELEASE)$/.test(input.operationId), 'operation identity is invalid');
+  requireCondition(/^[0-9a-f]{64}:(COMMIT|COMPENSATE|RELEASE|APPROVE_INVENTORY|RESERVE_INVENTORY|FINALIZE_INVENTORY)$/.test(input.operationId), 'operation identity is invalid');
   requireCondition(/^0x(?:[0-9a-fA-F]{2}){4,65536}$/.test(input.data), 'calldata is invalid or exceeds its bound');
   requireCondition(typeof input.gas === 'bigint' && input.gas > 0n && input.gas <= 30_000_000n
     && typeof input.maximumFeePerGasWei === 'bigint' && input.maximumFeePerGasWei > 0n
@@ -99,6 +99,11 @@ export class EvmCrossDomainSubmissionJournal {
   }
 
   close(): void { this.#db.close(); }
+
+  remainingBudgetWei(): bigint {
+    const row = this.#db.prepare('SELECT cap_wei,reserved_wei FROM binding WHERE id=1').get() as { cap_wei: string; reserved_wei: string };
+    return BigInt(row.cap_wei) - BigInt(row.reserved_wei);
+  }
 
   async reconcilePending(): Promise<boolean> {
     await this.#assertChain();

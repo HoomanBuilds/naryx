@@ -12,6 +12,7 @@ import { createViemEvmFirmReservationCrossDomainPort } from './evm-firm-reservat
 import { loadEvmStrategySolverKey } from './evm-strategy-execution-authorization.js';
 import { validateEvmFullReversal } from './evm-full-reversal-policy.js';
 import { CrossDomainWalletAdmission, validateCrossDomainWalletDraft, type CrossDomainWalletDraft } from './cross-domain-wallet-admission.js';
+import { createCrossDomainCalendarRuntime } from './cross-domain-calendar-runtime.js';
 
 interface LaneConfiguration {
   readonly rpcEnvironmentVariable: string;
@@ -60,6 +61,7 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
   requireCondition(new Set(config.lanes.map(l => l.lane.chainReference)).size === 2, 'repeated runtime chain');
   const store = new SqliteCrossDomainJobStore(config.jobDatabasePath);
   const ports: ReturnType<typeof createViemEvmFirmReservationCrossDomainPort>[] = [];
+  let calendar: ReturnType<typeof createCrossDomainCalendarRuntime> | undefined;
   try {
     const lanes: { item: LaneConfiguration; account: ReturnType<typeof loadEvmStrategySolverKey>; lane: EvmRecoverableCrossDomainLane; driver: EvmCrossDomainExecutionDriver; port: typeof ports[number] }[] = [];
     for (const item of config.lanes) {
@@ -134,6 +136,13 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
     requireCondition(environment.NARYX_CROSS_DOMAIN_WALLET_ENABLED === undefined
       || environment.NARYX_CROSS_DOMAIN_WALLET_ENABLED === 'false'
       || environment.NARYX_CROSS_DOMAIN_WALLET_ENABLED === 'true', 'invalid wallet approval flag');
+    if (environment.NARYX_CROSS_DOMAIN_CALENDAR_DIR?.trim()) {
+      requireCondition(environment.NARYX_CROSS_DOMAIN_WALLET_ENABLED === 'true'
+        && environment.NARYX_CROSS_DOMAIN_QUOTE_KEY_PATH !== undefined, 'calendar requires wallet admission and a quote signer');
+      calendar = createCrossDomainCalendarRuntime({ directory: environment.NARYX_CROSS_DOMAIN_CALENDAR_DIR,
+        databasePath: `${config.jobDatabasePath}.calendar.sqlite`, signingKeyPath: environment.NARYX_CROSS_DOMAIN_QUOTE_KEY_PATH,
+        lanes: lanes.map(({ item, port }) => ({ ...item, port, rpcUrl: environment[item.rpcEnvironmentVariable]! })) });
+    }
     const checkDraft = async (value: unknown): Promise<CrossDomainWalletDraft> => {
       const draft = value as CrossDomainWalletDraft;
       validateCrossDomainWalletDraft(draft);
@@ -170,9 +179,13 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
           requireCondition(lane !== undefined, 'solver is not configured');
           return lane.account.signTypedData(envelope.solverTypedData);
         },
-        validate: async (draft, job) => { await checkDraft(draft); checkCohort(job); },
+        validate: async (draft, job) => {
+          await checkDraft(draft); checkCohort(job);
+          if (calendar?.documents(toHex(draft.execution.orderHash))) await calendar.validate(draft);
+        },
         async reserve(_id, _draft, job) {
-          // Public approval never funds inventory. The operator must pre-fund each exact reservation.
+          if (calendar?.documents(toHex(_draft.execution.orderHash))) return calendar.reserve(_draft);
+          // Operator preparations still require their exact inventory to be funded separately.
           for (const { item, port } of lanes) {
             const leg = job.bundle.plan.legs.find(leg => leg.domain.domainId === item.lane.domain.domainId)!;
             if ((await port.reservation(item.lane.reservationBook, `0x${toHex(commitmentHash(leg.inventoryReservationId))}`)).state !== 'LIVE') return false;
@@ -196,6 +209,25 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
       });
     return {
       walletApprovals,
+      calendarProfile: calendar?.profile,
+      calendarMarket: () => calendar?.market(),
+      calendarDocuments: (orderHash: string) => calendar?.documents(orderHash),
+      inspectCalendar: () => calendar?.inspect(),
+      async prepareCalendar(value: unknown) {
+        requireCondition(calendar !== undefined && walletApprovals !== undefined, 'canonical preparation is disabled');
+        return walletApprovals.prepare(await calendar.prepare(value));
+      },
+      async calendarExit(value: unknown) {
+        requireCondition(calendar !== undefined && walletApprovals !== undefined && typeof value === 'object' && value !== null, 'calendar exit is disabled');
+        const request = value as Record<string, unknown>;
+        requireCondition(Object.keys(request).sort().join(',') === (request.signature === undefined ? 'domainId,draftId' : 'domainId,draftId,signature')
+          && typeof request.draftId === 'string' && typeof request.domainId === 'string'
+          && (request.signature === undefined || (typeof request.signature === 'string' && /^0x[0-9a-fA-F]{130}$/.test(request.signature))), 'invalid exit request');
+        const current = walletApprovals.get(request.draftId);
+        requireCondition(current?.state === 'ADMITTED' && current.planHash !== null
+          && store.status(current.planHash)?.status === 'TERMINAL', 'wait for coordinator reconciliation before a manual exit');
+        return calendar.exit(current.draft, request.domainId, request.signature as `0x${string}` | undefined);
+      },
       worker: new CrossDomainWorker(store, coordinator, {
         validate: checkCohort,
         async reconcileTerminal(job, result) {
@@ -226,9 +258,10 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
       async enqueue(path: string) {
         return admit(readBounded(path) as CrossDomainJob);
       },
-      close() { walletApprovals?.close(); for (const port of ports) port.close(); store.close(); },
+      close() { walletApprovals?.close(); calendar?.close(); for (const port of ports) port.close(); store.close(); },
     };
   } catch (error) {
+    calendar?.close();
     for (const port of ports) port.close();
     store.close();
     throw error;

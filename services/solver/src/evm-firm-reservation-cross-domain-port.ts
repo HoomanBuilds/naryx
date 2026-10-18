@@ -135,7 +135,7 @@ export function createViemEvmFirmReservationCrossDomainPort(input: Readonly<{
   submissionJournalPath: string;
   maximumGasBudgetWei: bigint;
   alreadySpentWei: bigint;
-}>): EvmRecoverableCrossDomainPort & { close(): void; reconcilePending(): Promise<boolean> } {
+}>): EvmRecoverableCrossDomainPort & { close(): void; reconcilePending(): Promise<boolean>; remainingBudgetWei(): bigint } {
   requireCondition(input.chainReference === 84_532n || input.chainReference === 421_614n,
     'only Base Sepolia and Arbitrum Sepolia are allowed');
   requireCondition(/^https?:\/\//.test(input.rpcUrl), 'RPC URL must be HTTP or HTTPS');
@@ -197,6 +197,7 @@ export function createViemEvmFirmReservationCrossDomainPort(input: Readonly<{
 
   return Object.freeze({
     close: () => submissions.close(),
+    remainingBudgetWei: () => submissions.remainingBudgetWei(),
     chainId: async () => BigInt(await publicClient.getChainId()),
     accountOwner: async (account: Address) => getAddress(await finalizedRead({ address: account, abi: STRATEGY_ACCOUNT_ABI, functionName: 'owner' }) as Address),
     currentTime: async () => (await publicClient.getBlock({ blockTag: 'latest' })).timestamp,

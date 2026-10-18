@@ -7,6 +7,11 @@ export function createCrossDomainServer(runtime: {
   admit(job: CrossDomainJob): Promise<{ planHash: string; admittedPlanHash: string }>;
   status(hash: string): unknown;
   walletApprovals?: CrossDomainWalletAdmission | undefined;
+  calendarProfile?: unknown;
+  calendarMarket?: () => unknown;
+  calendarDocuments?: (orderHash: string) => unknown;
+  prepareCalendar?: (value: unknown) => Promise<unknown>;
+  calendarExit?: (value: unknown) => Promise<unknown>;
 }) {
   let admitting = false;
   return createServer(async (request, response) => {
@@ -22,6 +27,14 @@ export function createCrossDomainServer(runtime: {
       reply(200, { status: 'ok', environment: 'testnet', admissionInProgress: admitting,
         walletApprovalsAvailable: runtime.walletApprovals !== undefined }); return;
     }
+    if (request.method === 'GET' && request.url === '/wallet/market') {
+      reply(runtime.calendarProfile === undefined ? 503 : 200, runtime.calendarMarket?.() ?? { error: 'Canonical market is disabled.' }); return;
+    }
+    const documentsMatch = /^\/wallet\/orders\/([0-9a-f]{64})$/.exec(request.url ?? '');
+    if (request.method === 'GET' && documentsMatch !== null) {
+      const documents = runtime.calendarDocuments?.(documentsMatch[1]!);
+      reply(documents === undefined ? 404 : 200, documents ?? { error: 'Canonical order not found.' }); return;
+    }
     const draftMatch = /^\/wallet\/drafts\/([0-9a-f]{64})$/.exec(request.url ?? '');
     if (request.method === 'GET' && draftMatch !== null) {
       try {
@@ -36,7 +49,7 @@ export function createCrossDomainServer(runtime: {
       const status = runtime.status(match[1]!);
       reply(status === undefined ? 404 : 200, status ?? { error: 'Job not found.' }); return;
     }
-    if (request.method !== 'POST' || !['/jobs', '/wallet/drafts', '/wallet/authorize'].includes(request.url ?? '')) {
+    if (request.method !== 'POST' || !['/jobs', '/wallet/drafts', '/wallet/authorize', '/wallet/orders', '/wallet/exit'].includes(request.url ?? '')) {
       reply(404, { error: 'Route not found.' }); return;
     }
     if (admitting) { reply(429, { error: 'Admission busy. Retry the same signed job.' }); return; }
@@ -59,6 +72,14 @@ export function createCrossDomainServer(runtime: {
       request.setTimeout(0);
       const value = parseProtocolJson(Buffer.concat(chunks).toString('utf8'));
       if (request.url === '/jobs') reply(202, await runtime.admit(value as CrossDomainJob));
+      else if (request.url === '/wallet/exit') {
+        if (runtime.calendarExit === undefined) reply(503, { error: 'Canonical exit is disabled.' });
+        else reply(200, await runtime.calendarExit(value));
+      }
+      else if (request.url === '/wallet/orders') {
+        if (runtime.calendarProfile === undefined || runtime.prepareCalendar === undefined) reply(503, { error: 'Canonical market is disabled.' });
+        else reply(201, await runtime.prepareCalendar(value));
+      }
       else if (runtime.walletApprovals === undefined) reply(503, { error: 'Wallet approval is disabled.' });
       else if (request.url === '/wallet/drafts') reply(201, await runtime.walletApprovals.prepare(value));
       else reply(202, await runtime.walletApprovals.authorize(value as CrossDomainWalletSignatures));

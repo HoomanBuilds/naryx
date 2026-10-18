@@ -63,6 +63,21 @@ test('restart after ambiguous broadcast resends identical bytes without another 
   await assert.rejects(f.journal().submit({ ...f.request, operationId: `${'b'.repeat(64)}:COMMIT` }), /budget is exhausted/);
 });
 
+test('inventory phases share the same durable gas cap and cannot gain capacity on replay', async t => {
+  const f = fixture(t, 63_000n);
+  assert.equal(f.journal().remainingBudgetWei(), 63_000n);
+  for (const [index, phase] of ['APPROVE_INVENTORY', 'RESERVE_INVENTORY', 'FINALIZE_INVENTORY'].entries()) {
+    const request = { ...f.request, operationId: `${'a'.repeat(64)}:${phase}` };
+    const hash = await f.journal().submit(request);
+    f.receipts.set(hash, 'SUCCESS');
+    f.restart();
+    assert.equal(await f.journal().submit(request), hash);
+    assert.equal(f.journal().remainingBudgetWei(), 63_000n - BigInt(index + 1) * 21_000n);
+  }
+  assert.equal(f.sent.length, 3);
+  await assert.rejects(f.journal().submit(f.request), /budget is exhausted/);
+});
+
 test('read-only reconciliation preserves unknown submissions and never signs or resends', async t => {
   const f = fixture(t);
   assert.equal(await f.journal().observe(f.request.operationId), undefined);

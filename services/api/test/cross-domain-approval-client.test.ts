@@ -19,4 +19,10 @@ test('cross-chain approval proxy only forwards bounded signatures and fixed loop
   await assert.rejects(client.authorize({ draftId, signatures: [signatures[0], signatures[0]] }), /Each chain/);
   assert.equal((await client.authorize({ draftId, signatures })).status, 202);
   assert.deepEqual(requests, ['http://127.0.0.1:8806/wallet/authorize']);
+  await assert.rejects(client.prepare({ marketId: 'base-arbitrum-calendar-v1', execution: {} }), /request/);
+  await client.prepare({ marketId: 'base-arbitrum-calendar-v1', owner: `0x${'12'.repeat(20)}`,
+    requestId: 'calendar-request-1', expiresAt: '1791000000', signature });
+  await client.market();
+  await client.documents(draftId);
+  assert.deepEqual(requests.slice(1), ['http://127.0.0.1:8806/wallet/orders', 'http://127.0.0.1:8806/wallet/market', `http://127.0.0.1:8806/wallet/orders/${draftId}`]);
 });

@@ -17,6 +17,39 @@ export class CrossDomainApprovalClient {
     return this.#request(`/wallet/drafts/${draftId}`);
   }
 
+  market() { return this.#request('/wallet/market'); }
+
+  async exit(value: unknown) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Invalid exit request.');
+    const request = value as Record<string, unknown>;
+    if (Object.keys(request).sort().join(',') !== (request.signature === undefined ? 'domainId,draftId' : 'domainId,draftId,signature')
+      || typeof request.draftId !== 'string' || !/^[0-9a-f]{64}$/.test(request.draftId)
+      || !['eip155:84532', 'eip155:421614'].includes(String(request.domainId))
+      || (request.signature !== undefined && (typeof request.signature !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(request.signature)))) {
+      throw new Error('Invalid exit approval.');
+    }
+    return this.#request('/wallet/exit', request);
+  }
+
+  async documents(orderHash: string) {
+    if (!/^[0-9a-f]{64}$/.test(orderHash)) throw new Error('Invalid canonical order identifier.');
+    return this.#request(`/wallet/orders/${orderHash}`);
+  }
+
+  async prepare(value: unknown) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Invalid preparation request.');
+    const request = value as Record<string, unknown>;
+    if (Object.keys(request).sort().join(',') !== 'expiresAt,marketId,owner,requestId,signature'
+      || request.marketId !== 'base-arbitrum-calendar-v1'
+      || typeof request.owner !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(request.owner)
+      || typeof request.requestId !== 'string' || !/^[a-zA-Z0-9._:-]{16,96}$/.test(request.requestId)
+      || typeof request.expiresAt !== 'string' || !/^[0-9]{1,12}$/.test(request.expiresAt)
+      || typeof request.signature !== 'string' || !/^0x[0-9a-fA-F]{130}$/.test(request.signature)) {
+      throw new Error('Invalid signed preparation request.');
+    }
+    return this.#request('/wallet/orders', request);
+  }
+
   async authorize(value: unknown) {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Invalid wallet approval.');
     const input = value as Record<string, unknown>;
@@ -45,7 +78,7 @@ export class CrossDomainApprovalClient {
       method: body === undefined ? 'GET' : 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
       ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
     });
-    if (![200, 202, 404, 409, 429, 503].includes(response.status)) throw new Error('Cross-chain approval service unavailable.');
+    if (![200, 201, 202, 404, 409, 429, 503].includes(response.status)) throw new Error('Cross-chain approval service unavailable.');
     const reader = response.body?.getReader();
     if (reader === undefined) throw new Error('Cross-chain approval service returned no body.');
     const chunks: Uint8Array[] = [];

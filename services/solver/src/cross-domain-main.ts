@@ -4,11 +4,14 @@ import { createCrossDomainServer } from './cross-domain-server.js';
 const runtime = await loadCrossDomainRuntime(process.env);
 if (runtime === undefined) throw new Error('Cross-domain runtime is disabled.');
 const args = process.argv.slice(2);
-if (args.length === 2 && args[0] === '--enqueue') {
+if (args.length === 1 && args[0] === '--inspect-calendar') {
+  try { process.stdout.write(`${JSON.stringify(await runtime.inspectCalendar())}\n`); }
+  finally { runtime.close(); }
+} else if (args.length === 2 && args[0] === '--enqueue') {
   try { process.stdout.write(`${JSON.stringify(await runtime.enqueue(args[1]!))}\n`); }
   finally { runtime.close(); }
 } else {
-  if (args.length !== 0) { runtime.close(); throw new Error('Usage: cross-domain-main.js [--enqueue /absolute/job.json]'); }
+  if (args.length !== 0) { runtime.close(); throw new Error('Usage: cross-domain-main.js [--enqueue /absolute/job.json | --inspect-calendar]'); }
   const port = process.env.NARYX_CROSS_DOMAIN_PORT;
   if (port !== undefined && (!/^\d+$/.test(port) || Number(port) < 1024 || Number(port) > 65535)) {
     runtime.close(); throw new Error('Invalid cross-domain loopback port.');

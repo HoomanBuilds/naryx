@@ -558,6 +558,26 @@ export function createPrivateTerminalRequestHandler(
     }
 
     const approvalMatch = /^\/internal\/terminal\/cross-domain\/drafts\/([0-9a-f]{64})$/.exec(url.pathname);
+    const canonicalMatch = /^\/internal\/terminal\/cross-domain\/orders\/([0-9a-f]{64})$/.exec(url.pathname);
+    if (url.pathname === '/internal/terminal/cross-domain/market'
+      || url.pathname === '/internal/terminal/cross-domain/prepare' || url.pathname === '/internal/terminal/cross-domain/exit' || canonicalMatch !== null) {
+      if (crossDomainApprovals === undefined) {
+        reject(response, 503, 'CROSS_DOMAIN_APPROVAL_UNAVAILABLE', 'Cross-chain preparation is not enabled.'); return;
+      }
+      const exiting = url.pathname.endsWith('/exit');
+      const preparing = url.pathname.endsWith('/prepare') || exiting;
+      if (request.method !== (preparing ? 'POST' : 'GET') || url.search !== '') {
+        reject(response, 405, 'METHOD_NOT_ALLOWED', 'Unsupported cross-chain operation.'); return;
+      }
+      try {
+        const result = exiting ? await crossDomainApprovals.exit(await readJson(request)) : preparing ? await crossDomainApprovals.prepare(await readJson(request))
+          : canonicalMatch !== null ? await crossDomainApprovals.documents(canonicalMatch[1]!) : await crossDomainApprovals.market();
+        sendJson(response, result.status, result.body);
+      } catch {
+        reject(response, 409, 'CROSS_DOMAIN_PREPARATION_REFUSED', 'Preparation failed. Check the funded test account, signature and current market state.');
+      }
+      return;
+    }
     if (approvalMatch !== null || url.pathname === '/internal/terminal/cross-domain/authorize') {
       if (crossDomainApprovals === undefined) {
         reject(response, 503, 'CROSS_DOMAIN_APPROVAL_UNAVAILABLE', 'Cross-chain wallet approval is not enabled.');
