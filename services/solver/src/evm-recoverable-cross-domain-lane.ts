@@ -25,6 +25,7 @@ export interface EvmCrossDomainRecoveryAuthorization {
 type ValidatedRecovery = EvmCrossDomainRecoveryAuthorization & { readonly data: Hex; readonly callsHash: Hex; readonly reversal: EvmFullReversal };
 export interface EvmRecoverableCrossDomainLaneConfig extends EvmFirmReservationCrossDomainLaneConfig {
   readonly recoveryAdapters: readonly EvmRecoveryAdapterPolicy[];
+  readonly reservationReleaseGasLimit?: bigint;
 }
 
 export interface EvmCrossDomainRecoveryAuthorizations extends EvmCrossDomainAuthorizationProvider {
@@ -56,6 +57,8 @@ export class EvmRecoverableCrossDomainLane implements EvmCrossDomainExecutionLan
     port: EvmRecoverableCrossDomainPort,
     authorizations: EvmCrossDomainRecoveryAuthorizations,
   ) {
+    requireCondition(config.reservationReleaseGasLimit === undefined || (config.reservationReleaseGasLimit > 0n
+      && config.reservationReleaseGasLimit <= config.compensationGasLimit), 'reservation release gas limit is invalid');
     this.config = Object.freeze({ ...config, recoveryAdapters: Object.freeze(config.recoveryAdapters.map(p => Object.freeze({ ...p }))) });
     this.port = port;
     this.authorizations = authorizations;
@@ -137,7 +140,8 @@ export class EvmRecoverableCrossDomainLane implements EvmCrossDomainExecutionLan
     if (await this.port.finalizedTime() <= reservation.expiry) return false;
     await this.port.submit({ operationId: `${input.planHash}:RELEASE`, to: this.config.reservationBook,
       data: encodeFunctionData({ abi: RELEASE_ABI, functionName: 'releaseExpired', args: [id] }),
-      gas: this.config.compensationGasLimit, maximumFeePerGasWei: this.config.maximumFeePerGasWei });
+      gas: this.config.reservationReleaseGasLimit ?? (this.config.compensationGasLimit < 300_000n ? this.config.compensationGasLimit : 300_000n),
+      maximumFeePerGasWei: this.config.maximumFeePerGasWei });
     return false;
   }
 

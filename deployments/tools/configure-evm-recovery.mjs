@@ -91,7 +91,7 @@ for (const [network, chain, rpcVariable] of [
       domain: domainRef(record.domain.domainId, record.domain.domainManifestVersion, record.domain.domainManifestHash),
       chainReference: BigInt(chain.id), reservationBook: address('reservationBook'),
       reservationBookCodeHash: record.contracts.reservationBook.runtimeCodeHash, strategyAccountCodeHash: record.accountCodeHash,
-      commitGasLimit: 4_000_000n, compensationGasLimit: 4_000_000n, maximumFeePerGasWei: 25_000_000n,
+      commitGasLimit: 4_000_000n, compensationGasLimit: 4_000_000n, reservationReleaseGasLimit: 300_000n, maximumFeePerGasWei: 25_000_000n,
       maximumCompensationCostQuoteAtoms: 1_000_000n,
       recoveryAdapters: Object.entries(record.instances).map(([name, instance]) => ({ ...instance,
         kind: name === 'spotFactory' ? 'SPOT' : name === 'perpetualFactory' ? 'RECOVERABLE_PERP' : 'RECOVERABLE_FUTURE',

@@ -736,6 +736,12 @@ test('running workers enforce their own cohort and require chain evidence before
 
 test('unused reservations release only after finalized expiry and under a distinct journal operation', async () => {
   const f = await recoverableSetup();
+  const lane = f.lane(), submit = lane.port.submit.bind(lane.port);
+  let releaseGas = 0n;
+  Object.assign(lane.port, { submit: async (input: Parameters<typeof submit>[0]) => {
+    if (input.operationId.endsWith(':RELEASE')) releaseGas = input.gas;
+    return submit(input);
+  } });
   assert.equal(await f.lane().settleUnusedReservation(f.input), false);
   assert.equal(f.base.submitted.length, 0);
   f.base.now = 251n;
@@ -743,6 +749,7 @@ test('unused reservations release only after finalized expiry and under a distin
   assert.equal(f.base.submitted[0]?.to, bookAddress);
   assert.equal(f.base.submitted[0]?.data, releaseData);
   assert.equal(f.base.operationIds[0], `${f.input.planHash}:RELEASE`);
+  assert.equal(releaseGas, 300_000n);
   assert.equal(await f.lane().settleUnusedReservation(f.input), true);
   assert.equal(f.base.submitted.length, 1);
   f.base.reservationValue = { ...f.base.reservationValue, state: 'LIVE', orderHash: hex('f') };
