@@ -109,6 +109,12 @@ export class HyperliquidPooledCollateralStore {
     return amount(this.members().reduce((total, row) => total + row.balanceQuoteAtoms, 0n));
   }
 
+  ownerFundingOperations(owner: string): readonly Readonly<{ id: string; kind: string; state: string }>[] {
+    check(ADDRESS.test(owner), 'invalid owner');
+    return this.#db.prepare("SELECT id, kind, state FROM pool_operations WHERE kind IN ('DEPOSIT', 'WITHDRAWAL') AND json_extract(payload, '$.owner') = ? ORDER BY rowid DESC LIMIT 50")
+      .all(owner) as { id: string; kind: string; state: string }[];
+  }
+
   pending(): Readonly<{ id: string; kind: string }> | undefined {
     const row = this.#db.prepare("SELECT id, kind FROM pool_operations WHERE state = 'PENDING'").get() as { id: string; kind: string } | undefined;
     return row === undefined ? undefined : Object.freeze(row);

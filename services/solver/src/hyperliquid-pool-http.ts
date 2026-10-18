@@ -5,6 +5,7 @@ import type { HyperliquidPooledCollateralStore } from './hyperliquid-pooled-coll
 import type { HyperliquidPoolFundingService, PoolWithdrawalRequest } from './hyperliquid-pool-funding.js';
 import type { HyperliquidPoolEpochService, HyperliquidPoolEpochPlan } from './hyperliquid-pool-epoch.js';
 import type { HyperliquidPoolWithdrawalService } from './hyperliquid-pool-withdrawal.js';
+import { createPoolBrowserCommands } from './hyperliquid-pool-browser.js';
 
 interface PoolServices {
   readonly store: HyperliquidPooledCollateralStore;
@@ -16,6 +17,7 @@ interface PoolServices {
 export function createHyperliquidPoolController(services: PoolServices, operatorToken: string) {
   if (!/^[a-f0-9]{64}$/.test(operatorToken)) throw new Error('A dedicated pool operator token is required');
   let busy = false;
+  const browser = createPoolBrowserCommands(services);
   async function exclusive<T>(action: () => Promise<T>): Promise<T> {
     if (busy) throw new Error('Pool operation is already running');
     busy = true;
@@ -57,6 +59,8 @@ export function createHyperliquidPoolController(services: PoolServices, operator
         if (Object.keys(body).sort().join(',') !== allowed.sort().join(',')) throw new Error('Invalid command fields');
       };
       const result = await exclusive(async () => {
+        const browserCommand = /^\/v1\/pool\/browser\/([a-z-]+)$/.exec(url.pathname);
+        if (browserCommand) return browser(browserCommand[1]!, body);
         switch (url.pathname) {
           case '/v1/pool/enroll':
             keys('owner', 'signature');

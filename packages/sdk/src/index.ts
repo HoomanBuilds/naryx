@@ -94,6 +94,8 @@ export {
   type VerifiedTerminalEvidence,
 } from './client.js';
 export { authorizeStrategyCommand } from './client.js';
+export { testPoolConfig, testPoolRequest, testPoolConsent, testPoolWithdrawal, verifyTestPoolChallenge,
+  type TestPoolConfig } from './test-pool.js';
 export { reviewEvmStrategyFunding, type EvmStrategyFundingReview } from './evm-strategy-funding.js';
 export {
   NaryxSolverClient,

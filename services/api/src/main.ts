@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import { createPrivateTerminalServer, loadPrivateTerminalServerConfig } from "./http-server.js";
 import { loadMakerControlProxy } from "./maker-control-proxy.js";
 import { createNativeCashProxy } from "./native-cash-proxy.js";
+import { createHyperliquidPoolProxy, loadPoolProxyToken } from "./hyperliquid-pool-proxy.js";
 import { createHyperliquidEnrollmentProxy } from "./hyperliquid-testnet-enrollment-proxy.js";
 import { HyperliquidOwnerCohorts, OwnerCohortError } from "./hyperliquid-owner-cohort.js";
 import { createHyperliquidOwnerCohortHandler } from "./hyperliquid-owner-cohort-http.js";
@@ -1246,6 +1247,9 @@ if (publicMarket?.reconcileAdvancedOrders !== undefined) {
 
 const nativeCashProxy = explicitlyEnabled('NARYX_NATIVE_CASH_TESTNET_ENABLED')
   ? createNativeCashProxy(process.env.NARYX_NATIVE_CASH_TESTNET_ORIGIN ?? '', fetch, config.terminalOrigin) : undefined;
+const hyperliquidPoolProxy = explicitlyEnabled('NARYX_HYPERLIQUID_POOL_BROWSER_ENABLED')
+  ? createHyperliquidPoolProxy(process.env.NARYX_HYPERLIQUID_POOL_BROWSER_ORIGIN ?? '',
+    loadPoolProxyToken(process.env.NARYX_HYPERLIQUID_POOL_OPERATOR_TOKEN_PATH ?? ''), config.terminalOrigin) : undefined;
 const server = createPrivateTerminalServer(
   config,
   runtime.solanaDevnet,
@@ -1272,6 +1276,7 @@ const server = createPrivateTerminalServer(
       ? createHyperliquidEnrollmentProxy(process.env.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ORIGIN ?? '') : undefined,
     makerControlProxy,
     nativeCashProxy,
+    hyperliquidPoolProxy,
     publicMarket?.internalHandler,
     publicMarket?.listener === undefined ? publicMarket?.handler : undefined,
     arbitrumOwnerRoutes,
@@ -1322,6 +1327,7 @@ const publicServer = publicMarket?.listener === undefined
   ? undefined
   : createServer((request, response) => {
     if (nativeCashProxy?.(request, response)) return;
+    if (hyperliquidPoolProxy?.(request, response)) return;
     if (publicMarket.handler(request, response)) return;
     response.statusCode = 404;
     response.setHeader("Content-Type", "application/json; charset=utf-8");

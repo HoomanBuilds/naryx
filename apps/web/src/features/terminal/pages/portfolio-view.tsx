@@ -17,6 +17,7 @@ import { TransactionLink } from "../transaction-status";
 import { usePortfolioIntelligence, type ObservationStatus } from "./use-portfolio-intelligence";
 import { NativeClearingCard, RiskDomainsCard, useNativeClearing } from "./clearing-and-risk";
 import { NativeCashMarkets } from "./native-cash-markets";
+import { HyperliquidTestPool } from "./hyperliquid-test-pool";
 import { StrategyPositionsTable, useStrategyPositions } from "./strategy-positions";
 import { PortfolioScenarioLab } from "./portfolio-scenario-lab";
 import { StrategyEntryManager, StrategyLifecycleManager } from "./strategy-lifecycle-manager";
@@ -519,6 +520,7 @@ export function PortfolioView() {
       <RiskDomainsCard baseUrl={publicApiBaseUrl} ids={riskDomainIds} clearingDomains={clearing.domains} />
 
       <NativeCashMarkets />
+      <HyperliquidTestPool baseUrl={publicApiBaseUrl} />
       <NativeClearingCard state={clearing} connected={connectedCount > 0} />
 
       <Suspense fallback={null}>
