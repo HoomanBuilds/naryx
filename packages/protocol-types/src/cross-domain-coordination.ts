@@ -7,8 +7,10 @@ import { domainHash, HASH_DOMAIN } from './hashing.js';
 import { commitmentHash, encodeCommitmentHash, type CommitmentHash } from './package-order-primitives.js';
 import { compareProtocolIds, domainRef, encodeDomainRef, encodeProtocolId, protocolId, type DomainRef, type ProtocolId } from './primitives.js';
 import { bytesEqual, toHex } from './bytes.js';
+import { replayRecoverableCrossDomainCoordination } from './cross-domain-recovery-v2.js';
 
 export const CROSS_DOMAIN_PLAN_VERSION = 1;
+export const CROSS_DOMAIN_RECOVERABLE_PLAN_VERSION = 2;
 export const CROSS_DOMAIN_COMPENSATION_ACTION_VERSION = 1;
 export const CROSS_DOMAIN_COMPENSATION_KIND = Object.freeze({
   RELEASE_RESERVED_INVENTORY: 1,
@@ -55,7 +57,7 @@ export interface CrossDomainPlanInput {
 }
 
 export interface CrossDomainPlan {
-  readonly planVersion: 1;
+  readonly planVersion: 1 | 2;
   readonly environment: ProtocolId;
   readonly orderHash: CommitmentHash;
   readonly quoteHash: CommitmentHash;
@@ -130,7 +132,9 @@ function u(value: bigint, bits: number, context: string): bigint {
 
 export function crossDomainPlan(input: CrossDomainPlanInput, context = 'crossDomainPlan'): CrossDomainPlan {
   if (typeof input !== 'object' || input === null) throw new MalformedInputError(context, 'expected an object');
-  if (input.planVersion !== CROSS_DOMAIN_PLAN_VERSION) throw new MalformedInputError(`${context}.planVersion`, `version must equal ${CROSS_DOMAIN_PLAN_VERSION}`);
+  if (input.planVersion !== CROSS_DOMAIN_PLAN_VERSION && input.planVersion !== CROSS_DOMAIN_RECOVERABLE_PLAN_VERSION) {
+    throw new MalformedInputError(`${context}.planVersion`, 'version must equal 1 or 2');
+  }
   enumDiscriminant(EXPIRY_UNIT, input.timeUnit, `${context}.timeUnit`);
   const prepareDeadline = u(input.prepareDeadline, U64, `${context}.prepareDeadline`);
   const commitDeadline = u(input.commitDeadline, U64, `${context}.commitDeadline`);
@@ -165,7 +169,7 @@ export function crossDomainPlan(input: CrossDomainPlanInput, context = 'crossDom
   const total = legs.reduce((sum, leg) => sum + leg.interimExposureQuoteAtoms, 0n);
   if (total > maximum) throw new MalformedInputError(`${context}.maximumInterimExposureQuoteAtoms`, 'every domain prepared at once would exceed the interim exposure bound');
   return Object.freeze({
-    planVersion: 1 as const,
+    planVersion: input.planVersion,
     environment: protocolId(input.environment, `${context}.environment`),
     orderHash: commitmentHash(input.orderHash, `${context}.orderHash`),
     quoteHash: commitmentHash(input.quoteHash, `${context}.quoteHash`),
@@ -291,6 +295,9 @@ export function crossDomainExecutionBundle(
     const matches = compensations.filter((action) => sameDomain(action.domain, leg.domain));
     if (matches.length !== 1) throw new MalformedInputError(`${context}.compensations`, `domain ${leg.domain.domainId} must have exactly one action`);
     const action = matches[0]!;
+    if (plan.planVersion === CROSS_DOMAIN_RECOVERABLE_PLAN_VERSION && action.actionKind !== 'REVERSE_FILLED_LEGS') {
+      throw new MalformedInputError(`${context}.compensations`, 'recoverable plans require filled-position recovery on every domain');
+    }
     if (action.environment !== plan.environment || !bytesEqual(action.orderHash, plan.orderHash)
       || !bytesEqual(action.quoteHash, plan.quoteHash) || !bytesEqual(action.routeHash, plan.routeHash)) {
       throw new MalformedInputError(`${context}.compensations`, `action for ${leg.domain.domainId} binds another package`);
@@ -311,12 +318,12 @@ export function crossDomainExecutionBundle(
 
 export type CrossDomainEvent =
   | { readonly kind: 'PREPARED' | 'COMMITTED' | 'COMPENSATED'; readonly domainId: string; readonly evidenceHash: Uint8Array | string; readonly finality: CrossDomainFinality; readonly atValue: bigint }
-  | { readonly kind: 'PREPARE_FAILED'; readonly domainId: string; readonly evidenceHash: Uint8Array | string; readonly atValue: bigint };
+  | { readonly kind: 'PREPARE_FAILED' | 'COMMIT_FAILED'; readonly domainId: string; readonly evidenceHash: Uint8Array | string; readonly atValue: bigint };
 
-export type CrossDomainDomainStatus = 'PENDING' | 'PREPARING' | 'PREPARED' | 'FAILED' | 'COMMITTING' | 'COMMITTED' | 'COMPENSATING' | 'COMPENSATED';
+export type CrossDomainDomainStatus = 'PENDING' | 'PREPARING' | 'PREPARED' | 'FAILED' | 'COMMITTING' | 'COMMITTED' | 'COMMIT_FAILED' | 'COMPENSATING' | 'COMPENSATED';
 export type CrossDomainPhase = 'PREPARING' | 'COMMITTING' | 'COMMITTED' | 'ABORTING' | 'ABORTED' | 'FENCED';
 export type CrossDomainAction =
-  | { readonly kind: 'PREPARE' | 'COMMIT' | 'COMPENSATE' | 'AWAIT_FINALITY'; readonly domainId: string }
+  | { readonly kind: 'PREPARE' | 'COMMIT' | 'COMPENSATE' | 'AWAIT_FINALITY' | 'RECONCILE_COMMIT'; readonly domainId: string }
   | { readonly kind: 'ESCALATE'; readonly reason: string };
 
 export interface CrossDomainCoordination {
@@ -344,6 +351,9 @@ export interface CrossDomainCoordination {
 export function replayCrossDomainCoordination(planInput: CrossDomainPlanInput, events: readonly CrossDomainEvent[], nowValue: bigint): CrossDomainCoordination {
   const plan = crossDomainPlan(planInput);
   const now = u(nowValue, U64, 'replayCrossDomainCoordination.nowValue');
+  if (plan.planVersion === CROSS_DOMAIN_RECOVERABLE_PLAN_VERSION) {
+    return replayRecoverableCrossDomainCoordination(plan, toHex(crossDomainPlanHash(planInput)), events, now);
+  }
   const status = new Map<string, CrossDomainDomainStatus>(plan.legs.map((leg) => [leg.domain.domainId, 'PENDING']));
   const seen = new Map<string, string>();
   const violations: string[] = [];
@@ -376,7 +386,7 @@ export function replayCrossDomainCoordination(planInput: CrossDomainPlanInput, e
       break;
     }
     seen.set(key, evidence);
-    const finalized = event.kind === 'PREPARE_FAILED' || event.finality === 'FINALIZED';
+    const finalized = event.kind === 'PREPARE_FAILED' || ('finality' in event && event.finality === 'FINALIZED');
     switch (event.kind) {
       case 'PREPARED':
         if (phase !== 'PREPARING' && phase !== 'ABORTING') { fence(`${event.domainId} prepared after ${phase}`); break; }

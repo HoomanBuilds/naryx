@@ -141,6 +141,69 @@ describe('cross-domain prepositioned coordination', () => {
   });
 });
 
+describe('versioned filled-position recovery', () => {
+  const recoverable = { ...plan, planVersion: 2 };
+  const prepared = [ev('PREPARED', 'svm:testnet', 20n), ev('PREPARED', 'eip155:84532', 40n, '52')];
+  const committed = ev('COMMITTED', 'svm:testnet', 50n, '53');
+  const failed: CrossDomainEvent = { kind: 'COMMIT_FAILED', domainId: 'eip155:84532', evidenceHash: '54'.repeat(32), atValue: 201n };
+
+  test('preserves v1 commitments and requires reverse-filled actions for v2', () => {
+    assert.equal(toHex(crossDomainPlanHash(plan)), '0475eff38a3898222f143d75300479118d52e69bbf349fd5ebdddc567da404db');
+    assert.notEqual(toHex(crossDomainPlanHash(recoverable)), toHex(crossDomainPlanHash(plan)));
+    assert.throws(() => crossDomainPlanHash({ ...plan, planVersion: 3 }), /version/);
+    const actions = plan.legs.map((leg, i) => compensation(leg.domain, leg.legIds, toHex(typeof leg.inventoryReservationId === 'string'
+      ? Buffer.from(leg.inventoryReservationId, 'hex') : leg.inventoryReservationId), i === 0 ? '71' : '72'));
+    const bundle = (items: CrossDomainCompensationActionInput[]) => ({
+      plan: { ...recoverable, legs: plan.legs.map((leg, i) => ({ ...leg, compensationActionHash: crossDomainCompensationActionHash(items[i]!) })) },
+      compensations: items,
+    });
+    assert.throws(() => crossDomainExecutionBundle(bundle(actions)), /filled-position recovery/);
+    assert.equal(crossDomainExecutionBundle(bundle(actions.map(action => ({ ...action, actionKind: 'REVERSE_FILLED_LEGS' })))).plan.planVersion, 2);
+  });
+
+  test('replays filled-side reversal and failed-side release to a verified flat outcome', () => {
+    const events = [...prepared, committed, failed];
+    const aborting = replayCrossDomainCoordination(recoverable, events, 202n);
+    assert.equal(aborting.phase, 'ABORTING');
+    assert.equal(aborting.interimExposureQuoteAtoms, 900n);
+    assert.deepEqual(aborting.nextActions.map(action => action.kind), ['COMPENSATE', 'COMPENSATE']);
+    const recovered = [...events, ev('COMPENSATED', 'svm:testnet', 210n, '55'), ev('COMPENSATED', 'eip155:84532', 220n, '56')];
+    assert.equal(replayCrossDomainCoordination(recoverable, recovered, 221n).terminalState, 'RECOVERED_FLAT');
+    const restarted = replayCrossDomainCoordination(recoverable, recovered, 400n);
+    assert.equal(restarted.terminalState, 'RECOVERED_FLAT');
+    assert.equal(restarted.interimExposureQuoteAtoms, 0n);
+    assert.equal(replayCrossDomainCoordination(plan, events, 202n).terminalState, 'MANUAL_INTERVENTION');
+  });
+
+  test('reconciles unknown outcomes without treating expiry or missing receipts as no effect', () => {
+    const state = replayCrossDomainCoordination(recoverable, [...prepared, committed], 201n);
+    assert.deepEqual(state.nextActions, [{ kind: 'RECONCILE_COMMIT', domainId: 'eip155:84532' }, { kind: 'COMPENSATE', domainId: 'svm:testnet' }]);
+    const unsafe = replayCrossDomainCoordination(recoverable, [...prepared, committed, ev('COMPENSATED', 'eip155:84532', 202n, '59')], 203n);
+    assert.equal(unsafe.terminalState, 'MANUAL_INTERVENTION');
+    const late = replayCrossDomainCoordination(recoverable, [...prepared, committed, ev('COMMITTED', 'eip155:84532', 202n, '58')], 203n);
+    assert.equal(late.phase, 'ABORTING');
+    assert.deepEqual(late.nextActions.map(action => action.kind), ['COMPENSATE', 'COMPENSATE']);
+    assert.equal(replayCrossDomainCoordination(recoverable, [...prepared, committed], 301n).terminalState, 'MANUAL_INTERVENTION');
+  });
+
+  test('only final evidence completes; failures cannot erase executed positions', () => {
+    const observed = ev('COMMITTED', 'svm:testnet', 50n, '53', 'OBSERVED');
+    assert.equal(replayCrossDomainCoordination(recoverable, [...prepared, observed], 60n).domains['svm:testnet'], 'COMMITTING');
+    const finalEvents = [...prepared, observed, { ...committed, atValue: 51n }, ev('COMMITTED', 'eip155:84532', 60n, '54')];
+    assert.equal(replayCrossDomainCoordination(recoverable, finalEvents, 400n).terminalState, 'FINALIZED_COMPLETE');
+    const cases: CrossDomainEvent[][] = [
+      [...prepared, committed, { ...failed, domainId: 'svm:testnet' }],
+      [...prepared, committed, { ...committed, atValue: 55n, evidenceHash: '59'.repeat(32) }],
+      [...prepared, committed, { ...observed, atValue: 55n }],
+      [...prepared, { ...committed, atValue: 39n }],
+      [...prepared, { ...committed, atValue: 202n }],
+      [...prepared, { kind: 'COMMITTED', domainId: 'svm:testnet', evidenceHash: '53'.repeat(32), atValue: 50n } as CrossDomainEvent],
+    ];
+    for (const events of cases) assert.equal(replayCrossDomainCoordination(recoverable, events, 201n).phase, 'FENCED');
+    assert.equal(replayCrossDomainCoordination(recoverable, [], 400n).terminalState, 'NO_EFFECT');
+  });
+});
+
 describe('manual controlled recovery', () => {
   const incident: ManualRecoveryIncidentInput = {
     incidentVersion: 1,

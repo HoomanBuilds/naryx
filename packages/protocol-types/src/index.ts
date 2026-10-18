@@ -1803,6 +1803,7 @@ export {
   CROSS_DOMAIN_COMPENSATION_ACTION_VERSION,
   CROSS_DOMAIN_COMPENSATION_KIND,
   CROSS_DOMAIN_PLAN_VERSION,
+  CROSS_DOMAIN_RECOVERABLE_PLAN_VERSION,
   crossDomainCompensationAction,
   crossDomainCompensationActionHash,
   crossDomainExecutionBundle,
