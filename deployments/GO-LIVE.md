@@ -198,14 +198,19 @@ Status checked 2026-10-18:
 | Item | Current state | Evidence needed to close |
 | --- | --- | --- |
 | 1. Standing liquidity for routed strategies | Closed for the enabled Solana cash-and-carry maker lane. Actual entry/exit and inventory reconciliation completed on 2026-10-18. | Evidence below. This does not advertise native cash liquidity as routed liquidity or activate additional routed maker lanes. |
-| 2. Cross-chain execution activation | Open. Submission journaling exists; coordinator startup and filled-position compensation are not activated. | A successful multi-domain execution and a failed-side recovery that reconciles already-filled positions without duplicate submission. |
+| 2. Cross-chain execution activation | Open. The durable coordinator and full spot reversal are implemented. Generation-bound perp/future recovery contracts and solver reconciliation are implemented; their new registry/factory deployments and AWS runtime configuration remain pending. | Deploy and register the separate recovery adapters, configure the capped worker, and record actual multi-domain execution and filled-position recovery evidence without duplicate submission. |
 | 3. Hyperliquid pooled-mode terminal integration | Closed for the approved dedicated cohort. Both owners completed authenticated browser deposit/withdrawal cycles on 2026-10-18. | UI, database and venue agreed after reload: zero pool cash, liabilities and pending operations. Receipt evidence below. Epoch trading remains operator-only; this is not public custody enrollment. |
-| 4. Strategy ownership transfers | Open. The public strategy book has no venue-transfer evidence verifier. | Both owners' consent plus verified transfer of the underlying positions, reconciled in the strategy book. Database reassignment alone is not a transfer. |
+| 4. Strategy ownership transfers | Backend evidence verifier and wallet-confirmed Portfolio workflow deployed for the Base strategy-account lane. A dedicated account is funded; its entry was refused by the signed spread limit before any trade. The funded transfer round-trip remains unverified. | Both owners' consent plus finalized underlying account ownership transfer, reconciled in the strategy book. Database reassignment alone is not a transfer. |
 | 5. Threshold-encryption backend | Backend and solver participation deployed; a real beacon opening was verified. | Preserve this completed backend evidence. Any claim of terminal-integrated encrypted trading also needs an encrypted auction award and settlement; current terminal auctions remain ordinary commit/reveal. |
 | 6. Operational wiring and documentation | Runbook corrected, incident endpoint wired, bounded oracle maintenance deployed. Solana qualification evidence remains unavailable. | A valid qualification journal backed by current release evidence. Do not manufacture a healthy status from a matching code watchlist. |
 
 Independent maker recruitment and additional roadmap capabilities are not new items in this
 completion scope. Report their limitations separately without reopening completed work.
+
+The deployment-first instruction on 2026-10-18 stops additional repeated test suites and funded
+verification cycles. Existing evidence remains valid for its exact code version; unexecuted flows
+remain unverified. It does not authorize mainnet, remove runtime safety gates, or convert missing
+qualification evidence into a passing release.
 
 ### Finish line: usable shipped website
 
@@ -334,9 +339,11 @@ strategy support is specific to a registered template and deployment, not every 
   resolves it. Never release an account merely because a local deadline passed. A spot buy's fee is
   paid in the base token, so each package leaves sub-lot base dust in the account; size the
   terminal base residual cap to at least the largest base fee plus one spot lot.
-- Seeded Uniswap pools drift from the oracle as people trade; nothing re-centres them yet. Orders
-  are bounded by the pinned Uniswap quoter's executable price for their size, so drift costs price,
-  not failed transactions, and a size the pool cannot fill is refused before signing.
+- Seeded Uniswap pools drift from the oracle as people trade; nothing re-centres them yet. Quotes
+  enforce both executable pool liquidity and the signed maximum spot/perp spread before signing.
+  Pool drift can therefore refuse an otherwise liquid entry. The ownership-transfer preparation
+  was refused at 5,215 quote atoms of spread against its 5,000-atom limit; no trade was signed.
+  Do not relax the global spread guard merely to produce a successful verification receipt.
 - The public v1 market API (package order book, tape, solver metrics, strategy receipts, RFQ and
   sealed auctions) runs on its own listener (8790) when a release enables it; the Hyperliquid
   release does. nginx forwards `/v1/` to it, and the web needs `NARYX_WEB_PUBLIC_API_BASE_URL` set to
@@ -354,11 +361,17 @@ strategy support is specific to a registered template and deployment, not every 
   qualification journal is reported as unavailable, not synthesized as healthy. A code watchlist
   alone is not a qualified incident journal.
 - Cross-domain EVM submissions now journal signed bytes before broadcast, reserve bounded gas
-  before signing and reconcile the exact finalized transaction after restart. This closes the
-  duplicate-send gap, but does not activate the multi-domain coordinator. Its current compensation
-  lane releases expired inventory reservations, not already-executed external positions.
-  Venue-confirmed novation remains unavailable without its evidence verifier. These capabilities
-  need their own activation evidence, not a general service-health assertion.
+  before signing and reconcile the exact finalized transaction after restart. Full reversal
+  requires exact spot quantities or a derivative close bound to its entry generation and payload,
+  bounded collateral loss, zero remaining derivative position and reserve, and finalized receipts.
+  The existing immutable adapter registries do not recognize the new recoverable classes. New
+  registry/account-factory deployment and delayed registration are required before their use;
+  existing exact adapters and user accounts are unchanged. The cross-domain systemd unit is
+  installed but disabled until its qualified testnet configuration exists.
+- Base strategy-account transfer verification now checks both wallet consents, the exact account,
+  its finalized ownership transition and receipt-backed strategy lifecycle. The Portfolio UI
+  proposes and accepts transfers through the owners' wallets; it does not transfer an account by
+  changing a database owner. This is scoped Base support, not generic novation of every venue.
 
 ## Not available yet
 
