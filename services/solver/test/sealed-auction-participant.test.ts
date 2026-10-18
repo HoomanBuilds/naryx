@@ -16,6 +16,55 @@ import {
 const START_MS = 1_900_000_000_000;
 const START_S = BigInt(START_MS / 1_000);
 
+test('threshold participant journals identical ciphertext, survives a disabled flag, and never reveals plaintext', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-threshold-participant-'));
+  const path = join(directory, 'journal.sqlite');
+  let journal = new SqliteSealedAuctionJournal(path);
+  t.after(() => { journal.close(); rmSync(directory, { recursive: true, force: true }); });
+  let now = START_MS;
+  const definition = sealedAuctionDefinition({ version: 1, auctionId: 'encrypted-opening', environment: 'testnet',
+    orderHash: '55'.repeat(32), eligibleSolverIds: ['solver-a'], timeUnit: 'EVM_UNIX_SECONDS',
+    commitDeadlineValue: START_S + 20n, revealDeadlineValue: START_S + 100n,
+    settlementDeadlineValue: START_S + 160n, minimumValidReveals: 1 });
+  const auctionHash = toHex(sealedAuctionHash(definition));
+  const ciphertexts: string[] = [];
+  let state: 'SEALED' | 'REVEALED' = 'SEALED';
+  let awards = 0;
+  const relay: SealedAuctionRelayPort = {
+    poll: async after => ({ auctions: after ? [] : [{ cursor: 1, auctionHash, definition, createdAtMs: START_MS }], nextCursor: 1 }),
+    commit: async () => assert.fail('encrypted auction must not send an ordinary commitment'),
+    commitThreshold: async (_hash, _commitment, ciphertext) => {
+      assert.equal(journal.get(auctionHash)?.thresholdCiphertext, ciphertext);
+      ciphertexts.push(ciphertext);
+      if (ciphertexts.length === 1) throw new Error('commit acknowledgement lost');
+    },
+    thresholdState: async (_hash, ciphertext) => { assert.equal(ciphertext, ciphertexts[0]); return state; },
+    reveal: async () => assert.fail('encrypted opening must never use the plaintext reveal route'),
+    view: async () => ({ phase: 'CLOSED', outcome: 'AWARDED', winner: { solverId: 'solver-a', quoteHash: '77'.repeat(32) } }),
+    finalizeAward: async () => { awards++; },
+  };
+  const participant = (enabled: boolean) => new SealedAuctionParticipant({ solverId: 'solver-a', journal, relay,
+    thresholdEnabled: enabled, clockMs: () => now,
+    quotes: { quote: async ({ orderHash }) => ({ orderHash, quoteHash: '77'.repeat(32), solverId: 'solver-a',
+      environment: 'testnet', validUntilUnit: 'EVM_UNIX_SECONDS', validUntilValue: START_S + 200n, netOutcomeAtoms: 10n }) } });
+  await participant(true).tick();
+  assert.equal(journal.get(auctionHash)?.status, 'OPENING_READY');
+  assert.match(ciphertexts[0]!, /^-----BEGIN AGE ENCRYPTED FILE-----/);
+  assert.equal(ciphertexts[0]!.includes('77'.repeat(32)), false);
+  journal.close(); journal = new SqliteSealedAuctionJournal(path);
+  await participant(false).tick();
+  assert.equal(ciphertexts[0], ciphertexts[1]);
+  assert.equal(journal.get(auctionHash)?.status, 'COMMITTED');
+  now += 25_000;
+  await participant(false).tick();
+  assert.equal(journal.get(auctionHash)?.status, 'COMMITTED');
+  state = 'REVEALED';
+  now += 80_000;
+  await participant(false).tick();
+  assert.equal(journal.get(auctionHash)?.status, 'REVEALED');
+  assert.equal(awards, 1);
+});
+
 test('an expired revealed auction stops retrying its settlement award', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'naryx-sealed-expired-'));
   const journal = new SqliteSealedAuctionJournal(join(directory, 'journal.sqlite'));

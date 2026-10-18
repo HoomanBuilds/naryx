@@ -475,6 +475,12 @@ export class SqlitePrivateDeliveryStore {
       .all(nowMs, limit) as { auctionHash: string; solverId: string; ciphertext: string; round: number; releaseAtMs: number; revealAtMs: number }[];
   }
 
+  thresholdOpeningStatus(auctionHash: string, solverId: string) {
+    const row = this.db.prepare('SELECT state,ciphertext_hash AS ciphertextHash FROM threshold_auction_openings WHERE auction_hash=? AND solver_id=?')
+      .get(Buffer.from(auctionHash, 'hex'), solverId) as { state: 'SEALED' | 'REVEALED' | 'EXPIRED'; ciphertextHash: string } | undefined;
+    return row ?? null;
+  }
+
   markThresholdAttempt(auctionHash: string, solverId: string, nowMs: number): void {
     this.db.prepare("UPDATE threshold_auction_openings SET attempted_at_ms = ? WHERE auction_hash = ? AND solver_id = ? AND state = 'SEALED'")
       .run(nowMs, Buffer.from(auctionHash, 'hex'), solverId);

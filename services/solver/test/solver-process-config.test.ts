@@ -157,6 +157,9 @@ test('sealed auction participation requires explicit durable identity and journa
     pollIntervalMs: 1_000,
   });
   const additional = { solverId: 'solver-b', keyId: 'quote-2', journalDbPath: '/external/second-auctions.sqlite' };
+  const threshold = loadSolverProcessConfig({ ...enabled, NARYX_SEALED_AUCTION_THRESHOLD_ENABLED: 'true' }).sealedAuctions;
+  assert.equal(threshold.kind === 'ENABLED' && threshold.thresholdEnabled, true);
+  assert.throws(() => loadSolverProcessConfig({ ...enabled, NARYX_SEALED_AUCTION_THRESHOLD_ENABLED: 'yes' }), /true or false/);
   const result = loadSolverProcessConfig({ ...enabled, NARYX_SEALED_AUCTION_ADDITIONAL_PARTICIPANTS: JSON.stringify([additional]) });
   assert.equal(result.sealedAuctions.kind, 'ENABLED');
   if (result.sealedAuctions.kind !== 'ENABLED') assert.fail('auctions disabled');

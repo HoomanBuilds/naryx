@@ -199,6 +199,8 @@ eligible authenticated solvers can GET a release policy and POST `{commitment, c
 `/v1/solver/auctions/{hash}/threshold`. Commitments and encrypted openings persist atomically.
 The API releases a valid opening automatically once the pinned drand quicknet round is published.
 The existing auction kernel still verifies the commitment and selects the result.
+An authenticated policy read includes only that solver's ciphertext hash and release state, so
+a participant can reconcile release without sending its plaintext opening.
 
 Only Unix-time testnet, devnet and local auctions qualify. The commit horizon is at most ten minutes;
 the reveal deadline must allow more than sixty seconds after beacon release. Admission is bounded

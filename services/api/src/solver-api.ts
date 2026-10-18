@@ -746,7 +746,7 @@ export function createSolverApiHandler(options: SolverApiOptions) {
       if (!options.thresholdAuctions) throw new SolverRequestError(503, 'THRESHOLD_UNAVAILABLE', 'Threshold auctions are disabled.');
       const definition = requireDelivery().auctionDefinition(match[1]!);
       if (!definition.eligibleSolverIds.some(id => id === solverId)) throw new SolverRequestError(403, 'INELIGIBLE_SOLVER', 'Solver is not eligible.');
-      if (method === 'GET') return options.thresholdAuctions.policy(match[1]!);
+      if (method === 'GET') return options.thresholdAuctions.policy(match[1]!, solverId);
       if (method === 'POST') return options.thresholdAuctions.seal(match[1]!, solverId, decodeBody(raw));
     }
     if ((match = /^\/v1\/solver\/auctions\/([0-9a-f]{64})\/(commit|reveal)$/.exec(path)) !== null && method === "POST") {

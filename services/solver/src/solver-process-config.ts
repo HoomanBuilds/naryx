@@ -30,6 +30,7 @@ export interface SolverProcessConfig {
       keyId: string;
       journalDbPath: string;
       pollIntervalMs: number;
+      thresholdEnabled?: boolean;
       additionalParticipants?: readonly Readonly<{ solverId: string; keyId: string; journalDbPath: string }>[];
     }>;
   readonly privateRfqs:
@@ -168,6 +169,8 @@ export function loadSolverProcessConfig(env: NodeJS.ProcessEnv): SolverProcessCo
         'NARYX_SEALED_AUCTION_JOURNAL_DB',
       ),
       pollIntervalMs: sealedAuctionPollIntervalMs,
+      ...(explicitBoolean(env.NARYX_SEALED_AUCTION_THRESHOLD_ENABLED, 'NARYX_SEALED_AUCTION_THRESHOLD_ENABLED')
+        ? { thresholdEnabled: true } : {}),
     })
     : Object.freeze({ kind: 'DISABLED' as const });
   if (present(env.NARYX_SEALED_AUCTION_ADDITIONAL_PARTICIPANTS)) {

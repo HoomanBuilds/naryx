@@ -96,10 +96,11 @@ export class ThresholdAuctionBackend {
 
   close() { clearInterval(this.#timer); }
 
-  async policy(auctionHash: string) {
+  async policy(auctionHash: string, solverId?: string) {
     const definition = this.#store.auctionDefinition(auctionHash);
     return { mode: 'TIMED_THRESHOLD_REVEAL', auctionHash,
       ...thresholdAuctionWindow(definition, await this.#client.chain().info()),
+      ...(solverId === undefined ? {} : { opening: this.#store.thresholdOpeningStatus(auctionHash, solverId) }),
       disclosure: 'Opening becomes decryptable to everyone after release. Threshold collusion can reveal it early. No plaintext fallback.' };
   }
 

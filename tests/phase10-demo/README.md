@@ -1,5 +1,14 @@
 # Phase 10 local demo
 
+## Live threshold release check
+
+After building protocol-types, API and solver, run
+`node tests/phase10-demo/src/run-threshold-release.mjs --output /absolute/new/private-directory`.
+It encrypts an opening for a future quicknet round and verifies automatic release against the
+live public beacon. The evidence database is isolated outside the checkout. It does not add
+public orders, trades, liquidity or volume, and it needs no wallet or funds. Keep its evidence
+separate from executed-market evidence. The output directory must not already exist.
+
 This workspace runs the existing Naryx deterministic lifecycle evidence once and combines the real command results into one machine-readable report. It does not duplicate the underlying scenario assertions.
 
 The required checks are:

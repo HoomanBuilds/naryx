@@ -515,6 +515,7 @@ if (config.sealedAuctions.kind === 'ENABLED') {
       solverId: participant.solverId,
       relay: sealedAuctionRelay,
       journal: sealedAuctionJournal,
+      thresholdEnabled: config.sealedAuctions.thresholdEnabled ?? false,
       quotes: {
         quote: async (request) => {
           const response = await generalizedStrategyQuoteService.quote(request);

@@ -61,6 +61,8 @@ test('sealed openings survive restart, reject replacement and reveal only a matc
       revealAtMs: window.revealAtMs, nowMs: window.commitAtMs - 1000 };
     store.storeThresholdCommitment(sealed);
     store.storeThresholdCommitment(sealed);
+    assert.deepEqual(store.thresholdOpeningStatus(auctionHashHex, opening.solverId), { state: 'SEALED', ciphertextHash: sealed.ciphertextHash });
+    assert.equal(store.thresholdOpeningStatus(auctionHashHex, 'unrelated-solver'), null);
     assert.throws(() => store.storeThresholdCommitment({ ...sealed, ciphertextHash: '99'.repeat(32) }));
     assert.equal(store.pendingThresholdOpenings(window.releaseAtMs - 1, 4).length, 0);
     store.close(); store = new SqlitePrivateDeliveryStore(path);
@@ -69,6 +71,7 @@ test('sealed openings survive restart, reject replacement and reveal only a matc
     assert.throws(() => store.revealThresholdOpening(auctionHashHex, opening.solverId, { ...opening, netOutcomeAtoms: 501n }, window.releaseAtMs));
     assert.equal(store.pendingThresholdOpenings(window.releaseAtMs, 4).length, 1);
     store.revealThresholdOpening(auctionHashHex, opening.solverId, opening, window.releaseAtMs);
+    assert.equal(store.thresholdOpeningStatus(auctionHashHex, opening.solverId)?.state, 'REVEALED');
     store.revealThresholdOpening(auctionHashHex, opening.solverId, opening, window.releaseAtMs);
     assert.equal(store.pendingThresholdOpenings(window.releaseAtMs, 4).length, 0);
     const result = store.auctionView(auctionHashHex, definition.revealDeadlineValue);

@@ -18,6 +18,7 @@ import {
   type SealedAuctionDefinition,
   type SealedAuctionDefinitionInput,
 } from '@naryx/protocol-types';
+import { encryptSolverAuctionOpening, thresholdReleaseWindow } from './threshold-auction-encryption.js';
 
 const HASH = /^[0-9a-f]{64}$/;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -38,6 +39,8 @@ export interface EligibleSealedAuctionPage {
 export interface SealedAuctionRelayPort {
   poll(after: number): Promise<EligibleSealedAuctionPage>;
   commit(auctionHash: string, commitment: string): Promise<void>;
+  commitThreshold?(auctionHash: string, commitment: string, ciphertext: string): Promise<void>;
+  thresholdState?(auctionHash: string, ciphertext: string): Promise<'SEALED' | 'REVEALED' | 'EXPIRED'>;
   reveal(auctionHash: string, opening: Readonly<{
     quoteHash: string;
     netOutcomeAtoms: bigint;
@@ -213,6 +216,29 @@ export class HttpSealedAuctionRelay implements SealedAuctionRelayPort {
     await this.#call('POST', `/v1/solver/auctions/${auctionHash}/reveal`, opening);
   }
 
+  async commitThreshold(auctionHash: string, commitment: string, ciphertext: string): Promise<void> {
+    if (!HASH.test(auctionHash) || !HASH.test(commitment) || Buffer.byteLength(ciphertext) > 32768) {
+      throw new Error('Threshold commitment is invalid');
+    }
+    const result = await this.#call('POST', `/v1/solver/auctions/${auctionHash}/threshold`, { commitment, ciphertext });
+    if (result.accepted !== true || result.mode !== 'TIMED_THRESHOLD_REVEAL'
+      || result.ciphertextHash !== createHash('sha256').update(ciphertext).digest('hex')) {
+      throw new Error('Threshold relay acknowledged another opening');
+    }
+  }
+
+  async thresholdState(auctionHash: string, ciphertext: string): Promise<'SEALED' | 'REVEALED' | 'EXPIRED'> {
+    if (!HASH.test(auctionHash)) throw new Error('Threshold auction identity is invalid');
+    const result = await this.#call('GET', `/v1/solver/auctions/${auctionHash}/threshold`);
+    const opening = result.opening as Record<string, unknown> | null;
+    if (result.auctionHash !== auctionHash || result.mode !== 'TIMED_THRESHOLD_REVEAL' || !opening
+      || opening.ciphertextHash !== createHash('sha256').update(ciphertext).digest('hex')
+      || !['SEALED', 'REVEALED', 'EXPIRED'].includes(String(opening.state))) {
+      throw new Error('Threshold relay state does not match the durable opening');
+    }
+    return opening.state as 'SEALED' | 'REVEALED' | 'EXPIRED';
+  }
+
   async view(auctionHash: string): Promise<Readonly<{
     phase: 'COMMIT' | 'REVEAL' | 'CLOSED';
     outcome?: 'AWARDED' | 'NO_FILL';
@@ -272,6 +298,7 @@ interface AuctionRow {
   readonly status: AuctionStatus;
   readonly award_state: 'PENDING' | 'FINALIZED' | 'NOT_AWARDED';
   readonly last_error: string | null;
+  readonly threshold_ciphertext: string | null;
 }
 
 export interface SealedAuctionJournalRecord {
@@ -284,6 +311,7 @@ export interface SealedAuctionJournalRecord {
   readonly status: AuctionStatus;
   readonly awardState: 'PENDING' | 'FINALIZED' | 'NOT_AWARDED';
   readonly lastError?: string;
+  readonly thresholdCiphertext?: string;
 }
 
 function repositoryRoot(): string | undefined {
@@ -330,6 +358,7 @@ function decodeRow(row: AuctionRow): SealedAuctionJournalRecord {
     status: row.status,
     awardState: row.award_state,
     ...(row.last_error === null ? {} : { lastError: row.last_error }),
+    ...(row.threshold_ciphertext == null ? {} : { thresholdCiphertext: row.threshold_ciphertext }),
   });
 }
 
@@ -365,6 +394,9 @@ export class SqliteSealedAuctionJournal {
     const columns = this.#db.prepare('PRAGMA table_info(sealed_auction_participation)').all() as { name: string }[];
     if (!columns.some((column) => column.name === 'award_state')) {
       this.#db.exec("ALTER TABLE sealed_auction_participation ADD COLUMN award_state TEXT NOT NULL DEFAULT 'PENDING' CHECK (award_state IN ('PENDING','FINALIZED','NOT_AWARDED'))");
+    }
+    if (!columns.some(column => column.name === 'threshold_ciphertext')) {
+      this.#db.exec('ALTER TABLE sealed_auction_participation ADD COLUMN threshold_ciphertext TEXT');
     }
   }
 
@@ -428,6 +460,17 @@ export class SqliteSealedAuctionJournal {
     if (result.changes !== 1 && this.get(auctionHash)?.status !== to) throw new Error('sealed auction journal transition failed');
   }
 
+  saveThresholdCiphertext(auctionHash: string, ciphertext: string): string {
+    if (!ciphertext.startsWith('-----BEGIN AGE ENCRYPTED FILE-----') || Buffer.byteLength(ciphertext) > 32768) {
+      throw new Error('Threshold ciphertext is invalid');
+    }
+    this.#db.prepare("UPDATE sealed_auction_participation SET threshold_ciphertext=? WHERE auction_hash=? AND status='OPENING_READY' AND threshold_ciphertext IS NULL")
+      .run(ciphertext, auctionHash);
+    const saved = this.get(auctionHash)?.thresholdCiphertext;
+    if (saved === undefined) throw new Error('Threshold opening is not ready');
+    return saved;
+  }
+
   markAward(auctionHash: string, state: 'FINALIZED' | 'NOT_AWARDED', nowMs: number): void {
     const result = this.#db.prepare(
       "UPDATE sealed_auction_participation SET award_state = ?, last_error = NULL, updated_at_ms = ? WHERE auction_hash = ? AND status = 'REVEALED' AND award_state = 'PENDING'",
@@ -462,6 +505,7 @@ export class SealedAuctionParticipant {
   readonly #journal: SqliteSealedAuctionJournal;
   readonly #clockMs: () => number;
   readonly #salt: () => Uint8Array;
+  readonly #thresholdEnabled: boolean;
   #running = false;
 
   constructor(input: Readonly<{
@@ -471,6 +515,7 @@ export class SealedAuctionParticipant {
     journal: SqliteSealedAuctionJournal;
     clockMs?: () => number;
     salt?: () => Uint8Array;
+    thresholdEnabled?: boolean;
   }>) {
     if (!IDENTIFIER.test(input.solverId)) throw new Error('sealed auction solver id is invalid');
     this.#solverId = input.solverId;
@@ -479,6 +524,10 @@ export class SealedAuctionParticipant {
     this.#journal = input.journal;
     this.#clockMs = input.clockMs ?? Date.now;
     this.#salt = input.salt ?? (() => new Uint8Array(randomBytes(32)));
+    this.#thresholdEnabled = input.thresholdEnabled ?? false;
+    if (this.#thresholdEnabled && (!input.relay.commitThreshold || !input.relay.thresholdState)) {
+      throw new Error('Threshold participation requires the encrypted relay protocol');
+    }
   }
 
   async tick(): Promise<void> {
@@ -539,16 +588,34 @@ export class SealedAuctionParticipant {
         const commitNowMs = this.#clockMs();
         const commitNow = currentValue(record.definition.timeUnit, commitNowMs);
         if (commitNow >= record.definition.commitDeadlineValue) {
-          this.#journal.mark(record.auctionHash, 'OPENING_READY', 'MISSED_COMMIT', commitNowMs);
-          return;
+          if (record.thresholdCiphertext !== undefined && commitNow < record.definition.settlementDeadlineValue) {
+            if (!this.#relay.thresholdState) throw new Error('Threshold commit acknowledgement is unresolved');
+            await this.#relay.thresholdState(record.auctionHash, record.thresholdCiphertext);
+            this.#journal.mark(record.auctionHash, 'OPENING_READY', 'COMMITTED', commitNowMs);
+          } else {
+            this.#journal.mark(record.auctionHash, 'OPENING_READY', 'MISSED_COMMIT', commitNowMs);
+            return;
+          }
+          record = this.#journal.get(record.auctionHash)!;
         }
+      }
+      if (record.status === 'OPENING_READY') {
         const commitment = sealedQuoteCommitment(record.auctionHash, {
           solverId: this.#solverId,
           quoteHash: record.quoteHash as string,
           netOutcomeAtoms: record.netOutcomeAtoms as bigint,
           salt: record.salt as Uint8Array,
         });
-        await this.#relay.commit(record.auctionHash, toHex(commitment));
+        if (record.thresholdCiphertext !== undefined || (this.#thresholdEnabled && thresholdReleaseWindow(record.definition))) {
+          const ciphertext = record.thresholdCiphertext ?? this.#journal.saveThresholdCiphertext(record.auctionHash,
+            await encryptSolverAuctionOpening(record.definition, this.#solverId, {
+              quoteHash: record.quoteHash!, netOutcomeAtoms: record.netOutcomeAtoms!, salt: record.salt!,
+            }, this.#clockMs()));
+          if (!this.#relay.commitThreshold) throw new Error('Threshold relay is unavailable; plaintext fallback is forbidden');
+          await this.#relay.commitThreshold(record.auctionHash, toHex(commitment), ciphertext);
+        } else {
+          await this.#relay.commit(record.auctionHash, toHex(commitment));
+        }
         this.#journal.mark(record.auctionHash, 'OPENING_READY', 'COMMITTED', this.#clockMs());
         record = this.#journal.get(record.auctionHash) as SealedAuctionJournalRecord;
       }
@@ -556,15 +623,24 @@ export class SealedAuctionParticipant {
         const revealNowMs = this.#clockMs();
         const revealNow = currentValue(record.definition.timeUnit, revealNowMs);
         if (revealNow < record.definition.commitDeadlineValue) return;
-        if (revealNow >= record.definition.revealDeadlineValue) {
+        const thresholdState = record.thresholdCiphertext === undefined ? undefined
+          : await this.#relay.thresholdState?.(record.auctionHash, record.thresholdCiphertext);
+        if (record.thresholdCiphertext !== undefined && thresholdState === undefined) {
+          throw new Error('Threshold release state is unavailable; plaintext fallback is forbidden');
+        }
+        if (thresholdState !== 'REVEALED' && revealNow >= record.definition.revealDeadlineValue) {
           this.#journal.mark(record.auctionHash, 'COMMITTED', 'MISSED_REVEAL', revealNowMs);
           return;
         }
-        await this.#relay.reveal(record.auctionHash, {
-          quoteHash: record.quoteHash as string,
-          netOutcomeAtoms: record.netOutcomeAtoms as bigint,
-          salt: record.salt as Uint8Array,
-        });
+        if (record.thresholdCiphertext !== undefined) {
+          if (thresholdState !== 'REVEALED') return;
+        } else {
+          await this.#relay.reveal(record.auctionHash, {
+            quoteHash: record.quoteHash as string,
+            netOutcomeAtoms: record.netOutcomeAtoms as bigint,
+            salt: record.salt as Uint8Array,
+          });
+        }
         this.#journal.mark(record.auctionHash, 'COMMITTED', 'REVEALED', this.#clockMs());
         record = this.#journal.get(record.auctionHash) as SealedAuctionJournalRecord;
       }

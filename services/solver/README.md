@@ -38,6 +38,18 @@ With none of them configured the listener starts with `runtime=NONE` and every q
 
 The sealed auction participant uses the authenticated API feed rather than guessing auction hashes. Its cursor, quote hash, net outcome, and 32-byte salt are stored in a separate full-synchronous SQLite journal before the commitment is sent. Exact commit and reveal retries are idempotent at the relay, so a response lost between network acceptance and local acknowledgement can be retried without adding another event. An auction is not entered unless its signed quote remains valid through the settlement deadline. Slot-timed auctions are refused because this process has no authoritative slot clock for the cross-domain relay.
 
+With `NARYX_SEALED_AUCTION_THRESHOLD_ENABLED=true`, eligible timed auctions with more than sixty
+seconds between the pinned beacon release and reveal deadline use encrypted openings. The exact
+ciphertext is journaled before delivery and reused on retry. A restart or disabling the flag never
+downgrades a journaled ciphertext to a plaintext reveal. The participant reads its authenticated
+release status and waits for verified server decryption before finalizing an award. Short-window
+auctions remain ordinary commit/reveal; the flag does not claim that every auction is encrypted.
+This requires the API's separate threshold flag. Quote validity must cover the longer window.
+
+The pinned `tlock-js` release uses drand-client's v1 hash imports. The explicit `@noble/hashes`
+1.8.0 dependency supplies those otherwise undeclared imports; clients needing v2 retain their
+own nested version. Do not remove this pin without verifying both dependency paths.
+
 ### Durable cross-domain EVM submission
 
 Cross-domain EVM submission uses an owner-only SQLite journal outside the checkout. Each domain
