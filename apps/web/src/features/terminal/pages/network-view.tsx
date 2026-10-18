@@ -10,6 +10,7 @@ import type { DomainId } from "../terminal-view-model";
 import { DOMAIN_META, DOMAIN_ORDER, domainHealth, domainLive, useTerminal, type HealthState } from "../shell/terminal-context";
 import t from "../trading-terminal.module.css";
 import { CrossBatchDetail } from "./cross-batch-detail";
+import { CrossDomainApprovals } from "./cross-domain-approvals";
 import { SolverEvidence } from "./solver-evidence";
 import styles from "./pages.module.css";
 
@@ -395,6 +396,7 @@ export function NetworkView() {
         </div>
         <SolverEvidence baseUrl={publicApiBaseUrl} />
       </section>
+      <CrossDomainApprovals />
     </main>
   );
 }
