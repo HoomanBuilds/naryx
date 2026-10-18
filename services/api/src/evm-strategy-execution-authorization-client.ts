@@ -30,7 +30,7 @@ export interface AuthorizedEvmStrategyExecution {
 }
 
 export interface EvmStrategyExecutionAuthorizationPort {
-  authorize(quoteHash: string, ownerSignature: string): Promise<AuthorizedEvmStrategyExecution>;
+  authorize(quoteHash: string, ownerSignature: string, domainId?: string): Promise<AuthorizedEvmStrategyExecution>;
 }
 
 export class EvmStrategyExecutionAuthorizationClientError extends Error {
@@ -106,6 +106,7 @@ export function validateAuthorizedEvmStrategyExecution(
   value: unknown,
   expectedQuoteHash: string,
   expectedOwnerSignature: string,
+  expectedDomainId?: string,
 ): AuthorizedEvmStrategyExecution {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new EvmStrategyExecutionAuthorizationClientError('INVALID_RESPONSE', 'authorization response must be an object');
@@ -116,6 +117,9 @@ export function validateAuthorizedEvmStrategyExecution(
     throw new EvmStrategyExecutionAuthorizationClientError('INVALID_RESPONSE', 'authorization response fields are invalid');
   }
   const result = root.authorization as Record<string, unknown>;
+  if (expectedDomainId !== undefined && expectedDomainId !== `eip155:${result.chainId}`) {
+    throw new EvmStrategyExecutionAuthorizationClientError('INVALID_RESPONSE', 'authorization returned another chain');
+  }
   if (result.version !== 1 || !Number.isSafeInteger(result.chainId) || !TEST_CHAIN_IDS.has(Number(result.chainId))
     || result.value !== 0n || typeof result.deadline !== 'bigint' || result.deadline <= 0n
     || typeof result.data !== 'string' || !isHex(result.data) || result.data.length < 10) {
@@ -161,7 +165,7 @@ export class HttpEvmStrategyExecutionAuthorizationClient implements EvmStrategyE
     this.#fetch = fetchImplementation;
   }
 
-  async authorize(quoteHashValue: string, ownerSignature: string): Promise<AuthorizedEvmStrategyExecution> {
+  async authorize(quoteHashValue: string, ownerSignature: string, domainId?: string): Promise<AuthorizedEvmStrategyExecution> {
     let normalized: string;
     try {
       normalized = toHex(commitmentHash(quoteHashValue, 'quoteHash'));
@@ -171,15 +175,18 @@ export class HttpEvmStrategyExecutionAuthorizationClient implements EvmStrategyE
     if (normalized !== quoteHashValue || !/^0x[0-9a-f]{130}$/.test(ownerSignature)) {
       throw new EvmStrategyExecutionAuthorizationClientError('INVALID_REQUEST', 'quoteHash or ownerSignature is invalid');
     }
+    if (domainId !== undefined && ![...TEST_CHAIN_IDS].some(id => domainId === `eip155:${id}`)) {
+      throw new EvmStrategyExecutionAuthorizationClientError('INVALID_REQUEST', 'domainId must identify a supported test chain');
+    }
     const response = await this.#fetch(`${this.#origin}/internal/strategy-executions/authorize-evm`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ quoteHash: quoteHashValue, ownerSignature }),
+      body: JSON.stringify({ quoteHash: quoteHashValue, ownerSignature, ...(domainId === undefined ? {} : { domainId }) }),
       redirect: 'error',
       signal: AbortSignal.timeout(10_000),
     });
     if (response.status === 404) throw new EvmStrategyExecutionAuthorizationClientError('NOT_FOUND', 'Strategy package was not found');
     if (!response.ok) throw new EvmStrategyExecutionAuthorizationClientError('UPSTREAM_REJECTED', `authorization failed with HTTP ${response.status}`);
-    return validateAuthorizedEvmStrategyExecution(await responseJson(response), quoteHashValue, ownerSignature);
+    return validateAuthorizedEvmStrategyExecution(await responseJson(response), quoteHashValue, ownerSignature, domainId);
   }
 }

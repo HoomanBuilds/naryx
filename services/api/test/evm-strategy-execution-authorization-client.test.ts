@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { stringifyProtocolJson } from '@naryx/protocol-types';
-import { HttpEvmStrategyExecutionAuthorizationClient } from '../src/evm-strategy-execution-authorization-client.js';
+import { HttpEvmStrategyExecutionAuthorizationClient, validateAuthorizedEvmStrategyExecution } from '../src/evm-strategy-execution-authorization-client.js';
 
 const quoteHash = '11'.repeat(32);
 const ownerSignature = `0x${'22'.repeat(65)}`;
@@ -41,4 +41,18 @@ test('rejects malformed authorization input before calling the solver', async ()
     throw new Error('unexpected fetch');
   });
   await assert.rejects(() => client.authorize('AA'.repeat(32), ownerSignature), /quoteHash or ownerSignature is invalid/);
+  await assert.rejects(() => client.authorize(quoteHash, ownerSignature, 'eip155:1'), /supported test chain/);
+});
+
+test('forwards the selected domain and refuses authorization from a different chain', async () => {
+  let sent: unknown;
+  const client = new HttpEvmStrategyExecutionAuthorizationClient('http://127.0.0.1:8788', async (_input, init) => {
+    sent = JSON.parse(String(init?.body));
+    return new Response(stringifyProtocolJson({ version: 1, authorization: { chainId: 84_532 } }),
+      { headers: { 'Content-Type': 'application/json' } });
+  });
+  await assert.rejects(client.authorize(quoteHash, ownerSignature, 'eip155:421614'), /another chain/);
+  assert.deepEqual(sent, { quoteHash, ownerSignature, domainId: 'eip155:421614' });
+  assert.throws(() => validateAuthorizedEvmStrategyExecution({ version: 1, authorization: { chainId: 1 } }, quoteHash,
+    ownerSignature, 'eip155:84532'), /another chain/);
 });

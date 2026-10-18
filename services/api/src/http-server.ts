@@ -1963,13 +1963,14 @@ export function createPrivateTerminalRequestHandler(
       try {
         const requestBody = await readJson(request);
         if (typeof requestBody !== 'object' || requestBody === null || Array.isArray(requestBody)
-          || Object.keys(requestBody).sort().join(',') !== 'ownerSignature,quoteHash'
+          || !['ownerSignature,quoteHash', 'domainId,ownerSignature,quoteHash'].includes(Object.keys(requestBody).sort().join(','))
           || typeof (requestBody as { quoteHash?: unknown }).quoteHash !== 'string'
-          || typeof (requestBody as { ownerSignature?: unknown }).ownerSignature !== 'string') {
-          throw new EvmStrategyExecutionAuthorizationClientError('INVALID_REQUEST', 'Request must contain only quoteHash and ownerSignature.');
+          || typeof (requestBody as { ownerSignature?: unknown }).ownerSignature !== 'string'
+          || ('domainId' in requestBody && typeof requestBody.domainId !== 'string')) {
+          throw new EvmStrategyExecutionAuthorizationClientError('INVALID_REQUEST', 'Request must contain quoteHash, ownerSignature and an optional testnet domainId.');
         }
-        const values = requestBody as { quoteHash: string; ownerSignature: string };
-        const authorized = await evmStrategyExecutionAuthorization.authorize(values.quoteHash, values.ownerSignature);
+        const values = requestBody as { quoteHash: string; ownerSignature: string; domainId?: string };
+        const authorized = await evmStrategyExecutionAuthorization.authorize(values.quoteHash, values.ownerSignature, values.domainId);
         sendJson(response, 200, { status: 'READY_FOR_WALLET_SUBMISSION', authorization: toProtocolJson(authorized) });
       } catch (error) {
         if (error instanceof EvmStrategyExecutionAuthorizationClientError) {
