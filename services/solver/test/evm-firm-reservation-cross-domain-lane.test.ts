@@ -756,14 +756,19 @@ test('running workers enforce their own cohort and require chain evidence before
   } finally { store.close(); rmSync(folder, { recursive: true, force: true }); }
 });
 
-test('unused reservations release only after finalized expiry and under a distinct journal operation', async () => {
+test('unused reservations submit after expiry but remain pending until finalized release', async () => {
   const f = await recoverableSetup();
   const lane = f.lane(), submit = lane.port.submit.bind(lane.port);
   let releaseGas = 0n;
-  Object.assign(lane.port, { submit: async (input: Parameters<typeof submit>[0]) => {
+  Object.assign(lane.port, { finalizedTime: async () => 249n, submit: async (input: Parameters<typeof submit>[0]) => {
     if (input.operationId.endsWith(':RELEASE')) releaseGas = input.gas;
-    return submit(input);
+    const hash = await submit(input);
+    f.base.reservationValue = { ...f.base.reservationValue, state: 'LIVE' };
+    return hash;
   } });
+  assert.equal(await f.lane().settleUnusedReservation(f.input), false);
+  assert.equal(f.base.submitted.length, 0);
+  f.base.now = 250n;
   assert.equal(await f.lane().settleUnusedReservation(f.input), false);
   assert.equal(f.base.submitted.length, 0);
   f.base.now = 251n;
@@ -772,6 +777,8 @@ test('unused reservations release only after finalized expiry and under a distin
   assert.equal(f.base.submitted[0]?.data, releaseData);
   assert.equal(f.base.operationIds[0], `${f.input.planHash}:RELEASE`);
   assert.equal(releaseGas, 300_000n);
+  assert.equal(f.base.reservationValue.state, 'LIVE');
+  f.base.reservationValue = { ...f.base.reservationValue, state: 'RELEASED' };
   assert.equal(await f.lane().settleUnusedReservation(f.input), true);
   assert.equal(f.base.submitted.length, 1);
   f.base.reservationValue = { ...f.base.reservationValue, state: 'LIVE', orderHash: hex('f') };

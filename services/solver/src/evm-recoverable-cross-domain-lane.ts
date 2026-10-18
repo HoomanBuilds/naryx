@@ -142,7 +142,8 @@ export class EvmRecoverableCrossDomainLane implements EvmCrossDomainExecutionLan
       && ((reservation.quoteHash === original.quoteHash && reservation.routeHash === original.routeHash)
         || (reservation.quoteHash === ZERO && reservation.routeHash === ZERO)), 'reservation differs from terminal job');
     if (reservation.state === 'CONSUMED' || reservation.state === 'RELEASED') return true;
-    if (await this.port.finalizedTime() <= reservation.expiry) return false;
+    // Submission uses chain time; the reservation read still requires finalized release state.
+    if (await this.port.currentTime() <= reservation.expiry) return false;
     await this.port.submit({ operationId: `${input.planHash}:RELEASE`, to: this.config.reservationBook,
       data: encodeFunctionData({ abi: RELEASE_ABI, functionName: 'releaseExpired', args: [id] }),
       gas: this.config.reservationReleaseGasLimit ?? (this.config.compensationGasLimit < 300_000n ? this.config.compensationGasLimit : 300_000n),
