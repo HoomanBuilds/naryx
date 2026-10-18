@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+
 const STATUS_PATH = '/internal/keeper/dependency-incidents';
 const MAX_RESPONSE_BYTES = 262_144;
 const HEX_32 = /^0x[0-9a-f]{64}$/;
@@ -97,6 +99,7 @@ export function parseDependencyIncidentStatus(value: unknown): DependencyInciden
   }
   const configuredScopeCount = safeInteger(value.configuredScopeCount, 'Configured incident scope count');
   const unavailableScopeCount = safeInteger(value.unavailableScopeCount, 'Unavailable incident scope count');
+  const observedAtMs = safeInteger(value.observedAtMs, 'Dependency incident status time');
   if (value.scopes.length + unavailableScopeCount !== configuredScopeCount) {
     throw new Error('Dependency incident scope counts are inconsistent.');
   }
@@ -130,6 +133,11 @@ export function parseDependencyIncidentStatus(value: unknown): DependencyInciden
     if (BigInt(evidenceValidUntilMs) <= BigInt(evidenceObservedAtMs)) {
       throw new Error(`Dependency incident scope ${index} evidence window is invalid.`);
     }
+    const evidenceFresh = BigInt(observedAtMs) >= BigInt(evidenceObservedAtMs)
+      && BigInt(observedAtMs) < BigInt(evidenceValidUntilMs);
+    if (entry.evidenceFresh !== evidenceFresh) {
+      throw new Error(`Dependency incident scope ${index} evidence freshness is inconsistent.`);
+    }
     return Object.freeze({
       scopeId: text(entry.scopeId, `Dependency incident scope ${index} id`),
       scopeHash,
@@ -156,7 +164,7 @@ export function parseDependencyIncidentStatus(value: unknown): DependencyInciden
   });
   return Object.freeze({
     version: 1,
-    observedAtMs: safeInteger(value.observedAtMs, 'Dependency incident status time'),
+    observedAtMs,
     configuredScopeCount,
     unavailableScopeCount,
     scopes: Object.freeze(scopes),
@@ -165,7 +173,8 @@ export function parseDependencyIncidentStatus(value: unknown): DependencyInciden
 
 function loopbackOrigin(value: string): string {
   const url = new URL(value);
-  const loopback = url.hostname === 'localhost' || url.hostname === '[::1]' || url.hostname.startsWith('127.');
+  const loopback = url.hostname === 'localhost' || url.hostname === '[::1]'
+    || (isIP(url.hostname) === 4 && url.hostname.startsWith('127.'));
   if (url.protocol !== 'http:' || !loopback || url.username !== '' || url.password !== '' ||
       url.pathname !== '/' || url.search !== '' || url.hash !== '') {
     throw new Error('NARYX_KEEPER_STATUS_ORIGIN must be a loopback HTTP origin.');
@@ -176,15 +185,18 @@ function loopbackOrigin(value: string): string {
 export class HttpDependencyIncidentStatusClient implements DependencyIncidentStatusPort {
   readonly #origin: string;
   readonly #fetch: FetchLike;
+  readonly #now: () => number;
 
-  constructor(origin: string, fetchImplementation: FetchLike = globalThis.fetch) {
+  constructor(origin: string, fetchImplementation: FetchLike = globalThis.fetch, now: () => number = Date.now) {
     this.#origin = loopbackOrigin(origin);
     this.#fetch = fetchImplementation;
+    this.#now = now;
   }
 
   async current(): Promise<DependencyIncidentStatusSnapshot> {
     const response = await this.#fetch(`${this.#origin}${STATUS_PATH}`, {
       method: 'GET',
+      redirect: 'error',
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(2_000),
     });
@@ -194,7 +206,12 @@ export class HttpDependencyIncidentStatusClient implements DependencyIncidentSta
       throw new Error('Keeper dependency incident status is too large.');
     }
     try {
-      return parseDependencyIncidentStatus(JSON.parse(body) as unknown);
+      const status = parseDependencyIncidentStatus(JSON.parse(body) as unknown);
+      const now = safeInteger(this.#now(), 'Dependency incident client time');
+      if (status.observedAtMs > now + 1_000 || now - status.observedAtMs > 10_000) {
+        throw new Error('Keeper dependency incident snapshot is stale.');
+      }
+      return status;
     } catch {
       throw new Error('Keeper dependency incident status is invalid.');
     }
