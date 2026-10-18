@@ -61,6 +61,8 @@ export interface SealedAuctionQuoteTerms {
   readonly solverId: string;
   readonly validUntilUnit: ExpiryUnit;
   readonly validUntilValue: bigint;
+  readonly routeExpiryUnit: ExpiryUnit;
+  readonly routeExpiryValue: bigint;
   readonly netOutcomeAtoms: bigint;
 }
 
@@ -578,8 +580,10 @@ export class SealedAuctionParticipant {
         if (!HASH.test(quote.quoteHash) || quote.orderHash !== orderHash
           || quote.environment !== record.definition.environment || quote.solverId !== this.#solverId
           || quote.validUntilUnit !== record.definition.timeUnit
-          || quote.validUntilValue < record.definition.settlementDeadlineValue) {
-          throw new Error('sealed auction quote does not cover the auction settlement window');
+          || quote.routeExpiryUnit !== record.definition.timeUnit
+          || quote.validUntilValue < record.definition.settlementDeadlineValue
+          || quote.routeExpiryValue < record.definition.settlementDeadlineValue) {
+          throw new Error('sealed auction quote and route must cover the auction settlement window');
         }
         const salt = this.#salt();
         if (!(salt instanceof Uint8Array) || salt.length !== 32) throw new Error('sealed auction salt source must return 32 bytes');

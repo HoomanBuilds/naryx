@@ -258,6 +258,8 @@ export function sealedAuctionAwardMatchesQuote(
     netOutcomeAtoms: bigint;
     validUntilUnit: string;
     validUntilValue: bigint;
+    routeExpiryUnit: string;
+    routeExpiryValue: bigint;
   }>,
   award: Readonly<{
     environment: string;
@@ -273,7 +275,9 @@ export function sealedAuctionAwardMatchesQuote(
     && quote.quoteHash === award.quoteHash
     && quote.netOutcomeAtoms === award.netOutcomeAtoms
     && quote.validUntilUnit === award.timeUnit
-    && quote.validUntilValue >= award.settlementDeadlineValue;
+    && quote.routeExpiryUnit === award.timeUnit
+    && quote.validUntilValue >= award.settlementDeadlineValue
+    && quote.routeExpiryValue >= award.settlementDeadlineValue;
 }
 
 export function privateRfqResponseMatchesQuote(
@@ -778,6 +782,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         netOutcomeAtoms: admitted.quote.netPackageOutcome.atoms,
         validUntilUnit: admitted.quote.validUntilUnit,
         validUntilValue: admitted.quote.validUntilValue,
+        routeExpiryUnit: admitted.route.routeExpiryUnit,
+        routeExpiryValue: admitted.route.routeExpiryValue,
       }, expectedAuctionAward)) {
         throw new RequestError(409, "AUCTION_AWARD_MISMATCH", "The signed quote does not match the sealed auction award.");
       }

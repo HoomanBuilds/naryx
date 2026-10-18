@@ -526,6 +526,8 @@ if (config.sealedAuctions.kind === 'ENABLED') {
             solverId: response.quote.solverId,
             validUntilUnit: response.quote.validUntilUnit,
             validUntilValue: response.quote.validUntilValue,
+            routeExpiryUnit: response.route.routeExpiryUnit,
+            routeExpiryValue: response.route.routeExpiryValue,
             netOutcomeAtoms: response.quote.netPackageOutcome.atoms,
           });
         },

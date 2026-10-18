@@ -57,6 +57,8 @@ test("sealed auction awards bind the exact solver quote through the settlement d
     netOutcomeAtoms: 500n,
     validUntilUnit: "EVM_UNIX_SECONDS",
     validUntilValue: NOW_S + 30n,
+    routeExpiryUnit: "EVM_UNIX_SECONDS",
+    routeExpiryValue: NOW_S + 30n,
   };
   const award = {
     environment: "testnet",
@@ -71,6 +73,8 @@ test("sealed auction awards bind the exact solver quote through the settlement d
   assert.equal(sealedAuctionAwardMatchesQuote({ ...quote, solverId: "solver-b" }, award), false);
   assert.equal(sealedAuctionAwardMatchesQuote({ ...quote, netOutcomeAtoms: 501n }, award), false);
   assert.equal(sealedAuctionAwardMatchesQuote({ ...quote, validUntilValue: NOW_S + 29n }, award), false);
+  assert.equal(sealedAuctionAwardMatchesQuote({ ...quote, routeExpiryValue: NOW_S + 29n }, award), false);
+  assert.equal(sealedAuctionAwardMatchesQuote({ ...quote, routeExpiryUnit: "SOLANA_SLOT" }, award), false);
 });
 
 test("private RFQ acceptance binds the exact encrypted-response quote", () => {

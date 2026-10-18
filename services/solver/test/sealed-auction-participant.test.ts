@@ -16,6 +16,44 @@ import {
 const START_MS = 1_900_000_000_000;
 const START_S = BigInt(START_MS / 1_000);
 
+test('auction participation requires a route covering settlement on the same clock', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-auction-route-window-'));
+  const journal = new SqliteSealedAuctionJournal(join(directory, 'journal.sqlite'));
+  t.after(() => { journal.close(); rmSync(directory, { recursive: true, force: true }); });
+  const definition = sealedAuctionDefinition({ version: 1, auctionId: 'route-window', environment: 'testnet',
+    orderHash: '55'.repeat(32), eligibleSolverIds: ['solver-a'], timeUnit: 'EVM_UNIX_SECONDS',
+    commitDeadlineValue: START_S + 20n, revealDeadlineValue: START_S + 35n,
+    settlementDeadlineValue: START_S + 50n, minimumValidReveals: 1 });
+  const auctionHash = toHex(sealedAuctionHash(definition));
+  let commits = 0;
+  let routeExpiryValue = START_S + 49n;
+  let routeExpiryUnit: 'EVM_UNIX_SECONDS' | 'SOLANA_SLOT' = 'EVM_UNIX_SECONDS';
+  const participant = new SealedAuctionParticipant({ solverId: 'solver-a', journal, clockMs: () => START_MS,
+    quotes: { quote: async ({ orderHash }) => ({ orderHash, quoteHash: '77'.repeat(32), solverId: 'solver-a',
+      environment: 'testnet', validUntilUnit: 'EVM_UNIX_SECONDS', validUntilValue: START_S + 120n,
+      routeExpiryUnit, routeExpiryValue, netOutcomeAtoms: 10n }) },
+    relay: {
+      poll: async after => ({ auctions: after ? [] : [{ cursor: 1, auctionHash, definition, createdAtMs: START_MS }], nextCursor: 1 }),
+      commit: async () => { commits++; },
+      reveal: async () => assert.fail('commit window has not closed'),
+      view: async () => assert.fail('auction has not closed'),
+      finalizeAward: async () => assert.fail('auction has not closed'),
+    },
+  });
+  await participant.tick();
+  assert.equal(commits, 0);
+  assert.equal(journal.get(auctionHash)?.status, 'DISCOVERED');
+  assert.match(journal.get(auctionHash)?.lastError ?? '', /quote and route must cover/);
+  routeExpiryValue = START_S + 50n;
+  routeExpiryUnit = 'SOLANA_SLOT';
+  await participant.tick();
+  assert.equal(commits, 0);
+  routeExpiryUnit = 'EVM_UNIX_SECONDS';
+  await participant.tick();
+  assert.equal(commits, 1);
+  assert.equal(journal.get(auctionHash)?.status, 'COMMITTED');
+});
+
 test('threshold participant journals identical ciphertext, survives a disabled flag, and never reveals plaintext', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'naryx-threshold-participant-'));
   const path = join(directory, 'journal.sqlite');
@@ -46,7 +84,8 @@ test('threshold participant journals identical ciphertext, survives a disabled f
   const participant = (enabled: boolean) => new SealedAuctionParticipant({ solverId: 'solver-a', journal, relay,
     thresholdEnabled: enabled, clockMs: () => now,
     quotes: { quote: async ({ orderHash }) => ({ orderHash, quoteHash: '77'.repeat(32), solverId: 'solver-a',
-      environment: 'testnet', validUntilUnit: 'EVM_UNIX_SECONDS', validUntilValue: START_S + 200n, netOutcomeAtoms: 10n }) } });
+      environment: 'testnet', validUntilUnit: 'EVM_UNIX_SECONDS', validUntilValue: START_S + 200n,
+      routeExpiryUnit: 'EVM_UNIX_SECONDS', routeExpiryValue: START_S + 200n, netOutcomeAtoms: 10n }) } });
   await participant(true).tick();
   assert.equal(journal.get(auctionHash)?.status, 'OPENING_READY');
   assert.match(ciphertexts[0]!, /^-----BEGIN AGE ENCRYPTED FILE-----/);
@@ -184,6 +223,8 @@ test('persists an opening and resumes through award finalization across restarts
         solverId: 'solver-a',
         validUntilUnit: 'EVM_UNIX_SECONDS',
         validUntilValue: START_S + 40n,
+        routeExpiryUnit: 'EVM_UNIX_SECONDS',
+        routeExpiryValue: START_S + 40n,
         netOutcomeAtoms: 500n,
       };
     },
