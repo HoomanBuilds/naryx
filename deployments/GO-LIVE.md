@@ -197,7 +197,7 @@ Status checked 2026-10-18:
 
 | Item | Current state | Evidence needed to close |
 | --- | --- | --- |
-| 1. Standing liquidity for routed strategies | Open. Funded native cash books are live, but represent different instruments. | Funded routed quotes, an actual matching execution, and reconciled inventory. Do not copy cash liquidity into routed books. |
+| 1. Standing liquidity for routed strategies | Closed for the enabled Solana cash-and-carry maker lane. Actual entry/exit and inventory reconciliation completed on 2026-10-18. | Evidence below. This does not advertise native cash liquidity as routed liquidity or activate additional routed maker lanes. |
 | 2. Cross-chain execution activation | Open. Submission journaling exists; coordinator startup and filled-position compensation are not activated. | A successful multi-domain execution and a failed-side recovery that reconciles already-filled positions without duplicate submission. |
 | 3. Hyperliquid pooled-mode terminal integration | Closed for the approved dedicated cohort. Both owners completed authenticated browser deposit/withdrawal cycles on 2026-10-18. | UI, database and venue agreed after reload: zero pool cash, liabilities and pending operations. Receipt evidence below. Epoch trading remains operator-only; this is not public custody enrollment. |
 | 4. Strategy ownership transfers | Open. The public strategy book has no venue-transfer evidence verifier. | Both owners' consent plus verified transfer of the underlying positions, reconciled in the strategy book. Database reassignment alone is not a transfer. |
@@ -261,6 +261,24 @@ Solana incident scope had no qualification journal. These findings do not close 
 Updated 2026-10-18. The root README and versioned release records identify the live paths.
 First-route cash-and-carry execution has testnet evidence on all four domains. Additional
 strategy support is specific to a registered template and deployment, not every catalogue entry.
+
+- Solana routed cash-and-carry maker capacity now reads finalized maker token balances and
+  clips both published and signed sizes to inventory, venue lot increments and minimum notional.
+  Before the fix the ask could advertise 10 SOL against 0.45 SOL in inventory. The live ask now
+  advertises 450 units of 0.001 SOL. An actual 0.02 SOL entry consumed 20 units; the exit restored
+  the maker's base inventory and the advertised 450-unit capacity. Both transactions finalized
+  and were observed through the API, leaving the trader with zero position lots and no open package.
+  Each trader transaction cost 5,000 Devnet lamports. Maker rent funding was 0.05 Devnet SOL.
+  Entry signature: `6585Fnf5BPMfttvmfircSX27YU5xygLmwv8RpE5fybG3R3fAYEHsg89MWTigXfKmjHVtYY1ikAjZXZc7NcuywTfN`.
+  Exit signature: `4rcwiD3g856MY9ax5PyADb4ig77TYY1mmA2fd3CSJ8RXuSGxgy9SGqCKFXhfCjgt8jfxbJ8UDPr6ApVJkxcEMGXN`.
+  API lifecycle records are FINALIZED; the final account read has zero lots and no package.
+  A read-only browser check on `naryx.xyz/liquidity` confirmed the funded capacity and reference-price
+  distinction with no browser exceptions. The price displayed in this card is a shard reference,
+  not an executable net strategy price; a complete quote reserves inventory during preparation.
+  This verifies the actual public API/signing/settlement path and the browser read surface, not
+  a wallet-extension click-through trade. Commits `4de5fc67` and `85e3fea6` are deployed to AWS;
+  `9e5d31da` is promoted as a static-only frontend. The exit retry fix preserves the first priced
+  order across oracle changes, races and restart; pre-fix request identities are not rewritten.
 
 - Base and Arbitrum native cash-range markets have funded browser entry/exit, withdrawal and
   finalized receipt evidence, including server reconciliation after browser closure and restart.
