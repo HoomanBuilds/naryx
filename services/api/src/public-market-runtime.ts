@@ -24,6 +24,7 @@ import { SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
 import { SqliteCollateralSnapshotStore } from "./collateral-snapshot-store.js";
 import { createCatalogueIssuer } from "./market-catalogue-issuer.js";
 import { SqliteStrategyBookStore } from "./strategy-book-store.js";
+import { ThresholdAuctionBackend } from './threshold-auction.js';
 import { createEvmBondReader } from "./evm-bond-reader.js";
 import { SqliteBuilderStore } from "./builder-store.js";
 import { createKeeperExecutorHandler, keeperClock, SqliteKeeperExecutor } from "./keeper-executor.js";
@@ -905,6 +906,12 @@ export function loadPublicMarketRuntime(
     const admission = admissionPath === undefined ? undefined : loadAdmissionContexts(absolute(admissionPath, "NARYX_ADMISSION_CONTEXTS"));
     const bondConfigPath = optional(environment.NARYX_BOND_READER_CONFIG);
     const bonds = bondConfigPath === undefined ? undefined : loadBondReader(absolute(bondConfigPath, "NARYX_BOND_READER_CONFIG"));
+    if (environment.NARYX_THRESHOLD_AUCTIONS_ENABLED === 'true' && delivery === undefined) {
+      throw new PublicMarketConfigError('Threshold auctions require a durable private delivery store.');
+    }
+    const thresholdAuctions = environment.NARYX_THRESHOLD_AUCTIONS_ENABLED === 'true' && delivery !== undefined
+      ? new ThresholdAuctionBackend(delivery, clockMs) : undefined;
+    if (thresholdAuctions) opened.push(thresholdAuctions);
     const solverHandler = solverState === undefined || registry === undefined
       ? undefined
       : createSolverApiHandler({
@@ -912,6 +919,7 @@ export function loadPublicMarketRuntime(
         registry,
         exchange: store,
         ...(delivery === undefined ? {} : { delivery }),
+        ...(thresholdAuctions === undefined ? {} : { thresholdAuctions }),
         ...(evidence === undefined ? {} : { evidence }),
         ...(admission === undefined ? {} : { admission }),
         ...(bonds === undefined ? {} : { bonds }),

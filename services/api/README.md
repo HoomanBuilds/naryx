@@ -181,3 +181,36 @@ Revenue reconciliation (`SqliteRevenueLedger`) is an internal back-office bounda
 ## Dedicated native cash market proxy
 
 `NARYX_NATIVE_CASH_TESTNET_ENABLED=true` enables the bounded `/v1/native-cash/` proxy to a loopback-only solver service at `NARYX_NATIVE_CASH_TESTNET_ORIGIN`. The proxy forwards no cookies, authorization, forwarding, or browser identity headers. Browser access uses the terminal's existing exact-origin allowlist. These native cash quotes and finalized receipts are separate from routed package orders, external positions, and the existing controlled-test clearing ledger. Enabling the proxy alone does not activate funded market liquidity.
+
+## Dedicated Hyperliquid pool browser access
+
+The optional `/v1/hyperliquid-pool/` proxy exposes only custody consent, signed member reads,
+deposit reconciliation and owner-authorized withdrawals. Set `NARYX_HYPERLIQUID_POOL_BROWSER_ENABLED=true`,
+a loopback `NARYX_HYPERLIQUID_POOL_BROWSER_ORIGIN`, and an owner-only
+`NARYX_HYPERLIQUID_POOL_OPERATOR_TOKEN_PATH`. The token never reaches the browser. Every owner action
+is restricted to the pool's dedicated test cohort and a wallet signature binding its exact payload.
+Operator epoch preparation, execution and close are not public browser endpoints. Funding is a
+separate action; enabling these routes neither deposits funds nor makes an empty pool liquid.
+
+## Timed threshold auction openings
+
+With `NARYX_THRESHOLD_AUCTIONS_ENABLED=true` and the durable private-delivery store configured,
+eligible authenticated solvers can GET a release policy and POST `{commitment, ciphertext}` to
+`/v1/solver/auctions/{hash}/threshold`. Commitments and encrypted openings persist atomically.
+The API releases a valid opening automatically once the pinned drand quicknet round is published.
+The existing auction kernel still verifies the commitment and selects the result.
+
+Only Unix-time testnet, devnet and local auctions qualify. The commit horizon is at most ten minutes;
+the reveal deadline must allow more than sixty seconds after beacon release. Admission is bounded
+to eight outstanding openings globally and two per solver. A refused opening creates no commitment.
+Pending ciphertext survives restart. Beacon or decryption failures never trigger a plaintext fallback.
+
+This encrypts the submitted opening until timed release, not the order, wallet identity, all quote
+metadata or the entire auction. After release anyone with the ciphertext can decrypt it. Threshold
+collusion could release keys early; a beacon outage can prevent completion. Ordinary commit/reveal
+and private RFQ are separate modes and are not retroactively threshold encrypted.
+
+Cryptography uses pinned `tlock-js@0.9.0` and `drand-client@1.2.5` (Apache-2.0 OR MIT), not a custom
+encryption scheme. Network identity and BLS beacon signatures are checked before caching.
+The dependency review found no npm advisory in these new packages; existing Solana SDK dependency
+advisories remain separate and were not bypassed with an unrelated major-version update.

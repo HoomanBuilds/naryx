@@ -385,6 +385,16 @@ export class NaryxSolverClient {
     return this.#call('POST', `/v1/solver/auctions/${auctionHash}/commit`, { commitment });
   }
 
+  thresholdAuctionPolicy(auctionHash: string) {
+    return this.#call('GET', `/v1/solver/auctions/${auctionHash}/threshold`);
+  }
+
+  commitThresholdOpening(auctionHash: string, opening: Readonly<{ commitment: string; ciphertext: string }>) {
+    return this.#call('POST', `/v1/solver/auctions/${auctionHash}/threshold`, {
+      commitment: opening.commitment, ciphertext: opening.ciphertext,
+    });
+  }
+
   revealSealedQuote(auctionHash: string, opening: { readonly quoteHash: string; readonly netOutcomeAtoms: bigint; readonly salt: Uint8Array }) {
     return this.#call('POST', `/v1/solver/auctions/${auctionHash}/reveal`, opening);
   }

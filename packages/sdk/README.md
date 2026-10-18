@@ -72,6 +72,18 @@ Orders and terminal evidence are covered end to end:
 
 No terminal-internal route is wrapped.
 
+`encryptThresholdAuctionOpening` encrypts a sealed quote opening to the pinned drand quicknet
+release round. Pass its commitment and ciphertext to `NaryxSolverClient.commitThresholdOpening`.
+`thresholdAuctionPolicy` reads the server policy, but encryption derives the round from the locally
+validated auction definition. This is timed public disclosure, not permanent privacy. The API
+requires more than sixty seconds after release for reveal and caps outstanding work; see the API
+README for limits. Solana-slot auctions cannot infer a wall-clock release and are refused.
+
+The test-pool signing helpers reconstruct the complete expected EIP-712 payload locally.
+`verifyTestPoolChallenge` rejects substituted pool, binding, action, amount, expiry or chain before
+the wallet is asked to sign. Withdrawals can exceed the entry cap when verified profits justify it;
+the server independently checks the owner's actual ledger balance and venue backing.
+
 ```sh
 npm test
 ```

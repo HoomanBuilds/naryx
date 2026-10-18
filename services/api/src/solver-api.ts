@@ -47,6 +47,7 @@ import { requestClientKey, createRateLimiter } from "./rate-limit.js";
 import { EvidenceStoreError, type SqliteEvidenceStore } from "./evidence-store.js";
 import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 import { acceptWebSocket, type WebSocketConnection } from "./websocket.js";
+import type { ThresholdAuctionBackend } from './threshold-auction.js';
 
 const MAX_BODY_BYTES = 65_536;
 const HEX32 = /^[0-9a-f]{64}$/;
@@ -84,6 +85,7 @@ export interface SolverApiOptions {
   /** Current time in the books' expiry unit. */
   readonly nowValue: () => bigint;
   readonly clockMs?: () => number;
+  readonly thresholdAuctions?: ThresholdAuctionBackend;
   /** Largest accepted difference between a request timestamp and server time. */
   readonly maxClockSkewMs?: number;
   readonly rateLimit: { readonly windowMs: number; readonly maxRequests: number };
@@ -739,6 +741,13 @@ export function createSolverApiHandler(options: SolverApiOptions) {
       if (!verified.valid) throw new SolverRequestError(409, verified.reason, "The encrypted response does not bind to this envelope.");
       relay.storeResponse(envelopeHash, verified.responseHash, { quoteHash: body.quoteHash, quoteOrderHash: body.quoteOrderHash }, body.responseCiphertext);
       return { responseHash: toHex(verified.responseHash) };
+    }
+    if ((match = /^\/v1\/solver\/auctions\/([0-9a-f]{64})\/threshold$/.exec(path)) !== null) {
+      if (!options.thresholdAuctions) throw new SolverRequestError(503, 'THRESHOLD_UNAVAILABLE', 'Threshold auctions are disabled.');
+      const definition = requireDelivery().auctionDefinition(match[1]!);
+      if (!definition.eligibleSolverIds.some(id => id === solverId)) throw new SolverRequestError(403, 'INELIGIBLE_SOLVER', 'Solver is not eligible.');
+      if (method === 'GET') return options.thresholdAuctions.policy(match[1]!);
+      if (method === 'POST') return options.thresholdAuctions.seal(match[1]!, solverId, decodeBody(raw));
     }
     if ((match = /^\/v1\/solver\/auctions\/([0-9a-f]{64})\/(commit|reveal)$/.exec(path)) !== null && method === "POST") {
       const relay = requireDelivery();

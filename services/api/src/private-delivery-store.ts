@@ -84,6 +84,19 @@ CREATE TABLE IF NOT EXISTS sealed_auction_events (
   event_json TEXT NOT NULL,
   PRIMARY KEY (auction_hash, sequence)
 ) STRICT;
+CREATE TABLE IF NOT EXISTS threshold_auction_openings (
+  auction_hash BLOB NOT NULL REFERENCES sealed_auctions(auction_hash),
+  solver_id TEXT NOT NULL,
+  commitment TEXT NOT NULL,
+  ciphertext TEXT NOT NULL,
+  ciphertext_hash TEXT NOT NULL,
+  round INTEGER NOT NULL,
+  release_at_ms INTEGER NOT NULL,
+  reveal_at_ms INTEGER NOT NULL,
+  attempted_at_ms INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL CHECK (state IN ('SEALED', 'REVEALED', 'EXPIRED')),
+  PRIMARY KEY (auction_hash, solver_id)
+) STRICT;
 CREATE TRIGGER IF NOT EXISTS reject_envelope_change BEFORE UPDATE ON rfq_envelopes BEGIN SELECT RAISE(ABORT, 'envelopes are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_response_change BEFORE UPDATE ON rfq_responses BEGIN SELECT RAISE(ABORT, 'responses are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_auction_event_change BEFORE UPDATE ON sealed_auction_events BEGIN SELECT RAISE(ABORT, 'auction events are append-only'); END;
@@ -429,6 +442,60 @@ export class SqlitePrivateDeliveryStore {
 
   auctionDefinition(auctionHashHex: string): SealedAuctionDefinition {
     return this.load(auctionHashHex).definition;
+  }
+
+  storeThresholdCommitment(input: Readonly<{ auctionHash: string; solverId: string; commitment: string;
+    ciphertext: string; ciphertextHash: string; round: number; releaseAtMs: number; revealAtMs: number; nowMs: number }>): void {
+    this.transaction(() => {
+      const definition = this.auctionDefinition(input.auctionHash);
+      const key = Buffer.from(input.auctionHash, 'hex');
+      const existing = this.db.prepare('SELECT ciphertext_hash, commitment FROM threshold_auction_openings WHERE auction_hash = ? AND solver_id = ?')
+        .get(key, input.solverId) as { ciphertext_hash: string; commitment: string } | undefined;
+      if (existing) {
+        if (existing.ciphertext_hash !== input.ciphertextHash || existing.commitment !== input.commitment) {
+          throw new PrivateDeliveryStoreError('THRESHOLD_CONFLICT', 'A sealed opening is immutable.');
+        }
+        return;
+      }
+      const capacity = this.db.prepare("SELECT count(*) AS total, coalesce(sum(solver_id = ?), 0) AS owned FROM threshold_auction_openings WHERE state = 'SEALED' AND reveal_at_ms > ?")
+        .get(input.solverId, input.nowMs) as { total: number; owned: number };
+      if (capacity.total >= 8 || capacity.owned >= 2) {
+        throw new PrivateDeliveryStoreError('THRESHOLD_CAPACITY', 'Threshold release capacity is full; no commitment was accepted.');
+      }
+      const atValue = BigInt(definition.timeUnit === 'EVM_UNIX_SECONDS' ? Math.floor(input.nowMs / 1000) : input.nowMs);
+      const result = this.appendAuctionEvent(input.auctionHash, { kind: 'COMMIT', solverId: input.solverId, commitment: input.commitment, atValue });
+      if (!result.accepted) throw new PrivateDeliveryStoreError(result.reason, 'Threshold commitment was rejected.');
+      this.db.prepare("INSERT INTO threshold_auction_openings (auction_hash, solver_id, commitment, ciphertext, ciphertext_hash, round, release_at_ms, reveal_at_ms, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'SEALED')")
+        .run(key, input.solverId, input.commitment, input.ciphertext, input.ciphertextHash, input.round, input.releaseAtMs, input.revealAtMs);
+    });
+  }
+
+  pendingThresholdOpenings(nowMs: number, limit: number) {
+    return this.db.prepare("SELECT lower(hex(auction_hash)) AS auctionHash, solver_id AS solverId, ciphertext, round, release_at_ms AS releaseAtMs, reveal_at_ms AS revealAtMs FROM threshold_auction_openings WHERE state = 'SEALED' AND release_at_ms <= ? ORDER BY attempted_at_ms, reveal_at_ms LIMIT ?")
+      .all(nowMs, limit) as { auctionHash: string; solverId: string; ciphertext: string; round: number; releaseAtMs: number; revealAtMs: number }[];
+  }
+
+  markThresholdAttempt(auctionHash: string, solverId: string, nowMs: number): void {
+    this.db.prepare("UPDATE threshold_auction_openings SET attempted_at_ms = ? WHERE auction_hash = ? AND solver_id = ? AND state = 'SEALED'")
+      .run(nowMs, Buffer.from(auctionHash, 'hex'), solverId);
+  }
+
+  expireThresholdOpening(auctionHash: string, solverId: string): void {
+    this.db.prepare("UPDATE threshold_auction_openings SET state = 'EXPIRED' WHERE auction_hash = ? AND solver_id = ? AND state = 'SEALED'")
+      .run(Buffer.from(auctionHash, 'hex'), solverId);
+  }
+
+  revealThresholdOpening(auctionHash: string, solverId: string, opening: Record<string, unknown>, nowMs: number): void {
+    this.transaction(() => {
+      const definition = this.auctionDefinition(auctionHash);
+      const atValue = BigInt(definition.timeUnit === 'EVM_UNIX_SECONDS' ? Math.floor(nowMs / 1000) : nowMs);
+      const result = this.appendAuctionEvent(auctionHash, { kind: 'REVEAL', solverId,
+        quoteHash: opening.quoteHash as string, netOutcomeAtoms: opening.netOutcomeAtoms as bigint,
+        salt: opening.salt as Uint8Array, atValue });
+      if (!result.accepted) throw new PrivateDeliveryStoreError(result.reason, 'Threshold opening was rejected.');
+      this.db.prepare("UPDATE threshold_auction_openings SET state = 'REVEALED' WHERE auction_hash = ? AND solver_id = ? AND state = 'SEALED'")
+        .run(Buffer.from(auctionHash, 'hex'), solverId);
+    });
   }
 
   /**
