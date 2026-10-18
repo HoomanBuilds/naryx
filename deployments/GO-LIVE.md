@@ -191,9 +191,10 @@ Arbitrum factories. The terminal guides account creation, adapter creation and f
 obtains separate entry and recovery approvals. Registered factory checks, exact recovery,
 finality and lifetime worker gas budgets remain enforced. This is not cross-chain atomicity.
 
-The October 18 public-access release was compiled and deployed without running tests at the
-owner's request. Service availability is not evidence of a new funded public-wallet round trip.
-The previous execution evidence below remains historical and is not attributed to this release.
+The October 18 public-access release was initially compiled and deployed without running tests at
+the owner's request. Subsequently authorized verification completed the public version-3 pooled
+browser cycle recorded below. Service availability alone is not execution evidence; earlier
+execution records remain historical and are not attributed to this release.
 
 ## 9. Public copy
 
@@ -212,7 +213,7 @@ Status checked 2026-10-18:
 | --- | --- | --- |
 | 1. Standing liquidity for routed strategies | Closed for the enabled Solana cash-and-carry maker lane. Actual entry/exit and inventory reconciliation completed on 2026-10-18. | Evidence below. This does not advertise native cash liquidity as routed liquidity or activate additional routed maker lanes. |
 | 2. Cross-chain execution activation | Recovery contracts, replacement reservation books and executor profile 5 are active. Public wallet onboarding derives accounts and adapters from verified factories. The terminal supports setup, funding, separate entry/recovery signatures, closing and owner-only idle collateral withdrawal. Historical operator recovery and the safely expired incompatible-book attempt remain recorded below. | Public access is deployed, with unchanged spending limits. No fresh funded public-calendar round trip was run for this release because the owner requested deployment without tests. Historical execution does not prove that new flow. |
-| 3. Hyperliquid pooled-mode terminal integration | Public version-3 custody consent is active. Any eligible testnet wallet can enroll, reconcile funding, request its own withdrawal and submit an epoch signed by every participating trader and recovery sponsor. Admission limits are 100,000 mock USDC aggregate and 1,000 per wallet. | Migration required empty venue backing, zero old member balances and no pending operations. Earlier ledgers are preserved; version-3 users consent afresh. Capacity and profit-withdrawal unit checks passed. Earlier funded browser evidence applies to the former dedicated cohort, not a newly exercised public epoch. |
+| 3. Hyperliquid pooled-mode terminal integration | Closed for the public version-3 application/provider flow. Three dedicated wallets enrolled under fresh custody consent, reconciled 12 mock USDC, submitted an epoch signed by both traders and the recovery sponsor, and withdrew every remaining balance through Portfolio. Admission limits remain 100,000 mock USDC aggregate and 1,000 per wallet. | The public-release browser cycle below opened and closed an actual net BTC position. All seven ledger operations completed; final venue backing, member balances, orders and positions were zero. A restricted test-wallet provider supplied real signatures; this does not establish compatibility with every wallet extension. |
 | 4. Strategy ownership transfers | Closed for the Base cash-and-carry account path. The seller proposed and the buyer accepted through live Portfolio, acceptance finalized, dual-signed strategy-book novation succeeded, and the new owner's exit finalized. Book closure and collateral withdrawals reconciled with an empty strategy account. | Evidence below. This does not claim transferable positions on other venues or compatibility with every wallet extension. |
 | 5. Threshold-encryption backend | Backend and solver participation deployed; a real beacon opening was verified. | Preserve this completed backend evidence. Any claim of terminal-integrated encrypted trading also needs an encrypted auction award and settlement; current terminal auctions remain ordinary commit/reveal. |
 | 6. Operational wiring and documentation | Closed for the explicitly owner-approved Solana devnet cash-and-carry scope. All seven deployed program identities, hashes, authorities and slots match; finalized funded-cycle evidence was checked. The signed testnet-only policy is active and the API reports ready. | This is not independent review. The approval expires on 2026-10-25 at 10:32:15 UTC; continued activation needs a renewed explicit approval. The unchanged independent-review policy remains required for any claim of independent qualification. |
@@ -220,10 +221,10 @@ Status checked 2026-10-18:
 Independent maker recruitment and additional roadmap capabilities are not new items in this
 completion scope. Report their limitations separately without reopening completed work.
 
-The deployment-first instruction on 2026-10-18 stops additional repeated test suites and funded
-verification cycles. Existing evidence remains valid for its exact code version; unexecuted flows
-remain unverified. It does not authorize mainnet, remove runtime safety gates, or convert missing
-qualification evidence into a passing release.
+The subsequent verification request on 2026-10-18 authorizes the two outstanding public-release
+flows: calendar entry/exit and the shared Hyperliquid pool cycle. It does not reopen unrelated
+suites or authorize mainnet. Existing evidence remains valid for its exact code version; unexecuted
+flows remain unverified, and runtime safety gates remain enforced.
 
 ### Finish line: usable shipped website
 
@@ -302,9 +303,9 @@ strategy support is specific to a registered template and deployment, not every 
   finalized receipt evidence, including server reconciliation after browser closure and restart.
   Their standing makers quote only those cash instruments. They do not populate routed spot/perp
   strategy books or create positions at external venues.
-- The dedicated Hyperliquid pool completed observed deposits, a two-owner netted BTC epoch,
+- The earlier dedicated-only Hyperliquid pool release completed observed deposits, a two-owner netted BTC epoch,
   an open-position service restart, close and all withdrawals. Final cash, liabilities and venue
-  positions were zero. It remains restricted to dedicated test accounts. The signed owner API is
+  positions were zero. That release was restricted to dedicated test accounts. The signed owner API is
   deployed; balance reads have been verified separately for both traders and the sponsor.
   Its Portfolio controls are included in the static frontend deployed on 2026-10-18 after the
   hosting block cleared. Following separate funding approval, both dedicated traders completed
@@ -590,6 +591,36 @@ one-hour-book rejection, insufficient-capacity rejection and the exact supported
 The activated runtime's chain-backed inspection returns `preparationReady: true`,
 `executionBudgetAvailable: true`, `staged: false`, `broadcast: false`. This does not claim a
 completed calendar trade, and no further funded cycle was started during this deployment fix.
+
+## Public version-3 pooled browser cycle, 2026-10-18
+
+The live Portfolio page exercised fresh version-3 enrollment, authenticated balance reads,
+deposit reconciliation, signed epoch submission, withdrawal authorization and receipt
+reconciliation using three dedicated test wallets. The public release had no cohort allowlist;
+the wallets used for this check were existing dedicated test identities, not newly created wallets.
+Transfers used the official testnet venue transport. Browser controls used a restricted EIP-1193
+provider backed by real signatures; compatibility with a particular wallet extension is not claimed.
+
+Traders deposited 5 mock USDC each and the recovery sponsor deposited 2, reusing approved funds.
+Epoch `public-v3-browser-epoch` carried all three participant signatures. The venue opened an actual
+net position of 0.00013 BTC at 81,068, then the worker closed it and reconciled the ledger. The final
+allocated balances were 4.996295, 4.997989 and 2 mock USDC, totaling the observed venue backing of
+11.994284. The 0.005716 reduction reflects the cycle's realized trading result and fees, not a
+missing withdrawal. All balances were then withdrawn through Portfolio.
+
+| Participant | Deposit receipt | Withdrawal receipt | Withdrawn mock USDC |
+| --- | --- | --- | --- |
+| Trader 1 | `0xb407f0f44ad48a3db581042c059cf3010e0008d9e5d7a90f57d09c4709d86428` | `0xa9787433ebd6c66aaaf2042c05b4df0102008c1986d9e53c4d411f86aadaa055` | 4.996295 |
+| Trader 2 | `0x993bb629336a95739ab5042c05a13f010300ce0ece6db4453d04617bf26e6f5e` | `0x4407fe29ab3455f64581042c05b9b2010900160f463774c8e7d0a97c6a382fe0` | 4.997989 |
+| Recovery sponsor | `0x880dde5d58228bb98987042c05a595010100f642f325aa8b2bd689b0172665a4` | `0x8455efd24806c93f85cf042c05be7800009107b7e309e811281e9b25070aa32a` | 2 |
+
+All seven ledger operations completed. Final read-only reconciliation showed zero member balances,
+zero venue account value and withdrawable cash, no open positions, no open orders and no pending
+operations. Browser execution reported no uncaught page errors. Entry and exit request, dispatch,
+proof and result stages remain in the durable operation journal. No mainnet assets were involved.
+An authenticated member read returned HTTP 200. Reusing that signature with another owner or
+a different action returned HTTP 409; neither request authorized access or a ledger operation.
+This verifies this public-release pooled flow, not every strategy template or wallet extension.
 
 ## Recovery deployment identities
 
