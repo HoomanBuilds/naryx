@@ -31,7 +31,7 @@ export function createHyperliquidPoolController(services: PoolServices, operator
     };
     const url = new URL(request.url ?? '/', 'http://localhost');
     if (request.method === 'GET' && url.pathname === '/health' && !url.search) {
-      send(200, { environment: 'TESTNET', custody: 'DEDICATED_TEST_ACCOUNTS_ONLY', busy }); return;
+      send(200, { environment: 'TESTNET', custody: services.store.binding.version === 2 ? 'PUBLIC_CUSTODIAL_TESTNET' : 'DEDICATED_TEST_ACCOUNTS_ONLY', busy }); return;
     }
     const expected = Buffer.from(`Bearer ${operatorToken}`);
     const received = Buffer.from(request.headers.authorization ?? '');

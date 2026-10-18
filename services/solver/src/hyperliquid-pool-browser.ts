@@ -4,6 +4,7 @@ import type { HyperliquidPooledCollateralStore } from './hyperliquid-pooled-coll
 import { poolBindingHash, poolConsentTypedData, poolWithdrawalTypedData,
   type HyperliquidPoolFundingService, type PoolWithdrawalRequest } from './hyperliquid-pool-funding.js';
 import type { HyperliquidPoolWithdrawalService } from './hyperliquid-pool-withdrawal.js';
+import type { HyperliquidPoolEpochService, HyperliquidPoolEpochPlan } from './hyperliquid-pool-epoch.js';
 
 const ADDRESS = /^0x(?!0{40}$)[0-9a-f]{40}$/;
 const ACTIONS = ['member', 'deposit', 'withdrawal-submit', 'withdrawal-complete', 'withdrawal-release'] as const;
@@ -12,6 +13,7 @@ interface Services {
   readonly store: HyperliquidPooledCollateralStore;
   readonly funding: HyperliquidPoolFundingService;
   readonly withdrawals: HyperliquidPoolWithdrawalService;
+  readonly epochs?: HyperliquidPoolEpochService;
 }
 
 function fields(value: unknown, keys: readonly string[]): asserts value is Record<string, unknown> {
@@ -34,7 +36,7 @@ export function createPoolBrowserCommands(services: Services, clock = Date.now) 
   const { store, funding, withdrawals } = services;
   const ownerOf = (value: unknown): `0x${string}` => {
     if (typeof value !== 'string' || !ADDRESS.test(value)
-      || !store.binding.dedicatedTestOwners.includes(value as `0x${string}`)) throw new Error('Dedicated test owner required');
+      || !store.acceptsOwner(value)) throw new Error('Wallet is not eligible for this pool');
     return value as `0x${string}`;
   };
   const withdrawalOf = (id: unknown, owner: string) => {
@@ -48,9 +50,12 @@ export function createPoolBrowserCommands(services: Services, clock = Date.now) 
   return async (command: string, body: unknown): Promise<unknown> => {
     if (command === 'config') {
       fields(body, []);
-      return { environment: 'TESTNET', custody: 'CUSTODIAL_TESTNET_POOL_V1', poolAccount: store.binding.poolAccount,
+      return { environment: 'TESTNET', custody: store.binding.version === 2 ? 'CUSTODIAL_TESTNET_POOL_V2' : 'CUSTODIAL_TESTNET_POOL_V1', poolAccount: store.binding.poolAccount,
         bindingHash: poolBindingHash(store.binding), policyHash: store.binding.policyHash,
-        maximumTotalQuoteAtoms: store.binding.maximumTotalQuoteAtoms, quoteDecimals: 6 };
+        maximumTotalQuoteAtoms: store.binding.maximumTotalQuoteAtoms, quoteDecimals: 6,
+        access: store.binding.version === 2 ? 'PUBLIC_TESTNET' : 'DEDICATED_TEST_ACCOUNTS',
+        availableQuoteAtoms: store.binding.maximumTotalQuoteAtoms > store.totalQuoteAtoms()
+          ? store.binding.maximumTotalQuoteAtoms - store.totalQuoteAtoms() : 0n };
     }
     if (command === 'consent') {
       fields(body, ['owner']);
@@ -60,6 +65,13 @@ export function createPoolBrowserCommands(services: Services, clock = Date.now) 
       fields(body, ['owner', 'signature']);
       await funding.enroll(ownerOf(body.owner), body.signature as `0x${string}`);
       return { status: 'ENROLLED' };
+    }
+    if (command === 'epoch-submit') {
+      fields(body, ['plan', 'authorizations']);
+      if (store.binding.version !== 2 || !services.epochs) throw new Error('Public pooled execution is unavailable');
+      await services.epochs.prepare(body.plan as HyperliquidPoolEpochPlan,
+        body.authorizations as Parameters<HyperliquidPoolEpochService['prepare']>[1]);
+      return { status: 'AUTHORIZED', operationId: (body.plan as HyperliquidPoolEpochPlan).id };
     }
     if (command === 'withdrawal-challenge' || command === 'withdrawal') {
       fields(body, command === 'withdrawal' ? ['request', 'signature'] : ['request']);

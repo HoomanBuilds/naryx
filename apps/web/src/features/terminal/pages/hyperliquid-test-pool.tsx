@@ -43,6 +43,7 @@ function PoolAccount({ baseUrl, config }: { baseUrl: string; config: TestPoolCon
   const [amount, setAmount] = useState("");
   const [transferHash, setTransferHash] = useState("");
   const [transferTime, setTransferTime] = useState("");
+  const [epochPayload, setEpochPayload] = useState("");
   const lock = useRef(false);
   const account = member?.owner === owner ? member : null;
   const disabled = busy !== null || wallet.awaitingWallet || wallet.switching;
@@ -50,7 +51,7 @@ function PoolAccount({ baseUrl, config }: { baseUrl: string; config: TestPoolCon
     if (!owner || activeOwner.current !== owner) throw new Error("Wallet changed. Restart this request with your current account.");
   };
   const signedRequest = async (action: string, payload: unknown) => {
-    if (!owner) throw new Error("Connect the dedicated test wallet first.");
+    if (!owner) throw new Error("Connect your wallet first.");
     guard();
     const body = { owner, action, payload, expiresAtMs: Date.now() + 120_000 };
     const expected = testPoolRequest(config, owner, action, payload, body.expiresAtMs);
@@ -105,7 +106,7 @@ function PoolAccount({ baseUrl, config }: { baseUrl: string; config: TestPoolCon
   return <section className={styles.card} aria-labelledby="test-pool-title">
     <div className={styles.cardHead}><h2 id="test-pool-title">Shared test pool</h2><span>Hyperliquid Testnet</span></div>
     <div className={cash.body}>
-      <p className={cash.terms}>Optional, custodial mode for approved test wallets only. Naryx controls the pooled account; your balance is a claim in its ledger, not a separate venue position. Your normal trading account is unchanged. Do not send real funds.</p>
+      <p className={cash.terms}>{config.custody === "CUSTODIAL_TESTNET_POOL_V2" ? "Open testnet enrollment with signed custody consent." : "Optional custodial mode for approved test wallets."} Naryx controls the pooled account; your balance is a claim in its ledger, not a separate venue position. Your normal trading account is unchanged. Do not send real funds. Pooled trading requires separately signed mandates from all participating owners.</p>
       <dl className={cash.metrics}>
         <div><dt>Pool account</dt><dd><button type="button" title={config.poolAccount} onClick={() => void navigator.clipboard.writeText(config.poolAccount).catch(() => setMessage("Could not copy the pool address."))}>{shortAddress(config.poolAccount)}</button></dd></div>
         <div><dt>Pool cap</dt><dd>{formatUnits(config.maximumTotalQuoteAtoms, 6)} test USDC</dd></div>
@@ -151,6 +152,19 @@ function PoolAccount({ baseUrl, config }: { baseUrl: string; config: TestPoolCon
             })}>Release expired request</button>
           </div>)}
         </details>
+        {config.custody === "CUSTODIAL_TESTNET_POOL_V2" && <details className={cash.review}><summary>Submit a signed pooled strategy</summary>
+          <p className={cash.terms}>Import a protocol-encoded epoch plan and all owner authorizations. The plan must include two funded traders and a consenting recovery sponsor. Every participant signs the exact plan and their loss and fee limits. Naryx reconciles and closes the epoch automatically; this does not authorize future trades.</p>
+          <textarea aria-label="Signed pooled strategy" value={epochPayload} maxLength={262144} rows={5}
+            onChange={event => setEpochPayload(event.target.value)} placeholder={'{"plan": {...}, "authorizations": [...]}'} />
+          <button type="button" className={styles.actionBtn} disabled={disabled || account.poolBusy || !epochPayload.trim()}
+            onClick={() => void run("Submitting signed strategy...", async () => {
+              const payload = fromProtocolJson(JSON.parse(epochPayload)) as { plan?: { mandates?: { owner: string }[] }; authorizations?: unknown[] };
+              if (!payload.plan?.mandates?.some(mandate => mandate.owner === owner) || !Array.isArray(payload.authorizations)) throw new Error("Import a fully authorized plan that includes your wallet.");
+              const result = await request(baseUrl, "epoch-submit", payload) as { status: string; operationId: string };
+              setMessage(`Strategy ${result.operationId} authorized. Execution and close are pending venue reconciliation.`);
+              await refresh();
+            })}>Submit owner-authorized strategy</button>
+        </details>}
       </> : null}
       {busy ? <p role="status">{busy}</p> : null}
       {message ? <p role="status">{message}</p> : null}

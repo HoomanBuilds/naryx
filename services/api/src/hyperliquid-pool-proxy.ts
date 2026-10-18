@@ -3,7 +3,7 @@ import { isAbsolute, resolve } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { isAllowedTerminalOrigin, type TerminalOrigins } from './terminal-origin.js';
 
-const COMMANDS = new Set(['config', 'consent', 'enroll', 'challenge', 'execute', 'withdrawal-challenge', 'withdrawal']);
+const COMMANDS = new Set(['config', 'consent', 'enroll', 'challenge', 'execute', 'withdrawal-challenge', 'withdrawal', 'epoch-submit']);
 
 export function loadPoolProxyToken(path: string): string {
   if (!isAbsolute(path) || realpathSync(path) !== resolve(path)) throw new Error('Pool token requires an absolute regular path');
@@ -48,7 +48,7 @@ export function createHyperliquidPoolProxy(origin: string, token: string,
       const chunks: Buffer[] = []; let length = 0;
       for await (const chunk of request) {
         length += chunk.length;
-        if (length > 16_384) { send(413, '{"error":"Pool request exceeds its bound."}'); return; }
+        if (length > (command === 'epoch-submit' ? 262_144 : 16_384)) { send(413, '{"error":"Pool request exceeds its bound."}'); return; }
         chunks.push(Buffer.from(chunk));
       }
       const upstream = await requestFetch(`${parsed.origin}/v1/pool/browser/${command}`, { method: 'POST',

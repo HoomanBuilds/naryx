@@ -3,7 +3,7 @@ import { stringifyProtocolJson } from '@naryx/protocol-types';
 
 export interface TestPoolConfig {
   readonly environment: 'TESTNET';
-  readonly custody: 'CUSTODIAL_TESTNET_POOL_V1';
+  readonly custody: 'CUSTODIAL_TESTNET_POOL_V1' | 'CUSTODIAL_TESTNET_POOL_V2';
   readonly poolAccount: `0x${string}`;
   readonly bindingHash: `0x${string}`;
   readonly policyHash: `0x${string}`;
@@ -13,7 +13,7 @@ export interface TestPoolConfig {
 
 export function testPoolConfig(value: unknown): TestPoolConfig {
   const config = value as TestPoolConfig;
-  if (!config || config.environment !== 'TESTNET' || config.custody !== 'CUSTODIAL_TESTNET_POOL_V1'
+  if (!config || config.environment !== 'TESTNET' || !['CUSTODIAL_TESTNET_POOL_V1', 'CUSTODIAL_TESTNET_POOL_V2'].includes(config.custody)
     || !/^0x(?!0{40}$)[0-9a-f]{40}$/.test(config.poolAccount)
     || ![config.bindingHash, config.policyHash].every(hash => /^0x(?!0{64}$)[0-9a-f]{64}$/.test(hash))
     || config.quoteDecimals !== 6 || typeof config.maximumTotalQuoteAtoms !== 'bigint'

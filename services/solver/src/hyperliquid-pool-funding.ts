@@ -39,7 +39,7 @@ export function poolBindingHash(binding: HyperliquidPoolBinding): `0x${string}` 
 export function poolConsentTypedData(binding: HyperliquidPoolBinding, owner: `0x${string}`) {
   return { domain: domain(binding), types: { PoolConsent: TYPES.PoolConsent }, primaryType: 'PoolConsent' as const,
     message: { owner, pool: binding.poolAccount, bindingHash: poolBindingHash(binding),
-      policyHash: binding.policyHash, custodyMode: 'CUSTODIAL_TESTNET_POOL_V1' } };
+      policyHash: binding.policyHash, custodyMode: binding.version === 2 ? 'CUSTODIAL_TESTNET_POOL_V2' : 'CUSTODIAL_TESTNET_POOL_V1' } };
 }
 
 export interface PoolWithdrawalRequest {
@@ -134,9 +134,10 @@ export class HyperliquidPoolFundingService {
       return;
     }
     const flat = await this.#flat();
+    const backed = this.#store.totalQuoteAtoms() + transfer.receivedQuoteAtoms;
     check(flat.requestedAtMs >= transfer.timeMs
-      && flat.equityQuoteAtoms === this.#store.totalQuoteAtoms() + transfer.receivedQuoteAtoms,
-    'deposit does not reconcile exactly to pool liabilities');
+      && (this.#store.binding.version === 2 ? flat.equityQuoteAtoms >= backed : flat.equityQuoteAtoms === backed),
+    'deposit is not fully backed by the observed pool equity');
     this.#store.creditDeposit({ id: input.id, owner: input.owner,
       receivedQuoteAtoms: transfer.receivedQuoteAtoms, transferHash: transfer.hash }, flat.equityQuoteAtoms);
   }
