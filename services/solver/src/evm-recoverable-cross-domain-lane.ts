@@ -57,6 +57,7 @@ export class EvmRecoverableCrossDomainLane implements EvmCrossDomainExecutionLan
     port: EvmRecoverableCrossDomainPort,
     authorizations: EvmCrossDomainRecoveryAuthorizations,
   ) {
+    requireCondition(config.maximumCompensationCostQuoteAtoms >= 0n, 'recovery loss limit is invalid');
     requireCondition(config.reservationReleaseGasLimit === undefined || (config.reservationReleaseGasLimit > 0n
       && config.reservationReleaseGasLimit <= config.compensationGasLimit), 'reservation release gas limit is invalid');
     this.config = Object.freeze({ ...config, recoveryAdapters: Object.freeze(config.recoveryAdapters.map(p => Object.freeze({ ...p }))) });
@@ -64,7 +65,11 @@ export class EvmRecoverableCrossDomainLane implements EvmCrossDomainExecutionLan
     this.authorizations = authorizations;
     this.domain = config.domain;
     this.chainReference = config.chainReference;
-    this.#entry = new EvmFirmReservationCrossDomainLane(config, port, authorizations);
+    // Reservation release returns inventory without spending quote tokens; gas is bounded separately.
+    this.#entry = new EvmFirmReservationCrossDomainLane({ ...config,
+      compensationGasLimit: config.reservationReleaseGasLimit ?? (config.compensationGasLimit < 300_000n ? config.compensationGasLimit : 300_000n),
+      maximumCompensationCostQuoteAtoms: 0n,
+    }, port, authorizations);
   }
 
   chainId() { return this.port.chainId(); }

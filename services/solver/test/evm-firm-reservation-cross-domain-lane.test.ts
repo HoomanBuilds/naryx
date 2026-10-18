@@ -11,6 +11,7 @@ import {
   type EvmMultiStrategyAccountEnvelope,
 } from '@naryx/adapter-evm';
 import {
+  commitmentHash,
   crossDomainCompensationAction,
   crossDomainCompensationActionHash,
   crossDomainPlanHash,
@@ -466,6 +467,27 @@ test('version-two recovery reverses a filled package and requires finalized clos
   f.observed.set(`${f.input.planHash}:COMPENSATE`, closeEvidence);
   assert.equal((await f.lane().start(f.input)).status, 'FINALIZED');
   assert.equal(f.base.submitted.length, 1);
+});
+
+test('failed entry releases unused inventory without charging the filled-position loss ceiling', async () => {
+  const f = await recoverableSetup();
+  f.config.maximumCompensationCostQuoteAtoms = -1n;
+  assert.throws(() => f.lane(), /recovery loss limit/);
+  f.config.maximumCompensationCostQuoteAtoms = 10n;
+  f.observed.set(`${f.input.planHash}:COMMIT`, { status: 'REVERTED', transactionHash: hex('f') });
+  let releaseGas = 0n;
+  const submit = f.base.submit.bind(f.base);
+  f.base.submit = async input => { releaseGas = input.gas; return submit(input); };
+  f.base.now = f.base.reservationValue.expiry - 1n;
+  assert.equal((await f.lane().start(f.input)).status, 'PENDING');
+  assert.equal(f.base.submitted.length, 0);
+  f.base.now = f.base.reservationValue.expiry + 1n;
+  assert.equal((await f.lane().start(f.input)).status, 'OBSERVED');
+  assert.equal(releaseGas, 300_000n);
+  assert.equal(f.base.submitted[0]?.to, bookAddress);
+  assert.equal(f.base.submitted[0]?.data, releaseData);
+  assert.equal((await f.lane().awaitFinality({ ...f.input, evidenceHash: commitmentHash(f.input.planLeg.inventoryReservationId) })).status, 'FINALIZED');
+  assert.equal(f.base.nonce, 0n);
 });
 
 test('admission requires live ownership and both authorizations before any submission', async () => {
