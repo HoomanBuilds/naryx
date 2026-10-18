@@ -397,6 +397,7 @@ export async function createBaseSepoliaOrderRuntime(input: Readonly<{
       spotReferencePrice: baseSepoliaSpotAsk(config.baseAsset, config.quoteAsset, snapshot),
       maxEntrySpread: config.maxEntrySpread,
       maximumQuantityAtoms: config.maximumQuantityAtoms,
+      quantityStepAtoms: deployment.seriesBindingInput.spotBaseAtomsPerPackageUnit,
       maxSlippageBps: config.maxSlippageBps,
       maxVenueFeeAtomsByAsset: venueFeeCaps,
       maxMarginAddedAtoms: config.maxMarginAddedAtoms,

@@ -1021,6 +1021,8 @@ test("a stale Base startup stays closed to orders and recovers with fresh prices
   updatedAt = 1_500n;
   await runtime.feed.refresh();
   assert.ok(runtime.contexts(config.contextId));
+  assert.equal(runtime.contexts(config.contextId)?.quantityStepAtoms,
+    fixture.configuration.seriesBindingInput.spotBaseAtomsPerPackageUnit);
   updatedAt = 1n;
   await assert.rejects(() => runtime.feed.refresh(), /older than the market allows/);
   assert.equal(runtime.contexts(config.contextId), undefined);
