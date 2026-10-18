@@ -3,6 +3,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { protocolId, toHex, type ReadinessDecision } from '@naryx/protocol-types';
 import {
   applyDependencyTrigger,
+  dependencyReadinessCommitment,
   type DependencyIncidentFileStore,
   type DependencyIncidentJournal,
 } from './dependency-incident-engine.js';
@@ -239,7 +240,7 @@ export function codeDriftTransition(
     evidence: {
       scopeHash: journal.scopeHash,
       readinessDecision,
-      readinessDecisionCommitment: journal.latestEvidence.readinessDecisionCommitment,
+      readinessDecisionCommitment: dependencyReadinessCommitment(readinessDecision),
       evidenceCommitment: observationCommitment(drifted),
       observedAtMs: nowMs,
       validUntilMs: nowMs + evidenceTtlMs,

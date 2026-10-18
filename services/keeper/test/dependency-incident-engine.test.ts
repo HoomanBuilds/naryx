@@ -141,6 +141,41 @@ test('unsafe dependency evidence pauses entries and exits', () => {
   assert.equal(paused.exitAllowed, false);
 });
 
+test('a revoked qualification can restrict permissions but cannot initialize or restore a scope', () => {
+  const revoked = evidence('05', {
+    readinessDecision: { ...readyDecision, status: 'NOT_READY' },
+    exitSafe: false,
+  });
+  assert.throws(() => createDependencyIncidentJournal(scope, revoked, nowMs + 1n), /not ready/);
+  const quarantined = applyDependencyTrigger(journal(), {
+    expectedRevision: 0n, trigger: 'CODE_DRIFT', evidence: revoked, occurredAtMs: nowMs + 2n,
+  });
+  assert.equal(quarantined.state, 'QUARANTINED');
+  assert.equal(quarantined.entryAllowed, false);
+  assert.equal(quarantined.exitAllowed, false);
+  assert.equal(quarantined.latestEvidence.readinessStatus, 'NOT_READY');
+  assert.throws(() => restoreDependencyScope(quarantined, {
+    expectedRevision: 1n,
+    evidence: { ...revoked, exitSafe: true },
+    reviewers: [
+      { role: riskReviewer, approvedAtMs: nowMs + 3n },
+      { role: incidentReviewer, approvedAtMs: nowMs + 3n },
+    ],
+    occurredAtMs: nowMs + 4n,
+  }), /not ready/);
+});
+
+test('initial activation requires safe exits and reductions cannot use future observations', () => {
+  assert.throws(() => createDependencyIncidentJournal(scope,
+    evidence('05', { exitSafe: false }), nowMs + 1n), /safe exits/);
+  assert.throws(() => applyDependencyTrigger(journal(), {
+    expectedRevision: 0n,
+    trigger: 'CODE_DRIFT',
+    evidence: evidence('05', { observedAtMs: nowMs + 3n }),
+    occurredAtMs: nowMs + 2n,
+  }), /predates new evidence/);
+});
+
 test('durable journal survives restart with its receipt chain intact', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'naryx-incident-'));
   try {

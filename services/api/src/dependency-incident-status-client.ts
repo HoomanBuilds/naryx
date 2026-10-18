@@ -49,6 +49,12 @@ export interface DependencyIncidentStatusPort {
   current(): Promise<DependencyIncidentStatusSnapshot>;
 }
 
+export function isDependencyIncidentStatusHealthy(status: DependencyIncidentStatusSnapshot | undefined): boolean {
+  return status !== undefined && status.configuredScopeCount > 0 && status.unavailableScopeCount === 0 &&
+    status.scopes.length === status.configuredScopeCount &&
+    status.scopes.every((scope) => scope.state === 'ACTIVE' && scope.entryAllowed && scope.exitAllowed && scope.evidenceFresh);
+}
+
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -121,6 +127,9 @@ export function parseDependencyIncidentStatus(value: unknown): DependencyInciden
     }
     if (entry.entryAllowed !== (entry.state === 'ACTIVE')) {
       throw new Error(`Dependency incident scope ${index} entry permission is inconsistent.`);
+    }
+    if (entry.state === 'ACTIVE' && !entry.exitAllowed) {
+      throw new Error(`Dependency incident scope ${index} exit permission is inconsistent.`);
     }
     const evidenceObservedAtMs = decimal(
       entry.evidenceObservedAtMs,

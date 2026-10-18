@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   HttpDependencyIncidentStatusClient,
+  isDependencyIncidentStatusHealthy,
   parseDependencyIncidentStatus,
 } from '../src/dependency-incident-status-client.js';
 
@@ -62,6 +63,32 @@ test('incident evidence cannot claim freshness at expiry or before its observati
     assert.throws(() => parseDependencyIncidentStatus(snapshot({ observedAtMs })), /freshness/);
   }
   assert.equal(parseDependencyIncidentStatus(snapshot({ observedAtMs: 1_899 })).scopes[0]?.evidenceFresh, true);
+});
+
+test('incident health requires every configured scope to be fresh and active', () => {
+  const active = snapshot();
+  active.scopes[0]!.state = 'ACTIVE';
+  active.scopes[0]!.entryAllowed = true;
+  assert.equal(isDependencyIncidentStatusHealthy(parseDependencyIncidentStatus(active)), true);
+  for (const state of ['EXIT_ONLY', 'ENTRY_PAUSED', 'ALL_PAUSED', 'QUARANTINED', 'INCIDENT_REVIEW']) {
+    const paused = snapshot();
+    paused.scopes[0]!.state = state;
+    assert.equal(isDependencyIncidentStatusHealthy(parseDependencyIncidentStatus(paused)), false, state);
+  }
+  active.observedAtMs = 1_900;
+  active.scopes[0]!.evidenceFresh = false;
+  assert.equal(isDependencyIncidentStatusHealthy(parseDependencyIncidentStatus(active)), false);
+  assert.equal(isDependencyIncidentStatusHealthy(undefined), false);
+  assert.equal(isDependencyIncidentStatusHealthy(parseDependencyIncidentStatus(snapshot({ scopes: [], unavailableScopeCount: 1 }))), false);
+  assert.equal(isDependencyIncidentStatusHealthy(parseDependencyIncidentStatus(snapshot({ scopes: [], configuredScopeCount: 0 }))), false);
+});
+
+test('an active scope cannot report unsafe exits', () => {
+  const active = snapshot();
+  active.scopes[0]!.state = 'ACTIVE';
+  active.scopes[0]!.entryAllowed = true;
+  active.scopes[0]!.exitAllowed = false;
+  assert.throws(() => parseDependencyIncidentStatus(active), /exit permission/);
 });
 
 test('incident client refuses stale and future snapshots even when their internal evidence is consistent', async () => {

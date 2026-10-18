@@ -14,6 +14,7 @@ import {
   SolanaRpcProgramDataReader,
   codeDriftTransition,
   createDependencyIncidentJournal,
+  dependencyReadinessCommitment,
   dependencyScopeHash,
   observeCode,
   loadCodeHashMonitorConfig,
@@ -132,7 +133,7 @@ test('the EVM reader hashes eth_getCode with keccak-256 and ProgramData hashes s
   assert.throws(() => programDataCodeHash(Buffer.concat([Buffer.from([2, 0, 0, 0]), Buffer.alloc(60, 1)])), /not upgradeable-loader ProgramData/);
 });
 
-test('a monitoring pass persists the quarantine to the scope journal', async () => {
+test('a monitoring pass persists quarantine even when current readiness is revoked', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'naryx-code-monitor-'));
   try {
     const store = new DependencyIncidentFileStore(join(dir, 'journal.json'));
@@ -140,12 +141,19 @@ test('a monitoring pass persists the quarantine to the scope journal', async () 
     const observations = await runCodeHashPass({
       targets: [verifier],
       readers: { [BASE_SEPOLIA]: reader(`0x${'ef'.repeat(32)}`) },
-      journals: [{ store, readinessDecision: readyDecision }],
+      journals: [{ store, readinessDecision: { ...readyDecision, status: 'NOT_READY', decisionVersion: 4 } }],
       nowMs,
       evidenceTtlMs: 60_000n,
     });
     assert.equal(observations[0]?.status, 'DRIFT');
-    assert.equal((await store.load()).state, 'QUARANTINED');
+    const persisted = await store.load();
+    assert.equal(persisted.state, 'QUARANTINED');
+    assert.equal(persisted.latestEvidence.readinessStatus, 'NOT_READY');
+    assert.equal(persisted.latestEvidence.readinessDecisionVersion, 4);
+    assert.equal(persisted.latestEvidence.readinessDecisionCommitment,
+      dependencyReadinessCommitment({ ...readyDecision, status: 'NOT_READY', decisionVersion: 4 }));
+    assert.notEqual(persisted.latestEvidence.readinessDecisionCommitment, dependencyReadinessCommitment(readyDecision));
+    assert.notEqual(persisted.latestEvidence.readinessDecisionCommitment, journal().latestEvidence.readinessDecisionCommitment);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

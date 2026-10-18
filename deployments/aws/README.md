@@ -156,6 +156,14 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
   scope remains unavailable; wiring this reader does not create qualification evidence, restore
   a quarantined dependency, or activate trading. Preserve `NARYX_KEEPER_STATUS_ORIGIN` in regenerated
   releases using the generator's environment input.
+- Incident state guards were deployed to the API and keeper on 2026-10-18. Revoked readiness
+  no longer prevents a code-drift quarantine, activation requires safe exits, and fresh paused
+  incident scopes still degrade health. The configured Solana incident journal is absent and
+  its watchlist decision is NOT_READY with no evidence or funded operations. Do not create an
+  ACTIVE journal from matching code hashes alone: a reviewed release decision with its authority
+  inventory, caps, funded-operation manifests, security review, and current evidence is required.
+  The testnet execution-cap policy is separate from that qualification. The rollback archive is
+  `/srv/naryx/backups/20261018-incident-state-guards/code-before.tar.gz`.
 - Deploy a new commit: `git pull`, `deployments/aws/build.sh`, regenerate the release if any
   template or deployment changed, then `sudo systemctl restart naryx-api naryx-solver naryx-keeper`.
   The generator refuses a non-empty `--out`, so regenerate as `naryx` into a new directory

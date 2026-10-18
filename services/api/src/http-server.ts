@@ -89,9 +89,10 @@ import {
 } from "./hyperliquid-testnet-runtime-client.js";
 import type { HyperliquidTestnetTerminalContext } from "./hyperliquid-testnet-order-context.js";
 import { HyperliquidTestnetLiquidityUnavailableError } from "./hyperliquid-testnet-terminal-execution.js";
-import type {
-  DependencyIncidentStatusPort,
-  DependencyIncidentStatusSnapshot,
+import {
+  isDependencyIncidentStatusHealthy,
+  type DependencyIncidentStatusPort,
+  type DependencyIncidentStatusSnapshot,
 } from "./dependency-incident-status-client.js";
 import {
   ExecutionReadinessError,
@@ -812,9 +813,7 @@ export function createPrivateTerminalRequestHandler(
           dependencyIncidents = undefined;
         }
       }
-      const dependencyIncidentStatusHealthy = dependencyIncidents !== undefined &&
-        dependencyIncidents.unavailableScopeCount === 0 &&
-        dependencyIncidents.scopes.every((scope) => scope.evidenceFresh);
+      const dependencyIncidentStatusHealthy = isDependencyIncidentStatusHealthy(dependencyIncidents);
       const currentStatus = (executionReadinessAvailable && !currentExecutionReadinessAvailable) ||
           (dependencyIncidentStatus !== undefined && !dependencyIncidentStatusHealthy)
         ? "degraded"

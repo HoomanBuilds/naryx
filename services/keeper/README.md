@@ -38,6 +38,17 @@ The dependency incident engine tracks one exact domain, template, settlement cla
 
 The durable file store writes an atomic restart-safe snapshot with a hash-chained sequence of immutable drill receipts. A receipt binds the prior and resulting state, permissions, trigger, evidence, approvals, timestamp, and previous receipt. Restoration requires fresh READY evidence for the same scope and two distinct nonzero risk or incident reviewer role commitments. The engine has no signer, network client, broadcast path, or automatic onchain pause authority.
 
+Initial activation also requires safe exits. A later NOT_READY decision can reduce permissions,
+never activate or restore them. Incident receipts record that decision's status and commitment;
+older journals without the status field remain readable. An observation cannot postdate its
+transition. Fresh incident evidence is not healthy readiness: the API reports paused or
+quarantined scopes as degraded even when their incident evidence is current.
+
+Code-drift receipts use the `naryx/incident-readiness/v1` snapshot commitment, not a release
+authorization hash. An incomplete NOT_READY decision may have no release evidence; the release
+encoder rejects that input and must not be used to block incident recording. This commitment
+records what the monitor observed, not approval to trade.
+
 ## Code-hash monitor
 
 The code-hash monitor is the service that feeds `CODE_DRIFT`. It reads reviewed code identities through read-only RPC: keccak-256 of `eth_getCode` on EVM, and SHA-256 of a Solana program's executable bytes from its ProgramData account, with loader metadata and trailing zero padding excluded. A different hash is `DRIFT` and absent code is `MISSING`; either quarantines the affected scope in its incident journal, with evidence that commits to the exact observations. A failed read is `UNREADABLE`, reported and never treated as a match. It is off unless `NARYX_CODE_WATCHLIST` names a protocol-JSON watchlist of targets, scope journals with their current readiness decisions, the poll interval (at least 5 seconds), and the evidence validity. It holds no key and never writes to a chain; restoring a quarantined scope remains a reviewed action.

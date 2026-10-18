@@ -77,6 +77,7 @@ export interface QualificationEvidence {
   readonly evidenceCommitment: `0x${string}`;
   readonly readinessDecisionVersion: number;
   readonly readinessEnvironment: string;
+  readonly readinessStatus?: ReadinessDecision['status'];
   readonly observedAtMs: bigint;
   readonly validUntilMs: bigint;
   readonly exitSafe: boolean;
@@ -181,13 +182,18 @@ export function dependencyScopeHash(scope: DependencyScopeInput): `0x${string}` 
   return sha256(['naryx/dependency-scope/v1', normalizedScope(scope)]);
 }
 
-function qualificationEvidence(
+export function dependencyReadinessCommitment(decision: ReadinessDecision): `0x${string}` {
+  return sha256(['naryx/incident-readiness/v1', decision]);
+}
+
+function incidentEvidence(
   input: QualificationEvidenceInput,
   expectedScopeHash: `0x${string}`,
 ): QualificationEvidence {
   requireCondition(HEX_32.test(input.scopeHash), 'evidence scope hash is invalid');
   requireCondition(input.scopeHash === expectedScopeHash, 'evidence is bound to a different scope');
-  requireCondition(input.readinessDecision.status === 'READY', 'readiness decision is not ready');
+  requireCondition(input.readinessDecision.status === 'READY' || input.readinessDecision.status === 'NOT_READY',
+    'readiness decision status is invalid');
   requireCondition(input.observedAtMs >= 0n, 'evidence observation time is negative');
   requireCondition(input.validUntilMs > input.observedAtMs, 'evidence validity window must increase');
   return Object.freeze({
@@ -199,6 +205,7 @@ function qualificationEvidence(
     evidenceCommitment: hex32(input.evidenceCommitment, 'evidence.evidenceCommitment'),
     readinessDecisionVersion: input.readinessDecision.decisionVersion,
     readinessEnvironment: input.readinessDecision.environment,
+    readinessStatus: input.readinessDecision.status,
     observedAtMs: input.observedAtMs,
     validUntilMs: input.validUntilMs,
     exitSafe: input.exitSafe,
@@ -259,6 +266,7 @@ function transition(
   occurredAtMs: bigint,
 ): DependencyIncidentJournal {
   requireCondition(occurredAtMs >= journal.latestEvidence.observedAtMs, 'transition time predates current evidence');
+  requireCondition(occurredAtMs >= evidence.observedAtMs, 'transition time predates new evidence');
   requireCondition(evidence.observedAtMs >= journal.latestEvidence.observedAtMs, 'evidence regressed');
   const after = permissions(afterState, evidence.exitSafe);
   if (trigger !== 'RESTORATION') {
@@ -299,8 +307,10 @@ export function createDependencyIncidentJournal(
 ): DependencyIncidentJournal {
   const scope = normalizedScope(scopeInput);
   const scopeHash = dependencyScopeHash(scope);
-  const evidence = qualificationEvidence(evidenceInput, scopeHash);
+  requireCondition(evidenceInput.readinessDecision.status === 'READY', 'readiness decision is not ready');
+  const evidence = incidentEvidence(evidenceInput, scopeHash);
   requireCondition(nowMs >= evidence.observedAtMs && nowMs < evidence.validUntilMs, 'initial evidence is not fresh');
+  requireCondition(evidence.exitSafe, 'initial evidence does not establish safe exits');
   const initial: DependencyIncidentJournal = Object.freeze({
     schemaVersion: 1,
     revision: 0n,
@@ -325,7 +335,7 @@ export function applyDependencyTrigger(
   }>,
 ): DependencyIncidentJournal {
   requireCondition(input.expectedRevision === journal.revision, 'incident journal compare-and-set failed');
-  const evidence = qualificationEvidence(input.evidence, journal.scopeHash);
+  const evidence = incidentEvidence(input.evidence, journal.scopeHash);
   const state = reducedState(input.trigger, evidence.exitSafe);
   return transition(journal, state, input.trigger, evidence, Object.freeze([]), input.occurredAtMs);
 }
@@ -341,7 +351,8 @@ export function restoreDependencyScope(
 ): DependencyIncidentJournal {
   requireCondition(input.expectedRevision === journal.revision, 'incident journal compare-and-set failed');
   requireCondition(journal.state !== 'ACTIVE', 'active scope does not require restoration');
-  const evidence = qualificationEvidence(input.evidence, journal.scopeHash);
+  requireCondition(input.evidence.readinessDecision.status === 'READY', 'readiness decision is not ready');
+  const evidence = incidentEvidence(input.evidence, journal.scopeHash);
   requireCondition(input.occurredAtMs >= evidence.observedAtMs, 'restoration predates evidence');
   requireCondition(input.occurredAtMs < evidence.validUntilMs, 'restoration evidence is stale');
   requireCondition(evidence.exitSafe, 'restoration evidence does not establish safe exits');
