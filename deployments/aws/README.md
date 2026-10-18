@@ -132,6 +132,18 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
 
 ## 7. Operating
 
+- Native EVM conformance oracles need maintenance independently of the live cash-mark worker.
+  On 2026-10-18 both fixed-price test oracles exceeded their 24-hour heartbeat, so treasury
+  quotes reverted with `StaleOraclePrice()` and a sealed auction correctly closed with no fill.
+  The owner-operated refresh tool restored the same test answers. Base receipt:
+  `0xffa4a862a18c6dcd09431677057c9e66ed80189222be569cdba8531d4f36e22c`;
+  Arbitrum receipt: `0xef9243087de8fba467a41a3efde299165f5d1ae7a887c1e68b77e89a743428c1`.
+  Subsequent ordinary commit/reveal auctions reached `AWARDED` and persisted signed quotes on
+  both domains: Base `67cfb368842b11dc60bacf04b0df0b9906d5e1ad6aaabb8c6613dbe18514fe8a`,
+  Arbitrum `82e2c85c896bbb3e9d25872ba6d6899c6d5062e887d8e385226f6455cc4db2e2`.
+  These checks placed no funded strategy trade and do not verify threshold auctions. Check
+  freshness with `deployments/tools/refresh-evm-conformance-oracles.mjs` before operation and
+  refresh before half the heartbeat. No unattended owner-key refresh service is active.
 - Encrypted solver openings: enable `NARYX_SEALED_AUCTION_THRESHOLD_ENABLED=true` in the solver
   environment only after deploying the threshold-capable API and solver together. Preserve the
   private-delivery and solver-auction SQLite journals in the rollback backup. The solver requires

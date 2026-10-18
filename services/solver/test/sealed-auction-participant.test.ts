@@ -265,3 +265,31 @@ test('records a discovered auction as missed without creating an opening after c
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('missed auction windows preserve the last failure across restart while progress clears it', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-sealed-failure-'));
+  const path = join(directory, 'journal.sqlite');
+  let journal = new SqliteSealedAuctionJournal(path);
+  t.after(() => { journal.close(); rmSync(directory, { recursive: true, force: true }); });
+  for (const [index, missed] of (['MISSED_COMMIT', 'MISSED_REVEAL'] as const).entries()) {
+    const definition = sealedAuctionDefinition({
+      version: 1, auctionId: `missed-${index}`, environment: 'testnet', orderHash: '55'.repeat(32),
+      eligibleSolverIds: ['solver-a'], timeUnit: 'EVM_UNIX_SECONDS',
+      commitDeadlineValue: START_S + 10n, revealDeadlineValue: START_S + 20n,
+      settlementDeadlineValue: START_S + 30n, minimumValidReveals: 1,
+    });
+    const auctionHash = toHex(sealedAuctionHash(definition));
+    journal.discover({ auctions: [{ cursor: index + 1, auctionHash, definition, createdAtMs: START_MS }], nextCursor: index + 1 }, START_MS);
+    if (missed === 'MISSED_REVEAL') {
+      journal.saveOpening(auctionHash, '77'.repeat(32), 1n, new Uint8Array(32).fill(1), START_MS);
+      journal.recordError(auctionHash, new Error('commit acknowledgement lost'), START_MS);
+      journal.mark(auctionHash, 'OPENING_READY', 'COMMITTED', START_MS + 1_000);
+      assert.equal(journal.get(auctionHash)?.lastError, undefined);
+    }
+    journal.recordError(auctionHash, new Error('oracle or release unavailable'), START_MS + 5_000);
+    journal.mark(auctionHash, missed === 'MISSED_COMMIT' ? 'DISCOVERED' : 'COMMITTED', missed, START_MS + 20_000);
+    journal.close(); journal = new SqliteSealedAuctionJournal(path);
+    assert.equal(journal.get(auctionHash)?.status, missed);
+    assert.equal(journal.get(auctionHash)?.lastError, 'oracle or release unavailable');
+  }
+});

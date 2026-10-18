@@ -455,8 +455,10 @@ export class SqliteSealedAuctionJournal {
 
   mark(auctionHash: string, from: AuctionStatus, to: AuctionStatus, nowMs: number): void {
     const result = this.#db.prepare(
-      'UPDATE sealed_auction_participation SET status = ?, last_error = NULL, updated_at_ms = ? WHERE auction_hash = ? AND status = ?',
-    ).run(to, nowMs, auctionHash, from);
+      `UPDATE sealed_auction_participation SET status = ?,
+       last_error = CASE WHEN ? IN ('MISSED_COMMIT','MISSED_REVEAL') THEN last_error ELSE NULL END,
+       updated_at_ms = ? WHERE auction_hash = ? AND status = ?`,
+    ).run(to, to, nowMs, auctionHash, from);
     if (result.changes !== 1 && this.get(auctionHash)?.status !== to) throw new Error('sealed auction journal transition failed');
   }
 

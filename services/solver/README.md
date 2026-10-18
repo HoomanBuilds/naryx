@@ -38,6 +38,10 @@ With none of them configured the listener starts with `runtime=NONE` and every q
 
 The sealed auction participant uses the authenticated API feed rather than guessing auction hashes. Its cursor, quote hash, net outcome, and 32-byte salt are stored in a separate full-synchronous SQLite journal before the commitment is sent. Exact commit and reveal retries are idempotent at the relay, so a response lost between network acceptance and local acknowledgement can be retried without adding another event. An auction is not entered unless its signed quote remains valid through the settlement deadline. Slot-timed auctions are refused because this process has no authoritative slot clock for the cross-domain relay.
 
+Missed commit or reveal windows retain the last failure in the private journal, including quote
+refusals caused by stale test-market oracles. Successful progress clears the old error. A
+`NO_FILL` result is not a trade and does not justify bypassing oracle freshness checks.
+
 With `NARYX_SEALED_AUCTION_THRESHOLD_ENABLED=true`, eligible timed auctions with more than sixty
 seconds between the pinned beacon release and reveal deadline use encrypted openings. The exact
 ciphertext is journaled before delivery and reused on retry. A restart or disabling the flag never
