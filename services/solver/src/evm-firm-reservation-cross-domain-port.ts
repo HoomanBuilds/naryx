@@ -135,7 +135,7 @@ export function createViemEvmFirmReservationCrossDomainPort(input: Readonly<{
   submissionJournalPath: string;
   maximumGasBudgetWei: bigint;
   alreadySpentWei: bigint;
-}>): EvmRecoverableCrossDomainPort & { close(): void } {
+}>): EvmRecoverableCrossDomainPort & { close(): void; reconcilePending(): Promise<boolean> } {
   requireCondition(input.chainReference === 84_532n || input.chainReference === 421_614n,
     'only Base Sepolia and Arbitrum Sepolia are allowed');
   requireCondition(/^https?:\/\//.test(input.rpcUrl), 'RPC URL must be HTTP or HTTPS');
@@ -311,6 +311,7 @@ export function createViemEvmFirmReservationCrossDomainPort(input: Readonly<{
       functionName: 'receipt',
       args: [receiptHash],
     })),
+    reconcilePending: () => submissions.reconcilePending(),
     submit: (request: Parameters<EvmFirmReservationCrossDomainPort['submit']>[0]) => submissions.submit(request),
   });
 }

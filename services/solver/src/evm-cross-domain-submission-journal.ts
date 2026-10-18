@@ -100,6 +100,13 @@ export class EvmCrossDomainSubmissionJournal {
 
   close(): void { this.#db.close(); }
 
+  async reconcilePending(): Promise<boolean> {
+    await this.#assertChain();
+    const row = this.#pending();
+    if (row === undefined) return true;
+    return (await this.observe(row.operation_id))?.status !== 'PENDING';
+  }
+
   async observe(operationId: string): Promise<Readonly<{ hash: Hex | null; status: 'PENDING' | 'SUCCESS' | 'REVERTED' }> | undefined> {
     await this.#assertChain();
     const row = this.#get(operationId);

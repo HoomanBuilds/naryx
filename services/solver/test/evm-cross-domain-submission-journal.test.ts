@@ -96,6 +96,22 @@ test('concurrent and cross-process submissions cannot reuse a pending signer or 
   } finally { second.close(); }
 });
 
+test('terminal reconciliation persists finalized refunds without another submission', async t => {
+  const f = fixture(t);
+  assert.equal(await f.journal().reconcilePending(), true);
+  const request = { ...f.request, operationId: `${'a'.repeat(64)}:RELEASE` };
+  const hash = await f.journal().submit(request);
+  assert.equal(await f.journal().reconcilePending(), false);
+  f.receipts.set(hash, 'SUCCESS');
+  f.restart();
+  assert.equal(await f.journal().reconcilePending(), true);
+  assert.deepEqual(await f.journal().observe(request.operationId), { hash, status: 'SUCCESS' });
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.signed(), 1);
+  f.chain(1);
+  await assert.rejects(f.journal().reconcilePending(), /chain identity/);
+});
+
 test('reverted operations remain immutable, retain gas accounting, and permit separate recovery', async t => {
   const f = fixture(t, 42_000n);
   const hash = await f.journal().submit(f.request);

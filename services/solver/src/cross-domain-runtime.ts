@@ -76,6 +76,7 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
         submissionJournalPath: item.submissionJournalPath, maximumGasBudgetWei: item.maximumGasBudgetWei, alreadySpentWei: item.alreadySpentWei });
       ports.push(port);
       requireCondition(await port.chainId() === chain, 'RPC chain identity differs from configured testnet');
+      await port.reconcilePending();
       const authorization = (hash: string, domainId: string) => store.get(hash)?.authorizations.find(a => a.domainId === domainId);
       const lane = new EvmRecoverableCrossDomainLane(item.lane, port, {
         resolve: async (hash, domainId) => authorization(hash, domainId)?.entry,
@@ -133,7 +134,7 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
       worker: new CrossDomainWorker(store, coordinator, {
         validate: checkCohort,
         async reconcileTerminal(job, result) {
-          for (const { lane } of lanes) {
+          for (const { lane, port } of lanes) {
             const domainId = lane.domain.domainId;
             const input: EvmCrossDomainLaneInput = { planHash: result.planHash, plan: job.bundle.plan,
               planLeg: job.bundle.plan.legs.find(l => l.domain.domainId === domainId)!,
@@ -149,6 +150,7 @@ export async function loadCrossDomainRuntime(environment: NodeJS.ProcessEnv) {
               if (recovered.status !== 'FINALIZED') return false;
             }
             if (!await lane.settleUnusedReservation(input)) return false;
+            if (!await port.reconcilePending()) return false;
           }
           return true;
         },
