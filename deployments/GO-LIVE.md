@@ -186,6 +186,26 @@ trading controls remain operator-only.
 Replace the landing page's "Pre-mainnet: public deployment deferred" status only after step 8
 passes on every lane being announced.
 
+## Fixed testnet completion scope
+
+The six outstanding items below are the completion scope established on 2026-10-17.
+Changes and verification belong to these items; the broader roadmap does not add new launch
+requirements. Process health, implemented classes and isolated checks are not end-to-end activation.
+
+Status checked 2026-10-18:
+
+| Item | Current state | Evidence needed to close |
+| --- | --- | --- |
+| 1. Standing liquidity for routed strategies | Open. Funded native cash books are live, but represent different instruments. | Funded routed quotes, an actual matching execution, and reconciled inventory. Do not copy cash liquidity into routed books. |
+| 2. Cross-chain execution activation | Open. Submission journaling exists; coordinator startup and filled-position compensation are not activated. | A successful multi-domain execution and a failed-side recovery that reconciles already-filled positions without duplicate submission. |
+| 3. Hyperliquid pooled-mode terminal integration | Browser controls deployed. The funded operator cycle passed; browser navigation passed. | Authenticated browser account actions and their reconciled records. A new funded browser cycle needs separate funding approval because the completed pool was fully withdrawn. |
+| 4. Strategy ownership transfers | Open. The public strategy book has no venue-transfer evidence verifier. | Both owners' consent plus verified transfer of the underlying positions, reconciled in the strategy book. Database reassignment alone is not a transfer. |
+| 5. Threshold-encryption backend | Backend and solver participation deployed; a real beacon opening was verified. | Preserve this completed backend evidence. Any claim of terminal-integrated encrypted trading also needs an encrypted auction award and settlement; current terminal auctions remain ordinary commit/reveal. |
+| 6. Operational wiring and documentation | Runbook corrected, incident endpoint wired, bounded oracle maintenance deployed. Solana qualification evidence remains unavailable. | A valid qualification journal backed by current release evidence. Do not manufacture a healthy status from a matching code watchlist. |
+
+Independent maker recruitment and additional roadmap capabilities are not new items in this
+completion scope. Report their limitations separately without reopening completed work.
+
 ## Verified testnet scope and remaining limitations
 
 Updated 2026-10-18. The root README and versioned release records identify the live paths.
