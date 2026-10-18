@@ -153,18 +153,19 @@ netting execution is refused in per-user mode: cancelling obligations between di
 cannot settle their independent HyperCore accounts. It requires a separately qualified funded
 clearing or novation mechanism. Historical shared-account evidence is not per-user settlement.
 
-### Optional dedicated pooled test-account runtime
+### Optional custodial testnet pool
 
 `hyperliquid-pooled-collateral-store.ts`, `hyperliquid-pool-funding.ts`,
 `hyperliquid-pool-funding-reads.ts`, and `hyperliquid-pool-withdrawal.ts` implement a
 separate testnet custody boundary. `hyperliquid-pool-main.ts` hosts its operator-only
 runtime independently of `main.ts`. Its signed browser operations are separately proxied by the
-public API; epoch execution remains operator-only. It is disabled
+public API. Version 2 also accepts fully owner-authorized epochs through the browser proxy. It is disabled
 by default. Existing per-user accounts are not migrated or pooled.
 Consent creates a claim in Naryx's ledger, not an owner-specific HyperCore position.
 
 - An immutable database binding pins the testnet domain, dedicated pool account,
-  collateral identity, funding cap, and explicit dedicated-test-owner allowlist.
+  collateral identity and funding cap. Version 1 uses an explicit test-owner allowlist;
+  version 2 permits public testnet enrollment with fresh wallet-signed custody consent.
   Wallet-signed custody and withdrawal messages bind the full configuration hash.
 - Deposits credit only the amount actually received after venue fees. Both account
   ledgers and the successful testnet explorer action must agree. Reused transfer
@@ -231,9 +232,12 @@ and forwarded requests are refused. Commands cover enrollment, observed deposits
 signed epochs, advancement, close, recovery, and signed withdrawal preparation,
 submission, evidence completion, and unsubmitted-expiry release. Responses use the
 existing protocol JSON codec. The Portfolio shared-pool panel uses separate signed browser
-endpoints for approved owners' consent, balance, deposit reconciliation and withdrawals.
-It cannot authorize an epoch, access the operator token, or operate another owner's claim.
-This is not public custody enrollment.
+endpoints for consent, balance, deposit reconciliation and withdrawals. Version 2 additionally
+accepts a protocol-encoded epoch plan with every trader's and recovery sponsor's exact signatures.
+The browser cannot access the operator token or operate another owner's claim.
+Public enrollment does not remove the pool funding cap or permit unsigned trading.
+Upgrading from version 1 requires an empty, flat venue account and no pending operations.
+The previous ledger is retained separately; old consent is never reused for version 2.
 
 The dedicated AWS test cohort completed a funded round trip on October 17, 2026:
 three observed deposits backed 20 mock USDC; two signed owners held opposing BTC

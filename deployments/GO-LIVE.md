@@ -178,9 +178,19 @@ qualification, supported account mode and execution caps:
 The Activity page lists each wallet's packages from the API, so they follow the wallet across
 devices. How many users can trade at once is bounded by the funded operator inventory (the solver's
 bonds and inventory), each user's venue account, and the caps above. The optional shared Hyperliquid
-pool is a separate dedicated test cohort, not a substitute for public enrollment. Its signed
-browser API exposes only each approved owner's consent, balance and funding operations. Epoch
-trading controls remain operator-only.
+pool is a separate custodial mode, not a substitute for owning a venue account. Version 2 supports
+public enrollment with explicit signed custody consent, owner-scoped funding operations, and
+submission of fully signed pooled epoch plans. The 20 mock-USDC aggregate funding cap remains.
+Pooled epochs need at least two funded traders and a separately consenting recovery sponsor.
+
+Cross-chain calendar setup now resolves each wallet's accounts from the deployed Base and
+Arbitrum factories. The terminal guides account creation, adapter creation and funding, then
+obtains separate entry and recovery approvals. Registered factory checks, exact recovery,
+finality and lifetime worker gas budgets remain enforced. This is not cross-chain atomicity.
+
+The October 18 public-access release was compiled and deployed without running tests at the
+owner's request. Service availability is not evidence of a new funded public-wallet round trip.
+The previous execution evidence below remains historical and is not attributed to this release.
 
 ## 9. Public copy
 
