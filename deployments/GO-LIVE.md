@@ -198,9 +198,9 @@ Status checked 2026-10-18:
 | Item | Current state | Evidence needed to close |
 | --- | --- | --- |
 | 1. Standing liquidity for routed strategies | Closed for the enabled Solana cash-and-carry maker lane. Actual entry/exit and inventory reconciliation completed on 2026-10-18. | Evidence below. This does not advertise native cash liquidity as routed liquidity or activate additional routed maker lanes. |
-| 2. Cross-chain execution activation | Recovery deployments, delayed registry/policy activation and the capped AWS worker are installed on both EVM testnets. The dedicated accounts received 3 mock USDC each; both inventory reservations are funded and bound to a signed operator recovery job. Admission waits for finalized reservation state. | Actual multi-domain execution and filled-position recovery, plus public order-to-job materialization and wallet authorization. The operator-only job is not a canonical public quote and does not prove website execution. |
+| 2. Cross-chain execution activation | Recovery deployments, delayed registry/policy activation and the capped AWS worker are running on both EVM testnets. The signed operator job was admitted: Arbitrum entered, Base reverted within its signed bounds, and Arbitrum's compensating close succeeded. Finalized recovery and reservation refunds are still reconciling. | Terminal recovery reconciliation, plus public order-to-job materialization and wallet authorization. The operator-only job is not a canonical public quote and does not prove website execution. |
 | 3. Hyperliquid pooled-mode terminal integration | Closed for the approved dedicated cohort. Both owners completed authenticated browser deposit/withdrawal cycles on 2026-10-18. | UI, database and venue agreed after reload: zero pool cash, liabilities and pending operations. Receipt evidence below. Epoch trading remains operator-only; this is not public custody enrollment. |
-| 4. Strategy ownership transfers | A funded Base entry is finalized and recorded in the strategy book. The seller proposed and the buyer accepted the underlying account through the live Portfolio workflow. Account ownership changed onchain; the confirmation-read retry fix is deployed. | Finalized acceptance, dual-signed strategy-book novation, then the new owner's exit and balance reconciliation. Database reassignment alone is not a transfer. |
+| 4. Strategy ownership transfers | Closed for the Base cash-and-carry account path. The seller proposed and the buyer accepted through live Portfolio, acceptance finalized, dual-signed strategy-book novation succeeded, and the new owner's exit finalized. Book closure and collateral withdrawals reconciled with an empty strategy account. | Evidence below. This does not claim transferable positions on other venues or compatibility with every wallet extension. |
 | 5. Threshold-encryption backend | Backend and solver participation deployed; a real beacon opening was verified. | Preserve this completed backend evidence. Any claim of terminal-integrated encrypted trading also needs an encrypted auction award and settlement; current terminal auctions remain ordinary commit/reveal. |
 | 6. Operational wiring and documentation | Runbook corrected, incident endpoint wired, bounded oracle maintenance deployed. All five Solana code hashes match, and the funded entry/exit signatures were rechecked as finalized. Supporting evidence is saved on AWS. The configured qualification decision is still NOT_READY and no incident journal is activated. | Current-release authority inventory, caps, funded-operation manifests and required release evidence, including an independent security-review attestation. Code matches and transaction success do not replace release approval. |
 
@@ -376,16 +376,36 @@ strategy support is specific to a registered template and deployment, not every 
   The AWS cross-domain worker is enabled and running with a separate durable job database,
   allowlisted owner/accounts, and a 10 mock-USDC entry cap per chain. This is an operator-admitted
   recovery cohort using controlled test derivative venues, not activation of every website strategy
-  or a claim of atomic cross-chain settlement. No recovery job or new trade was submitted during
-  this deployment. Public strategy materialization, cohort quote funding and live recovery evidence
-  remain activation prerequisites for that user flow.
+  or a claim of atomic cross-chain settlement. A subsequently admitted capped recovery job funded
+  each strategy account with 3 mock USDC. Arbitrum entered successfully; Base intentionally failed
+  its signed notional guard; Arbitrum's compensating close succeeded. The worker retains account
+  locks until finalized recovery and unused-reservation refunds reconcile. Public canonical order
+  materialization and multi-domain wallet entry/recovery authorization remain separate work.
 - Base strategy-account transfer verification now checks both wallet consents, the exact account,
   its finalized ownership transition and receipt-backed strategy lifecycle. The Portfolio UI
   proposes and accepts transfers through the owners' wallets; it does not transfer an account by
   changing a database owner. This is scoped Base support, not generic novation of every venue.
-  The earlier funded transfer cycle has not completed: entry was refused by the signed spread
-  guard before any position opened. Deployment does not establish that transfer cycle as verified.
-  No extra trade or browser test was run during the recovery deployment.
+  After correcting quote lot sizing and bringing the controlled spot pool back within the signed
+  spread bound, the funded transfer completed on 2026-10-18. Both onchain transfer actions used the
+  live Portfolio with a restricted test-wallet provider and real signatures, not simulated receipts.
+  Finalized acceptance preceded the two-owner signed `NOVATE` command. The new owner exited through
+  the public execution API; its finalized receipt closed the strategy book. Withdrawals left no
+  open package and zero base, quote, reserve and required margin in the strategy account. The buyer
+  wallet balance was 4.977596 mock USDC after withdrawal. The confirmation-read retry fix is
+  deployed to the static frontend.
+
+  | Ownership cycle action | Base Sepolia transaction |
+  | --- | --- |
+  | Funded entry | `0x7ac91defa85628543b8a4e2164bd3cae60dd1d63cd9c01ad6889e450c643e1c9` |
+  | Seller proposal | `0x553e260765204adb682d528f8cc7ddc41b2be6d1abdc7f87fa8ddcbbe4c5a248` |
+  | Buyer acceptance | `0xe6a7ebcd59ff6f0f99e4c4ca02bbed085e3d1fe0201c8fb726c6d34bc78dbaa8` |
+  | New-owner exit | `0xcac567f33333f7dbc712e3e9324f4154c7fb890a9ce3609d6a7d53b4540d7da6` |
+  | First collateral withdrawal | `0x3aa9a0a1435240ef4ed2cc32e602268fbbc4f641312ad66590611d35cb7dc7df` |
+  | Remaining collateral withdrawal | `0xb2965c6e14bf23a5901786291aae49396c2af3851d4b7ea91022e9e4266622dd` |
+
+  Account: `0x04F5d46111a7D57374D2DD501Be5Ca0Bb19f3319`.
+  The closed strategy record is
+  `strategy-dccee7f18509e003b3cf68665c85cdace2ad404bedcb3fab5a68da970f03119a`.
 
 ## Recovery deployment identities
 
