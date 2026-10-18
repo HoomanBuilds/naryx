@@ -4,11 +4,12 @@ import { isAbsolute } from 'node:path';
 import { parseProtocolJson, stringifyProtocolJson } from '@naryx/protocol-types';
 import { EvmNativeCashRangeAdapter, NATIVE_CASH_RANGE_ABI, NATIVE_CASH_HOUSE_ABI, observeNativeCashMatch,
   type EvmNativeCashRangeBinding, type EvmNativeClearingTransitionReadPort } from '@naryx/adapter-evm';
-import { nativeCashContractAuthorization, NativeCashAwaitingFinality } from '@naryx/adapter-evm';
+import { nativeCashContractAuthorization, NativeCashAwaitingFinality, NativeCashMarkUpdating } from '@naryx/adapter-evm';
 import { createPublicClient, getAddress, http, keccak256, parseAbi, stringToHex, type Hex } from 'viem';
 import { loadEvmStrategySolverKey } from './evm-strategy-execution-authorization.js';
 import { NativeCashService, type NativeCashMarketPort, type NativeCashQuoteRequest } from './native-cash-service.js';
 import { NativeCashRegistration, type NativeCashRegistrationBinding } from './native-cash-registration.js';
+import { createNativeCashStandingBookReader, NativeCashBookReadTimeout } from './native-cash-standing-book.js';
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
@@ -64,6 +65,7 @@ export async function loadNativeCashTestnetRuntime(environment: NodeJS.ProcessEn
       return { number: block.number, hash: block.hash, timestamp: block.timestamp };
     };
     const adapter = new EvmNativeCashRangeAdapter(binding, { ...reads, head });
+    const readStandingBook = createNativeCashStandingBookReader(() => adapter.standingBook());
     for (const [address, codeHash] of [[binding.controller, binding.controllerCodeHash],
       [binding.clearingHouse, binding.clearingHouseCodeHash], [binding.collateralToken, binding.collateralTokenCodeHash]] as const) {
       if (keccak256(await client.getCode({ address }) ?? '0x') !== codeHash) throw new Error('Native cash runtime deployment code differs.');
@@ -87,9 +89,11 @@ export async function loadNativeCashTestnetRuntime(environment: NodeJS.ProcessEn
       observe: (quote, hash) => observeNativeCashMatch(binding, reads, quote, hash) });
     markets.push({ marketId: binding.marketId, binding, account: (owner, accountId) => adapter.account(getAddress(owner), accountId),
       ...(binding.makerAuthorization === undefined ? {} : { book: async () => {
+        const initialState = registration.status(binding.marketId).state;
+        if (initialState === 'INACTIVE' || initialState === 'ALL_PAUSED') throw new Error('Native cash standing market is inactive.');
+        const book = await readStandingBook();
         const state = registration.status(binding.marketId).state;
         if (state === 'INACTIVE' || state === 'ALL_PAUSED') throw new Error('Native cash standing market is inactive.');
-        const book = await adapter.standingBook();
         return state === 'ACTIVE' ? book : { ...book, bidQuantity: 0n, askQuantity: 0n };
       } }), inspect: async () => {
       if (await reads.chainId() !== BigInt(binding.domain.domainId.slice(7))) throw new Error('Native cash chain changed.');
@@ -188,6 +192,14 @@ export function createNativeCashTestnetHandler(runtime: Pick<Awaited<ReturnType<
         value: 0n, functionName: 'executeMatch', ownerSignatureRequired: true,
         prepareCalldata: 'Sign the returned typedData, then pass the match and both owner signatures to executeMatch.' } });
     } catch (error) {
+      if (error instanceof NativeCashBookReadTimeout) {
+        response.setHeader('Retry-After', '2');
+        send(503, { error: 'The standing book read timed out. Retry shortly; no stale quote was issued.', code: 'BOOK_READ_TIMEOUT' }); return;
+      }
+      if (error instanceof NativeCashMarkUpdating) {
+        response.setHeader('Retry-After', '2');
+        send(503, { error: 'The clearing price is refreshing. Retry shortly; no stale quote was issued.', code: 'MARK_REFRESHING' }); return;
+      }
       if (error instanceof NativeCashAwaitingFinality) {
         send(409, { error: 'Trade included. Server-side reconciliation will record the receipt after finality.',
           code: 'AWAITING_FINALITY', backgroundReconciliation: true }); return;

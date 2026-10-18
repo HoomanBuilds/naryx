@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createServer } from 'node:http';
 import { domainRef, parseProtocolJson, stringifyProtocolJson } from '@naryx/protocol-types';
-import { NativeCashAwaitingFinality } from '@naryx/adapter-evm';
+import { NativeCashAwaitingFinality, NativeCashMarkUpdating } from '@naryx/adapter-evm';
 import { hashTypedData, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { NativeCashService, type NativeCashMarketPort } from '../src/native-cash-service.js';
@@ -195,8 +195,9 @@ test('wrong maker signatures, invalid quantities and unverifiable receipts fail 
 test('native cash HTTP preserves tagged integer terms and refuses forwarded callers', async () => {
   const f = fixture(); const service = f.service();
   const accountCalls: unknown[] = [];
+  let refreshing = false;
   const handler = createNativeCashTestnetHandler({ service, markets: [{ marketId: request.marketId, binding: {} as never,
-    inspect: async () => ({}), book: async () => ({ bidQuantity: 1n }),
+    inspect: async () => ({}), book: async () => { if (refreshing) throw new NativeCashMarkUpdating(); return { bidQuantity: 1n }; },
     account: async (owner, accountId) => { accountCalls.push({ owner, accountId }); return { collateralQuoteAtoms: 42n }; } }] });
   const server = createServer((request, response) => { void handler(request, response); });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -219,6 +220,11 @@ test('native cash HTTP preserves tagged integer terms and refuses forwarded call
     const book = await fetch(`${origin}/v1/native-cash/markets/${request.marketId}/book`);
     assert.equal(book.status, 200);
     assert.deepEqual(parseProtocolJson(await book.text()), { version: 1, result: { bidQuantity: 1n } });
+    refreshing = true;
+    const updating = await fetch(`${origin}/v1/native-cash/markets/${request.marketId}/book`);
+    assert.equal(updating.status, 503);
+    assert.equal(updating.headers.get('retry-after'), '2');
+    assert.equal((await updating.json() as { code: string }).code, 'MARK_REFRESHING');
     f.port.observe = async (quote, tx) => { throw new NativeCashAwaitingFinality(tx, quote.digest); };
     const pending = await fetch(`${origin}/v1/native-cash/quotes/${request.requestId}/settlement`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: stringifyProtocolJson({ transactionHash: hash }) });

@@ -71,6 +71,13 @@ function integer(value: unknown): bigint {
   return value;
 }
 
+export class NativeCashMarkUpdating extends Error {
+  constructor() {
+    super('Native cash clearing mark is updating to the qualified oracle price.');
+    this.name = 'NativeCashMarkUpdating';
+  }
+}
+
 export class EvmNativeCashRangeAdapter {
   readonly #binding: EvmNativeCashRangeBinding;
   readonly #reads: EvmNativeCashRangeReadPort;
@@ -106,27 +113,45 @@ export class EvmNativeCashRangeAdapter {
     requireCondition(b.makerAuthorization?.kind === 'ERC1271_NATIVE_CASH_STANDING_V1', 'no standing maker is registered');
     requireCondition(await this.#reads.chainId() === BigInt(b.domain.domainId.slice(7)), 'RPC chain identity differs');
     const block = await this.#reads.head();
-    for (const [address, codeHash] of [[b.makerOwner, b.makerAuthorization.codeHash], [b.controller, b.controllerCodeHash],
-      [b.clearingHouse, b.clearingHouseCodeHash], [b.collateralToken, b.collateralTokenCodeHash]] as const) {
+    await Promise.all(([[b.makerOwner, b.makerAuthorization.codeHash], [b.controller, b.controllerCodeHash],
+      [b.clearingHouse, b.clearingHouseCodeHash], [b.collateralToken, b.collateralTokenCodeHash]] as const).map(async ([address, codeHash]) => {
       requireCondition(keccak256(await this.#reads.code(address, block.number)) === codeHash, 'standing maker dependency code differs');
-    }
+    }));
     const read = (functionName: string) => this.#reads.read({ address: b.makerOwner, abi: NATIVE_CASH_STANDING_ABI, functionName }, block.number);
-    const [house, controller, accountId, spread, book] = await Promise.all([
-      read('clearingHouse'), read('controller'), read('makerAccountId'), read('spreadBps'), read('book'),
+    const [house, controller, accountId, spread, result] = await Promise.all([
+      read('clearingHouse'), read('controller'), read('makerAccountId'), read('spreadBps'),
+      read('book').then(value => ({ ok: true as const, value }), (error: unknown) => ({ ok: false as const, error })),
     ]);
     requireCondition(getAddress(String(house)) === b.clearingHouse && getAddress(String(controller)) === b.controller
       && accountId === evmNativeClearingAccountId(`0x${toHex(b.policy.policyHash)}`, b.makerAccountId)
       && spread === 10, 'standing maker binding differs');
-    const result = { version: 1, marketId: b.marketId, environment: 'testnet' as const, domain: b.domain,
+    if (!result.ok) {
+      const [reference, mark, fees] = await Promise.all([
+        this.#reads.read({ address: b.controller, abi: NATIVE_CASH_RANGE_ABI, functionName: 'previewMark' }, block.number),
+        this.#reads.read({ address: b.clearingHouse, abi: NATIVE_CASH_HOUSE_ABI, functionName: 'currentMark' }, block.number),
+        this.#reads.read({ address: b.clearingHouse, abi: NATIVE_CASH_HOUSE_ABI, functionName: 'feeBps' }, block.number),
+      ]);
+      const referencePrice = integer(structField(reference, 0, 'priceTicks'));
+      const markPrice = integer(structField(mark, 1, 'priceTicks'));
+      const observedAt = integer(structField(mark, 3, 'observedAt'));
+      if ((fees === 0 || fees === 0n) && referencePrice >= 1n && referencePrice <= b.maximumPriceTicks
+        && markPrice >= 1n && markPrice <= b.maximumPriceTicks && markPrice !== referencePrice
+        && integer(structField(reference, 3, 'maximumValidUntil')) > block.timestamp
+        && integer(structField(mark, 4, 'validUntil')) > block.timestamp && observedAt <= block.timestamp
+        && block.timestamp - observedAt <= b.policy.markMaximumStalenessMs / 1000n) throw new NativeCashMarkUpdating();
+      throw result.error;
+    }
+    const book = result.value;
+    const qualified = { version: 1, marketId: b.marketId, environment: 'testnet' as const, domain: b.domain,
       makerOwner: b.makerOwner, clearingHouse: b.clearingHouse, codeHash: b.makerAuthorization.codeHash,
       quoteMode: 'EXECUTION_COMMITMENT' as const, reservationPolicy: 'RESERVE_ON_ACCEPT' as const,
       bidTicks: integer(structField(book, 0, 'bidTicks')), askTicks: integer(structField(book, 1, 'askTicks')),
       bidQuantity: integer(structField(book, 2, 'bidQuantity')), askQuantity: integer(structField(book, 3, 'askQuantity')),
       validUntil: integer(structField(book, 4, 'validUntil')), block };
-    requireCondition(result.validUntil > block.timestamp && result.bidTicks >= 1n && result.askTicks <= b.maximumPriceTicks
-      && result.bidTicks <= result.askTicks && result.bidQuantity <= b.policy.maximumPositionAtoms
-      && result.askQuantity <= b.policy.maximumPositionAtoms, 'standing book bounds differ');
-    return Object.freeze(result);
+    requireCondition(qualified.validUntil > block.timestamp && qualified.bidTicks >= 1n && qualified.askTicks <= b.maximumPriceTicks
+      && qualified.bidTicks <= qualified.askTicks && qualified.bidQuantity <= b.policy.maximumPositionAtoms
+      && qualified.askQuantity <= b.policy.maximumPositionAtoms, 'standing book bounds differ');
+    return Object.freeze(qualified);
   }
 
   async verifyMakerSignature(quote: EvmNativeCashRangeQuote, signature: Hex): Promise<boolean> {

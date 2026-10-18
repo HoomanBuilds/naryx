@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { assetRef, domainRef, nativeClearingPolicy, toHex, versionedManifestRef } from '@naryx/protocol-types';
 import { encodeAbiParameters, encodeEventTopics, encodeFunctionData, getAddress, hashTypedData, keccak256, parseAbi, type Address, type Hex, type TransactionReceipt } from 'viem';
-import { EvmNativeCashRangeAdapter, type EvmNativeCashRangeBinding, type EvmNativeCashRangeReadPort } from '../src/native-cash-range.js';
+import { EvmNativeCashRangeAdapter, NativeCashMarkUpdating, type EvmNativeCashRangeBinding, type EvmNativeCashRangeReadPort } from '../src/native-cash-range.js';
 import { NATIVE_CASH_HOUSE_ABI, nativeCashContractAuthorization } from '../src/native-cash-range.js';
 import { observeNativeCashMatch, NativeCashAwaitingFinality } from '../src/native-cash-observation.js';
 import type { EvmNativeClearingTransitionReadPort } from '../src/native-clearing-transition.js';
@@ -99,6 +99,38 @@ test('native account reads bind owner, policy, collateral and testnet identity w
   unopened.reads.read = async (read, block) => read.functionName === 'account'
     ? ['0x0000000000000000000000000000000000000000', 0n, 0n, 0n, 0n] : original(read, block);
   assert.equal((await new EvmNativeCashRangeAdapter(binding, unopened.reads).account(owner, 'new-user')).opened, false);
+});
+
+test('only a fresh price mismatch makes a refused standing book retryable', async () => {
+  const f = fixture();
+  const smart = { ...binding, makerAuthorization: { kind: 'ERC1271_NATIVE_CASH_STANDING_V1' as const, codeHash: keccak256('0x01') } };
+  f.values.set('controller', controller);
+  f.values.set('makerAccountId', evmNativeClearingAccountId(`0x${toHex(policy.policyHash)}`, binding.makerAccountId));
+  f.values.set('spreadBps', 10);
+  f.values.set('previewMark', [500_002n, 2n, 999n, 1600n]);
+  const original = f.reads.read;
+  const refusal = new Error('book reverted');
+  f.reads.read = async (read, block) => {
+    if (read.functionName === 'book') throw refusal;
+    return original(read, block);
+  };
+  const adapter = new EvmNativeCashRangeAdapter(smart, f.reads);
+  await assert.rejects(adapter.standingBook(), NativeCashMarkUpdating);
+  for (const [key, value] of [
+    ['feeBps', 1], ['previewMark', [500_001n, 2n, 999n, 1600n]],
+    ['previewMark', [500_002n, 2n, 999n, 1000n]],
+    ['currentMark', [`0x${hash}`, 500_001n, 1n, 990n, 1000n]],
+    ['currentMark', [`0x${hash}`, 500_001n, 1n, 1001n, 1600n]],
+  ] as const) {
+    const prior = f.values.get(key); f.values.set(key, value);
+    await assert.rejects(adapter.standingBook(), error => error === refusal);
+    f.values.set(key, prior);
+  }
+  f.values.set('controller', address('9'));
+  await assert.rejects(adapter.standingBook(), /binding differs/);
+  f.values.set('controller', controller);
+  f.reads.code = async () => '0x02';
+  await assert.rejects(adapter.standingBook(), /code differs/);
 });
 
 test('unfunded, expired, stale, paused and changed cash market state refuse quotes', async () => {
