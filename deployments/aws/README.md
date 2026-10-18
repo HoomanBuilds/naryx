@@ -113,6 +113,15 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
 
 ## 7. Operating
 
+- Encrypted solver openings: enable `NARYX_SEALED_AUCTION_THRESHOLD_ENABLED=true` in the solver
+  environment only after deploying the threshold-capable API and solver together. Preserve the
+  private-delivery and solver-auction SQLite journals in the rollback backup. The solver requires
+  a compatible Unix-clock auction with more than 60 seconds after beacon release for verification;
+  shorter auctions retain ordinary commit/reveal. Check the installed crypto dependency before
+  restart, then restart only `naryx-api` and `naryx-solver`. For an isolated live-beacon check, run
+  `node tests/phase10-demo/src/run-threshold-release.mjs --output <new-private-directory-outside-checkout>`
+  from the deployed checkout as the service user. This creates its own evidence database and
+  does not create public trades, transfer tokens or execute a strategy.
 - Dedicated test-pool browser access: after deploying the pool controller, run
   `sudo -u naryx node /srv/naryx/app/deployments/tools/wire-testnet-pool-browser.mjs --root /srv/naryx`
   and then `--apply`. It verifies the test pool, preserves existing API settings, and enables

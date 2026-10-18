@@ -237,12 +237,19 @@ strategy support is specific to a registered template and deployment, not every 
 - The optional threshold-opening backend is deployed using pinned drand quicknet identity and
   verified public beacons. Openings become public after the release round; threshold collusion
   can disclose them early. The backend accepts at most eight pending openings globally and two
-  per solver. Ordinary commit/reveal participants and the terminal do not yet select this mode
-  automatically. This is not a claim that all sealed auctions are threshold encrypted.
+  per solver. The deployed solver participants now encrypt compatible Unix-clock auctions when
+  the release window leaves more than 60 seconds for verified opening. Their exact ciphertext
+  is journaled before submission and reused after restart, never replaced by a plaintext reveal.
+  An isolated AWS check observed a sealed opening release at quicknet round 33163252; this was
+  cryptographic release evidence, not a trade or public-market record. The terminal still creates
+  short ordinary commit/reveal auctions. This is not a claim that all auctions are encrypted.
 - The API now reads the keeper's configured incident-status endpoint. Its missing Solana
   qualification journal is reported as unavailable, not synthesized as healthy. A code watchlist
   alone is not a qualified incident journal.
-- A multi-domain coordinator library does not establish an activated cross-chain execution service.
+- Cross-domain EVM submissions now journal signed bytes before broadcast, reserve bounded gas
+  before signing and reconcile the exact finalized transaction after restart. This closes the
+  duplicate-send gap, but does not activate the multi-domain coordinator. Its current compensation
+  lane releases expired inventory reservations, not already-executed external positions.
   Venue-confirmed novation remains unavailable without its evidence verifier. These capabilities
   need their own activation evidence, not a general service-health assertion.
 
