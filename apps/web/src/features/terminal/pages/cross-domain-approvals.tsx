@@ -4,6 +4,8 @@ import { fromProtocolJson } from "@naryx/sdk";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
+import { encodeFunctionData, parseAbi, formatUnits, type Address } from "viem";
+import { usePublicClient } from "wagmi";
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { shortAddress, useWalletModal } from "@/features/wallet/wallet-modal";
 import { useTerminal } from "../shell/terminal-context";
@@ -61,6 +63,8 @@ async function request(origin: string, path: string, body?: unknown): Promise<Ap
 export function CrossDomainApprovals() {
   const { privateApiBaseUrl } = useTerminal();
   const wallet = useEvmWallet();
+  const baseClient = usePublicClient({ chainId: 84532 });
+  const arbitrumClient = usePublicClient({ chainId: 421614 });
   const currentOwner = useRef(wallet.account);
   useEffect(() => { currentOwner.current = wallet.account; }, [wallet.account]);
   const modal = useWalletModal();
@@ -70,6 +74,7 @@ export function CrossDomainApprovals() {
   const [creating, setCreating] = useState(false);
   const [closingDomain, setClosingDomain] = useState<string | null>(null);
   const [setupDomain, setSetupDomain] = useState<string | null>(null);
+  const [withdrawing, setWithdrawing] = useState<number | null>(null);
   const [closeStatus, setCloseStatus] = useState<Record<string, string>>({});
   const lock = useRef(false);
   const [error, setError] = useState<string | null>(null);
@@ -192,6 +197,40 @@ export function CrossDomainApprovals() {
       await onboarding.refetch();
     } finally { setSetupDomain(null); }
   });
+  const withdrawIdle = (chainId: number) => run(async () => {
+    const owner = wallet.account;
+    const network = chainId === 84532 ? "base" : "arbitrum";
+    const client = chainId === 84532 ? baseClient : arbitrumClient;
+    if (!owner || !client || ![84532, 421614].includes(chainId)) throw new Error("Connect your wallet on the selected testnet.");
+    setWithdrawing(chainId);
+    const pendingKey = `naryx:calendar-withdraw:${owner.toLowerCase()}:${chainId}`;
+    try {
+      let hash = sessionStorage.getItem(pendingKey);
+      if (!hash) {
+        const refreshed = await onboarding.refetch();
+        const chain = refreshed.data?.chains.find(chain => chain.chainId === chainId);
+        if (refreshed.error || !chain || refreshed.data?.owner.toLowerCase() !== owner.toLowerCase()) throw new Error("Refresh your accounts before withdrawing.");
+        const abi = parseAbi(['function activePackageCount() view returns(uint256)', 'function owner() view returns(address)',
+          'function withdrawIdleToken(address,address,uint256)']);
+        const [active, accountOwner, balance] = await Promise.all([
+          client.readContract({ address: chain.account as Address, abi, functionName: "activePackageCount" }),
+          client.readContract({ address: chain.account as Address, abi, functionName: "owner" }),
+          client.readContract({ address: chain.quoteToken as Address, abi: parseAbi(['function balanceOf(address) view returns(uint256)']),
+            functionName: "balanceOf", args: [chain.account as Address] }),
+        ]);
+        if (active !== BigInt(0)) throw new Error("Close all packages in this account before withdrawing idle collateral.");
+        if (accountOwner.toLowerCase() !== owner.toLowerCase() || currentOwner.current?.toLowerCase() !== owner.toLowerCase()) throw new Error("Wallet ownership changed. Refresh before withdrawing.");
+        if (balance === BigInt(0)) throw new Error("No idle collateral to withdraw.");
+        hash = await wallet.sendTransaction(network, { to: chain.account, value: "0",
+          data: encodeFunctionData({ abi, functionName: "withdrawIdleToken", args: [chain.quoteToken as Address, owner as Address, balance] }) });
+        sessionStorage.setItem(pendingKey, hash);
+      }
+      const success = await wallet.waitForReceipt(network, hash);
+      sessionStorage.removeItem(pendingKey);
+      if (!success) throw new Error("Withdrawal reverted. Your collateral remains in the strategy account.");
+      await onboarding.refetch();
+    } finally { setWithdrawing(null); }
+  });
   const close = (domainId: string) => run(async () => {
     if (!value || !privateApiBaseUrl || !ownerMatches || value.job?.status !== "TERMINAL") throw new Error("Wait for coordinator reconciliation before closing.");
     const network = domainId === "eip155:84532" ? "base" : "arbitrum";
@@ -276,6 +315,17 @@ export function CrossDomainApprovals() {
             : <button className={styles.ghost} disabled={busy || !market.data.executionBudgetAvailable || (value !== undefined && !expired && value.state !== "EXPIRED")}
               onClick={() => void create()}>{creating ? "Preparing calendar spread..." : "Prepare calendar spread"}</button>}
       </div>}
+      {onboarding.data?.owner.toLowerCase() === wallet.account?.toLowerCase() && onboarding.data?.chains.some(chain => BigInt(chain.balanceQuoteAtoms) > BigInt(0)) && <details>
+        <summary>Your calendar collateral</summary>
+        <p>Withdraw idle collateral to your connected wallet after all packages in the account are closed.</p>
+        {onboarding.data.chains.filter(chain => BigInt(chain.balanceQuoteAtoms) > BigInt(0)).map(chain => {
+          const network = chain.chainId === 84532 ? "base" : "arbitrum";
+          return <div key={chain.chainId}><span>{network === "base" ? "Base" : "Arbitrum"}: {formatUnits(BigInt(chain.balanceQuoteAtoms), 6)} mock USDC </span>
+            <button className={styles.ghost} disabled={busy || wallet.awaitingWallet || wallet.switching}
+              onClick={() => { if (wallet.onChain(network)) void withdrawIdle(chain.chainId); else void run(() => wallet.switchNetwork(network)); }}>
+              {withdrawing === chain.chainId ? "Withdrawing..." : wallet.onChain(network) ? "Withdraw idle collateral" : `Switch to ${network === "base" ? "Base" : "Arbitrum"}`}</button></div>;
+        })}
+      </details>}
       <form className={styles.lifecycleForm} onSubmit={event => { event.preventDefault(); if (/^[0-9a-f]{64}$/.test(identifier)) { setDraftId(identifier); setApprovals({}); setError(null); } }}>
         <label className={styles.field}>Preparation identifier<input value={identifier} maxLength={64} placeholder="Paste the preparation identifier"
           disabled={busy} onChange={event => setIdentifier(event.target.value.trim().toLowerCase())} /></label>
