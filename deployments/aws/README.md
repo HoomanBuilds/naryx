@@ -114,6 +114,11 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
 - `NEXT_PUBLIC_PRIVATE_TERMINAL_API_BASE_URL` is `https://api.<your domain>`.
 - Run Vercel CLI deployments from the repository root. The project already sets Root Directory
   to `apps/web`; invoking it from that workspace resolves `apps/web/apps/web` and fails.
+  Keep the root `.vercelignore` upload filter: only `apps/web`, `packages/protocol-types`, and
+  `packages/sdk` application sources belong in the upload. Use explicit directory exclusions;
+  this CLI skips traversal under a blanket `*` despite nested re-inclusion rules. A deployment without this filter selected about
+  2 GB of local artifacts despite Git ignores and was stopped before completion. Do not rely
+  on Git ignores alone or upload local secrets, caches, contract builds, or backend services.
   Stage with `vercel deploy --prod --skip-domain`, check the staged deployment, then promote it.
 
 ## 7. Operating
