@@ -194,14 +194,14 @@ function incidentEvidence(
   requireCondition(input.scopeHash === expectedScopeHash, 'evidence is bound to a different scope');
   requireCondition(input.readinessDecision.status === 'READY' || input.readinessDecision.status === 'NOT_READY',
     'readiness decision status is invalid');
+  const readinessCommitment = hex32(input.readinessDecisionCommitment, 'evidence.readinessDecisionCommitment');
+  requireCondition(readinessCommitment === dependencyReadinessCommitment(input.readinessDecision),
+    'evidence readiness commitment differs from the supplied decision');
   requireCondition(input.observedAtMs >= 0n, 'evidence observation time is negative');
   requireCondition(input.validUntilMs > input.observedAtMs, 'evidence validity window must increase');
   return Object.freeze({
     scopeHash: input.scopeHash,
-    readinessDecisionCommitment: hex32(
-      input.readinessDecisionCommitment,
-      'evidence.readinessDecisionCommitment',
-    ),
+    readinessDecisionCommitment: readinessCommitment,
     evidenceCommitment: hex32(input.evidenceCommitment, 'evidence.evidenceCommitment'),
     readinessDecisionVersion: input.readinessDecision.decisionVersion,
     readinessEnvironment: input.readinessDecision.environment,

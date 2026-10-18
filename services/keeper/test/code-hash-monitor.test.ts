@@ -64,7 +64,7 @@ function journal() {
     {
       scopeHash: dependencyScopeHash(scope),
       readinessDecision: readyDecision,
-      readinessDecisionCommitment: '31'.repeat(32),
+      readinessDecisionCommitment: dependencyReadinessCommitment(readyDecision),
       evidenceCommitment: '32'.repeat(32),
       observedAtMs: nowMs - 10n,
       validUntilMs: nowMs + 10_000n,
@@ -178,13 +178,17 @@ test('a pass without a created scope journal still reports drift instead of fail
 test('the monitor stays off unless configured, and needs a per-chain RPC URL for every target chain', () => {
   assert.equal(loadCodeHashMonitorConfig({}, () => '', JSON.parse), undefined);
   const arbitrumVerifier = { ...verifier, targetId: 'arbitrum-coordinator', chainRef: ARBITRUM_SEPOLIA };
-  const file = { intervalMs: 60_000, evidenceTtlMs: 600_000n, targets: [verifier, arbitrumVerifier], journals: [{ journalPath: '/var/lib/naryx/base.json', readinessDecision: readyDecision }] };
+  const file = { intervalMs: 60_000, evidenceTtlMs: 600_000n, targets: [verifier, arbitrumVerifier], journals: [{ journalPath: '/var/lib/naryx/base.json', readinessDecision: { ...readyDecision, status: 'NOT_READY' } }] };
   const env = { NARYX_CODE_WATCHLIST: '/etc/naryx/watchlist.json' };
   const urls = (map: Record<string, string>) => ({ ...env, NARYX_KEEPER_RPC_URLS: JSON.stringify(map) });
   // The old single EVM URL is not read; Base Sepolia and Arbitrum Sepolia each need their own.
   assert.throws(() => loadCodeHashMonitorConfig({ ...env, NARYX_EVM_RPC_URL: 'https://rpc.example' }, () => '', () => file), /eip155:84532 need its RPC URL in NARYX_KEEPER_RPC_URLS/);
   assert.throws(() => loadCodeHashMonitorConfig(urls({ [BASE_SEPOLIA]: 'https://base.example' }), () => '', () => file), /eip155:421614/);
   const config = loadCodeHashMonitorConfig(urls({ [BASE_SEPOLIA]: 'https://base.example/v2/key', [ARBITRUM_SEPOLIA]: 'https://arb.example/v2/key', 'solana:devnet': 'https://sol.example' }), () => '', () => file);
+  assert.throws(() => loadCodeHashMonitorConfig(env, () => '', () => ({ ...file,
+    journals: [{ journalPath: '/var/lib/naryx/base.json', readinessDecision: readyDecision }] })), /full readiness input/);
+  assert.throws(() => loadCodeHashMonitorConfig(env, () => '', () => ({ ...file,
+    journals: [{ journalPath: '/var/lib/naryx/base.json', readinessDecision: { status: 'NOT_READY' } }] })), /schemaVersion/);
   assert.deepEqual([...(config?.rpcUrls ?? [])], [[BASE_SEPOLIA, 'https://base.example/v2/key'], [ARBITRUM_SEPOLIA, 'https://arb.example/v2/key']]);
   assert.throws(() => loadCodeHashMonitorConfig(urls({ [BASE_SEPOLIA]: 'http://rpc.example', [ARBITRUM_SEPOLIA]: 'https://arb.example' }), () => '', () => file), /https, or http to a loopback host/);
   assert.throws(() => loadCodeHashMonitorConfig(urls({ 'base-sepolia': 'https://base.example' }), () => '', () => file), /not eip155/);

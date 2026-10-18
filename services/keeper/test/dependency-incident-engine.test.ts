@@ -16,6 +16,7 @@ import {
   DependencyIncidentFileStore,
   applyDependencyTrigger,
   createDependencyIncidentJournal,
+  dependencyReadinessCommitment,
   dependencyScopeHash,
   restoreDependencyScope,
   type DependencyIncidentJournal,
@@ -55,7 +56,7 @@ function evidence(
   return {
     scopeHash: dependencyScopeHash(scope),
     readinessDecision: readyDecision,
-    readinessDecisionCommitment: `${suffix.padStart(2, '0')}`.repeat(32),
+    readinessDecisionCommitment: dependencyReadinessCommitment(overrides.readinessDecision ?? readyDecision),
     evidenceCommitment: `${(Number(suffix) + 40).toString(16).padStart(2, '0')}`.repeat(32),
     observedAtMs: nowMs,
     validUntilMs: nowMs + 10_000n,
@@ -67,6 +68,18 @@ function evidence(
 function journal(): DependencyIncidentJournal {
   return createDependencyIncidentJournal(scope, evidence('01'), nowMs + 1n);
 }
+
+test('qualification rejects a changed readiness decision under the original commitment', () => {
+  const original = evidence('01');
+  assert.throws(() => createDependencyIncidentJournal(scope, {
+    ...original,
+    readinessDecision: { ...readyDecision, decisionVersion: readyDecision.decisionVersion + 1 },
+  }, nowMs + 1n), /readiness commitment differs/);
+  assert.throws(() => applyDependencyTrigger(journal(), {
+    expectedRevision: 0n, trigger: 'STALE_EVIDENCE', occurredAtMs: nowMs + 1n,
+    evidence: { ...original, readinessDecisionCommitment: '01'.repeat(32) },
+  }), /readiness commitment differs/);
+});
 
 function reviewer(
   roleId: string,

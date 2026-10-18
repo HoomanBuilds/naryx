@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { protocolId, toHex, type ReadinessDecision } from '@naryx/protocol-types';
+import { protocolId, readinessDecision, toHex,
+  type ReadinessDecision, type ReadinessDecisionInput } from '@naryx/protocol-types';
 import {
   applyDependencyTrigger,
   dependencyReadinessCommitment,
@@ -305,10 +306,22 @@ export function loadCodeHashMonitorConfig(
   requireCondition(Array.isArray(raw.targets) && raw.targets.length > 0 && raw.targets.length <= 256, 'targets must list 1 to 256 targets');
   requireCondition(Array.isArray(raw.journals) && raw.journals.length > 0, 'journals must list at least one scope journal');
   const targets = (raw.targets as CodeWatchTarget[]).map(codeWatchTarget);
-  const journals = (raw.journals as { journalPath: unknown; readinessDecision: unknown }[]).map((entry) => {
+  const journals = (raw.journals as { journalPath: unknown; readinessDecision: unknown; readinessInput?: unknown }[]).map((entry) => {
     requireCondition(typeof entry.journalPath === 'string' && entry.journalPath.startsWith('/'), 'journalPath must be absolute');
     requireCondition(typeof entry.readinessDecision === 'object' && entry.readinessDecision !== null, 'readinessDecision is required');
-    return { journalPath: entry.journalPath, readinessDecision: entry.readinessDecision as ReadinessDecision };
+    const decision = entry.readinessDecision as ReadinessDecision;
+    requireCondition(decision.schemaVersion === 1 && Number.isSafeInteger(decision.decisionVersion)
+      && decision.decisionVersion > 0 && (decision.status === 'READY' || decision.status === 'NOT_READY')
+      && Array.isArray(decision.evidence) && Array.isArray(decision.fundedOperationHashes),
+      'qualification schemaVersion, decision version, status or evidence is invalid');
+    requireCondition(decision.status !== 'READY' || entry.readinessInput !== undefined,
+      'READY qualification requires its full readiness input');
+    if (entry.readinessInput !== undefined) {
+      const evaluated = readinessDecision(entry.readinessInput as ReadinessDecisionInput);
+      requireCondition(dependencyReadinessCommitment(evaluated) === dependencyReadinessCommitment(decision),
+        'qualification decision does not match its evaluated readiness input');
+    }
+    return { journalPath: entry.journalPath, readinessDecision: decision };
   });
   const configured = loadKeeperRpcUrls(environment);
   const rpcUrls = new Map<string, string>();
