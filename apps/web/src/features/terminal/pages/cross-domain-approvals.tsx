@@ -59,6 +59,9 @@ export function CrossDomainApprovals() {
   const [identifier, setIdentifier] = useState("");
   const [draftId, setDraftId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [closingDomain, setClosingDomain] = useState<string | null>(null);
+  const [closeStatus, setCloseStatus] = useState<Record<string, string>>({});
   const lock = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
@@ -67,6 +70,18 @@ export function CrossDomainApprovals() {
     return () => window.clearInterval(timer);
   }, []);
   const [approvals, setApprovals] = useState<Record<string, { draftId: string; owner: string; entry: string; recovery: string }>>({});
+  const market = useQuery({
+    queryKey: ["cross-domain-calendar-market", privateApiBaseUrl], enabled: privateApiBaseUrl !== null, retry: false, staleTime: 60_000, refetchInterval: 60_000,
+    queryFn: async () => {
+      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/cross-domain/market`, { cache: "no-store", signal: AbortSignal.timeout(15_000) });
+      if (!response.ok) throw new Error("Canonical calendar preparation is unavailable.");
+      const value = await response.json() as { marketId: string; owner: string; preparationAccount: string; executionBudgetAvailable: boolean };
+      if (value.marketId !== "base-arbitrum-calendar-v1" || !/^0x[0-9a-fA-F]{40}$/.test(value.owner)
+        || !/^0x[0-9a-fA-F]{40}$/.test(value.preparationAccount)
+        || typeof value.executionBudgetAvailable !== "boolean") throw new Error("Market configuration is invalid.");
+      return value;
+    },
+  });
   const preparation = useQuery({
     queryKey: ["cross-domain-wallet-approval", privateApiBaseUrl, draftId],
     enabled: privateApiBaseUrl !== null && draftId !== null,
@@ -104,11 +119,91 @@ export function CrossDomainApprovals() {
         entry: approvals[domain.domain.domainId]!.entry, recovery: approvals[domain.domain.domainId]!.recovery })) });
     await preparation.refetch();
   });
+  const create = () => run(async () => {
+    if (!market.data?.executionBudgetAvailable || !privateApiBaseUrl || !wallet.account
+      || wallet.account.toLowerCase() !== market.data.owner.toLowerCase()) throw new Error("Connect the funded test account to prepare this market.");
+    setCreating(true);
+    try {
+      const input = { owner: wallet.account, marketId: market.data.marketId, requestId: crypto.randomUUID(),
+        expiresAt: String(Math.floor(Date.now() / 1_000) + 240) };
+      const signature = await wallet.signTypedData("base", {
+        domain: { name: "Naryx Cross-chain Preparation", version: "1", chainId: 84532, verifyingContract: market.data.preparationAccount },
+        primaryType: "PrepareCalendar", types: { PrepareCalendar: [
+          { name: "owner", type: "address" }, { name: "marketId", type: "string" },
+          { name: "requestId", type: "string" }, { name: "expiresAt", type: "uint256" },
+        ] }, message: input,
+      });
+      const created = await request(privateApiBaseUrl, "prepare", { ...input, signature });
+      setIdentifier(created.draftId); setDraftId(created.draftId); setApprovals({});
+    } finally { setCreating(false); }
+  });
+  const close = (domainId: string) => run(async () => {
+    if (!value || !privateApiBaseUrl || !ownerMatches || value.job?.status !== "TERMINAL") throw new Error("Wait for coordinator reconciliation before closing.");
+    const network = domainId === "eip155:84532" ? "base" : "arbitrum";
+    const expected = value.draft.execution.domains.find(d => d.domain.domainId === domainId)!.envelope.account;
+    const call = async (signature?: string) => {
+      const response = await fetch(`${privateApiBaseUrl}/internal/terminal/cross-domain/exit`, {
+        method: "POST", headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(35_000),
+        body: JSON.stringify({ draftId: value.draftId, domainId, ...(signature ? { signature } : {}) }),
+      });
+      if (!response.ok) throw new Error("Close preparation was refused. Refresh the package and check its current state.");
+      return fromProtocolJson(await response.json()) as { state: string; domainId: string; envelope?: Envelope;
+        transaction?: { to: string; data: string; value: string } };
+    };
+    setClosingDomain(domainId);
+    try {
+      const pendingKey = `naryx:calendar-close:${value.draftId}:${domainId}`;
+      const pendingHash = sessionStorage.getItem(pendingKey);
+      if (pendingHash && /^0x[0-9a-f]{64}$/i.test(pendingHash)) {
+        if (!await wallet.waitForReceipt(network, pendingHash)) {
+          sessionStorage.removeItem(pendingKey); throw new Error("The previous close reverted. Refresh before preparing a new approval.");
+        }
+        const reconciled = await call();
+        const flat = reconciled.state === "CLOSED" || reconciled.state === "FLAT";
+        if (flat) sessionStorage.removeItem(pendingKey);
+        setCloseStatus(current => ({ ...current, [`${value.draftId}:${domainId}`]: flat ? "Confirmed flat" : "Finalized reconciliation is pending. No new transaction was sent." }));
+        return;
+      }
+      const prepared = await call();
+      if (prepared.state === "CLOSED" || prepared.state === "FLAT") {
+        setCloseStatus(current => ({ ...current, [`${value.draftId}:${domainId}`]: "Confirmed flat" })); return;
+      }
+      const typed = prepared.envelope?.ownerTypedData;
+      if (prepared.domainId !== domainId || prepared.state !== "PREPARED" || !typed
+        || typed.primaryType !== "OwnerExecution" || typed.domain.chainId !== Number(domainId.slice(7))
+        || typed.domain.verifyingContract.toLowerCase() !== expected.toLowerCase()) throw new Error("Close approval targets another account or chain.");
+      const signed = await wallet.signTypedData(network, typed);
+      const ready = await call(signed);
+      if (ready.state !== "READY" || ready.domainId !== domainId || !ready.transaction
+        || ready.transaction.to.toLowerCase() !== expected.toLowerCase() || ready.transaction.value !== "0") throw new Error("Close transaction is invalid.");
+      const transactionHash = await wallet.sendTransaction(network, ready.transaction);
+      sessionStorage.setItem(pendingKey, transactionHash);
+      setCloseStatus(current => ({ ...current, [`${value.draftId}:${domainId}`]: "Submitted. Waiting for confirmation." }));
+      if (!await wallet.waitForReceipt(network, transactionHash)) {
+        sessionStorage.removeItem(pendingKey); throw new Error("Close transaction reverted. No successful close was recorded.");
+      }
+      const reconciled = await call();
+      if (reconciled.state === "CLOSED" || reconciled.state === "FLAT") sessionStorage.removeItem(pendingKey);
+      setCloseStatus(current => ({ ...current, [`${value.draftId}:${domainId}`]: reconciled.state === "CLOSED" || reconciled.state === "FLAT"
+        ? "Confirmed flat" : "Transaction mined. Finalized position reconciliation is pending; refresh before retrying." }));
+    } finally { setClosingDomain(null); }
+  });
 
   return <section className={styles.card}>
     <div className={styles.cardHead}><h2>Cross-chain approvals</h2><span>Base + Arbitrum testnets</span></div>
     <div className={`${styles.cardBody} ${styles.lifecycleForm}`}>
-      <p>Review a solver-prepared package, then approve entry and bounded recovery on each chain. Execution is coordinated, not cross-chain atomic. Inventory must be funded before admission.</p>
+      <p>Prepare a package, then approve entry and bounded recovery on each chain. Execution is coordinated, not cross-chain atomic.</p>
+      {market.data && <div className={styles.lifecycleForm}>
+        <p>Calendar spread: buy the near future on Base and sell the far future on Arbitrum. The funded test cohort uses 0.0001 base units and 1 mock USDC collateral per chain, with a maximum recovery loss of 0.10 mock USDC per chain. Mock tokens have no cash value.</p>
+        <p>Preparation only signs a request. No trade is sent until all four execution approvals are submitted. Existing solver inventory is reserved within its testnet gas budget.</p>
+        {!market.data.executionBudgetAvailable && <p role="status">New entries are paused until the worker gas allowances cover entry and full recovery.</p>}
+        {!wallet.account ? <button className={styles.ghost} disabled={busy} onClick={() => modal.open()}>Connect wallet</button>
+          : wallet.account.toLowerCase() !== market.data.owner.toLowerCase() ? <p>This market is limited to its funded test account.</p>
+            : !wallet.onChain("base") ? <button className={styles.ghost} disabled={busy || wallet.switching}
+              onClick={() => void wallet.switchNetwork("base")}>Switch to Base Sepolia</button>
+            : <button className={styles.ghost} disabled={busy || !market.data.executionBudgetAvailable || (value !== undefined && !expired && value.state !== "EXPIRED")}
+              onClick={() => void create()}>{creating ? "Preparing calendar spread..." : "Prepare calendar spread"}</button>}
+      </div>}
       <form className={styles.lifecycleForm} onSubmit={event => { event.preventDefault(); if (/^[0-9a-f]{64}$/.test(identifier)) { setDraftId(identifier); setApprovals({}); setError(null); } }}>
         <label className={styles.field}>Preparation identifier<input value={identifier} maxLength={64} placeholder="Paste the preparation identifier"
           disabled={busy} onChange={event => setIdentifier(event.target.value.trim().toLowerCase())} /></label>
@@ -143,6 +238,20 @@ export function CrossDomainApprovals() {
           {busy ? "Waiting for approval..." : "Submit approved package"}</button>
         {value.planHash && <details><summary>Execution identifier</summary><code style={{ overflowWrap: "anywhere" }}>{value.planHash}</code></details>}
       </>}
+      {value?.job?.status === "TERMINAL" && ownerMatches && <div className={styles.lifecycleForm}>
+        <p>Close remaining positions after settlement. Each chain closes separately through your wallet and retains the original minimum recovery return. A close can be refused if losses exceed that bound.</p>
+        {value.draft.execution.domains.map(domain => {
+          const id = domain.domain.domainId;
+          const network = id === "eip155:84532" ? "base" : "arbitrum";
+          return <div key={id}>
+            {!wallet.onChain(network) ? <button className={styles.ghost} disabled={busy || wallet.switching}
+              onClick={() => void wallet.switchNetwork(network)}>Switch to {network === "base" ? "Base" : "Arbitrum"} Sepolia</button>
+              : <button className={styles.ghost} disabled={busy} onClick={() => void close(id)}>
+                {closingDomain === id ? "Closing and reconciling..." : `Close ${network === "base" ? "Base" : "Arbitrum"} position`}</button>}
+            {closeStatus[`${value.draftId}:${id}`] && <p role="status">{closeStatus[`${value.draftId}:${id}`]}</p>}
+          </div>;
+        })}
+      </div>}
     </div>
   </section>;
 }
