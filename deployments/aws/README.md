@@ -104,8 +104,10 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
 
 - Import the repository; Framework Next.js; Root Directory `apps/web`; Install `npm ci`;
   Build `npm run build`; Node.js 22.x.
-- The frontend is a static export. Publish `out/` as configured in `apps/web/vercel.json`;
-  keep the Next.js framework preset so exported page and client-navigation routes are handled.
+- The frontend is a static export. Keep the Next.js framework preset and its default Output
+  Directory setting so exported page and client-navigation routes are handled. Do not set the
+  Vercel Output Directory to `out`: its Next.js builder first reads `.next` manifests before
+  publishing the exported assets, and an override makes it look for those manifests in `out`.
   Security headers run at the CDN level, not in middleware. All application requests go
   directly to AWS. Verify zero functions in the deployment output before promotion. CDN and
   build usage remain separate from Fluid active CPU; do not add request-time Vercel compute.
