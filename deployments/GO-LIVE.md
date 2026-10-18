@@ -198,11 +198,11 @@ Status checked 2026-10-18:
 | Item | Current state | Evidence needed to close |
 | --- | --- | --- |
 | 1. Standing liquidity for routed strategies | Closed for the enabled Solana cash-and-carry maker lane. Actual entry/exit and inventory reconciliation completed on 2026-10-18. | Evidence below. This does not advertise native cash liquidity as routed liquidity or activate additional routed maker lanes. |
-| 2. Cross-chain execution activation | Recovery deployments, delayed registry/policy activation and the capped AWS worker are running on both EVM testnets. The signed operator job was admitted: Arbitrum entered, Base reverted within its signed bounds, and Arbitrum's compensating close succeeded. Finalized recovery and reservation refunds are still reconciling. | Terminal recovery reconciliation, plus public order-to-job materialization and wallet authorization. The operator-only job is not a canonical public quote and does not prove website execution. |
+| 2. Cross-chain execution activation | Recovery deployments, delayed registry/policy activation and the capped AWS worker are running on both EVM testnets. The operator recovery cycle closed as `RECOVERED_FLAT`: Arbitrum entered, Base reverted within its signed bounds, Arbitrum closed, both reservation refunds finalized, and all account locks were released. | Public order-to-job materialization and multi-domain wallet authorization remain open. The completed operator job is not a canonical public quote and does not prove website execution. |
 | 3. Hyperliquid pooled-mode terminal integration | Closed for the approved dedicated cohort. Both owners completed authenticated browser deposit/withdrawal cycles on 2026-10-18. | UI, database and venue agreed after reload: zero pool cash, liabilities and pending operations. Receipt evidence below. Epoch trading remains operator-only; this is not public custody enrollment. |
 | 4. Strategy ownership transfers | Closed for the Base cash-and-carry account path. The seller proposed and the buyer accepted through live Portfolio, acceptance finalized, dual-signed strategy-book novation succeeded, and the new owner's exit finalized. Book closure and collateral withdrawals reconciled with an empty strategy account. | Evidence below. This does not claim transferable positions on other venues or compatibility with every wallet extension. |
 | 5. Threshold-encryption backend | Backend and solver participation deployed; a real beacon opening was verified. | Preserve this completed backend evidence. Any claim of terminal-integrated encrypted trading also needs an encrypted auction award and settlement; current terminal auctions remain ordinary commit/reveal. |
-| 6. Operational wiring and documentation | Runbook corrected, incident endpoint wired, bounded oracle maintenance deployed. All five Solana code hashes match, and the funded entry/exit signatures were rechecked as finalized. Supporting evidence is saved on AWS. The configured qualification decision is still NOT_READY and no incident journal is activated. | Current-release authority inventory, caps, funded-operation manifests and required release evidence, including an independent security-review attestation. Code matches and transaction success do not replace release approval. |
+| 6. Operational wiring and documentation | Closed for the explicitly owner-approved Solana devnet cash-and-carry scope. All seven deployed program identities, hashes, authorities and slots match; finalized funded-cycle evidence was checked. The signed testnet-only policy is active and the API reports ready. | This is not independent review. The approval expires on 2026-10-25 at 10:32:15 UTC; continued activation needs a renewed explicit approval. The unchanged independent-review policy remains required for any claim of independent qualification. |
 
 Independent maker recruitment and additional roadmap capabilities are not new items in this
 completion scope. Report their limitations separately without reopening completed work.
@@ -357,9 +357,22 @@ strategy support is specific to a registered template and deployment, not every 
   An isolated AWS check observed a sealed opening release at quicknet round 33163252; this was
   cryptographic release evidence, not a trade or public-market record. The terminal still creates
   short ordinary commit/reveal auctions. This is not a claim that all auctions are encrypted.
-- The API now reads the keeper's configured incident-status endpoint. Its missing Solana
-  qualification journal is reported as unavailable, not synthesized as healthy. A code watchlist
-  alone is not a qualified incident journal.
+- The API reads the keeper's configured incident-status endpoint. On 2026-10-18 the owner
+  explicitly approved a separate Solana devnet policy, labelled `OWNER_APPROVED_TESTNET` and
+  not independently reviewed. Its signed release binds all seven deployed programs, upgrade
+  authority, deployment slots, the exact unchanged execution-cap file, and the owner-attested
+  reconciled funded cycle. Read-only checks confirmed the code and finalized invocations before
+  activation. The keeper now refreshes five-minute evidence and quarantines on failed checks;
+  it cannot silently restore a quarantined scope or extend the owner's seven-day approval.
+  The public API reports ready, with no unavailable incident scopes. This does not independently
+  audit the release, qualify other templates, or authorize mainnet.
+
+  Approval commitment: `0xefbaf98857fa0a874fc491d67005fe23f70257747cbfcba8e3e9a7dc48a43826`.
+  Release commitment: `0x14afd670d169d3283a96ede00c2c603f3d862cf89c52fa95284aa6d2f14d6728`.
+  Execution-cap SHA-256: `bd8aa2ebe01254ea4def9146d18e6ecccddd18ce056db346ceb344c072c8faa8`.
+  Approval expires at `2026-10-25T10:32:15.937Z`.
+  Static frontend deployment `dpl_CHJZ6ZHiDG3Cx3yDPRyb1AcdhEpL` displays the policy explicitly
+  on Network; the build lists every page as static. No request-time frontend compute was added.
 - Cross-domain EVM submissions now journal signed bytes before broadcast, reserve bounded gas
   before signing and reconcile the exact finalized transaction after restart. Full reversal
   requires exact spot quantities or a derivative close bound to its entry generation and payload,
@@ -378,9 +391,25 @@ strategy support is specific to a registered template and deployment, not every 
   recovery cohort using controlled test derivative venues, not activation of every website strategy
   or a claim of atomic cross-chain settlement. A subsequently admitted capped recovery job funded
   each strategy account with 3 mock USDC. Arbitrum entered successfully; Base intentionally failed
-  its signed notional guard; Arbitrum's compensating close succeeded. The worker retains account
-  locks until finalized recovery and unused-reservation refunds reconcile. Public canonical order
-  materialization and multi-domain wallet entry/recovery authorization remain separate work.
+  its signed notional guard; Arbitrum's compensating close succeeded. Both unused-reservation
+  refunds finalized, both domains reached `COMPENSATED`, and the durable job reached `TERMINAL`
+  with outcome `RECOVERED_FLAT`, no error and zero remaining account locks. Arbitrum collateral
+  decreased by 402 quote atoms (0.000402 mock USDC), within its 100,000-atom signed recovery cap;
+  Base's 3 mock USDC collateral was unchanged. No second funded cycle was started.
+  Submission-journal reconciliation now runs at startup and before job closure, so finalized
+  reservation refunds do not remain labelled pending after the coordination has completed.
+  Public canonical order materialization and multi-domain wallet entry/recovery authorization
+  remain separate work.
+
+  | Recovery cycle action | Testnet transaction |
+  | --- | --- |
+  | Arbitrum entry | `0x2054146323dd1bb82eeb803a309b211f50ea63789c4dce143faa478f94a70e04` |
+  | Base bounded entry revert | `0x802615767fcfb58b02c9a8b6a458d8d7caa892c166df4c64edd6a74cfef4bbe3` |
+  | Arbitrum exact compensating close | `0x0f32d6bcca7a0998eedb9f217fac30d5801136dca6502acf2bab2975e4a55577` |
+  | Base reservation refund | `0x1062a18a39ddbfb2b4790c6961c1d29d64f0e388dbbfd79ba378d9eaaa6c0766` |
+  | Arbitrum reservation refund | `0xc8e141b04dd4069ffe9ed81ac7b27759a2df8e5f0254f3160af7cc819e7e989a` |
+
+  Coordination plan: `4437ad97cee7bf2aceee05c0d4104e8886b4131c853ac508bda4ce05c74ae347`.
 - Base strategy-account transfer verification now checks both wallet consents, the exact account,
   its finalized ownership transition and receipt-backed strategy lifecycle. The Portfolio UI
   proposes and accepts transfers through the owners' wallets; it does not transfer an account by
@@ -414,6 +443,8 @@ on Base Sepolia and `0x12f45b20600d4d7ac7f82a6ccf63188d013c7814` on Arbitrum Sep
 Their reservation books are `0x8c3e369aaad5b377eacdbbeccb6a292cf05a8bca` and
 `0xe6fb9393541a462702d5b3e5a7b3fc63a5cdef17`, respectively. Detailed transaction observations
 are installed on AWS at `/srv/naryx/release/recovery/activation-observations.json`.
+The completed operator-cycle receipts and terminal reconciliation are saved at
+`/srv/naryx/release/recovery/completed-cycle-20261018.json`.
 
 ## Not available yet
 
