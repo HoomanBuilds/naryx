@@ -16,7 +16,7 @@ const { baseSepolia, arbitrumSepolia } = require('viem/chains');
 const [network, phase] = process.argv.slice(2);
 assert.ok(['base-sepolia', 'arbitrum-sepolia'].includes(network), 'Only the two approved testnets are supported');
 assert.ok(['deploy', 'propose-domain', 'activate-domain', 'configure', 'activate',
-  'propose-risk-dependencies', 'activate-risk-dependencies', 'inspect'].includes(phase));
+  'propose-risk-dependencies', 'activate-risk-dependencies', 'deploy-calendar-reservation-book', 'inspect'].includes(phase));
 const directory = process.env.NARYX_RECOVERY_RELEASE_DIR;
 assert.ok(directory && isAbsolute(directory) && !resolve(directory).startsWith(`${root}/`) && resolve(directory) !== root,
   'Use a private external release directory');
@@ -193,6 +193,17 @@ if (phase === 'deploy') {
     record.instances[id] = { address: instance, codeHash: await codeHash(instance) };
     save();
   }
+} else if (phase === 'deploy-calendar-reservation-book') {
+  assert.equal(record.activationState, 'ACTIVE');
+  const old = address('reservationBook');
+  const occupancy = await read('FirmInventoryReservationBook', old, 'solverStrategyKey', [record.solver, record.account]);
+  assert.equal(await read('FirmInventoryReservationBook', old, 'liveReservation', [occupancy]), `0x${'0'.repeat(64)}`,
+    'Resolve existing inventory before activating another reservation book');
+  const perReservation = await read('FirmInventoryReservationBook', old, 'maximumBaseAtomsPerReservation');
+  const perSolver = await read('FirmInventoryReservationBook', old, 'maximumReservedBaseAtomsPerSolver');
+  await deploy('calendarReservationBook', 'FirmInventoryReservationBook',
+    [address('protocolConfig'), baseToken, quoteToken, 21_600n, perReservation, perSolver]);
+  assert.equal(await read('FirmInventoryReservationBook', address('calendarReservationBook'), 'maximumTtlSeconds'), 21_600n);
 } else if (phase === 'configure') {
   const domain = { domainIdHash: hash(record.domain.domainId), manifestVersion: 3, manifestHash: record.domain.domainManifestHash };
   const templates = ['cash-and-carry-v1', 'calendar-spread-v1', 'perpetual-funding-spread-v1'];
