@@ -198,7 +198,7 @@ Status checked 2026-10-18:
 | Item | Current state | Evidence needed to close |
 | --- | --- | --- |
 | 1. Standing liquidity for routed strategies | Closed for the enabled Solana cash-and-carry maker lane. Actual entry/exit and inventory reconciliation completed on 2026-10-18. | Evidence below. This does not advertise native cash liquidity as routed liquidity or activate additional routed maker lanes. |
-| 2. Cross-chain execution activation | Recovery contracts and the capped AWS worker are active on both EVM testnets; the operator cycle closed as `RECOVERED_FLAT`. Canonical calendar preparation, four wallet approvals, automatic inventory reservations and reconciled owner exits are now deployed for the dedicated funded cohort. Per-chain registrations remain separately bound. | Implementation and deployment are complete for this bounded calendar market. Chain-backed read-only preparation and the live Network panel passed. A fresh funded browser-signed calendar entry/exit remains unverified under the deployment-first instruction; the older operator cycle is not that evidence. |
+| 2. Cross-chain execution activation | Recovery contracts and the capped AWS worker are active on both EVM testnets; the operator cycle closed as `RECOVERED_FLAT`. Browser preparation, all four execution approvals and reload reconciliation passed. That attempt exposed an incompatible reservation TTL and was stopped before reserving or trading. Finalized replacement books and executor profile 4 are now active; the original draft was safely expired with its history retained. | Deployment and reservation compatibility are corrected. Read-only canonical preparation and the public calendar endpoint pass. A fresh funded browser-signed calendar entry/exit remains unverified; neither the older operator cycle nor wallet signatures prove it. |
 | 3. Hyperliquid pooled-mode terminal integration | Closed for the approved dedicated cohort. Both owners completed authenticated browser deposit/withdrawal cycles on 2026-10-18. | UI, database and venue agreed after reload: zero pool cash, liabilities and pending operations. Receipt evidence below. Epoch trading remains operator-only; this is not public custody enrollment. |
 | 4. Strategy ownership transfers | Closed for the Base cash-and-carry account path. The seller proposed and the buyer accepted through live Portfolio, acceptance finalized, dual-signed strategy-book novation succeeded, and the new owner's exit finalized. Book closure and collateral withdrawals reconciled with an empty strategy account. | Evidence below. This does not claim transferable positions on other venues or compatibility with every wallet extension. |
 | 5. Threshold-encryption backend | Backend and solver participation deployed; a real beacon opening was verified. | Preserve this completed backend evidence. Any claim of terminal-integrated encrypted trading also needs an encrypted auction award and settlement; current terminal auctions remain ordinary commit/reveal. |
@@ -528,6 +528,55 @@ checks passed again, including the maturity boundary. Read-only preparation agai
 registrations returned `preparationReady: true`, `executionBudgetAvailable: true`,
 `staged: false`, `broadcast: false`. These checks do not claim a fresh funded browser round trip.
 No contract redeployment or mainnet operation occurred in this release.
+
+## Calendar reservation compatibility correction, 2026-10-18
+
+The browser-signed attempt exposed a missing dependency check in the earlier activation:
+the original reservation books enforce an immutable 3,600-second maximum TTL, while the
+calendar requires a 14,640-second reservation window. Read-only entry simulation did not
+exercise inventory reservation and therefore did not detect this mismatch.
+
+The worker was stopped after a bounded Base inventory approval, before any reservation or
+new derivative entry. The approval transaction is
+`0x660f5160e22faf85d443a29fd07f2d831cdd6ac0131feecf898f028b17ddb15a`.
+Both strategy accounts were flat and both original books had no live reservation. The signed
+draft `039cbf8e6d7e9ec7d5b21cebe25e7daa247826d8935160b71bacd688a4e43910`
+and its authorizations are retained as historical evidence, not reinterpreted under a new book.
+
+Commits `9724f86b` and `03544c8d` add replacement book deployment and reject incompatible
+TTL or inventory capacity before issuing a calendar quote. Book address, code hash and observed
+capacity now contribute to the canonical package commitment. Existing tokens, accounts, limits,
+registrations and historical books remain unchanged. No Solidity source changed.
+
+| Testnet | Calendar reservation book | Deployment transaction |
+| --- | --- | --- |
+| Base Sepolia | `0xdbda14397ce04bde022e647c471b11267e181de3` | `0x70b8647d2f91aa978f591984de798dfa2f0e3cdfcf68e11bc154c1eb862e0341` |
+| Arbitrum Sepolia | `0x1a318898123969abe0cef8889be8cc65e8347574` | `0x785d029a9f39e8843666c1b919fb116aaa8ef99b9fdb902ff0bb8adac1d9a674` |
+
+Both replacements retain the original token identities and inventory caps and allow a maximum
+TTL of 21,600 seconds. Deployment gas was 15,616,092,000,094 wei on Base and
+52,105,693,640,000 wei on Arbitrum, inside the existing recovery-deployment ceiling. No additional
+mock USDC was allocated. Worker journals retain their existing cumulative spending and the
+approved 500,000,000,000,000-wei lifetime ceiling per network.
+
+At 17:00 UTC both replacement runtime hashes were finalized. The original approval transaction
+was reconciled as successful, both old books had zero live reservations, both accounts were flat,
+and no active execution job or account lock existed. The draft moved through `RELEASING` to
+`EXPIRED` without another transaction. Its signed documents remain unchanged. The private
+incident record and wallet-database backup are retained on AWS.
+
+Executor manifest version 4 is active with hash
+`0xe2f8be359ebb1a821313aa6240af45e872027f4d8a8b5be742ce3734aacb29a1`.
+The earlier profiles and configuration are preserved. Both deployed solver modules match the
+local build hashes. The cross-domain worker, API, solver and keeper are active with zero automatic
+restarts. The public calendar endpoint returns HTTP 200 and available execution budget; the
+historical draft endpoint returns `EXPIRED` with no admitted job. No unrelated service changed.
+
+Validation: solver build and the two focused canonical-calendar checks passed, including
+one-hour-book rejection, insufficient-capacity rejection and the exact supported TTL boundary.
+The activated runtime's chain-backed inspection returns `preparationReady: true`,
+`executionBudgetAvailable: true`, `staged: false`, `broadcast: false`. This does not claim a
+completed calendar trade, and no further funded cycle was started during this deployment fix.
 
 ## Recovery deployment identities
 
