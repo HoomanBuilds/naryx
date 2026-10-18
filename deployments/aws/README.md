@@ -163,6 +163,14 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
   and Arbitrum `0x3e993a20c7e522c4809abcf57698c39cc0513f07721d6c7b1c8b630ee92e05d5`.
   Base's initial receipt check failed; the next invocation recovered the already-mined hash
   from its journal without signing another transaction. Both journals recorded confirmation.
+- Native cash marks also require funded updater wallets; an active process alone is insufficient.
+  On 2026-10-18 the Arbitrum updater had only 851064026000 wei despite a fresh source feed, and
+  its cash mark had expired. A journaled 0.0002 test ETH top-up restored updates without a
+  contract change or test USDC mint. Funding receipt:
+  `0x8bd6962884288a7d81c0a5285e5d84cf0c414a9bed49f8dc2e172ee78f359189`.
+  The native mark journal conservatively charges both the transferred value and maximum gas
+  against its existing allowance. Insufficient-gas failures now have an explicit log message.
+  Check the public standing book's `validUntil` and actual bid/ask capacity, not just systemd.
 - Encrypted solver openings: enable `NARYX_SEALED_AUCTION_THRESHOLD_ENABLED=true` in the solver
   environment only after deploying the threshold-capable API and solver together. Preserve the
   private-delivery and solver-auction SQLite journals in the rollback backup. The solver requires

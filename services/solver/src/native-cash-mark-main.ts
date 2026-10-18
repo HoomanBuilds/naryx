@@ -85,7 +85,10 @@ try {
         process.stdout.write(JSON.stringify({ marketId: binding.marketId, transactionHash: pending.hash,
           status: receipt.status, reservedWei: journal.reserved(chain.id).toString() }) + '\n');
       }, failed: error => {
-        const reason = error instanceof Error && /budget.*exhausted|insufficient remaining validity/.test(error.message) ? error.message : 'Mark refresh failed closed; existing marks retain their original expiry.';
+        const reason = error instanceof Error && /insufficient funds|exceeds the balance/i.test(error.message)
+          ? 'Mark updater needs testnet gas; existing marks retain their original expiry.'
+          : error instanceof Error && /budget.*exhausted|insufficient remaining validity/.test(error.message)
+            ? error.message : 'Mark refresh failed closed; existing marks retain their original expiry.';
         process.stderr.write(JSON.stringify({ marketId: binding.marketId, reason }) + '\n');
       } });
   }));
