@@ -237,7 +237,19 @@ accepts a protocol-encoded epoch plan with every trader's and recovery sponsor's
 The browser cannot access the operator token or operate another owner's claim.
 Public enrollment does not remove the pool funding cap or permit unsigned trading.
 Upgrading from version 1 requires an empty, flat venue account and no pending operations.
-The previous ledger is retained separately; old consent is never reused for version 2.
+The previous ledger is retained separately; old consent is never reused for a new binding.
+
+Version 3 binds configurable `maximumTotalQuoteAtoms` and `maximumOwnerQuoteAtoms`
+to custody consent. Both are positive uint128 atom values; the owner cap cannot exceed
+the pool cap. The public testnet policy uses 100,000 mock USDC total and 1,000 per wallet.
+These are admission limits, not funded liquidity or performance guarantees. Deposits enforce
+both limits in the same database transaction; epoch loss reservations cannot exceed the
+owner cap or funded balance. Existing gross exposure, leverage and execution-policy limits
+remain unchanged. Settlement and withdrawals accept profits above admission caps.
+Legacy version-1/2 hashes and ceilings remain unchanged. Changing either signed limit requires
+a new binding and fresh consent, never editing a funded ledger. Activate a replacement only
+with zero old liabilities, an empty flat venue account and no pending operations, preserving
+the original ledger and history. No operator funds are moved when raising admission limits.
 
 The dedicated AWS test cohort completed a funded round trip on October 17, 2026:
 three observed deposits backed 20 mock USDC; two signed owners held opposing BTC
