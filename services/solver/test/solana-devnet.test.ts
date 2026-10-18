@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { PublicKey } from '@solana/web3.js';
 import { firmReservationId, toProtocolJson } from '@naryx/protocol-types';
 import type { DomainRef } from '@naryx/protocol-types';
 import {
@@ -12,12 +13,16 @@ import {
   requireSolanaDevnetMarketMinimums,
   selectFirmLevel,
   shardSequencesHeld,
+  solanaDevnetAvailableInventory,
+  solanaDevnetInventoryCapacity,
+  solanaDevnetMinimumPackageUnits,
   standingLevelExpiry,
   standingLevelLeadSlots,
 } from '../src/solana-devnet-firm-quote.js';
 import { SOLANA_DEVNET_MIN_QUOTE_TTL_SLOTS, loadSolanaDevnetSolverConfig } from '../src/solana-devnet-solver-config.js';
 import {
   BorshWriter,
+  TOKEN_PROGRAM_ID,
   accountDiscriminator,
   decodeFirmReservation,
   previewTestPerpShortAdjustment,
@@ -37,6 +42,64 @@ const market: TestPerpMarketState = {
   quoteTickAtomsPerBaseLot: 1n, maxPositionLots: 1_000_000n,
   fundingRatePerSecond: 0n, cumulativeFundingIndex: 0n, lastFundingTimestamp: 1_000n, pauseOpens: false,
 };
+
+const inventory = { baseAtoms: 20_000_000_000n, quoteAtoms: 4_000_000_000n };
+const capacityConfig = {
+  series: { spotBaseAtomsPerPackageUnit: 1_000_000n, perpQuantityAtomsPerPackageUnit: 1_000_000n,
+    seriesManifestHash: new Uint8Array(32).fill(1), executionClassManifestHash: new Uint8Array(32).fill(2),
+    settlementClassIdentityHash: new Uint8Array(32).fill(3) },
+  inventorySpreadBps: 10, spotBaseLotAtoms: 1_000_000n, perpLimitToleranceBps: 5,
+  maxQuantityAtoms: 20_000_000_000n, levelCapacityUnits: 20_000n,
+};
+
+test('standing capacity is bounded by free inventory, exact units and venue size limits', () => {
+  const state = { market, oraclePricePerLot: 150_001n, availableInventory: { baseAtoms: 2_999_999n, quoteAtoms: 449_552n } };
+  const config = capacityConfig as Parameters<typeof solanaDevnetInventoryCapacity>[1];
+  assert.equal(solanaDevnetInventoryCapacity(state, config, 2), 2n);
+  const bid = solanaDevnetInventoryCapacity(state, config, 1);
+  assert.equal(bid, 2n);
+  assert.ok(priceSolanaDevnetExit({ ...config, perpLimitToleranceBps: 5 }, market, state.oraclePricePerLot,
+    bid * config.series.spotBaseAtomsPerPackageUnit).firmQuoteAtoms <= state.availableInventory.quoteAtoms);
+  assert.equal(solanaDevnetInventoryCapacity({ ...state, availableInventory: { baseAtoms: 0n, quoteAtoms: 0n } }, config, 2), 0n);
+  assert.equal(solanaDevnetInventoryCapacity({ ...state, market: { ...market, maxPositionLots: 1n } }, config, 2), 1n);
+  assert.equal(solanaDevnetInventoryCapacity({ ...state, market: { ...market, maxSlippageBps: 2 } }, config, 2), 0n);
+  assert.throws(() => solanaDevnetInventoryCapacity(state, { ...config, inventorySpreadBps: 10_000 }, 1), /invalid/);
+});
+
+test('standing minimum covers both leg minimums under bounded spread and lot rounding', () => {
+  const state = { market, oraclePricePerLot: 103_274n, marketMinimumNotionals: { spot: 1_000_000n, perpetual: 1_000_000n } };
+  const config = capacityConfig as Parameters<typeof solanaDevnetMinimumPackageUnits>[1];
+  assert.equal(solanaDevnetMinimumPackageUnits(state, config), 10n);
+  const amount = 10n * config.series.spotBaseAtomsPerPackageUnit;
+  const entry = priceSolanaDevnetEntry(config, market, state.oraclePricePerLot, amount);
+  const exit = priceSolanaDevnetExit(config, market, state.oraclePricePerLot, amount);
+  requireSolanaDevnetMarketMinimums(state.marketMinimumNotionals, entry);
+  requireSolanaDevnetMarketMinimums(state.marketMinimumNotionals, { ...exit, spotLimitPerLot: exit.spotMinimumPerLot });
+  const smallerUnits = { ...config, series: { ...config.series, spotBaseAtomsPerPackageUnit: 1_000n } };
+  assert.equal(solanaDevnetMinimumPackageUnits(state, smallerUnits), 10_000n);
+  assert.equal(solanaDevnetInventoryCapacity({ ...state, availableInventory: { baseAtoms: 1_999_999n, quoteAtoms: 1_000_000n } },
+    { ...capacityConfig, ...smallerUnits }, 2), 1_000n);
+});
+
+test('only initialized token accounts owned by the configured maker fund capacity', () => {
+  const mint = new PublicKey(new Uint8Array(32).fill(3));
+  const solver = new PublicKey(new Uint8Array(32).fill(4));
+  const data = Buffer.alloc(165);
+  mint.toBuffer().copy(data, 0);
+  solver.toBuffer().copy(data, 32);
+  data.writeBigUInt64LE(123n, 64);
+  data[108] = 1;
+  const account = { owner: TOKEN_PROGRAM_ID.toBase58(), data };
+  const read = (value: typeof account | null) => solanaDevnetAvailableInventory(value, mint.toBase58(), solver.toBase58());
+  assert.equal(read(account), 123n);
+  assert.equal(read(null), 0n);
+  data[108] = 2;
+  assert.equal(read(account), 0n);
+  data[108] = 0;
+  assert.equal(read(account), 0n);
+  assert.throws(() => read({ ...account, owner: solver.toBase58() }), /token program/);
+  assert.throws(() => solanaDevnetAvailableInventory(account, solver.toBase58(), solver.toBase58()), /mint or authority/);
+});
 
 test('reservation ids match the protocol firm reservation identity', () => {
   const nonce = new Uint8Array(32).fill(3);
@@ -121,12 +184,13 @@ test('selects only a live firm ask level with the reviewed policy, capacity, and
   };
   const state = {
     slot: 400n, market, oraclePricePerLot: 150_000n, oracleObservationAgeMs: 0n,
+    availableInventory: inventory,
     marketMinimumNotionals: { spot: 1n, perpetual: 1n },
     reservationClass: { policyHash: policy } as never,
     shard: { epoch: 2n, heartbeatExpirySlot: 600n } as never,
     levels: [level],
   };
-  const config = { series: { settlementClassIdentityHash: settlement } } as never;
+  const config = { ...capacityConfig, series: { ...capacityConfig.series, settlementClassIdentityHash: settlement } } as never;
   assert.equal(selectFirmLevel(state, config, 2n, 450n, 550n)?.levelId, 77n);
   assert.equal(selectFirmLevel(state, config, 11n, 450n, 550n), undefined);
   assert.equal(selectFirmLevel(state, config, 2n, 500n, 550n), undefined);
@@ -145,12 +209,13 @@ test('binds a quote to the usable level with the latest expiry, ties to the lowe
   };
   const state = (levels: QuoteLevelState[]) => ({
     slot: 400n, market, oraclePricePerLot: 150_000n, oracleObservationAgeMs: 0n,
+    availableInventory: inventory,
     marketMinimumNotionals: { spot: 1n, perpetual: 1n },
     reservationClass: { policyHash: policy } as never,
     shard: { epoch: 2n, heartbeatExpirySlot: 600n } as never,
     levels,
   });
-  const config = { series: { settlementClassIdentityHash: settlement } } as never;
+  const config = { ...capacityConfig, series: { ...capacityConfig.series, settlementClassIdentityHash: settlement } } as never;
   // An older level with little time left sits in the first slot; the fresh one wins.
   const fresh = { ...level, slotIndex: 7, levelId: 2n, expirySlot: 540n };
   const tie = { ...level, slotIndex: 9, levelId: 3n, expirySlot: 540n };
@@ -164,8 +229,9 @@ test('keeps a standing level per side that a quote made a lead time from now can
   const policy = new Uint8Array(32).fill(4);
   const settlement = new Uint8Array(32).fill(5);
   const config = {
-    series: { settlementClassIdentityHash: settlement, spotBaseAtomsPerPackageUnit: 1_000n },
-    maxQuantityAtoms: 10_000n, levelCapacityUnits: 10n, quoteTtlSlots: 450n,
+    ...capacityConfig,
+    series: { ...capacityConfig.series, settlementClassIdentityHash: settlement },
+    maxQuantityAtoms: 10_000_000n, levelCapacityUnits: 10n, quoteTtlSlots: 450n,
   } as never;
   const ask: QuoteLevelState = {
     slotIndex: 0, settlementClassIdentityHash: settlement, reservationPolicyHash: policy, referenceOffset: 0n, levelId: 1n,
@@ -174,6 +240,7 @@ test('keeps a standing level per side that a quote made a lead time from now can
   };
   const at = (slot: bigint, levels: QuoteLevelState[]) => ({
     slot, market, oraclePricePerLot: 150_000n, oracleObservationAgeMs: 0n,
+    availableInventory: inventory,
     marketMinimumNotionals: { spot: 1n, perpetual: 1n },
     reservationClass: { policyHash: policy } as never,
     shard: { epoch: 2n, heartbeatExpirySlot: 5_000n } as never,
@@ -187,6 +254,7 @@ test('keeps a standing level per side that a quote made a lead time from now can
   assert.equal(standingLevelExpiry(at(1_250n, [ask]), config, 2), 1_700n);
   // A partly filled level that can no longer take a full-size package is refreshed too.
   assert.equal(standingLevelExpiry(at(1_000n, [{ ...ask, remainingCapacity: 4n }]), config, 2), 1_450n);
+  assert.equal(standingLevelExpiry({ ...at(1_000n, []), availableInventory: { baseAtoms: 0n, quoteAtoms: 0n } }, config, 2), undefined);
 
   // For every allowed TTL a freshly written level satisfies the refresher for at least 5/12 of the
   // TTL, never fewer than 125 slots, so it is not rewritten on the next cycles.

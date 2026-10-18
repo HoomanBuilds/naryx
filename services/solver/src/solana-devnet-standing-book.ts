@@ -1,5 +1,5 @@
 import { bytesEqual } from '@naryx/protocol-types';
-import type { SolanaDevnetLiveQuoteState } from './solana-devnet-firm-quote.js';
+import { solanaDevnetInventoryCapacity, solanaDevnetMinimumPackageUnits, type SolanaDevnetLiveQuoteState } from './solana-devnet-firm-quote.js';
 import type { SolanaDevnetSolverConfig } from './solana-devnet-solver-config.js';
 import { QUOTE_MODE_FIRM_ONCHAIN, QUOTE_SIDE_ASK, QUOTE_SIDE_BID, type QuoteLevelState } from './solana-devnet-wire.js';
 
@@ -24,8 +24,8 @@ export type SolanaDevnetStandingBook = Readonly<{
 }>;
 
 export function solanaDevnetStandingBook(
-  state: Pick<SolanaDevnetLiveQuoteState, 'slot' | 'shard' | 'reservationClass' | 'levels'>,
-  config: Pick<SolanaDevnetSolverConfig, 'accounts' | 'series'>,
+  state: Pick<SolanaDevnetLiveQuoteState, 'slot' | 'shard' | 'reservationClass' | 'levels' | 'availableInventory' | 'market' | 'oraclePricePerLot' | 'marketMinimumNotionals'>,
+  config: Pick<SolanaDevnetSolverConfig, 'accounts' | 'series' | 'inventorySpreadBps' | 'maxQuantityAtoms' | 'levelCapacityUnits' | 'spotBaseLotAtoms' | 'perpLimitToleranceBps'>,
 ): SolanaDevnetStandingBook {
   if (!bytesEqual(state.shard.seriesManifestHash, config.series.seriesManifestHash)) {
     throw new Error('Solana Devnet standing book series does not match the reviewed solver configuration.');
@@ -40,15 +40,19 @@ export function solanaDevnetStandingBook(
     && level.minPackageSizeUnits > 0n && level.maxPackageSizeUnits >= level.minPackageSizeUnits
     && level.remainingCapacity >= level.minPackageSizeUnits;
   const latest = (side: number): StandingLevel | null => {
+    const capacity = solanaDevnetInventoryCapacity(state, config, side);
+    const marketMinimum = solanaDevnetMinimumPackageUnits(state, config);
     const level = state.levels.filter((candidate) => eligible(candidate, side))
+      .filter((candidate) => candidate.minPackageSizeUnits <= capacity && marketMinimum <= capacity
+        && marketMinimum <= candidate.maxPackageSizeUnits && marketMinimum <= candidate.remainingCapacity)
       .sort((left, right) => left.expirySlot === right.expirySlot
         ? left.slotIndex - right.slotIndex : left.expirySlot > right.expirySlot ? -1 : 1)[0];
     return level === undefined ? null : Object.freeze({
       levelId: level.levelId.toString(),
       referenceOffsetAtoms: level.referenceOffset.toString(),
-      remainingCapacityUnits: level.remainingCapacity.toString(),
-      minPackageSizeUnits: level.minPackageSizeUnits.toString(),
-      maxPackageSizeUnits: level.maxPackageSizeUnits.toString(),
+      remainingCapacityUnits: (level.remainingCapacity < capacity ? level.remainingCapacity : capacity).toString(),
+      minPackageSizeUnits: (level.minPackageSizeUnits > marketMinimum ? level.minPackageSizeUnits : marketMinimum).toString(),
+      maxPackageSizeUnits: (level.maxPackageSizeUnits < capacity ? level.maxPackageSizeUnits : capacity).toString(),
       expirySlot: level.expirySlot.toString(),
     });
   };

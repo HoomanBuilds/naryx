@@ -54,6 +54,8 @@ import {
   QUOTE_SIDE_BID,
   SOLANA_DEVNET_SOL_USD_FEED_ID_HEX,
   SOLANA_DEVNET_SOL_USD_PRICE_ACCOUNT,
+  TOKEN_PROGRAM_ID,
+  associatedTokenAddress,
   accountDiscriminator,
   type TestPerpMarketState,
 } from '../src/solana-devnet-wire.js';
@@ -245,7 +247,7 @@ function solverConfig(feePolicy: FeePolicyManifestInput): SolanaDevnetSolverConf
   };
 }
 
-function chainAccounts(trader: PublicKey, order: PackageOrder): Map<string, { owner: string; data: Uint8Array }> {
+function chainAccounts(trader: PublicKey, order: PackageOrder, minimumNotional = 1_000_000n): Map<string, { owner: string; data: Uint8Array }> {
   const marketData = new BorshWriter().bytes(accountDiscriminator('TestPerpMarket')).key(key()).key(key()).key(quoteMint)
     .key(SOLANA_DEVNET_SOL_USD_PRICE_ACCOUNT).bytes(Buffer.from(SOLANA_DEVNET_SOL_USD_FEED_ID_HEX, 'hex'))
     .key(market.collateralVault).key(market.feeVault).key(market.insuranceVault).u8(6).u8(9).u32(60)
@@ -280,7 +282,7 @@ function chainAccounts(trader: PublicKey, order: PackageOrder): Map<string, { ow
     .bytes(bytes(20)).u32(1).bytes(resources[name].manifestHash)
     .key(resources[name].subjectAddress).key(resources[name].programId).key(key()).bytes(bytes(20))
     .u8(9).u8(6).u8(role).bytes(new Uint8Array(7)).u8(1)
-    .u8(9).u8(6).u64(1_000_000n).u64(1n).u64(1_000_000n).u64(1n).u64(1n)
+    .u8(9).u8(6).u64(1_000_000n).u64(1n).u64(minimumNotional).u64(1n).u64(1n)
     .u8(0).u8(0).u8(0).bool(true).u8(255).done();
   const result = new Map([
     [manifest.testPerp.market, { owner: programs.perp_venue!.programId, data: marketData }],
@@ -291,6 +293,16 @@ function chainAccounts(trader: PublicKey, order: PackageOrder): Map<string, { ow
     [accounts.records.spotMarket, { owner: programs.core!.programId, data: marketResource('spotMarket', 1) }],
     [accounts.records.perpMarket, { owner: programs.core!.programId, data: marketResource('perpMarket', 2) }],
   ]);
+  for (const mint of [baseMint, quoteMint]) {
+    const data = Buffer.alloc(165);
+    mint.toBuffer().copy(data, 0);
+    solver.publicKey.toBuffer().copy(data, 32);
+    data.writeBigUInt64LE(20_000_000_000n, 64);
+    data[108] = 1;
+    result.set(associatedTokenAddress(solver.publicKey.toBase58(), mint.toBase58()).toBase58(), {
+      owner: TOKEN_PROGRAM_ID.toBase58(), data,
+    });
+  }
   if (order.action === 'EXIT') {
     const open = pda('core', Buffer.from('cash-carry-open'), trader.toBuffer(), strategy.toBuffer());
     const entryReceipt = pda('core', Buffer.from('cash-carry-receipt'), trader.toBuffer(), Buffer.from(order.entryReceiptHash!));
@@ -338,7 +350,7 @@ function packageOrder(action: 'ENTRY' | 'EXIT', trader: PublicKey, maxVenueFeeAt
 }
 
 /** Quotes the order through the solver's own firm signing path against fixed Devnet account state. */
-async function signThroughSolver(order: PackageOrderInput, feePolicy: FeePolicyManifestInput, writer?: SolanaDevnetSolverWritePort) {
+async function signThroughSolver(order: PackageOrderInput, feePolicy: FeePolicyManifestInput, writer?: SolanaDevnetSolverWritePort, minimumNotional?: bigint) {
   const directory = mkdtempSync(join(tmpdir(), 'naryx-solana-firm-'));
   const keyPath = join(directory, 'solver.json');
   writeFileSync(keyPath, JSON.stringify(Array.from(solver.secretKey)));
@@ -346,7 +358,7 @@ async function signThroughSolver(order: PackageOrderInput, feePolicy: FeePolicyM
   const journal = new SqliteSolanaDevnetFirmQuoteJournal(':memory:');
   try {
     const validated = order as PackageOrder;
-    const state = chainAccounts(new PublicKey(order.owner), validated);
+    const state = chainAccounts(new PublicKey(order.owner), validated, minimumNotional);
     let nonce = 0n;
     const port = createSolanaDevnetFirmQuotePort({
       manifest, config: solverConfig(feePolicy), key: loadSolanaDevnetSolverKey(keyPath, solver.publicKey.toBase58()), journal,
@@ -420,6 +432,14 @@ test('a Solana firm exit quote passes every fee list rule, and the order cap sti
   assert.equal(admitted.quote.expectedNormalizedVenueFeesByAsset.find((fee) => compareBytes(assetKey(fee.asset), assetKey(quote)) === 0)?.atoms, exitFee);
   assert.equal(admitted.quote.expectedNetSpotQuantity.atoms, -QUANTITY);
   await assert.rejects(signThroughSolver(packageOrder('EXIT', trader, templatePolicy(exitFee - 1n).orderCaps), policy.feePolicy), /perp taker fee exceeds the order cap/);
+});
+
+test('below standing-minimum quotes are refused before any level write', async () => {
+  const policy = templatePolicy(entryFee);
+  let writes = 0;
+  const writer: SolanaDevnetSolverWritePort = { sendAndFinalize: async () => { writes += 1; throw new Error('unexpected write'); } };
+  await assert.rejects(signThroughSolver(packageOrder('ENTRY', key(), policy.orderCaps), policy.feePolicy, writer, 299_000_000n), /funded solver minimum/);
+  assert.equal(writes, 0);
 });
 
 test('an on-demand quote never writes a level while a binding holds the shard sequences', async () => {

@@ -365,13 +365,14 @@ export function decodeRiskDomainIndexActiveRecord(data: Uint8Array): string {
   return r.key();
 }
 
-export function decodeTokenAccount(data: Uint8Array): Readonly<{ mint: string; owner: string; amount: bigint }> {
+export function decodeTokenAccount(data: Uint8Array): Readonly<{ mint: string; owner: string; amount: bigint; state: number }> {
   const buffer = Buffer.from(data);
   if (buffer.length !== 165) fail('token account layout is invalid');
   return Object.freeze({
     mint: new PublicKey(buffer.subarray(0, 32)).toBase58(),
     owner: new PublicKey(buffer.subarray(32, 64)).toBase58(),
     amount: buffer.readBigUInt64LE(64),
+    state: buffer[108]!,
   });
 }
 

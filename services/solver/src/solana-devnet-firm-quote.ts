@@ -41,7 +41,7 @@ import {
 } from './internal-atomic-quote-server.js';
 import type { SolanaDevnetSharedManifest, SolanaDevnetSolverConfig, SolanaDevnetSolverKey } from './solana-devnet-solver-config.js';
 import { SOLANA_DEVNET_RESOURCE_NAMES } from './solana-devnet-solver-config.js';
-import { requireSolanaDevnet, type SolanaDevnetSolverReadPort, type SolanaDevnetSolverWritePort } from './solana-devnet-rpc.js';
+import { requireSolanaDevnet, type SolanaDevnetAccount, type SolanaDevnetSolverReadPort, type SolanaDevnetSolverWritePort } from './solana-devnet-rpc.js';
 import {
   BorshWriter,
   MAX_QUOTE_LEVELS,
@@ -57,6 +57,7 @@ import {
   decodeQuoteLevelPage,
   decodeReservationClass,
   decodeTestPerpMarket,
+  decodeTokenAccount,
   instructionDiscriminator,
   priceTestPerpCloseShort,
   priceTestPerpShort,
@@ -411,7 +412,71 @@ export type SolanaDevnetLiveQuoteState = Readonly<{
   shard: PackageQuoteShardState;
   levels: readonly QuoteLevelState[];
   marketMinimumNotionals: Readonly<{ spot: bigint; perpetual: bigint }>;
+  availableInventory: Readonly<{ baseAtoms: bigint; quoteAtoms: bigint }>;
 }>;
+
+export function solanaDevnetAvailableInventory(
+  account: SolanaDevnetAccount | null | undefined,
+  mint: string,
+  solver: string,
+): bigint {
+  if (account == null) return 0n;
+  if (account.owner !== TOKEN_PROGRAM_ID.toBase58()) fail('inventory token program is not supported');
+  const token = decodeTokenAccount(account.data);
+  if (token.mint !== mint || token.owner !== solver) fail('inventory mint or authority does not match');
+  return token.state === 1 ? token.amount : 0n;
+}
+
+export function solanaDevnetInventoryCapacity(
+  state: Pick<SolanaDevnetLiveQuoteState, 'availableInventory' | 'market' | 'oraclePricePerLot'>,
+  config: Pick<SolanaDevnetSolverConfig, 'series' | 'maxQuantityAtoms' | 'levelCapacityUnits' | 'inventorySpreadBps' | 'spotBaseLotAtoms'>,
+  side: number,
+): bigint {
+  const unit = config.series.spotBaseAtomsPerPackageUnit;
+  const spread = BigInt(config.inventorySpreadBps);
+  if ((side !== QUOTE_SIDE_ASK && side !== QUOTE_SIDE_BID)
+    || unit <= 0n || state.market.baseLotAtoms <= 0n || config.spotBaseLotAtoms <= 0n
+    || spread < 0n || spread >= BPS || state.oraclePricePerLot <= 0n) fail('inventory capacity inputs are invalid');
+  const available = side === QUOTE_SIDE_ASK
+    ? state.availableInventory.baseAtoms / unit
+    : (state.availableInventory.quoteAtoms * state.market.baseLotAtoms * BPS)
+      / (unit * state.oraclePricePerLot * (BPS - spread));
+  const slippageBudget = BigInt(state.market.maxSlippageBps - state.market.halfSpreadBps);
+  if (slippageBudget < 0n) return 0n;
+  const lots = state.market.impactBpsPerUnit > 0
+    ? (slippageBudget / BigInt(state.market.impactBpsPerUnit)) * state.market.impactUnitLots
+    : state.market.maxPositionLots;
+  const capacity = [available, config.maxQuantityAtoms / unit, config.levelCapacityUnits,
+    state.market.maxPositionLots * state.market.baseLotAtoms / unit, lots * state.market.baseLotAtoms / unit]
+    .reduce((minimum, value) => value < minimum ? value : minimum);
+  const increment = packageUnitIncrement(unit, config.spotBaseLotAtoms, state.market.baseLotAtoms);
+  return capacity / increment * increment;
+}
+
+function packageUnitIncrement(unit: bigint, spotLot: bigint, perpLot: bigint): bigint {
+  if (unit <= 0n || spotLot <= 0n || perpLot <= 0n) fail('package or market unit is invalid');
+  const spot = spotLot / gcd(unit, spotLot);
+  const perp = perpLot / gcd(unit, perpLot);
+  return spot / gcd(spot, perp) * perp;
+}
+
+export function solanaDevnetMinimumPackageUnits(
+  state: Pick<SolanaDevnetLiveQuoteState, 'market' | 'oraclePricePerLot' | 'marketMinimumNotionals'>,
+  config: Pick<SolanaDevnetSolverConfig, 'series' | 'inventorySpreadBps' | 'spotBaseLotAtoms' | 'perpLimitToleranceBps'>,
+): bigint {
+  const market = state.market;
+  const increment = packageUnitIncrement(config.series.spotBaseAtomsPerPackageUnit, config.spotBaseLotAtoms, market.baseLotAtoms);
+  const unit = config.series.spotBaseAtomsPerPackageUnit * increment;
+  const spotPerLot = (config.spotBaseLotAtoms * state.oraclePricePerLot * (BPS - BigInt(config.inventorySpreadBps)))
+    / (market.baseLotAtoms * BPS);
+  const worstPerpFill = state.oraclePricePerLot * (BPS - BigInt(market.maxSlippageBps)) / BPS;
+  const perpLimit = (worstPerpFill * (BPS - BigInt(config.perpLimitToleranceBps))) / BPS
+    / market.quoteTickAtomsPerBaseLot * market.quoteTickAtomsPerBaseLot;
+  if (spotPerLot <= 0n || perpLimit <= 0n) fail('market minimum price is zero');
+  return [1n, ceilDiv(state.marketMinimumNotionals.spot, spotPerLot * (unit / config.spotBaseLotAtoms)),
+    ceilDiv(state.marketMinimumNotionals.perpetual, perpLimit * (unit / market.baseLotAtoms))]
+    .reduce((maximum, value) => value > maximum ? value : maximum) * increment;
+}
 
 export async function readSolanaDevnetQuoteState(
   rpc: SolanaDevnetSolverReadPort,
@@ -425,10 +490,12 @@ export async function readSolanaDevnetQuoteState(
       manifest.testPerp.market, manifest.testPerp.oracle, config.accounts.reservationClass,
       config.accounts.packageBookShard, config.accounts.packageBookLevelPage,
       config.accounts.records.spotMarket, config.accounts.records.perpMarket,
+      associatedTokenAddress(config.solverId, config.resources.baseAsset.subjectAddress).toBase58(),
+      associatedTokenAddress(config.solverId, config.resources.quoteAsset.subjectAddress).toBase58(),
     ], slot),
     rpc.getBlockTime(slot),
   ]);
-  const [marketAccount, oracleAccount, classAccount, shardAccount, pageAccount, spotResourceAccount, perpResourceAccount] = accounts;
+  const [marketAccount, oracleAccount, classAccount, shardAccount, pageAccount, spotResourceAccount, perpResourceAccount, baseInventory, quoteInventory] = accounts;
   const owned = (account: typeof marketAccount, program: string, name: string) => {
     if (account === null || account === undefined || account.owner !== programAddress(manifest, program).programId) {
       fail(`${name} is absent or not owned by the reviewed ${program} program`);
@@ -470,7 +537,11 @@ export async function readSolanaDevnetQuoteState(
     || reservationClass.quoteMint !== new PublicKey(config.resources.quoteAsset.subjectAddress).toBase58()) {
     fail('reservation class or package book shard does not match the reviewed series and solver');
   }
-  return Object.freeze({ slot, market, oraclePricePerLot, oracleObservationAgeMs, reservationClass, shard, levels: page.levels, marketMinimumNotionals });
+  const availableInventory = Object.freeze({
+    baseAtoms: solanaDevnetAvailableInventory(baseInventory, new PublicKey(config.resources.baseAsset.subjectAddress).toBase58(), config.solverId),
+    quoteAtoms: solanaDevnetAvailableInventory(quoteInventory, new PublicKey(config.resources.quoteAsset.subjectAddress).toBase58(), config.solverId),
+  });
+  return Object.freeze({ slot, market, oraclePricePerLot, oracleObservationAgeMs, reservationClass, shard, levels: page.levels, marketMinimumNotionals, availableInventory });
 }
 
 /**
@@ -486,6 +557,8 @@ export function selectFirmLevel(
   maximumExpiry: bigint,
   side: number = QUOTE_SIDE_ASK,
 ): QuoteLevelState | undefined {
+  if (units < solanaDevnetMinimumPackageUnits(state, config) || units > solanaDevnetInventoryCapacity(state, config, side)
+    || units % packageUnitIncrement(config.series.spotBaseAtomsPerPackageUnit, config.spotBaseLotAtoms, state.market.baseLotAtoms) !== 0n) return undefined;
   let selected: QuoteLevelState | undefined;
   for (const level of state.levels) {
     const usable = level.active && level.epoch === state.shard.epoch
@@ -518,6 +591,9 @@ export function packageBookLevelInstructions(input: Readonly<{
   const { manifest, config, state, expirySlot } = input;
   const side = input.side ?? QUOTE_SIDE_ASK;
   if (side !== QUOTE_SIDE_ASK && side !== QUOTE_SIDE_BID) fail('level side is invalid');
+  const capacity = solanaDevnetInventoryCapacity(state, config, side);
+  const minimum = solanaDevnetMinimumPackageUnits(state, config);
+  if (capacity < minimum) throw new InternalAtomicQuoteError('QUOTE_DECLINED', 'Solver inventory cannot fund a minimum-size package.');
   const program = new PublicKey(programAddress(manifest, 'package_book').programId);
   const solver = new PublicKey(config.solverId);
   const keys = (levels: boolean) => [
@@ -550,15 +626,15 @@ export function packageBookLevelInstructions(input: Readonly<{
     .u64(reusing ? previous.levelSequence + 1n : 1n)
     .u64(reusing ? previous.levelId : levelId)
     .u8(side)
-    .u64(1n)
-    .u64(config.levelCapacityUnits)
+    .u64(minimum)
+    .u64(capacity)
     .i128(0n)
     .u64(0n)
     .bytes(config.series.settlementClassIdentityHash)
     .u8(QUOTE_MODE_FIRM_ONCHAIN)
     .bytes(state.reservationClass.policyHash)
     .u64(expirySlot)
-    .u64(config.levelCapacityUnits)
+    .u64(capacity)
     .done();
   return Object.freeze({
     slotIndex,
@@ -612,12 +688,11 @@ export async function refreshSolanaDevnetStandingLevels(
  */
 export function standingLevelExpiry(
   state: SolanaDevnetLiveQuoteState,
-  config: Pick<SolanaDevnetSolverConfig, 'maxQuantityAtoms' | 'levelCapacityUnits' | 'quoteTtlSlots' | 'series'>,
+  config: Pick<SolanaDevnetSolverConfig, 'maxQuantityAtoms' | 'levelCapacityUnits' | 'quoteTtlSlots' | 'series' | 'inventorySpreadBps' | 'spotBaseLotAtoms' | 'perpLimitToleranceBps'>,
   side: number,
 ): bigint | undefined {
-  const maxUnits = config.maxQuantityAtoms / config.series.spotBaseAtomsPerPackageUnit;
-  const units = maxUnits < config.levelCapacityUnits ? maxUnits : config.levelCapacityUnits;
-  if (units <= 0n) return undefined;
+  const units = solanaDevnetInventoryCapacity(state, config, side);
+  if (units < solanaDevnetMinimumPackageUnits(state, config)) return undefined;
   const quotedAt = state.slot + standingLevelLeadSlots(config.quoteTtlSlots);
   // The window a quote at that slot applies: at least two-thirds of the TTL remains.
   const usable = selectFirmLevel(state, config as SolanaDevnetSolverConfig, units, quotedAt + (config.quoteTtlSlots * 2n) / 3n,
@@ -865,6 +940,12 @@ export function createSolanaDevnetFirmQuotePort(
     }
     const side = exit ? QUOTE_SIDE_BID : QUOTE_SIDE_ASK;
     const units = order.quantity.atoms / config.series.spotBaseAtomsPerPackageUnit;
+    const requireAvailableUnits = (current: SolanaDevnetLiveQuoteState) => {
+      if (units < solanaDevnetMinimumPackageUnits(current, config) || units > solanaDevnetInventoryCapacity(current, config, side)) {
+        throw new InternalAtomicQuoteError('QUOTE_DECLINED', 'Package size is outside funded solver minimum and maximum limits.');
+      }
+    };
+    requireAvailableUnits(state);
     const latestExpiry = order.expiryValue < state.slot + config.quoteTtlSlots ? order.expiryValue : state.slot + config.quoteTtlSlots;
     if (latestExpiry - state.slot > state.reservationClass.maxTtlSlots) fail('quote TTL exceeds the reservation class TTL');
     // A route expiry must leave time to fund, lock, sign, and submit on Devnet.
@@ -878,6 +959,7 @@ export function createSolanaDevnetFirmQuotePort(
       // waited may find the level another request just wrote, and never sends a stale sequence.
       const written = await withShardWriteLock(config.accounts.packageBookShard, async () => {
         let current = await readSolanaDevnetQuoteState(rpc, manifest, config);
+        requireAvailableUnits(current);
         const existing = selectFirmLevel(current, config, units, minimumExpiry, latestExpiry, side);
         if (existing !== undefined) return { state: current, level: existing };
         // A level write bumps the shard sequence that an in-flight binding's quote lock pins.
@@ -896,6 +978,10 @@ export function createSolanaDevnetFirmQuotePort(
       });
       state = written.state;
       level = written.level;
+    }
+    if ((exit && leg.firmQuoteAtoms > state.availableInventory.quoteAtoms)
+      || (!exit && order.quantity.atoms > state.availableInventory.baseAtoms)) {
+      throw new InternalAtomicQuoteError('QUOTE_DECLINED', 'Solver inventory changed before quote admission.');
     }
     const routeExpiryValue = level.expirySlot;
     const reservationNonce = dependencies.randomNonce?.() ?? Uint8Array.from(randomBytes(32));
