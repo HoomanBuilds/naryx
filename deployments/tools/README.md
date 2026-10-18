@@ -254,6 +254,17 @@ owned by `naryx` with mode 600. Install the runtime under `/srv/naryx/release/re
 Preserve its database and journals across all future releases. Startup is not proof of an
 executed recovery or a substitute for release qualification.
 
+The worker binds to `127.0.0.1:8806`. Its `POST /jobs` accepts a complete signed protocol-JSON
+job only from a loopback service without a browser Origin header. Admission verifies the exact
+account owner, entry and recovery signatures, funded reservation, code hashes, deadlines and
+dedicated cohort limits before storing immutable authorizations. `GET /jobs/<planHash>` reports
+the persisted job status without exposing those signatures. This is an operator/service interface,
+not the public website's quote materializer. Do not expose it through the public reverse proxy.
+
+Reservation release has its own 300,000 gas ceiling, separate from the 4,000,000 ceilings for
+entry and recovery. Budget reservation includes all three possible submissions. Do not increase
+the approved gas budget just because a reservation release inherited an entry-sized gas limit.
+
 ## Self-check
 
 ```bash
