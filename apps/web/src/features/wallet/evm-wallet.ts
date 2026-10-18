@@ -54,6 +54,7 @@ export type EvmWalletSession = {
   sendTransaction(domain: EvmDomain, transaction: Readonly<{ to: string; data: string; value: string }>): Promise<string>;
   /** Waits for the transaction's receipt on the domain's testnet; true when it succeeded. */
   waitForReceipt(domain: EvmDomain, hash: string): Promise<boolean>;
+  waitForReceiptIdentity(domain: EvmDomain, hash: string): Promise<{ success: boolean; transactionHash: string }>;
 };
 
 /** A ceiling on any wallet-sent value: testnet execution fees are far below 0.1 ETH. */
@@ -203,7 +204,7 @@ export function useEvmWallet(): EvmWalletSession {
     }
   }, [requireReady, transactionMutation]);
 
-  const waitForReceipt = useCallback(async (domain: EvmDomain, hash: string) => {
+  const waitForReceiptIdentity = useCallback(async (domain: EvmDomain, hash: string) => {
     if (!/^0x[0-9a-f]{64}$/i.test(hash)) throw new Error("Transaction hash is invalid.");
     try {
       const receipt = await waitForTransactionReceipt(config, {
@@ -211,11 +212,13 @@ export function useEvmWallet(): EvmWalletSession {
         hash: hash as `0x${string}`,
         timeout: RECEIPT_TIMEOUT_MS,
       });
-      return receipt.status === "success";
+      return { success: receipt.status === "success", transactionHash: receipt.transactionHash.toLowerCase() };
     } catch {
       throw new Error(`The transaction has not confirmed on ${EVM_CHAINS[domain].name} yet. Check it in your wallet, then retry.`);
     }
   }, [config]);
+  const waitForReceipt = useCallback(async (domain: EvmDomain, hash: string) =>
+    (await waitForReceiptIdentity(domain, hash)).success, [waitForReceiptIdentity]);
 
   return {
     connectors,
@@ -234,5 +237,6 @@ export function useEvmWallet(): EvmWalletSession {
     signChainlessTypedData,
     sendTransaction,
     waitForReceipt,
+    waitForReceiptIdentity,
   };
 }

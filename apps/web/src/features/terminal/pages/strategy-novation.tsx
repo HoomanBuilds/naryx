@@ -17,6 +17,7 @@ import {
 import { useEvmWallet } from "@/features/wallet/evm-wallet";
 import { useSolanaWallet } from "@/features/wallet/solana-wallet";
 import type { ManagedStrategy } from "./strategy-lifecycle-manager";
+import { BaseStrategyTransfer } from "./base-strategy-transfer";
 import styles from "./pages.module.css";
 
 const HASH = /^[0-9a-f]{64}$/;
@@ -197,6 +198,10 @@ export function StrategyNovation({
         </div>
         {selected ? <span className={transferable ? styles.pillOk : styles.pillWarn}>{transferable ? "Transferable state" : "Exit and re-enter"}</span> : null}
       </div>
+      <BaseStrategyTransfer key={selected?.strategyId ?? "new"} baseUrl={baseUrl} initialStrategyId={selected?.strategyId ?? ""}
+        onEvidence={(strategyId, hash) => {
+          if (selected?.strategyId === strategyId) setEvidence(Object.fromEntries(venues.map(venue => [venue, hash])));
+        }} />
       <div className={`${styles.cardBody} ${styles.novationGrid}`}>
         {selected ? <div className={styles.novationPane}>
           <h3>1. Current owner creates proposal</h3>

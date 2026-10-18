@@ -2151,6 +2151,7 @@ export function TradingTerminal({
   const [activePackageMarketId, setActivePackageMarketId] = useState<string | null>(packageMarketId);
   // The page query, null until it has been read; a deep link resolves only against the loaded market list.
   const [linkSearch, setLinkSearch] = useState<string | null>(null);
+  const linkedStrategyAccount = new URLSearchParams(linkSearch ?? "").get("strategyAccount") ?? undefined;
   const appliedMarketLink = useRef<string | null>(null);
   useEffect(() => {
     if (publicApiBaseUrl === null) {
@@ -2370,6 +2371,7 @@ export function TradingTerminal({
 
   const ticketKey = JSON.stringify({
     selectedDomain,
+    linkedStrategyAccount,
     selectedStrategyTemplateId,
     selectedLifecycleAction,
     mode,
@@ -3681,14 +3683,14 @@ export function TradingTerminal({
       busy: null,
       error,
     });
-    privateProvider.getBaseAccountStatus(owner, {}, controller.signal)
+    privateProvider.getBaseAccountStatus(owner, { strategyAccount: linkedStrategyAccount }, controller.signal)
       .then((account) => { if (!controller.signal.aborted) setBaseFlow(fresh(account, null)); })
       .catch((cause) => {
         if (controller.signal.aborted) return;
         setBaseFlow(fresh(null, cause instanceof Error ? cause.message : "Strategy account read failed."));
       });
     return () => controller.abort();
-  }, [baseFlowMissing, baseOwner, privateProvider, ticketKey]);
+  }, [baseFlowMissing, baseOwner, linkedStrategyAccount, privateProvider, ticketKey]);
 
   const basePending = currentBaseFlow?.pendingSetup ?? null;
   const basePollOwner = currentBaseFlow?.owner ?? null;
@@ -3699,6 +3701,7 @@ export function TradingTerminal({
     let active = true;
     const check = () => {
       void privateProvider.getBaseAccountStatus(basePollOwner, {
+        strategyAccount: linkedStrategyAccount,
         orderHash: basePollOrderHash,
         marginAtoms: basePollMargin,
       }).then((account) => {
@@ -3724,7 +3727,7 @@ export function TradingTerminal({
       window.clearInterval(timer);
       stopReturnRefresh();
     };
-  }, [basePending, basePollMargin, basePollOrderHash, basePollOwner, privateProvider]);
+  }, [basePending, basePollMargin, basePollOrderHash, basePollOwner, linkedStrategyAccount, privateProvider]);
 
   const baseObservedHash = currentBaseFlow?.transactionHash ?? null;
   const baseObservationDone = isBaseObservationTerminal(currentBaseFlow?.observation ?? null);
@@ -3773,12 +3776,12 @@ export function TradingTerminal({
   useEffect(() => {
     if (!privateProvider || !baseExitFinalized || !basePollOwner || !baseObservedHash) return;
     let active = true;
-    void privateProvider.getBaseAccountStatus(basePollOwner, {}).then((account) => {
+    void privateProvider.getBaseAccountStatus(basePollOwner, { strategyAccount: linkedStrategyAccount }).then((account) => {
       if (!active) return;
       setBaseFlow((current) => current?.transactionHash === baseObservedHash ? { ...current, account } : current);
     }).catch(() => undefined);
     return () => { active = false; };
-  }, [baseExitFinalized, baseObservedHash, basePollOwner, privateProvider]);
+  }, [baseExitFinalized, baseObservedHash, basePollOwner, linkedStrategyAccount, privateProvider]);
 
   async function handleBaseStep(step: BaseStep) {
     if (!privateProvider || !currentBaseFlow?.account || evmTarget !== "base") return;
@@ -3786,6 +3789,7 @@ export function TradingTerminal({
     const account = currentBaseFlow.account;
     setBaseFlow({ ...base, busy: step, error: null });
     const readAccount = (flow: BaseFlowState) => privateProvider.getBaseAccountStatus(flow.owner, {
+      strategyAccount: linkedStrategyAccount,
       orderHash: flow.order?.orderHashHex,
       marginAtoms: quoteMarginAtoms(flow.quote),
     });

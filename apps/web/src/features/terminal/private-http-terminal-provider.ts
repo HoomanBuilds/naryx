@@ -4736,12 +4736,13 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
 
   async getBaseAccountStatus(
     owner: string,
-    input: Readonly<{ orderHash?: string; marginAtoms?: string }> = {},
+    input: Readonly<{ orderHash?: string; marginAtoms?: string; strategyAccount?: string }> = {},
     signal?: AbortSignal,
   ): Promise<BaseAccountStatus> {
     const query = new URLSearchParams({ owner: requireEvmAddress(owner, "Base owner") });
     if (input.orderHash !== undefined) query.set("orderHash", requireHex32(input.orderHash, "Base order hash"));
     if (input.marginAtoms !== undefined) query.set("marginAtoms", requireEvmDecimal(input.marginAtoms, "Base margin"));
+    if (input.strategyAccount !== undefined) query.set("strategyAccount", requireEvmAddress(input.strategyAccount, "Base strategy account"));
     const response = await fetch(`${this.#baseUrl}/internal/terminal/base-sepolia/account?${query.toString()}`, {
       method: "GET",
       cache: "no-store",
@@ -4790,6 +4791,7 @@ export class PrivateHttpTerminalProvider implements TerminalViewModelProvider {
   ): Promise<BaseOrderRecord> {
     const request = {
       owner: account.owner,
+      strategyAccount: account.account,
       slippageBps: requireInteger(input.slippageBps, "Base exit slippage"),
       idempotencyKey: requireObservationIdempotencyKey(input.idempotencyKey),
     };
