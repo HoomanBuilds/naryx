@@ -17,6 +17,7 @@ export interface DependencyIncidentScopeStatus {
   readonly evidenceValidUntilMs: string;
   readonly evidenceFresh: boolean;
   readonly latestReceiptHash: `0x${string}` | null;
+  readonly qualificationPolicy?: 'OWNER_APPROVED_TESTNET';
 }
 
 export interface DependencyIncidentStatusSnapshot {
@@ -41,6 +42,8 @@ function scopeStatus(journal: DependencyIncidentJournal, nowMs: bigint): Depende
     evidenceValidUntilMs: journal.latestEvidence.validUntilMs.toString(),
     evidenceFresh: nowMs >= journal.latestEvidence.observedAtMs && nowMs < journal.latestEvidence.validUntilMs,
     latestReceiptHash: journal.receipts.at(-1)?.receiptHash ?? null,
+    ...(journal.latestEvidence.qualificationPolicy === undefined ? {}
+      : { qualificationPolicy: journal.latestEvidence.qualificationPolicy }),
   });
 }
 

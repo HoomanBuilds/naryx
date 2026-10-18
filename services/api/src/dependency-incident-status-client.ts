@@ -35,6 +35,7 @@ export interface DependencyIncidentScopeStatus {
   readonly evidenceValidUntilMs: string;
   readonly evidenceFresh: boolean;
   readonly latestReceiptHash: `0x${string}` | null;
+  readonly qualificationPolicy?: 'OWNER_APPROVED_TESTNET';
 }
 
 export interface DependencyIncidentStatusSnapshot {
@@ -115,9 +116,13 @@ export function parseDependencyIncidentStatus(value: unknown): DependencyInciden
     exactKeys(entry, [
       'scopeId', 'scopeHash', 'domainId', 'state', 'entryAllowed', 'exitAllowed', 'revision',
       'evidenceCommitment', 'evidenceObservedAtMs', 'evidenceValidUntilMs', 'evidenceFresh',
-      'latestReceiptHash',
+      'latestReceiptHash', ...(entry.qualificationPolicy === undefined ? [] : ['qualificationPolicy']),
     ], `Dependency incident scope ${index}`);
     const scopeHash = hash(entry.scopeHash, `Dependency incident scope ${index} hash`);
+    if (entry.qualificationPolicy !== undefined
+      && (entry.qualificationPolicy !== 'OWNER_APPROVED_TESTNET' || entry.domainId !== 'svm:devnet')) {
+      throw new Error('Unknown or mismatched testnet qualification policy.');
+    }
     if (scopeHashes.has(scopeHash)) throw new Error('Dependency incident scope is duplicated.');
     scopeHashes.add(scopeHash);
     if (typeof entry.state !== 'string' || !STATES.has(entry.state) ||
@@ -166,6 +171,7 @@ export function parseDependencyIncidentStatus(value: unknown): DependencyInciden
       evidenceObservedAtMs,
       evidenceValidUntilMs,
       evidenceFresh: entry.evidenceFresh,
+      ...(entry.qualificationPolicy === undefined ? {} : { qualificationPolicy: entry.qualificationPolicy }),
       latestReceiptHash: entry.latestReceiptHash === null
         ? null
         : hash(entry.latestReceiptHash, `Dependency incident scope ${index} receipt hash`),

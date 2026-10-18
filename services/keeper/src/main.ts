@@ -4,8 +4,11 @@ import { HyperliquidTestnetEvidenceRuntime } from './hyperliquid-testnet-evidenc
 import { HyperliquidStrategyAuthoritativeEvidenceCollector } from './hyperliquid-strategy-evidence.js';
 import { HyperliquidNettingResidualAuthoritativeEvidenceCollector } from './hyperliquid-netting-residual-evidence.js';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { Connection } from '@solana/web3.js';
 import { parseProtocolJson } from '@naryx/protocol-types';
-import { createCodeReader, loadCodeHashMonitorConfig, runCodeHashPass } from './code-hash-monitor.js';
+import { createCodeReader, loadCodeHashMonitorConfig, programDataCodeHash, runCodeHashPass } from './code-hash-monitor.js';
+import { observeOwnerTestnetRelease, refreshOwnerTestnetJournal } from './owner-approved-testnet.js';
 import { loadKeeperRpcUrls, solanaSlotReader } from './chain-identity.js';
 import { DependencyIncidentFileStore } from './dependency-incident-engine.js';
 import { DependencyIncidentStatusReader } from './dependency-incident-status.js';
@@ -118,6 +121,7 @@ const monitor = loadCodeHashMonitorConfig(process.env, (path) => readFileSync(pa
 const monitorJournals = monitor?.journals.map((entry) => ({
   store: new DependencyIncidentFileStore(entry.journalPath),
   readinessDecision: entry.readinessDecision,
+  ownerApproval: entry.ownerApproval,
 }));
 const dependencyIncidents = monitorJournals === undefined
   ? undefined
@@ -133,14 +137,34 @@ const server = createHyperliquidTestnetEvidenceServer({
 let monitorTimer: ReturnType<typeof setInterval> | undefined;
 if (monitor !== undefined && monitorJournals !== undefined) {
   const readers = Object.fromEntries([...monitor.rpcUrls].map(([chainRef, url]) => [chainRef, createCodeReader(chainRef, url)]));
+  let running = false;
   const pass = async () => {
+    if (running) return;
+    running = true;
     try {
+      for (const entry of monitorJournals) {
+        const approval = entry.ownerApproval;
+        if (approval === undefined) continue;
+        try {
+          await refreshOwnerTestnetJournal({ approval: approval.signed, trustedApprover: approval.trustedApprover,
+            capPolicyText: approval.capPolicyText, store: entry.store, nowMs: BigInt(Date.now()),
+            observe: async release => {
+              if (createHash('sha256').update(readFileSync(approval.capPolicyPath)).digest('hex') !== release.capPolicySha256) {
+                throw new Error('Owner-approved testnet execution caps changed.');
+              }
+              const rpc = new Connection(monitor.rpcUrls.get('solana:devnet')!, 'finalized');
+              await observeOwnerTestnetRelease(release, rpc, programDataCodeHash);
+            } });
+        } catch {
+          process.stderr.write('Owner-approved devnet qualification unavailable or quarantined; inspect its approval and live evidence.\n');
+        }
+      }
       const observations = await runCodeHashPass({ targets: monitor.targets, readers, journals: monitorJournals, nowMs: BigInt(Date.now()), evidenceTtlMs: monitor.evidenceTtlMs });
       const flagged = observations.filter((entry) => entry.status !== 'MATCH');
       if (flagged.length > 0) process.stdout.write(`Code-hash monitor: ${flagged.map((entry) => `${entry.targetId} ${entry.chainRef} ${entry.status}${entry.detail === undefined ? '' : ` (${entry.detail})`}`).join(', ')}\n`);
     } catch (error) {
       process.stderr.write(`Code-hash monitor pass failed: ${error instanceof Error ? error.message : 'unknown error'}\n`);
-    }
+    } finally { running = false; }
   };
   void pass();
   monitorTimer = setInterval(() => void pass(), monitor.intervalMs);

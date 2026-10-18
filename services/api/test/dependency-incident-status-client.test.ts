@@ -91,6 +91,13 @@ test('an active scope cannot report unsafe exits', () => {
   assert.throws(() => parseDependencyIncidentStatus(active), /exit permission/);
 });
 
+test('owner qualification is explicitly labelled and restricted to Solana devnet', () => {
+  const scope = { ...snapshot().scopes[0]!, domainId: 'svm:devnet', qualificationPolicy: 'OWNER_APPROVED_TESTNET' };
+  assert.equal(parseDependencyIncidentStatus(snapshot({ scopes: [scope] })).scopes[0]?.qualificationPolicy, 'OWNER_APPROVED_TESTNET');
+  assert.throws(() => parseDependencyIncidentStatus(snapshot({ scopes: [{ ...scope, domainId: 'svm:mainnet' }] })), /qualification/);
+  assert.throws(() => parseDependencyIncidentStatus(snapshot({ scopes: [{ ...scope, qualificationPolicy: 'INDEPENDENT_REVIEW' }] })), /qualification/);
+});
+
 test('incident client refuses stale and future snapshots even when their internal evidence is consistent', async () => {
   for (const now of [11_001, 0]) {
     const observedAtMs = now === 0 ? 1_001 : 1_000;

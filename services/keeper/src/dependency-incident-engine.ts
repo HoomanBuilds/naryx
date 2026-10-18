@@ -63,13 +63,27 @@ export interface DependencyScope {
 
 export interface QualificationEvidenceInput {
   readonly scopeHash: `0x${string}`;
-  readonly readinessDecision: ReadinessDecision;
+  readonly readinessDecision: DependencyReadinessDecision;
   readonly readinessDecisionCommitment: Uint8Array | string;
   readonly evidenceCommitment: Uint8Array | string;
   readonly observedAtMs: bigint;
   readonly validUntilMs: bigint;
   readonly exitSafe: boolean;
 }
+
+export interface OwnerApprovedTestnetDecision {
+  readonly schemaVersion: 1;
+  readonly decisionVersion: number;
+  readonly environment: 'devnet';
+  readonly qualificationPolicy: 'OWNER_APPROVED_TESTNET';
+  readonly independentlyReviewed: false;
+  readonly releaseHash: string;
+  readonly scopeHash: `0x${string}`;
+  readonly approvalHash: `0x${string}`;
+  readonly status: 'READY' | 'NOT_READY';
+}
+
+export type DependencyReadinessDecision = ReadinessDecision | OwnerApprovedTestnetDecision;
 
 export interface QualificationEvidence {
   readonly scopeHash: `0x${string}`;
@@ -78,6 +92,7 @@ export interface QualificationEvidence {
   readonly readinessDecisionVersion: number;
   readonly readinessEnvironment: string;
   readonly readinessStatus?: ReadinessDecision['status'];
+  readonly qualificationPolicy?: 'OWNER_APPROVED_TESTNET';
   readonly observedAtMs: bigint;
   readonly validUntilMs: bigint;
   readonly exitSafe: boolean;
@@ -182,7 +197,7 @@ export function dependencyScopeHash(scope: DependencyScopeInput): `0x${string}` 
   return sha256(['naryx/dependency-scope/v1', normalizedScope(scope)]);
 }
 
-export function dependencyReadinessCommitment(decision: ReadinessDecision): `0x${string}` {
+export function dependencyReadinessCommitment(decision: DependencyReadinessDecision): `0x${string}` {
   return sha256(['naryx/incident-readiness/v1', decision]);
 }
 
@@ -192,6 +207,11 @@ function incidentEvidence(
 ): QualificationEvidence {
   requireCondition(HEX_32.test(input.scopeHash), 'evidence scope hash is invalid');
   requireCondition(input.scopeHash === expectedScopeHash, 'evidence is bound to a different scope');
+  if ('qualificationPolicy' in input.readinessDecision) {
+    requireCondition(input.readinessDecision.qualificationPolicy === 'OWNER_APPROVED_TESTNET'
+      && input.readinessDecision.environment === 'devnet' && !input.readinessDecision.independentlyReviewed
+      && input.readinessDecision.scopeHash === expectedScopeHash, 'testnet approval scope differs');
+  }
   requireCondition(input.readinessDecision.status === 'READY' || input.readinessDecision.status === 'NOT_READY',
     'readiness decision status is invalid');
   const readinessCommitment = hex32(input.readinessDecisionCommitment, 'evidence.readinessDecisionCommitment');
@@ -206,6 +226,8 @@ function incidentEvidence(
     readinessDecisionVersion: input.readinessDecision.decisionVersion,
     readinessEnvironment: input.readinessDecision.environment,
     readinessStatus: input.readinessDecision.status,
+    ...('qualificationPolicy' in input.readinessDecision
+      ? { qualificationPolicy: input.readinessDecision.qualificationPolicy } : {}),
     observedAtMs: input.observedAtMs,
     validUntilMs: input.validUntilMs,
     exitSafe: input.exitSafe,
@@ -307,6 +329,8 @@ export function createDependencyIncidentJournal(
 ): DependencyIncidentJournal {
   const scope = normalizedScope(scopeInput);
   const scopeHash = dependencyScopeHash(scope);
+  requireCondition(!('qualificationPolicy' in evidenceInput.readinessDecision)
+    || scope.domain.domainId === 'svm:devnet', 'owner approval is restricted to Solana devnet');
   requireCondition(evidenceInput.readinessDecision.status === 'READY', 'readiness decision is not ready');
   const evidence = incidentEvidence(evidenceInput, scopeHash);
   requireCondition(nowMs >= evidence.observedAtMs && nowMs < evidence.validUntilMs, 'initial evidence is not fresh');

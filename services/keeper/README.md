@@ -51,6 +51,33 @@ records what the monitor observed, not approval to trade.
 
 ## Code-hash monitor
 
+### Owner-approved Solana devnet policy
+
+The optional `OWNER_APPROVED_TESTNET` policy is separate from independent release review. It is
+restricted to `svm:devnet` and its pinned genesis, does not authorize mainnet, and does not alter
+execution caps. The Network page and incident API identify it as not independently reviewed.
+
+An operator places a signed `OwnerApprovedTestnetRelease` in the watchlist journal's
+`ownerApproval` field instead of `readinessDecision` or `readinessInput`. Set
+`NARYX_OWNER_TESTNET_APPROVER` to the public upgrade authority and
+`NARYX_OWNER_TESTNET_CAP_POLICY` to the absolute path of the API's actual execution policy.
+`ownerTestnetApprovalMessage` supplies the canonical, domain-separated Ed25519 signing bytes.
+Keep the signing key off the keeper; it only needs the signed public approval.
+
+The approval binds the exact domain/template scope, all watched program identities, code hashes,
+deployment slots and upgrade authority, the SHA-256 of the unchanged execution-cap file, and an
+owner-attested reconciled funded entry/exit after those deployments. Each refresh independently
+checks finalized deployments and successful program invocations. It does not infer position
+reconciliation from transaction success or represent the owner's attestation as an audit.
+
+Approvals expire within seven days. Successful read-only checks refresh evidence for at most five
+minutes, bounded by that expiry. A changed cap file, authority, deployment or failed observation
+quarantines an active journal. A new approval or restored RPC does not silently clear incidents:
+existing quarantine receipts and reviewed restoration requirements remain in force. Renewal needs
+a new explicit approval and controlled journal handover; never erase an incident to renew it.
+
+### Observation
+
 The code-hash monitor is the service that feeds `CODE_DRIFT`. It reads reviewed code identities through read-only RPC: keccak-256 of `eth_getCode` on EVM, and SHA-256 of a Solana program's executable bytes from its ProgramData account, with loader metadata and trailing zero padding excluded. A different hash is `DRIFT` and absent code is `MISSING`; either quarantines the affected scope in its incident journal, with evidence that commits to the exact observations. A failed read is `UNREADABLE`, reported and never treated as a match. It is off unless `NARYX_CODE_WATCHLIST` names a protocol-JSON watchlist of targets, scope journals with their current readiness decisions, the poll interval (at least 5 seconds), and the evidence validity. It holds no key and never writes to a chain; restoring a quarantined scope remains a reviewed action.
 
 Every target names its chain with `chainRef`: `eip155:<chain id>` (for example `eip155:84532` for Base Sepolia and `eip155:421614` for Arbitrum Sepolia), `solana:devnet`, or `solana:mainnet-beta`. Any other reference fails closed. Each chain a target uses needs its own URL in `NARYX_KEEPER_RPC_URLS`, so Base Sepolia and Arbitrum Sepolia are watched together through separate endpoints. In every pass, before any code on a chain is read, that chain's endpoint must prove its identity from chain data: `eth_chainId` must equal the eip155 chain id, and `getGenesisHash` must equal the cluster's genesis hash (Devnet `EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG`, mainnet-beta `5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d`). An endpoint that answers for another chain makes every target on it `RPC_IDENTITY_MISMATCH` and reads no code; like `UNREADABLE`, that is reported and never quarantines a scope, because a misrouted URL says nothing about the watched code.

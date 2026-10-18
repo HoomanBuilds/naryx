@@ -2,11 +2,13 @@ import { createHash } from 'node:crypto';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { protocolId, readinessDecision, toHex,
   type ReadinessDecision, type ReadinessDecisionInput } from '@naryx/protocol-types';
+import { validateOwnerTestnetApproval, type SignedOwnerTestnetApproval } from './owner-approved-testnet.js';
 import {
   applyDependencyTrigger,
   dependencyReadinessCommitment,
   type DependencyIncidentFileStore,
   type DependencyIncidentJournal,
+  type DependencyReadinessDecision,
 } from './dependency-incident-engine.js';
 import {
   chainIdentity,
@@ -228,7 +230,7 @@ export function observationCommitment(observations: readonly CodeObservation[]):
 export function codeDriftTransition(
   journal: DependencyIncidentJournal,
   observations: readonly CodeObservation[],
-  readinessDecision: ReadinessDecision,
+  readinessDecision: DependencyReadinessDecision,
   nowMs: bigint,
   evidenceTtlMs: bigint,
 ): DependencyIncidentJournal {
@@ -255,7 +257,7 @@ export function codeDriftTransition(
 export async function runCodeHashPass(input: {
   readonly targets: readonly CodeWatchTarget[];
   readonly readers: Readonly<Record<string, CodeReader>>;
-  readonly journals: readonly { readonly store: Pick<DependencyIncidentFileStore, 'load' | 'save'>; readonly readinessDecision: ReadinessDecision }[];
+  readonly journals: readonly { readonly store: Pick<DependencyIncidentFileStore, 'load' | 'save'>; readonly readinessDecision: DependencyReadinessDecision }[];
   readonly nowMs: bigint;
   readonly evidenceTtlMs: bigint;
 }): Promise<readonly CodeObservation[]> {
@@ -280,7 +282,16 @@ export interface CodeHashMonitorConfig {
   readonly intervalMs: number;
   readonly evidenceTtlMs: bigint;
   readonly targets: readonly CodeWatchTarget[];
-  readonly journals: readonly { readonly journalPath: string; readonly readinessDecision: ReadinessDecision }[];
+  readonly journals: readonly {
+    readonly journalPath: string;
+    readonly readinessDecision: DependencyReadinessDecision;
+    readonly ownerApproval?: {
+      readonly signed: SignedOwnerTestnetApproval;
+      readonly trustedApprover: string;
+      readonly capPolicyPath: string;
+      readonly capPolicyText: string;
+    };
+  }[];
   /** One RPC URL for each chain reference a target lives on. */
   readonly rpcUrls: ReadonlyMap<string, string>;
 }
@@ -306,8 +317,25 @@ export function loadCodeHashMonitorConfig(
   requireCondition(Array.isArray(raw.targets) && raw.targets.length > 0 && raw.targets.length <= 256, 'targets must list 1 to 256 targets');
   requireCondition(Array.isArray(raw.journals) && raw.journals.length > 0, 'journals must list at least one scope journal');
   const targets = (raw.targets as CodeWatchTarget[]).map(codeWatchTarget);
-  const journals = (raw.journals as { journalPath: unknown; readinessDecision: unknown; readinessInput?: unknown }[]).map((entry) => {
+  const journals = (raw.journals as { journalPath: unknown; readinessDecision?: unknown; readinessInput?: unknown; ownerApproval?: SignedOwnerTestnetApproval }[]).map((entry) => {
     requireCondition(typeof entry.journalPath === 'string' && entry.journalPath.startsWith('/'), 'journalPath must be absolute');
+    if (entry.ownerApproval !== undefined) {
+      requireCondition(entry.readinessDecision === undefined && entry.readinessInput === undefined,
+        'owner-approved testnet and independent review policies cannot be combined');
+      const trustedApprover = environment.NARYX_OWNER_TESTNET_APPROVER;
+      const capPolicyPath = environment.NARYX_OWNER_TESTNET_CAP_POLICY;
+      requireCondition(typeof trustedApprover === 'string' && typeof capPolicyPath === 'string'
+        && capPolicyPath.startsWith('/'), 'owner-approved testnet requires its pinned approver and execution cap file');
+      const capPolicyText = readText(capPolicyPath);
+      const decision = validateOwnerTestnetApproval(entry.ownerApproval, trustedApprover, capPolicyText);
+      const release = entry.ownerApproval.release;
+      const scoped = targets.filter(t => t.scopeId === release.scope.scopeId);
+      requireCondition(scoped.length === release.programs.length && release.programs.every(p =>
+        scoped.some(t => t.chainRef === 'solana:devnet' && t.address === p.programData && t.expectedCodeHash === p.codeHash)),
+      'watchlist does not cover the exact owner-approved program inventory');
+      return { journalPath: entry.journalPath, readinessDecision: decision,
+        ownerApproval: { signed: entry.ownerApproval, trustedApprover, capPolicyPath, capPolicyText } };
+    }
     requireCondition(typeof entry.readinessDecision === 'object' && entry.readinessDecision !== null, 'readinessDecision is required');
     const decision = entry.readinessDecision as ReadinessDecision;
     requireCondition(decision.schemaVersion === 1 && Number.isSafeInteger(decision.decisionVersion)
