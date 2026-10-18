@@ -107,11 +107,27 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
 - Environment variables (Production): the values from the generated `web/.env.production`.
   `NEXT_PUBLIC_*` values are compiled in at build time, so redeploy after changing any.
 - `NEXT_PUBLIC_PRIVATE_TERMINAL_API_BASE_URL` is `https://api.<your domain>`.
+- Run Vercel CLI deployments from the repository root. The project already sets Root Directory
+  to `apps/web`; invoking it from that workspace resolves `apps/web/apps/web` and fails.
+  Stage with `vercel deploy --prod --skip-domain`, check the staged deployment, then promote it.
 
 ## 7. Operating
 
+- Dedicated test-pool browser access: after deploying the pool controller, run
+  `sudo -u naryx node /srv/naryx/app/deployments/tools/wire-testnet-pool-browser.mjs --root /srv/naryx`
+  and then `--apply`. It verifies the test pool, preserves existing API settings, and enables
+  the restricted proxy and timed threshold openings. Restart only `naryx-api` afterward.
+  Wait for `/health` after a controller restart before running this probe. A restart acknowledgement
+  alone does not mean the listener is ready. Keep the private-delivery SQLite backup for rollback.
 - Health: `curl https://api.<your domain>/internal/healthz`; point an uptime monitor (for example a
   Route 53 health check) at it.
+- Incident visibility: run `sudo -u naryx node /srv/naryx/app/deployments/tools/wire-keeper-status.mjs --root /srv/naryx`
+  to inspect the keeper endpoint before applying the same command with `--apply`. The tool derives
+  the actual loopback port, probes the status schema, preserves other settings and makes an
+  owner-only backup before updating `api.env`. Restart only `naryx-api` afterward. An unavailable
+  scope remains unavailable; wiring this reader does not create qualification evidence, restore
+  a quarantined dependency, or activate trading. Preserve `NARYX_KEEPER_STATUS_ORIGIN` in regenerated
+  releases using the generator's environment input.
 - Deploy a new commit: `git pull`, `deployments/aws/build.sh`, regenerate the release if any
   template or deployment changed, then `sudo systemctl restart naryx-api naryx-solver naryx-keeper`.
   The generator refuses a non-empty `--out`, so regenerate as `naryx` into a new directory

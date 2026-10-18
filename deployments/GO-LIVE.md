@@ -164,40 +164,45 @@ the bundle, so redeploy after any change. Leave the API URL unset for Preview de
 
 ## What any user can do
 
-Nothing in a lane is tied to the operator's wallet. Any visitor connects their own wallets and:
+Users connect their own wallets. Entry still requires the specific lane's funding,
+qualification, supported account mode and execution caps:
 
 | Lane | Funding | Entry | Exit |
 |---|---|---|---|
 | Base Sepolia | Claim tUSDC in Portfolio; ETH gas from a public faucet | The wallet signs and sends the atomic package | Wallet-signed, from any device |
 | Arbitrum Sepolia | Mint USDC.SG in Portfolio; ETH gas from a public faucet | The wallet creates its own Naryx account and signs; the solver submits to GMX and pays GMX fees | Wallet-signed exit authorization; the solver submits the full close |
 | Solana Devnet | Claim test USDC in Portfolio; SOL from a public faucet | The wallet signs the solver's firm quote; one atomic transaction | Wallet-signed firm buy-back exit from the solver |
-| Hyperliquid testnet | None | The EVM wallet signs the package authorization; the shared trading account executes, one package at a time | The owner wallet signs; only its own packages |
+| Hyperliquid testnet | Fund the user's own Standard testnet account and approve its restricted agent through enrollment | The owner signs the package authorization; its enrolled venue account executes | The owner signs; only its own packages |
 
 The Activity page lists each wallet's packages from the API, so they follow the wallet across
 devices. How many users can trade at once is bounded by the funded operator inventory (the solver's
-bonds and inventory, the Hyperliquid account) and by the caps above, so keep them funded.
+bonds and inventory), each user's venue account, and the caps above. The optional shared Hyperliquid
+pool is a separate dedicated test cohort, not a substitute for public enrollment. Its signed
+browser API exposes only each approved owner's consent, balance and funding operations. Epoch
+trading controls remain operator-only.
 
 ## 9. Public copy
 
 Replace the landing page's "Pre-mainnet: public deployment deferred" status only after step 8
 passes on every lane being announced.
 
-## Not yet proven
+## Verified testnet scope and remaining limitations
 
-These have passed local, fork, and LiteSVM tests but have never run against the live testnets:
+Updated 2026-10-18. The root README and versioned release records identify the live paths.
+First-route cash-and-carry execution has testnet evidence on all four domains. Additional
+strategy support is specific to a registered template and deployment, not every catalogue entry.
 
-- No lane has executed a package on a live testnet yet; step 8 is the first end-to-end run.
-- Base has run the whole user journey on a local anvil fork of Base Sepolia, deployed with these
-  runbooks and driven through the real web app, API, and solver with a fresh wallet: claim test
-  USDC, set up the account, enter, reload, restart the API, wait past staleness, exit, withdraw,
-  enter again, and a second wallet trading at the same time. Arbitrum has run the same journey on
-  a local anvil fork of Arbitrum Sepolia, with GMX orders executed and cancelled through the pinned
-  OrderHandler by an impersonated order keeper using GMX's on-chain Chainlink price feed provider
-  (the live keepers use Data Streams reports, which a fork cannot produce): entry, reload, API
-  restart, an hour of accrued fees, full close, a close GMX cancelled and its retry, a second
-  wallet, an oversized order refused before signing, and GMX-cancelled entries refunded by the
-  bonded recovery. Solana and Hyperliquid have not had a journey run; expect their first live run
-  to surface integration issues.
+- Base and Arbitrum native cash-range markets have funded browser entry/exit, withdrawal and
+  finalized receipt evidence, including server reconciliation after browser closure and restart.
+  Their standing makers quote only those cash instruments. They do not populate routed spot/perp
+  strategy books or create positions at external venues.
+- The dedicated Hyperliquid pool completed observed deposits, a two-owner netted BTC epoch,
+  an open-position service restart, close and all withdrawals. Final cash, liabilities and venue
+  positions were zero. It remains restricted to dedicated test accounts. The signed owner API is
+  deployed; balance reads have been verified separately for both traders and the sponsor.
+  Its new Portfolio controls are committed but not deployed: the frontend provider blocked the
+  release because the hosting team exceeded fair-use limits. Existing frontend routing is unchanged.
+  Re-funding requires separate approval; a healthy empty service is not funded liquidity.
 - Arbitrum: GMX execution depends on GMX's testnet keepers (they executed 122 of 143 orders in the
   week to 2026-10-02). The GMX fee and gas keys the solver reads return live values. A request GMX
   cancels, or one still pending after its venue deadline, is recovered by the solver through the
@@ -215,17 +220,13 @@ These have passed local, fork, and LiteSVM tests but have never run against the 
   the rest as claimable collateral for the account; the Naryx account has no path to claim it, so
   the quotes count it as a cost. The open-interest multiplier on GMX's minimum collateral factor is
   not modeled (about 0.001% on testnet).
-- Arbitrum exit: GMX's accrued borrowing and funding fees are not read exactly, so the close carries
-  a slippage allowance; if it is too small, GMX cancels the close and the package stays open. The
-  close callback gas (`exitCallbackGasLimit`) is untested on the live network, and GMX refunds the
-  unused execution fee to the owner, not the solver.
-- Hyperliquid: every user's package runs in the service's shared testnet account (Hyperliquid's
-  faucet does not fund new users), one package at a time; an outcome that is not final blocks the
-  lane until fresh evidence shows it final (released automatically) or an operator releases it
-  (`deployments/aws/README.md`, Operating). A spot buy's fee is
+- Arbitrum exits are asynchronous. A cancelled close leaves the position open until a verified
+  retry or recovery finishes. Do not classify a submission or an API acknowledgement as a fill.
+  Keep callback, fee and price-impact bounds tied to the exact registered deployment.
+- Hyperliquid: an uncertain outcome fences the affected account until authoritative evidence
+  resolves it. Never release an account merely because a local deadline passed. A spot buy's fee is
   paid in the base token, so each package leaves sub-lot base dust in the account; size the
   terminal base residual cap to at least the largest base fee plus one spot lot.
-- Solana: firm entry has no end-to-end LiteSVM test.
 - Seeded Uniswap pools drift from the oracle as people trade; nothing re-centres them yet. Orders
   are bounded by the pinned Uniswap quoter's executable price for their size, so drift costs price,
   not failed transactions, and a size the pool cannot fill is refused before signing.
@@ -233,6 +234,17 @@ These have passed local, fork, and LiteSVM tests but have never run against the 
   sealed auctions) runs on its own listener (8790) when a release enables it; the Hyperliquid
   release does. nginx forwards `/v1/` to it, and the web needs `NARYX_WEB_PUBLIC_API_BASE_URL` set to
   the API's HTTPS origin or those panels show as not configured. Quote-based trading does not need it.
+- The optional threshold-opening backend is deployed using pinned drand quicknet identity and
+  verified public beacons. Openings become public after the release round; threshold collusion
+  can disclose them early. The backend accepts at most eight pending openings globally and two
+  per solver. Ordinary commit/reveal participants and the terminal do not yet select this mode
+  automatically. This is not a claim that all sealed auctions are threshold encrypted.
+- The API now reads the keeper's configured incident-status endpoint. Its missing Solana
+  qualification journal is reported as unavailable, not synthesized as healthy. A code watchlist
+  alone is not a qualified incident journal.
+- A multi-domain coordinator library does not establish an activated cross-chain execution service.
+  Venue-confirmed novation remains unavailable without its evidence verifier. These capabilities
+  need their own activation evidence, not a general service-health assertion.
 
 ## Not available yet
 

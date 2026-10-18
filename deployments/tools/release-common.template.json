@@ -12,6 +12,11 @@
         "NARYX_API_LIFECYCLE_DB": { "$data": "api/package-lifecycle.db" },
         "NARYX_API_EXECUTION_INTENT_DB": { "$data": "api/execution-intents.db" },
         "NARYX_SOLVER_INTERNAL_ORIGIN": "http://127.0.0.1:8788",
+        "NARYX_KEEPER_STATUS_ORIGIN": { "$env": "NARYX_KEEPER_STATUS_ORIGIN", "optional": true },
+        "NARYX_HYPERLIQUID_POOL_BROWSER_ENABLED": { "$env": "NARYX_HYPERLIQUID_POOL_BROWSER_ENABLED", "optional": true },
+        "NARYX_HYPERLIQUID_POOL_BROWSER_ORIGIN": { "$env": "NARYX_HYPERLIQUID_POOL_BROWSER_ORIGIN", "optional": true },
+        "NARYX_HYPERLIQUID_POOL_OPERATOR_TOKEN_PATH": { "$env": "NARYX_HYPERLIQUID_POOL_OPERATOR_TOKEN_PATH", "optional": true },
+        "NARYX_THRESHOLD_AUCTIONS_ENABLED": { "$env": "NARYX_THRESHOLD_AUCTIONS_ENABLED", "optional": true },
         "NARYX_EXECUTION_POLICY_FILE": { "$out": "api/testnet-execution-policy.json" },
         "NARYX_EXECUTION_POLICY_DB": { "$data": "api/execution-policy.db" },
         "NARYX_REFERENCE_HISTORY_DB": { "$data": "api/reference-history.db" }
