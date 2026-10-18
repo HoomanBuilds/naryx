@@ -37,6 +37,9 @@ test('canonical cross-chain calendar binds real documents and distinct local reg
   const source = observations();
   const { draft, documents } = await prepareCanonicalCalendar({ owner: a(1), requestId: 'canonical-calendar-request-1', now, observations: source, signer });
   validateCrossDomainWalletDraft(draft);
+  assert.equal(draft.plan.prepareDeadline - now, 10_800n);
+  assert.equal(draft.plan.commitDeadline - now, 14_400n);
+  assert.ok(draft.plan.compensationDeadline < source[0]!.maturity);
   assert.equal(toHex(draft.execution.orderHash), toHex(strategyPackageOrderHash(documents.order)));
   assert.equal(toHex(draft.execution.graphHash), toHex(packageGraphHash(documents.graph)));
   assert.equal(toHex(draft.execution.routeHash), toHex(typedStrategyRouteHash(documents.route)));
@@ -72,7 +75,7 @@ test('projection changes alter canonical commitments; mismatched owner, domain a
   assert.notEqual(toHex(first.draft.execution.graphHash), toHex(second.draft.execution.graphHash));
   for (const mutation of [
     { owner: a(99) }, { generation: (1n << 64n) - 1n },
-    { domain: domainRef('eip155:1', 3, h('mainnet')) }, { maturity: now + 1n },
+    { domain: domainRef('eip155:1', 3, h('mainnet')) }, { maturity: now + 28_800n },
   ]) {
     const source = observations(); source[0] = { ...source[0]!, ...mutation };
     await assert.rejects(prepareCanonicalCalendar({ ...input, observations: source }), /refused/);

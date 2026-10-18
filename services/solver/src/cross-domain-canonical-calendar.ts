@@ -119,7 +119,7 @@ export async function prepareCanonicalCalendar(input: {
   const [near, far] = observations as [CalendarDomainObservation, CalendarDomainObservation];
   requireCondition(near.role === 'near-future' && far.role === 'far-future'
     && near.domain.domainId === 'eip155:84532' && far.domain.domainId === 'eip155:421614', 'unsupported domain projection');
-  requireCondition(near.maturity < far.maturity && near.maturity > input.now + 7_200n, 'maturities are expired or reversed');
+  requireCondition(near.maturity < far.maturity && near.maturity > input.now + 28_800n, 'maturities are expired or reversed');
   requireCondition(/^[a-zA-Z0-9._:-]{16,96}$/.test(input.requestId) && input.now > 0n, 'invalid request identity or time');
   for (const observation of observations) {
     requireCondition(observation.owner.toLowerCase() === input.owner.toLowerCase()
@@ -154,9 +154,10 @@ export async function prepareCanonicalCalendar(input: {
     seriesId: 'base-arbitrum-calendar-v1', seriesVersion: 1, seriesManifestHash: seriesHash,
     executionClassId: CLASS, executionClassVersion: 1, executionClassManifestHash: executionClassHash };
   const nonce = BigInt(`0x${toHex(calendarCommitment({ owner: input.owner.toLowerCase(), requestId: input.requestId })).slice(0, 16)}`);
-  const prepareDeadline = input.now + 900n;
-  const commitDeadline = input.now + 1_200n;
-  const compensationDeadline = input.now + 7_200n;
+  // Each inventory operation waits for L1-backed finality before the next one can proceed.
+  const prepareDeadline = input.now + 10_800n;
+  const commitDeadline = input.now + 14_400n;
+  const compensationDeadline = input.now + 28_800n;
   const graph = packageGraph({
     ...common, graphVersion: 1, environment: 'testnet', lifecycleAction: 'ENTRY', owner: input.owner.toLowerCase(),
     strategyAccountRefs: observations.map(o => o.account.toLowerCase()), settlementClass: 'CROSS_DOMAIN_PREPOSITIONED',
