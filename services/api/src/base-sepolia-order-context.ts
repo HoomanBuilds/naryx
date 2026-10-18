@@ -444,12 +444,13 @@ export async function createBaseSepoliaOrderRuntime(input: Readonly<{
     status: async (request: Parameters<EvmTestnetAccountPort["status"]>[0]) => {
       const { marginAtoms } = request;
       await requireChain();
-      const resolved = await resolveBaseSepoliaStrategyAccount(port, identity, request.owner);
+      const resolved = await resolveBaseSepoliaStrategyAccount(port, identity, request.owner, request.strategyAccount);
       let spotQuoteAtoms = 0n;
       if (request.orderHash !== undefined) {
         const order = orders.getCanonicalOrderByHash(request.orderHash);
         if (order === undefined || order.domain.domainId !== BASE_SEPOLIA_DOMAIN_ID
-          || !equalAddress(requiredEvmAddress(order.owner, "order.owner"), resolved.owner)) {
+          || !equalAddress(requiredEvmAddress(order.owner, "order.owner"), resolved.owner)
+          || !equalAddress(requiredEvmAddress(order.settlementAccount, "order.settlementAccount"), resolved.account)) {
           throw new EvmTestnetTerminalValidationError("ORDER_NOT_FOUND", "Base Sepolia order was not found for this owner.");
         }
         spotQuoteAtoms = order.maxSpotQuoteIn?.atoms ?? 0n;

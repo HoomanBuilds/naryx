@@ -3,6 +3,11 @@ import {
   bytesEqual,
   packageGraph,
   packageGraphHash,
+  packageReceipt,
+  packageReceiptHash,
+  packageOrder,
+  packageOrderHash,
+  cashCarrySeriesBindingV1,
   requiresSuccessfulReceipt,
   strategyCommandHash,
   strategyExecutionMatches,
@@ -20,7 +25,13 @@ import {
   type StrategyPackageOrder,
   type StrategyPackageReceiptInput,
   type StrategyState,
+  type PackageReceiptInput,
+  type EconomicStrategySeries,
+  type SeriesExecutionClass,
+  type PackageOrderInput,
+  type CashCarrySeriesBindingV1Input,
 } from "@naryx/protocol-types";
+import type { BaseAccountReceipt } from "./base-account-receipt.js";
 
 export class StrategyOpenPreparationError extends Error {
   readonly code: string;
@@ -71,6 +82,115 @@ export interface PreparedStrategyOpen {
 }
 
 export type PreparedStrategyTransition = PreparedStrategyOpen;
+
+export function prepareBoundCashCarryOpen(input: {
+  environment: string; atValue: bigint; receiptHashHex: string; receipt: PackageReceiptInput | BaseAccountReceipt;
+  order: PackageOrderInput; binding: CashCarrySeriesBindingV1Input;
+  spotInstrument: string; perpInstrument: string; transferable: boolean;
+}): PreparedStrategyOpen {
+  const receipt = "kind" in input.receipt ? input.receipt : packageReceipt(input.receipt), order = packageOrder(input.order), binding = cashCarrySeriesBindingV1(input.binding);
+  requireCondition(("kind" in receipt ? receipt.receiptHashHex : toHex(packageReceiptHash(receipt))) === input.receiptHashHex
+    && bytesEqual(packageOrderHash(order), receipt.orderHash), "RECEIPT_MISMATCH", "The receipt requires its originating signed order.");
+  requireCondition(receipt.environment === input.environment && order.environment === input.environment
+    && order.action === "ENTRY" && receipt.action === "ENTRY" && ("kind" in receipt ? order.owner.toLowerCase() === receipt.owner : order.owner === receipt.owner)
+    && receipt.finalityStatus === "FINALIZED" && receipt.terminalState === "FINALIZED_COMPLETE"
+    && receipt.netSpotDelta !== undefined && receipt.netSpotDelta > 0n && receipt.perpPositionDelta < 0n,
+  "RECEIPT_NOT_FINAL", "A strategy requires a finalized entry and positive spot inventory.");
+  requireCondition(receipt.domain.domainId === binding.domain.domainId
+    && receipt.domain.domainManifestVersion === binding.domain.domainManifestVersion
+    && bytesEqual(receipt.domain.domainManifestHash, binding.domain.domainManifestHash)
+    && order.domain.domainId === binding.domain.domainId
+    && order.domain.domainManifestVersion === binding.domain.domainManifestVersion
+    && bytesEqual(order.domain.domainManifestHash, binding.domain.domainManifestHash)
+    && receipt.templateId === binding.templateId && receipt.templateVersion === binding.templateVersion
+    && order.templateId === binding.templateId && order.templateVersion === binding.templateVersion
+    && order.settlementClass === binding.settlementClass && receipt.settlementClass === binding.settlementClass
+    && bytesEqual(receipt.packageTemplateManifestHash, binding.templateManifestHash)
+    && bytesEqual(order.packageTemplateManifestHash, binding.templateManifestHash)
+    && bytesEqual(order.quantity.asset.assetManifestHash, binding.baseAsset.manifestHash)
+    && bytesEqual(order.maxMarginAdded.asset.assetManifestHash, binding.quoteAsset.manifestHash)
+    && receipt.spotVenue !== receipt.perpVenue && receipt.quantity === order.quantity.atoms
+    && order.quantity.atoms === receipt.netSpotDelta
+    && receipt.netSpotDelta * binding.perpQuantityAtomsPerPackageUnit === -receipt.perpPositionDelta * binding.spotBaseAtomsPerPackageUnit,
+  "BINDING_MISMATCH", "The entry differs from the reviewed onchain cash-and-carry binding.");
+  const common = gcd(receipt.netSpotDelta!, receipt.perpPositionDelta);
+  const state = strategyState({ version: 1, strategyId: `strategy-${input.receiptHashHex}`, ownerId: receipt.owner,
+    subaccountId: order.settlementAccount, seriesId: `series-${toHex(binding.seriesManifestHash)}`, executionClassId: receipt.packageMarketId,
+    open: true, stateVersion: 1n, liabilities: [], delegations: [], legalTransferRestricted: false,
+    venuePositionsTransferable: input.transferable && receipt.domain.domainId === "eip155:84532",
+    legs: [
+      { legId: "spot", underlyingId: order.quantity.asset.assetId, instrumentId: input.spotInstrument, venueId: receipt.spotVenue,
+        signedQuantityAtoms: receipt.netSpotDelta!, lotAtoms: common, ratioNumerator: receipt.netSpotDelta! / common, ratioDenominator: 1n },
+      { legId: "perp", underlyingId: order.quantity.asset.assetId, instrumentId: input.perpInstrument, venueId: receipt.perpVenue,
+        signedQuantityAtoms: receipt.perpPositionDelta, lotAtoms: common, ratioNumerator: receipt.perpPositionDelta / common, ratioDenominator: 1n },
+    ] });
+  const command: StrategyCommandInput = { commandVersion: 1, environment: input.environment, strategyId: state.strategyId,
+    actorId: state.ownerId, expectedStateVersion: 0n, expectedStateHash: "00".repeat(32), atValue: input.atValue,
+    parameters: { kind: "OPEN", originReceiptHash: input.receiptHashHex, state } };
+  return { command, commandHashHex: toHex(strategyCommandHash(command)), stateHashHex: toHex(strategyStateHash(state)),
+    orderHashHex: toHex(receipt.orderHash), receiptHashHex: input.receiptHashHex };
+}
+
+export function prepareBaseAccountExit(input: { environment: string; atValue: bigint; current: StrategyState; receipt: BaseAccountReceipt }): PreparedStrategyTransition {
+  const { current, receipt } = input;
+  const command: StrategyCommandInput = { commandVersion: 1, environment: input.environment, strategyId: current.strategyId,
+    actorId: current.ownerId, expectedStateVersion: current.stateVersion, expectedStateHash: strategyStateHash(current), atValue: input.atValue,
+    parameters: { kind: "EXIT", settlements: [], executionReceiptHashes: [receipt.receiptHashHex] } };
+  const next = strategyState({ ...current, open: false, delegations: [], stateVersion: current.stateVersion + 1n,
+    legs: current.legs.map(leg => ({ ...leg, signedQuantityAtoms: 0n })) });
+  return { command, commandHashHex: toHex(strategyCommandHash(command)), stateHashHex: toHex(strategyStateHash(next)),
+    receiptHashHex: receipt.receiptHashHex, orderHashHex: typeof receipt.orderHash === "string" ? receipt.orderHash : toHex(receipt.orderHash) };
+}
+
+export function prepareCanonicalStrategyOpen(input: {
+  environment: string;
+  atValue: bigint;
+  receiptHashHex: string;
+  receipt: PackageReceiptInput;
+  series: EconomicStrategySeries;
+  executionClass: SeriesExecutionClass;
+  transferable: boolean;
+}): PreparedStrategyOpen {
+  const receipt = packageReceipt(input.receipt);
+  const { series, executionClass } = input;
+  requireCondition(toHex(packageReceiptHash(receipt)) === input.receiptHashHex, "RECEIPT_MISMATCH", "The entry receipt hash differs.");
+  requireCondition(receipt.environment === input.environment && receipt.action === "ENTRY"
+    && receipt.finalityStatus === "FINALIZED" && receipt.terminalState === "FINALIZED_COMPLETE"
+    && receipt.netSpotDelta !== undefined && receipt.netSpotDelta > 0n && receipt.perpPositionDelta < 0n,
+  "RECEIPT_NOT_FINAL", "A canonical strategy requires a finalized spot and perpetual entry.");
+  requireCondition(series.seriesId === executionClass.seriesId && receipt.packageMarketId === executionClass.executionClassId
+    && receipt.templateId === series.templateId && receipt.templateVersion === series.templateVersion
+    && bytesEqual(receipt.packageTemplateManifestHash, series.templateManifestHash)
+    && executionClass.domains.length === 1 && executionClass.domains[0]!.domainId === receipt.domain.domainId
+    && executionClass.domains[0]!.domainManifestVersion === receipt.domain.domainManifestVersion
+    && bytesEqual(executionClass.domains[0]!.domainManifestHash, receipt.domain.domainManifestHash)
+    && series.underlyingRefs.length === 2 && series.instrumentRefs?.length === 2
+    && series.underlyingRefs[0] === series.underlyingRefs[1]
+    && series.economicLegRatios[0]!.numerator > 0n && series.economicLegRatios[1]!.numerator < 0n,
+  "BINDING_MISMATCH", "The receipt requires its registered cash-and-carry series and instruments.");
+  const common = gcd(receipt.netSpotDelta!, receipt.perpPositionDelta);
+  const state = strategyState({
+    version: 1, strategyId: `strategy-${input.receiptHashHex}`, ownerId: receipt.owner,
+    subaccountId: receipt.owner, seriesId: series.seriesId, executionClassId: executionClass.executionClassId,
+    open: true, stateVersion: 1n, liabilities: [], delegations: [], legalTransferRestricted: false,
+    venuePositionsTransferable: input.transferable && receipt.domain.domainId === "eip155:84532",
+    legs: [
+      { legId: "spot", underlyingId: series.underlyingRefs[0]!, instrumentId: series.instrumentRefs![0]!,
+        venueId: receipt.spotVenue, signedQuantityAtoms: receipt.netSpotDelta!, lotAtoms: common,
+        ratioNumerator: receipt.netSpotDelta! / common, ratioDenominator: 1n },
+      { legId: "perp", underlyingId: series.underlyingRefs[1]!, instrumentId: series.instrumentRefs![1]!,
+        venueId: receipt.perpVenue, signedQuantityAtoms: receipt.perpPositionDelta, lotAtoms: common,
+        ratioNumerator: receipt.perpPositionDelta / common, ratioDenominator: 1n },
+    ],
+  });
+  const command: StrategyCommandInput = {
+    commandVersion: 1, environment: input.environment, strategyId: state.strategyId, actorId: state.ownerId,
+    expectedStateVersion: 0n, expectedStateHash: "00".repeat(32), atValue: input.atValue,
+    parameters: { kind: "OPEN", originReceiptHash: input.receiptHashHex, state },
+  };
+  return { command, commandHashHex: toHex(strategyCommandHash(command)), stateHashHex: toHex(strategyStateHash(state)),
+    orderHashHex: toHex(receipt.orderHash), receiptHashHex: input.receiptHashHex };
+}
 
 export function prepareStrategyOpen(input: Readonly<{
   environment: string;

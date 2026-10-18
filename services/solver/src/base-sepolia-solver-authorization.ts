@@ -240,7 +240,8 @@ export function createBaseSepoliaSolverAuthorization(options: BaseSepoliaSolverA
     if (!verifyOwnQuote(admission.quote, solverSignatureDigest(admission.quote), options.quoteVerificationKey)) {
       fail('NOT_AUTHORIZED', 'selected quote was not signed by this solver');
     }
-    const account = await readBaseSepoliaAccountOf(options.chain, options.deployment.deployment, admission.order.owner);
+    const account = await readBaseSepoliaAccountOf(options.chain, options.deployment.deployment, admission.order.owner,
+      admission.order.settlementAccount);
     if (!equalAddress(account, bounds.strategyAccount)) {
       fail('NOT_AUTHORIZED', 'bounds strategy account is not the owner factory account');
     }

@@ -2674,7 +2674,9 @@ export function createPrivateTerminalRequestHandler(
       const owner = url.searchParams.get("owner") ?? "";
       const orderHash = url.searchParams.get("orderHash") ?? undefined;
       const margin = url.searchParams.get("marginAtoms") ?? "0";
+      const strategyAccount = url.searchParams.get("strategyAccount") ?? undefined;
       if (!/^0x[0-9a-fA-F]{40}$/.test(owner) || !/^(?:0|[1-9][0-9]{0,30})$/.test(margin)
+        || (strategyAccount !== undefined && !/^0x[0-9a-fA-F]{40}$/.test(strategyAccount))
         || (orderHash !== undefined && !/^[0-9a-f]{64}$/.test(orderHash))) {
         reject(response, 400, "INVALID_REQUEST", "owner must be an EVM address, orderHash a hash, and margin integer atoms.");
         return;
@@ -2683,6 +2685,7 @@ export function createPrivateTerminalRequestHandler(
         sendJson(response, 200, await evmTestnetPorts.account.status({
           owner,
           ...(orderHash === undefined ? {} : { orderHash }),
+          ...(strategyAccount === undefined ? {} : { strategyAccount }),
           marginAtoms: BigInt(margin),
         }));
       } catch (error) {

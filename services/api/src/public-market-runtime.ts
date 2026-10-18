@@ -4,13 +4,17 @@ import { isAbsolute, resolve } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { createMarketStream } from "./market-stream.js";
-import { domainRefFromManifest, parseProtocolJson, protocolId } from "@naryx/protocol-types";
+import { domainRefFromManifest, parseProtocolJson, protocolId, toHex } from "@naryx/protocol-types";
+import { prepareBaseAccountExit, prepareBoundCashCarryOpen } from "./strategy-open-preparation.js";
+import { createBaseAccountReceiptResolver } from "./base-account-receipt.js";
+import type { SqlitePreparedEvmTestnetAtomicStore } from "./evm-testnet-prepared-store.js";
 import type {
   EconomicStrategySeriesSupportInput,
   SeriesExecutionClassSupportInput,
   DomainRegistryRecordInput,
   DomainResourceLimit,
   SolverCapabilityManifestInput,
+  PackageOrder,
 } from "@naryx/protocol-types";
 import { SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { createPublicApiHandler } from "./public-api.js";
@@ -94,6 +98,7 @@ import {
   type StrategyOrderIntakePort,
 } from "./strategy-order-intake.js";
 import bs58 from "bs58";
+import { createBaseStrategyTransferContext, createBaseStrategyTransferVerifier } from "./base-strategy-transfer-verifier.js";
 
 const MAX_SUPPORT_MANIFEST_BYTES = 65_536;
 const MAX_ADMISSION_CONTEXT_BYTES = 1_048_576;
@@ -400,6 +405,8 @@ export function loadPublicMarketRuntime(
   environment: NodeJS.ProcessEnv = process.env,
   clockMs: () => number = Date.now,
   unitClock?: (unit: string) => bigint | undefined,
+  canonicalOrder?: (hash: string) => PackageOrder | undefined,
+  baseReceipts?: SqlitePreparedEvmTestnetAtomicStore,
 ): PublicMarketRuntime | undefined {
   const enabled = environment.NARYX_PUBLIC_MARKET_ENABLED ?? "false";
   if (enabled !== "true" && enabled !== "false") throw new PublicMarketConfigError("NARYX_PUBLIC_MARKET_ENABLED must be true or false.");
@@ -557,11 +564,47 @@ export function loadPublicMarketRuntime(
     if (strategyPath !== undefined && (publicEnvironment === undefined || !/^[A-Za-z0-9._:-]{1,64}$/.test(publicEnvironment) || publicEnvironment.toLowerCase().includes("mainnet"))) {
       throw new PublicMarketConfigError("NARYX_STRATEGY_DB requires NARYX_PUBLIC_ENVIRONMENT, a non-mainnet environment id.");
     }
+    const transfersSetting = environment.NARYX_BASE_STRATEGY_TRANSFERS_ENABLED;
+    if (transfersSetting !== undefined && transfersSetting !== "true" && transfersSetting !== "false") {
+      throw new PublicMarketConfigError("NARYX_BASE_STRATEGY_TRANSFERS_ENABLED must be true or false.");
+    }
+    const originReceipt = (receiptHashHex: string) => baseReceipts?.accountReceipt(receiptHashHex) ?? strategyPackages?.receipt(receiptHashHex) ?? evidence?.outcomeByReceipt(receiptHashHex)?.receipt;
+    if (transfersSetting === "true" && (publicEnvironment !== "testnet" || strategyPath === undefined || evidence === undefined
+      || baseReceipts === undefined || canonicalOrder === undefined)) {
+      throw new PublicMarketConfigError("Base strategy transfers require a testnet strategy book, canonical orders and finalized account receipts.");
+    }
+    const transferRuntime = transfersSetting !== "true" ? undefined : loadBaseSepoliaRuntimeManifest(absolute(environment.NARYX_BASE_SEPOLIA_RUNTIME_MANIFEST,
+      "NARYX_BASE_SEPOLIA_RUNTIME_MANIFEST")).deployment;
+    const transferConfig = transferRuntime === undefined ? undefined : {
+      rpcUrl: environment.NARYX_BASE_SEPOLIA_RPC_URL ?? "",
+      deployment: transferRuntime.deployment,
+      originReceipt,
+      originOrder: (hash: string) => canonicalOrder?.(hash) ?? evidence?.getOrder(hash)?.order,
+    };
+    const transferEvidence = transferConfig === undefined ? undefined : createBaseStrategyTransferVerifier(transferConfig);
+    const resolveAccountReceipt = transferConfig === undefined || transferRuntime === undefined || baseReceipts === undefined ? undefined
+      : createBaseAccountReceiptResolver({ rpcUrl: transferConfig.rpcUrl, configuration: transferRuntime, store: baseReceipts, order: transferConfig.originOrder });
+    const prepareCanonicalStrategy = (receiptHash: string, atValue: bigint) => {
+      const receipt = originReceipt(receiptHash);
+      if (transferRuntime === undefined || receipt === undefined || "legOutcomes" in receipt || receipt.domain.domainId !== "eip155:84532") return undefined;
+      if (!("kind" in receipt)) throw new PublicMarketConfigError("Base account strategies require the finalized onchain account receipt.");
+      const order = transferConfig!.originOrder(toHex(receipt.orderHash));
+      if (order === undefined) throw new PublicMarketConfigError("The originating signed order is unavailable.");
+      return prepareBoundCashCarryOpen({ environment: "testnet", atValue, receiptHashHex: receiptHash, receipt, order,
+        binding: transferRuntime.seriesBindingInput, spotInstrument: transferRuntime.deployment.spot.market.address.toLowerCase(),
+        perpInstrument: transferRuntime.deployment.perpetual.market.address.toLowerCase(), transferable: true });
+    };
     const strategies = strategyPath === undefined || evidence === undefined
       ? undefined
       : new SqliteStrategyBookStore(absolute(strategyPath, "NARYX_STRATEGY_DB"), {
         environment: publicEnvironment as string,
-        originReceipt: (receiptHashHex) => strategyPackages?.receipt(receiptHashHex) ?? evidence.outcomeByReceipt(receiptHashHex)?.receipt,
+        originReceipt,
+        ...(transferEvidence === undefined ? {} : { transferEvidence }),
+        ...(resolveAccountReceipt === undefined ? {} : { resolveReceipt: resolveAccountReceipt }),
+        ...(transferRuntime === undefined ? {} : { canonicalOriginState: (hash: string) => {
+          const command = prepareCanonicalStrategy(hash, 1n)?.command;
+          return command?.parameters.kind === "OPEN" ? command.parameters.state : undefined;
+        } }),
         packageOrder: (orderHashHex) => strategyPackages?.order(orderHashHex)?.order,
         clock: clockMs,
       });
@@ -882,6 +925,25 @@ export function loadPublicMarketRuntime(
       ...(graphContext === undefined ? {} : { graphContext }),
       ...(catalogue === undefined ? {} : { catalogue }),
       ...(strategies === undefined ? {} : { strategies }),
+      baseStrategyTransfersEnabled: transferEvidence !== undefined,
+      ...(transferConfig === undefined ? {} : { strategyTransferContext: createBaseStrategyTransferContext(transferConfig) }),
+      ...(transferRuntime === undefined ? {} : {
+        prepareCanonicalStrategy: async (hash: string, atValue: bigint) => {
+          await resolveAccountReceipt?.(hash);
+          return prepareCanonicalStrategy(hash, atValue);
+        },
+        prepareCanonicalTransition: async (strategyId: string, hash: string, atValue: bigint) => {
+          const receipt = await resolveAccountReceipt?.(hash), stored = strategies?.strategy(strategyId);
+          if (receipt === undefined || stored === undefined) return undefined;
+          const origin = stored.originReceiptHashHex === undefined ? undefined : originReceipt(stored.originReceiptHashHex);
+          if (origin === undefined || !("kind" in origin) || receipt.action !== "EXIT" || receipt.entryReceiptHashHex !== origin.receiptHashHex
+            || receipt.strategyAccount !== origin.strategyAccount || receipt.owner !== stored.state.ownerId) {
+            throw new PublicMarketConfigError("The exit does not belong to this account and originating entry.");
+          }
+          return prepareBaseAccountExit({ environment: "testnet", atValue, current: stored.state, receipt });
+        },
+      }),
+      ...(evidence === undefined ? {} : { canonicalStrategyReceipt: (hash: string) => evidence.outcomeByReceipt(hash)?.receipt }),
       ...(strategyPackages === undefined ? {} : { strategyPackages }),
       ...(strategyOrderIntake === undefined ? {} : { strategyOrderIntake }),
       ...(strategyPackages === undefined ? {} : { strategyPackageSources: strategyPackages }),

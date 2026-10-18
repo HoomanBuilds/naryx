@@ -22,6 +22,7 @@ import {
   baseSepoliaFeesByAsset,
   createBaseSepoliaQuoteRuntime,
   priceBaseSepoliaEntry,
+  readBaseSepoliaAccountOf,
   type BaseSepoliaReadPort,
   type BaseSepoliaSolverDeployment,
 } from '../src/base-sepolia-quote-runtime.js';
@@ -55,12 +56,35 @@ const deployment = {
   domainManifest: manifest,
   deploymentChainReference: 84_532n,
   strategyAccountFactory: { address: address('a'), expectedCodeHash: `0x${hash('a')}` as Hex },
+  strategyAccountCodeHash: `0x${hash('b')}` as Hex,
   spot: { market: { address: address('b') } },
   perpetual: { market: { address: address('c') } },
   baseAsset: { address: address('d'), decimals: 18 },
   quoteAsset: { address: address('9'), decimals: 6 },
 } as unknown as BaseSepoliaSolverDeployment['deployment'];
 const spotQuoter = { address: address('6'), expectedCodeHash: `0x${hash('6')}` as Hex };
+
+test('an acquired exit account needs the reviewed code, current owner and verifier', async () => {
+  const acquired = address('3');
+  const verifier = address('4');
+  const codeHash = `0x${hash('a')}` as Hex;
+  const identity = { ...deployment, strategyAccountCodeHash: codeHash,
+    packageVerifier: { address: verifier, expectedCodeHash: codeHash } };
+  let currentOwner = owner;
+  let currentVerifier = verifier;
+  let currentCode: Hex | undefined = codeHash;
+  const reads: BaseSepoliaReadPort = { chainId: async () => 84532n, latestBlockTimestamp: async () => 1_000n,
+    codeHash: async () => currentCode,
+    readContract: async ({ functionName }) => functionName === 'accountOf' ? account : functionName === 'owner' ? currentOwner : currentVerifier };
+  assert.equal(await readBaseSepoliaAccountOf(reads, identity, owner, acquired), getAddress(acquired));
+  currentOwner = address('9');
+  await assert.rejects(readBaseSepoliaAccountOf(reads, identity, owner, acquired), /ownership or verifier/);
+  currentOwner = owner; currentVerifier = address('9');
+  await assert.rejects(readBaseSepoliaAccountOf(reads, identity, owner, acquired), /ownership or verifier/);
+  currentVerifier = verifier; currentCode = undefined;
+  await assert.rejects(readBaseSepoliaAccountOf(reads, identity, owner, acquired), /code differs/);
+  assert.equal(await readBaseSepoliaAccountOf(reads, identity, owner), getAddress(account));
+});
 
 type QuoterCall = Readonly<{ functionName: string; args?: readonly unknown[] }>;
 
@@ -204,7 +228,7 @@ test('declines a Base quote when the live spread exceeds the signed maximum', as
   );
 });
 
-test('refuses to quote an order whose settlement account is not the owner factory account', async () => {
+test('refuses an acquired account without the reviewed account code', async () => {
   const runtime = quoteRuntime(chain());
   const order = {
     environment: 'testnet',
@@ -224,7 +248,7 @@ test('refuses to quote an order whose settlement account is not the owner factor
   } as unknown as PackageOrder;
   await assert.rejects(
     async () => runtime.candidates({ order, orderHash: new Uint8Array(32).fill(1) as never }),
-    /not the owner factory account/,
+    /acquired strategy account code differs/,
   );
 });
 

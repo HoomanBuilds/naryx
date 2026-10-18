@@ -213,14 +213,14 @@ function requireClock(value: bigint): bigint {
 }
 
 /**
- * Resolves the owner's factory account from chain. The address is `accountOf(owner)`; once deployed
- * its code must be the factory's shared account code, bound to this verifier, and still owned by
- * `owner` (a novated account no longer settles for its previous owner).
+ * An acquired account must be deployed with the same reviewed code and verifier, and owned by
+ * the signer. Only the owner's default factory address can be undeployed.
  */
 export async function resolveBaseSepoliaStrategyAccount(
   reads: BaseSepoliaAtomicLiveReads,
   deployment: EvmDeploymentIdentity,
   ownerValue: string,
+  accountValue?: string,
 ): Promise<BaseSepoliaStrategyAccount> {
   let owner: Address;
   try {
@@ -229,7 +229,7 @@ export async function resolveBaseSepoliaStrategyAccount(
     fail("INVALID_OWNER", "Base Sepolia order owner must be an EVM address.");
   }
   const factory = requiredEvmAddress(deployment.strategyAccountFactory.address, "strategyAccountFactory");
-  const account = requiredEvmAddress(
+  const defaultAccount = requiredEvmAddress(
     String(await reads.readContract({
       address: factory,
       abi: NARYX_STRATEGY_ACCOUNT_FACTORY_ABI,
@@ -238,8 +238,12 @@ export async function resolveBaseSepoliaStrategyAccount(
     })),
     "accountOf(owner)",
   );
+  const account = accountValue === undefined ? defaultAccount : requiredEvmAddress(accountValue, "strategyAccount");
   const codeHash = await reads.codeHash(account);
-  if (codeHash === undefined) return Object.freeze({ owner, account, deployed: false });
+  if (codeHash === undefined) {
+    if (!equalAddress(account, defaultAccount)) fail("ACCOUNT_NOT_DEPLOYED", "An acquired strategy account must already be deployed.");
+    return Object.freeze({ owner, account, deployed: false });
+  }
   if (!equalHash(codeHash, deployment.strategyAccountCodeHash)) {
     fail("ACCOUNT_CODE_MISMATCH", "Strategy account code does not match the factory account code.");
   }
@@ -501,7 +505,7 @@ export function createBaseSepoliaAtomicContextProvider(
       });
     }
 
-    const resolved = await resolveBaseSepoliaStrategyAccount(options.reads, deployment, order.owner);
+    const resolved = await resolveBaseSepoliaStrategyAccount(options.reads, deployment, order.owner, settlementAccount);
     if (!equalAddress(resolved.account, settlementAccount)) {
       fail("SETTLEMENT_ACCOUNT_MISMATCH", "Order settlement account is not the owner's factory account.");
     }

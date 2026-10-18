@@ -35,8 +35,15 @@ import {
   type EvmDeploymentIdentity,
   type EvmManifestResourceIdentity,
 } from "@naryx/adapter-evm";
-import { keccak256, stringToHex, type Address, type Hex } from "viem";
+import { getAddress, keccak256, stringToHex, type Address, type Hex } from "viem";
 import { createBaseSepoliaOrderRuntime, type BaseSepoliaOrderContextConfig } from "../src/base-sepolia-order-context.js";
+import { resolveBaseSepoliaStrategyAccount } from "../src/base-sepolia-atomic-context-provider.js";
+import { prepareBoundCashCarryOpen } from "../src/strategy-open-preparation.js";
+import { packageReceiptHash, toHex } from "@naryx/protocol-types";
+import { receipt as canonicalReceipt } from "./evidence-fixtures.js";
+import { createBaseAccountReceiptResolver, type BaseAccountReceipt } from "../src/base-account-receipt.js";
+import { cashCarrySeriesBindingV1Hash, cashCarrySeriesIdentityKey } from "@naryx/protocol-types";
+import { encodeAbiParameters, encodeEventTopics, parseAbi, parseAbiParameters } from "viem";
 import {
   BASE_SEPOLIA_ATOMIC_EVIDENCE_CLASS,
   BASE_SEPOLIA_CONFORMANCE_PERPETUAL_EVIDENCE_LABEL,
@@ -585,6 +592,74 @@ function setupPackage() {
   return { canonical, context, configuration, response };
 }
 
+test("a bound entry opens the actual account without inventing a public catalogue series", () => {
+  const { canonical, configuration } = setupPackage();
+  const order = canonical.order;
+  const origin = canonicalReceipt(canonical.orderHash, { owner: order.owner, domain: order.domain,
+    packageTemplateManifestHash: order.packageTemplateManifestHash, quantity: order.quantity.atoms,
+    netSpotDelta: order.quantity.atoms, perpPositionDelta: -order.quantity.atoms });
+  const input = { environment: "testnet", atValue: 1_000n, receiptHashHex: toHex(packageReceiptHash(origin)),
+    receipt: origin, order, binding: configuration.seriesBindingInput,
+    spotInstrument: spotPool, perpInstrument, transferable: true };
+  const prepared = prepareBoundCashCarryOpen(input);
+  if (prepared.command.parameters.kind !== "OPEN") throw new Error("unexpected command");
+  assert.equal(prepared.command.parameters.state.subaccountId, order.settlementAccount);
+  assert.equal(prepared.command.parameters.state.venuePositionsTransferable, true);
+  assert.equal(prepared.command.parameters.state.seriesId, `series-${bytesHex(hash(81))}`);
+  assert.throws(() => prepareBoundCashCarryOpen({ ...input,
+    binding: { ...input.binding, domain: { ...input.binding.domain, domainManifestVersion: 2 } } }), /binding/);
+  assert.throws(() => prepareBoundCashCarryOpen({ ...input,
+    binding: { ...input.binding, baseAsset: { ...input.binding.baseAsset, manifestHash: hash(99) } } }), /binding/);
+  assert.throws(() => prepareBoundCashCarryOpen({ ...input,
+    binding: { ...input.binding, perpQuantityAtomsPerPackageUnit: 2n } }), /binding/);
+});
+
+test("native receipt hydration uses the finalized prepared transaction and exact onchain binding", async () => {
+  const { canonical, configuration, response } = setupPackage();
+  const code = "0x6000" as Hex, codeHash = keccak256(code), txHash = hashHex(91), receiptHash = hashHex(92), blockHash = hashHex(93);
+  const identity = configuration.deployment;
+  const config = { ...configuration, deployment: { ...identity, strategyAccountCodeHash: codeHash,
+    packageVerifier: { ...identity.packageVerifier, expectedCodeHash: codeHash } } };
+  const asHex = (value: Uint8Array) => `0x${toHex(value)}`;
+  const raw = { orderHash: asHex(canonical.orderHash), quoteHash: `0x${response.quoteHash}`, routeHash: `0x${response.routeHash}`,
+    strategyAccount: String(canonical.order.settlementAccount), action: 1, recovery: false, seriesBindingVersion: 1,
+    seriesIdentityKey: asHex(cashCarrySeriesIdentityKey(configuration.seriesBindingInput)),
+    seriesBindingHash: asHex(cashCarrySeriesBindingV1Hash(configuration.seriesBindingInput)),
+    baseQuantityAtoms: canonical.order.quantity.atoms, prePerpSizeWad: 0n, postPerpSizeWad: -canonical.order.quantity.atoms,
+    entryReceiptHash: hashHex(0) };
+  const eventAbi = parseAbi(["event PackageVerified(bytes32 indexed receiptHash,address indexed strategyAccount,uint8 indexed action,address solver,bool recovery,uint256 baseQuantityAtoms,uint256 spotQuoteAtoms,bytes32 packageQuoteIntentHash,bytes32 packageQuoteFillCommitment)"]);
+  const topics = encodeEventTopics({ abi: eventAbi, eventName: "PackageVerified", args: { receiptHash, strategyAccount, action: 1 } });
+  const data = encodeAbiParameters(parseAbiParameters("address,bool,uint256,uint256,bytes32,bytes32"), [solver, false, raw.baseQuantityAtoms, 10n, hashHex(0), hashHex(0)]);
+  let cached: BaseAccountReceipt | undefined, final = 100n, canonicalBlock = true;
+  const resolve = createBaseAccountReceiptResolver({ rpcUrl: "https://unused.example", configuration: config,
+    order: () => canonical.order, store: {
+      accountReceipt: () => cached, saveAccountReceipt: value => { cached = value; },
+      finalizedReceiptSource: () => ({ preparation: { orderHash: raw.orderHash, quoteHash: raw.quoteHash, routeHash: raw.routeHash } as never,
+        transactionHash: txHash, blockNumber: "100" }),
+    }, reads: {
+      getChainId: async () => 84532,
+      getTransactionReceipt: async () => ({ status: "success", blockNumber: 100n, blockHash,
+        logs: [{ address: packageVerifier, data, topics }] }),
+      getBlock: async ({ blockTag }: { blockTag?: string }) => ({ number: blockTag ? final : 100n, hash: canonicalBlock ? blockHash : hashHex(99) }),
+      getCode: async ({ blockNumber }: { blockNumber: bigint }) => { assert.equal(blockNumber, 100n); return code; },
+      readContract: async ({ functionName, blockNumber }: { functionName: string; blockNumber: bigint }) => {
+        assert.equal(blockNumber, 100n); return functionName === "owner" ? owner : raw;
+      },
+    } as never });
+  final = 99n;
+  await assert.rejects(resolve(receiptHash.slice(2)), /not canonical and finalized/);
+  final = 100n; canonicalBlock = false;
+  await assert.rejects(resolve(receiptHash.slice(2)), /not canonical and finalized/);
+  canonicalBlock = true; raw.strategyAccount = address(99);
+  await assert.rejects(resolve(receiptHash.slice(2)), /does not match/);
+  raw.strategyAccount = canonical.order.settlementAccount;
+  const result = await resolve(receiptHash.slice(2));
+  assert.equal(result?.netSpotDelta, canonical.order.quantity.atoms);
+  assert.equal(result?.perpPositionDelta, -canonical.order.quantity.atoms);
+  assert.equal(result?.receiptHashHex, receiptHash.slice(2));
+  assert.equal(await resolve(receiptHash.slice(2)), cached);
+});
+
 const WAD = 1_000_000_000_000_000_000n;
 
 type FakeChain = {
@@ -729,7 +804,7 @@ test("derives live entry bounds for the owner account and freezes them for prepa
   }
 });
 
-test("fails closed unless the settlement account is the owner's funded factory account", async () => {
+test("fails closed unless the settlement account is deployed, reviewed, owned and funded", async () => {
   const scratch = mkdtempSync(join(tmpdir(), "naryx-base-context-account-"));
   const { orders, intents, fixture, attempt } = selectedAttempt(scratch);
   try {
@@ -740,7 +815,7 @@ test("fails closed unless the settlement account is the owner's funded factory a
       currentUnixSeconds: () => 1_500n,
       reads: liveReads(chain, fixture.configuration),
     })(attempt.attemptId, "authorize");
-    await assert.rejects(invoke({ ...fakeChain(), accountOf: address(15) }), rejectsWith("SETTLEMENT_ACCOUNT_MISMATCH"));
+    await assert.rejects(invoke({ ...fakeChain(), accountOf: address(15) }), rejectsWith("ACCOUNT_NOT_DEPLOYED"));
     await assert.rejects(invoke({ ...fakeChain(), accountCodeHash: hashHex(99) }), rejectsWith("ACCOUNT_CODE_MISMATCH"));
     await assert.rejects(invoke({ ...fakeChain(), accountCodeHash: undefined }), rejectsWith("ACCOUNT_NOT_DEPLOYED"));
     await assert.rejects(invoke({ ...fakeChain(), reserveAtoms: 399_999_999n }), rejectsWith("MARGIN_RESERVE_INSUFFICIENT"));
@@ -785,6 +860,22 @@ test("admission reads the chain's clock, which the verifier also uses, not the s
     orders.close();
     rmSync(scratch, { recursive: true, force: true });
   }
+});
+
+test("an acquired account resolves for its new owner but not its former owner or a changed deployment", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "naryx-base-transferred-"));
+  const { orders, intents, fixture } = selectedAttempt(scratch);
+  try {
+    const base = liveReads(fakeChain(), fixture.configuration);
+    const reads = { ...base, readContract: async (request: Parameters<typeof base.readContract>[0]) =>
+      request.functionName === "accountOf" ? address(15) : base.readContract(request) };
+    assert.deepEqual(await resolveBaseSepoliaStrategyAccount(reads, fixture.configuration.deployment, owner, strategyAccount),
+      { owner: getAddress(owner), account: getAddress(strategyAccount), deployed: true });
+    await assert.rejects(resolveBaseSepoliaStrategyAccount(reads, fixture.configuration.deployment, address(16), strategyAccount),
+      rejectsWith("ACCOUNT_OWNER_MISMATCH"));
+    await assert.rejects(resolveBaseSepoliaStrategyAccount({ ...reads, codeHash: async () => undefined },
+      fixture.configuration.deployment, owner, strategyAccount), rejectsWith("ACCOUNT_NOT_DEPLOYED"));
+  } finally { intents.close(); orders.close(); rmSync(scratch, { recursive: true, force: true }); }
 });
 
 test("fails closed on deployment code and evidence mismatches", async () => {

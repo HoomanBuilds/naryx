@@ -11,6 +11,8 @@ import {
   type PreparedEvmTestnetAtomicStore,
 } from "./evm-testnet-runtime-ports.js";
 import type { OwnerPackageOutcome } from "./terminal-packages.js";
+import { parseProtocolJson, stringifyProtocolJson } from "@naryx/protocol-types";
+import type { BaseAccountReceipt } from "./base-account-receipt.js";
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
 const HASH_PATTERN = /^0x[0-9a-f]{64}$/;
@@ -18,6 +20,11 @@ const BLOCK_PATTERN = /^(0|[1-9][0-9]{0,19})$/;
 const OUTCOME_STATES: readonly string[] = ["PENDING", "EXPIRED", "REVERTED", "FINALIZED"];
 
 const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS evm_strategy_account_receipts (receipt_hash TEXT PRIMARY KEY, receipt_json TEXT NOT NULL) STRICT;
+CREATE TRIGGER IF NOT EXISTS reject_account_receipt_rewrite BEFORE UPDATE ON evm_strategy_account_receipts
+BEGIN SELECT RAISE(ABORT, 'verified account receipts are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS reject_account_receipt_delete BEFORE DELETE ON evm_strategy_account_receipts
+BEGIN SELECT RAISE(ABORT, 'verified account receipts are durable'); END;
 CREATE TABLE IF NOT EXISTS evm_prepared_atomic_attempts (
   idempotency_key TEXT PRIMARY KEY,
   attempt_id TEXT NOT NULL,
@@ -336,6 +343,33 @@ export class SqlitePreparedEvmTestnetAtomicStore implements PreparedEvmTestnetAt
         this.#clock(),
       );
     }).immediate();
+  }
+
+  finalizedReceiptSource(hash: string) {
+    if (!/^[0-9a-f]{64}$/.test(hash)) return undefined;
+    const row = this.#db.prepare("SELECT * FROM evm_atomic_attempt_outcomes WHERE receipt_hash = ? AND state = 'FINALIZED'").get(`0x${hash}`) as OutcomeRow | undefined;
+    if (row === undefined) return undefined;
+    const outcome = decodeOutcome(row);
+    const prepared = this.get(outcome.idempotencyKey);
+    if (prepared === undefined || prepared.boundTransactionHash !== outcome.transactionHash || outcome.blockNumber === null) {
+      throw new Error("Finalized receipt has no matching prepared transaction.");
+    }
+    return { preparation: prepared.preparation, transactionHash: outcome.transactionHash, blockNumber: outcome.blockNumber };
+  }
+
+  accountReceipt(hash: string): BaseAccountReceipt | undefined {
+    const row = this.#db.prepare("SELECT receipt_json FROM evm_strategy_account_receipts WHERE receipt_hash = ?").get(hash) as { receipt_json: string } | undefined;
+    return row === undefined ? undefined : parseProtocolJson(row.receipt_json) as BaseAccountReceipt;
+  }
+
+  saveAccountReceipt(receipt: BaseAccountReceipt): void {
+    const source = this.finalizedReceiptSource(receipt.receiptHashHex);
+    if (source === undefined || source.transactionHash !== receipt.transactionHash || source.blockNumber !== receipt.blockNumber.toString()) {
+      throw new Error("Only a finalized prepared transaction can back an account receipt.");
+    }
+    const json = stringifyProtocolJson(receipt), current = this.accountReceipt(receipt.receiptHashHex);
+    if (current !== undefined && stringifyProtocolJson(current) !== json) throw new Error("The verified receipt already exists with different evidence.");
+    this.#db.prepare("INSERT OR IGNORE INTO evm_strategy_account_receipts (receipt_hash,receipt_json) VALUES (?,?)").run(receipt.receiptHashHex, json);
   }
 
   /** The attempt's outcome for its owner's package list; undefined while none of its transactions was observed. */

@@ -409,7 +409,8 @@ if (solanaDevnetOrderRuntime !== undefined) {
   }
 }
 const publicMarket = loadPublicMarketRuntime(process.env, Date.now, (unit) =>
-  unit === "SOLANA_SLOT" && Date.now() - publicSolanaSlotObservedAtMs <= 15_000 ? publicSolanaSlot : undefined);
+  unit === "SOLANA_SLOT" && Date.now() - publicSolanaSlotObservedAtMs <= 15_000 ? publicSolanaSlot : undefined,
+  hash => orderStore.getCanonicalOrderByHash(hash), basePreparationStore);
 // The async observation port the terminal serves; after the executor handoff below, it advances the solver too.
 let arbitrumRuntime: Pick<Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>>, "observe"> | undefined;
 let arbitrumAdmittingRuntime: Awaited<ReturnType<typeof createArbitrumSepoliaRuntime>> | undefined;

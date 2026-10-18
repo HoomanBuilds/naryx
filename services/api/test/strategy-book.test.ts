@@ -20,8 +20,48 @@ import {
 import { createPublicApiHandler, SqliteEvidenceStore, SqlitePackageExchangeStore, SqliteStrategyBookStore } from "../src/index.js";
 import { CLASS_SUPPORT, NOW, SERIES_SUPPORT } from "./exchange-fixtures.js";
 import { hash, manifest, outcome, receipt, terms } from "./evidence-fixtures.js";
+import type { BaseAccountReceipt } from "../src/base-account-receipt.js";
 
 const NOW_MS = 1_790_000_000_000;
+
+test("account-backed exits bind the immutable originating entry even after internal reassignment", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "naryx-account-book-")), owner = actor();
+  const entryHash = "a1".repeat(32), exitHash = "b1".repeat(32), account = `0x${"12".repeat(20)}`;
+  const entry: BaseAccountReceipt = { ...receipt(hash(1), { owner: owner.id, netSpotDelta: 1_000_000_000n }),
+    kind: "BASE_ACCOUNT_RECEIPT_V1", receiptHashHex: entryHash, entryReceiptHashHex: "00".repeat(32),
+    strategyAccount: account, transactionHash: `0x${"11".repeat(32)}`, blockNumber: 1n, blockHash: `0x${"22".repeat(32)}`,
+    orderHash: hash(1), packageTemplateManifestHash: hash(4) };
+  let exit: BaseAccountReceipt = { ...entry, action: "EXIT", receiptHashHex: exitHash, entryReceiptHashHex: entryHash,
+    netSpotDelta: -entry.netSpotDelta!, perpPositionDelta: -entry.perpPositionDelta };
+  const book = new SqliteStrategyBookStore(join(dir, "book.db"), { environment: "testnet", clock: () => NOW_MS,
+    originReceipt: hash => hash === entryHash ? entry : hash === exitHash ? exit : undefined });
+  const state: StrategyState = { version: 1, strategyId: "account-bound", ownerId: owner.id, subaccountId: account,
+    seriesId: "cash-carry", executionClassId: entry.packageMarketId, open: true, stateVersion: 1n,
+    liabilities: [], delegations: [], legalTransferRestricted: false, venuePositionsTransferable: true,
+    legs: [
+      { legId: "spot", underlyingId: "sol", instrumentId: "spot", venueId: entry.spotVenue, signedQuantityAtoms: entry.netSpotDelta!, lotAtoms: 1n, ratioNumerator: 1n, ratioDenominator: 1n },
+      { legId: "perp", underlyingId: "sol", instrumentId: "perp", venueId: entry.perpVenue, signedQuantityAtoms: entry.perpPositionDelta, lotAtoms: 1n, ratioNumerator: -1n, ratioDenominator: 1n },
+    ] };
+  const submit = (parameters: StrategyCommandInput["parameters"]) => {
+    const current = book.strategy(state.strategyId);
+    const command: StrategyCommandInput = { commandVersion: 1, environment: "testnet", actorId: owner.id, strategyId: state.strategyId,
+      expectedStateVersion: current?.state.stateVersion ?? 0n, expectedStateHash: current?.stateHashHex ?? "00".repeat(32),
+      atValue: BigInt(NOW_MS), parameters };
+    return book.submit(command, { scheme: "ED25519", signature: bs58.encode(sign(null, strategyCommandHash(command), owner.key)) });
+  };
+  try {
+    assert.ok((await submit({ kind: "OPEN", originReceiptHash: entryHash, state })).accepted);
+    assert.ok((await submit({ kind: "ASSIGN_INTERNAL", subaccountId: "new-desk" })).accepted);
+    const close = { kind: "EXIT" as const, settlements: [], executionReceiptHashes: [exitHash] };
+    exit = { ...exit, strategyAccount: `0x${"13".repeat(20)}` };
+    await assert.rejects(submit(close), { code: "EXECUTION_MISMATCH" });
+    exit = { ...exit, strategyAccount: account, entryReceiptHashHex: "99".repeat(32) };
+    await assert.rejects(submit(close), { code: "EXECUTION_MISMATCH" });
+    exit = { ...exit, entryReceiptHashHex: entryHash };
+    assert.ok((await submit(close)).accepted);
+    assert.equal(book.strategy(state.strategyId)?.state.open, false);
+  } finally { book.close(); rmSync(dir, { recursive: true, force: true }); }
+});
 
 function actor(): { id: string; key: KeyObject } {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -31,9 +71,11 @@ function actor(): { id: string; key: KeyObject } {
 test("the strategy book opens from one settled entry, applies signed commands through the kernel, and records their receipts", async () => {
   const dir = mkdtempSync(join(tmpdir(), "naryx-strategy-book-"));
   const evidence = new SqliteEvidenceStore(join(dir, "evidence.sqlite"), { clock: () => NOW_MS });
+  let canonicalState: StrategyState | undefined;
   const book = new SqliteStrategyBookStore(join(dir, "strategies.sqlite"), {
     environment: "testnet",
     originReceipt: (receiptHashHex) => evidence.outcomeByReceipt(receiptHashHex)?.receipt,
+    canonicalOriginState: () => canonicalState,
     clock: () => NOW_MS,
   });
   const exchange = new SqlitePackageExchangeStore(join(dir, "exchange.sqlite"), { seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT });
@@ -85,10 +127,15 @@ test("the strategy book opens from one settled entry, applies signed commands th
     const wrongLegs = state().legs.map((leg) => ({ ...leg, signedQuantityAtoms: leg.signedQuantityAtoms / 2n }));
     await assert.rejects(() => submit(openCommand("carry-1", wrongLegs)), { code: "ORIGIN_MISMATCH" });
     const opening = openCommand("carry-1");
+    canonicalState = state();
+    const altered = { ...opening.command, parameters: { kind: "OPEN" as const, originReceiptHash,
+      state: state({ subaccountId: "different-account", venuePositionsTransferable: true }) } };
+    await assert.rejects(() => book.submit(altered, { scheme: "ED25519", signature: bs58.encode(sign(null, strategyCommandHash(altered), owner.key)) }), { code: "ORIGIN_MISMATCH" });
     const opened = await submit(opening);
     assert.ok(opened.accepted && !opened.replayed);
     assert.equal(opened.states[0]?.stateHashHex, toHex(strategyStateHash(state())));
     assert.ok((await submit(opening)).accepted, "a replayed command returns its first result");
+    canonicalState = undefined;
     await assert.rejects(() => submit(openCommand("carry-2")), { code: "ORIGIN_CLAIMED" });
 
     // Signatures must come from the actor's own key, at the book's time.
@@ -128,7 +175,14 @@ test("the strategy book opens from one settled entry, applies signed commands th
     ]);
 
     // The public routes serve the book with every hash and signature needed to check it.
-    const handler = createPublicApiHandler({ exchange, evidence, strategies: book, nowValue: () => NOW, clockMs: () => NOW_MS, rateLimit: { windowMs: 60_000, maxRequests: 1_000 } });
+    const handler = createPublicApiHandler({ exchange, evidence, strategies: book, nowValue: () => NOW, clockMs: () => NOW_MS,
+      prepareCanonicalTransition: async (strategyId, receiptHash) => {
+        const current = book.strategy(strategyId)!.state;
+        const command = signed(owner, { ...bind(current), parameters: { kind: "EXIT", settlements: [], executionReceiptHashes: [receiptHash] } }).command;
+        return { command, commandHashHex: toHex(strategyCommandHash(command)), stateHashHex: toHex(strategyStateHash(current)),
+          orderHashHex: toHex(orderHash), receiptHashHex: receiptHash };
+      },
+      rateLimit: { windowMs: 60_000, maxRequests: 1_000 } });
     const server = createServer((request, response) => {
       if (!handler(request, response)) {
         response.statusCode = 418;
@@ -147,6 +201,9 @@ test("the strategy book opens from one settled entry, applies signed commands th
     try {
       const read = await call("GET", "/v1/strategies/carry-1m");
       assert.equal(read.status, 200);
+      const transition = await call("POST", "/v1/strategies/transitions/prepare", { strategyId: "carry-1m", receiptHash: originReceiptHash });
+      assert.equal(transition.status, 200, "native transition preparation must not require the generalized package store");
+      assert.equal(transition.body.receiptHashHex, originReceiptHash);
       assert.equal(read.body.stateHash, toHex(strategyStateHash(read.body.state as StrategyState)));
       const history = await call("GET", "/v1/strategies/carry-1/history");
       assert.equal((history.body.commands as unknown[]).length, 3);
@@ -183,7 +240,11 @@ test("position moves are accepted only with unclaimed settled receipts that acco
   const book = new SqliteStrategyBookStore(join(dir, "strategies.sqlite"), {
     environment: "testnet",
     originReceipt: (hex) => receipts.get(hex),
-    transferEvidence: (claim) => verified.has(`${claim.venueId}:${claim.evidenceHashHex}:${claim.toOwnerId}`),
+    transferEvidence: async (claim) => {
+      assert.equal(claim.stateHashHex, toHex(strategyStateHash(claim.state)));
+      assert.equal(claim.state.ownerId, claim.fromOwnerId);
+      return verified.has(`${claim.venueId}:${claim.evidenceHashHex}:${claim.toOwnerId}`);
+    },
     clock: () => NOW_MS,
   });
   try {
@@ -243,6 +304,18 @@ test("position moves are accepted only with unclaimed settled receipts that acco
     assert.equal(book.strategy("carry-1")?.state.ownerId, buyer.id);
     assert.equal(book.ownerStrategies(buyer.id).length, 1);
     assert.deepEqual(book.history("carry-1").at(-1)?.consents.map((entry) => entry.signerId), [buyer.id]);
+
+    const back: StrategyCommandInput["parameters"] = { kind: "NOVATE", newOwnerId: owner.id,
+      venueConfirmations: [{ venueId: "phoenix", evidenceHash: "c3".repeat(32) }, { venueId: "drift", evidenceHash: "c4".repeat(32) }] };
+    verified.add(`phoenix:${"c3".repeat(32)}:${owner.id}`);
+    verified.add(`drift:${"c4".repeat(32)}:${owner.id}`);
+    assert.ok((await submit(buyer, back, [{ signerId: owner.id, authorization: { scheme: "ED25519", signature: signature(owner, build(buyer, back)) } }])).accepted);
+    await assert.rejects(submit(owner, novation, consent()), { code: "TRANSFER_EVIDENCE_CLAIMED" });
+    const again: StrategyCommandInput["parameters"] = { ...novation, venueConfirmations: [
+      { venueId: "phoenix", evidenceHash: "c5".repeat(32) }, { venueId: "drift", evidenceHash: "c6".repeat(32) }] };
+    verified.add(`phoenix:${"c5".repeat(32)}:${buyer.id}`);
+    verified.add(`drift:${"c6".repeat(32)}:${buyer.id}`);
+    assert.ok((await submit(owner, again, [{ signerId: buyer.id, authorization: { scheme: "ED25519", signature: signature(buyer, build(owner, again)) } }])).accepted);
 
     // The new owner exits with its own settled receipt, and the strategy closes.
     assert.deepEqual(await submit(owner, { kind: "EXIT", settlements: [], executionReceiptHashes: ["b3".repeat(32)] }), { accepted: false, rejection: "UNAUTHORIZED" });

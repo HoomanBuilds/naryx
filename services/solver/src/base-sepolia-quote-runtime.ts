@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from 'node:path';
 import {
   CHAINLINK_AGGREGATOR_ABI,
   NARYX_STRATEGY_ACCOUNT_FACTORY_ABI,
+  NARYX_STRATEGY_ACCOUNT_OWNER_ABI,
   NARYX_TEST_PERP_MARKET_ABI,
   UNISWAP_V3_POOL_ABI,
   equalAddress,
@@ -187,19 +188,34 @@ export async function requireBaseSepoliaChain(chain: Pick<BaseSepoliaReadPort, '
   if (await chain.chainId() !== BASE_SEPOLIA_CHAIN_ID) throw new Error('Base Sepolia RPC eth_chainId is not 84532');
 }
 
-/** `accountOf(owner)` from the reviewed factory; the only settlement account an order may name. */
 export async function readBaseSepoliaAccountOf(
   chain: BaseSepoliaReadPort,
   deployment: EvmDeploymentIdentity,
   owner: string,
+  acquiredAccount?: string,
 ): Promise<Address> {
   const factory = requiredEvmAddress(deployment.strategyAccountFactory.address, 'strategyAccountFactory');
-  return requiredEvmAddress(String(await chain.readContract({
+  const account = requiredEvmAddress(String(await chain.readContract({
     address: factory,
     abi: NARYX_STRATEGY_ACCOUNT_FACTORY_ABI as Abi,
     functionName: 'accountOf',
     args: [requiredEvmAddress(owner, 'order.owner')],
   })), 'accountOf(owner)');
+  if (acquiredAccount === undefined || equalAddress(account, requiredEvmAddress(acquiredAccount, 'strategyAccount'))) return account;
+  const acquired = requiredEvmAddress(acquiredAccount, 'strategyAccount');
+  const codeHash = await chain.codeHash(acquired);
+  if (codeHash?.toLowerCase() !== deployment.strategyAccountCodeHash.toLowerCase()) {
+    throw new Error('acquired strategy account code differs from the reviewed deployment');
+  }
+  const [currentOwner, verifier] = await Promise.all([
+    chain.readContract({ address: acquired, abi: NARYX_STRATEGY_ACCOUNT_OWNER_ABI, functionName: 'owner' }),
+    chain.readContract({ address: acquired, abi: NARYX_STRATEGY_ACCOUNT_OWNER_ABI, functionName: 'verifier' }),
+  ]);
+  if (!equalAddress(requiredEvmAddress(String(currentOwner), 'account.owner'), requiredEvmAddress(owner, 'owner'))
+    || !equalAddress(requiredEvmAddress(String(verifier), 'account.verifier'), requiredEvmAddress(deployment.packageVerifier.address, 'packageVerifier'))) {
+    throw new Error('acquired strategy account ownership or verifier differs');
+  }
+  return acquired;
 }
 
 /** The pinned quoter and the deployment's spot pool and tokens, at the pool fee read live. */
@@ -337,7 +353,7 @@ function requireOrder(order: PackageOrder, input: BaseSepoliaQuoteRuntimeInput):
 async function build(order: PackageOrder, orderHash: Hash32, input: BaseSepoliaQuoteRuntimeInput) {
   requireOrder(order, input);
   const deployment = input.deployment.deployment;
-  const account = await readBaseSepoliaAccountOf(input.chain, deployment, order.owner);
+  const account = await readBaseSepoliaAccountOf(input.chain, deployment, order.owner, order.settlementAccount);
   if (!equalAddress(account, requiredEvmAddress(order.settlementAccount, 'order.settlementAccount'))) {
     throw new Error('order settlement account is not the owner factory account');
   }

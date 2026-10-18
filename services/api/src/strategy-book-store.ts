@@ -16,6 +16,7 @@ import {
 } from "@naryx/protocol-types";
 import type { PackageReceiptInput, StrategyCommandInput, StrategyPackageOrderInput, StrategyPackageReceiptInput, StrategyRejection, StrategyState, StrategyTransitionReceipt } from "@naryx/protocol-types";
 import { openDurableDatabase } from "./durable-sqlite.js";
+import type { BaseAccountReceipt } from "./base-account-receipt.js";
 import {
   storedStrategyCommandAuthorization,
   verifyStrategyCommandAuthorization,
@@ -72,10 +73,19 @@ CREATE TABLE IF NOT EXISTS strategy_command_consents (
   signature BLOB NOT NULL,
   PRIMARY KEY (command_hash, signer_id)
 ) STRICT;
+CREATE TABLE IF NOT EXISTS strategy_transfer_evidence (
+  strategy_id TEXT NOT NULL,
+  venue_id TEXT NOT NULL,
+  evidence_hash TEXT NOT NULL,
+  command_hash BLOB NOT NULL,
+  PRIMARY KEY (strategy_id, venue_id, evidence_hash)
+) STRICT;
 CREATE TRIGGER IF NOT EXISTS reject_execution_receipt_change BEFORE UPDATE ON strategy_execution_receipts BEGIN SELECT RAISE(ABORT, 'execution receipt claims are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_execution_receipt_delete BEFORE DELETE ON strategy_execution_receipts BEGIN SELECT RAISE(ABORT, 'execution receipt claims are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_consent_change BEFORE UPDATE ON strategy_command_consents BEGIN SELECT RAISE(ABORT, 'command consents are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_consent_delete BEFORE DELETE ON strategy_command_consents BEGIN SELECT RAISE(ABORT, 'command consents are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_transfer_evidence_change BEFORE UPDATE ON strategy_transfer_evidence BEGIN SELECT RAISE(ABORT, 'transfer evidence claims are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS reject_transfer_evidence_delete BEFORE DELETE ON strategy_transfer_evidence BEGIN SELECT RAISE(ABORT, 'transfer evidence claims are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_command_change BEFORE UPDATE ON strategy_commands BEGIN SELECT RAISE(ABORT, 'strategy commands are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_command_delete BEFORE DELETE ON strategy_commands BEGIN SELECT RAISE(ABORT, 'strategy commands are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS reject_strategy_subject_change BEFORE UPDATE ON strategy_command_subjects BEGIN SELECT RAISE(ABORT, 'strategy command subjects are append-only'); END;
@@ -114,7 +124,7 @@ export type StrategyCommandResult =
  * Checks that a settled entry receipt can found a strategy: the book asks it for the receipt and
  * compares the owner, market, and leg quantities itself.
  */
-export type StrategyExecutionReceiptInput = PackageReceiptInput | StrategyPackageReceiptInput;
+export type StrategyExecutionReceiptInput = PackageReceiptInput | StrategyPackageReceiptInput | BaseAccountReceipt;
 export type OriginReceiptReader = (receiptHashHex: string) => StrategyExecutionReceiptInput | undefined;
 export type StrategyPackageOrderReader = (orderHashHex: string) => StrategyPackageOrderInput | undefined;
 
@@ -157,7 +167,10 @@ export type TransferEvidenceVerifier = (claim: {
   readonly evidenceHashHex: string;
   readonly fromOwnerId: string;
   readonly toOwnerId: string;
-}) => boolean;
+  readonly state: StrategyState;
+  readonly stateHashHex: string;
+  readonly originReceiptHashHex?: string;
+}) => boolean | Promise<boolean>;
 
 /** Another owner's wallet consent to a command, over the same command hash. */
 export interface StrategyCommandConsent {
@@ -179,13 +192,17 @@ export class SqliteStrategyBookStore {
   private readonly originReceipt: OriginReceiptReader;
   private readonly packageOrder: StrategyPackageOrderReader | undefined;
   private readonly transferEvidence: TransferEvidenceVerifier | undefined;
+  private readonly canonicalOriginState: ((hash: string) => StrategyState | undefined) | undefined;
+  private readonly resolveReceipt: ((hash: string) => Promise<unknown>) | undefined;
 
-  constructor(dbPath: string, options: { readonly environment: string; readonly originReceipt: OriginReceiptReader; readonly packageOrder?: StrategyPackageOrderReader; readonly transferEvidence?: TransferEvidenceVerifier; readonly clock?: () => number }) {
+  constructor(dbPath: string, options: { readonly environment: string; readonly originReceipt: OriginReceiptReader; readonly packageOrder?: StrategyPackageOrderReader; readonly transferEvidence?: TransferEvidenceVerifier; readonly canonicalOriginState?: (hash: string) => StrategyState | undefined; readonly resolveReceipt?: (hash: string) => Promise<unknown>; readonly clock?: () => number }) {
     this.db = openDurableDatabase(dbPath, SCHEMA_SQL, (code, message) => new StrategyBookError(code, message));
     this.environment = options.environment;
     this.originReceipt = options.originReceipt;
     this.packageOrder = options.packageOrder;
     this.transferEvidence = options.transferEvidence;
+    this.canonicalOriginState = options.canonicalOriginState;
+    this.resolveReceipt = options.resolveReceipt;
     this.clock = options.clock ?? Date.now;
   }
 
@@ -212,6 +229,10 @@ export class SqliteStrategyBookStore {
     if (command.environment !== this.environment) throw new StrategyBookError("WRONG_ENVIRONMENT", `This book serves ${this.environment}.`);
     const signature = await verifyStrategyCommandAuthorization(command, command.actorId, authorization);
     if (signature === undefined) throw new StrategyBookError("INVALID_SIGNATURE", "The command is not signed by the actor identity it names.");
+    if (this.resolveReceipt !== undefined) {
+      const receipts = command.parameters.kind === "OPEN" ? [command.parameters.originReceiptHash] : strategyExecutionReceiptHashes(command.parameters);
+      for (const hash of receipts) await this.resolveReceipt(typeof hash === "string" ? hash : toHex(hash));
+    }
     // Consents are other owners' signatures over the same command hash; only verified ones count.
     if (!Array.isArray(consents) || consents.length > 3) throw new StrategyBookError("INVALID_SIGNATURE", "A command carries at most three consents.");
     const consented: { signerId: string; signature: Uint8Array }[] = [];
@@ -223,6 +244,10 @@ export class SqliteStrategyBookStore {
     const now = BigInt(this.clock());
     if (command.atValue > now + MAXIMUM_COMMAND_SKEW_MS || command.atValue + MAXIMUM_COMMAND_SKEW_MS < now) {
       throw new StrategyBookError("STALE_COMMAND", "The command time is outside five minutes of the book's clock.");
+    }
+    const transferEvidence = await this.evidenceFor(command, consented.map((entry) => entry.signerId));
+    if (command.atValue + MAXIMUM_COMMAND_SKEW_MS < BigInt(this.clock())) {
+      throw new StrategyBookError("STALE_COMMAND", "The command expired while verifying its evidence. Sign a new command.");
     }
     return this.db.transaction((): StrategyCommandResult => {
       const known = this.db.prepare("SELECT receipt_json FROM strategy_commands WHERE command_hash = ?").get(commandHash) as { receipt_json: string | null } | undefined;
@@ -243,7 +268,7 @@ export class SqliteStrategyBookStore {
       }
       let outcome;
       try {
-        outcome = applyStrategyCommand(command, states, this.evidenceFor(command, states, consented.map((entry) => entry.signerId)));
+        outcome = applyStrategyCommand(command, states, transferEvidence);
       } catch (error) {
         throw new StrategyBookError("INVALID_COMMAND", (error as Error).message);
       }
@@ -267,6 +292,15 @@ export class SqliteStrategyBookStore {
       }
       const result = outcome.result;
       if (!result.accepted) return { accepted: false, rejection: result.rejection, ...(result.remedy === undefined ? {} : { remedy: result.remedy }) };
+      if (command.parameters.kind === "NOVATE") {
+        for (const confirmation of command.parameters.venueConfirmations) {
+          const evidenceHash = typeof confirmation.evidenceHash === "string" ? confirmation.evidenceHash.toLowerCase() : toHex(confirmation.evidenceHash);
+          const claimed = this.db.prepare("SELECT 1 FROM strategy_transfer_evidence WHERE strategy_id = ? AND venue_id = ? AND evidence_hash = ?")
+            .get(command.strategyId, confirmation.venueId, evidenceHash);
+          if (claimed !== undefined) throw new StrategyBookError("TRANSFER_EVIDENCE_CLAIMED", "This transfer evidence already accounted for a prior ownership change.");
+          this.db.prepare("INSERT INTO strategy_transfer_evidence VALUES (?, ?, ?, ?)").run(command.strategyId, confirmation.venueId, evidenceHash, commandHash);
+        }
+      }
       const executionReceipts = this.requireExecution(command, states, result.states);
       const nextIds = new Set(result.states.map((state) => state.strategyId as string));
       for (const state of result.states) {
@@ -325,21 +359,30 @@ export class SqliteStrategyBookStore {
   }
 
   /** Verified consents and venue transfer evidence for a novation; nothing for any other command. */
-  private evidenceFor(command: StrategyCommandInput, states: ReadonlyMap<string, StrategyState>, consentingOwnerIds: readonly string[]) {
+  private async evidenceFor(command: StrategyCommandInput, consentingOwnerIds: readonly string[]) {
     const parameters = command.parameters;
     if (parameters.kind !== "NOVATE") return {};
-    const current = states.get(command.strategyId);
-    const confirmedVenueIds = current === undefined || this.transferEvidence === undefined
-      ? []
-      : parameters.venueConfirmations
-        .filter((confirmation) => this.transferEvidence?.({
+    if (this.db.prepare("SELECT 1 FROM strategy_commands WHERE command_hash = ?").get(strategyCommandHash(command)) !== undefined) return {};
+    const stored = this.read(command.strategyId);
+    const current = stored?.state;
+    const confirmedVenueIds: string[] = [];
+    const expectedHash = typeof command.expectedStateHash === "string" ? command.expectedStateHash : toHex(command.expectedStateHash);
+    if (current !== undefined && this.transferEvidence !== undefined && stored?.stateHashHex === expectedHash
+      && current.stateVersion === command.expectedStateVersion && current.ownerId === command.actorId
+      && consentingOwnerIds.includes(parameters.newOwnerId)) {
+      for (const confirmation of parameters.venueConfirmations) {
+        if (await this.transferEvidence({
           strategyId: command.strategyId,
           venueId: confirmation.venueId,
           evidenceHashHex: typeof confirmation.evidenceHash === "string" ? confirmation.evidenceHash.toLowerCase() : toHex(confirmation.evidenceHash),
           fromOwnerId: current.ownerId,
           toOwnerId: parameters.newOwnerId,
-        }) === true)
-        .map((confirmation) => confirmation.venueId);
+          state: current,
+          stateHashHex: stored.stateHashHex,
+          ...(stored.originReceiptHashHex === undefined ? {} : { originReceiptHashHex: stored.originReceiptHashHex }),
+        })) confirmedVenueIds.push(confirmation.venueId);
+      }
+    }
     return { consentingOwnerIds, confirmedVenueIds };
   }
 
@@ -364,6 +407,27 @@ export class SqliteStrategyBookStore {
       return receipt;
     });
     const prior = states.get(command.strategyId) as StrategyState;
+    const native = receipts.filter((receipt): receipt is BaseAccountReceipt => "kind" in receipt);
+    if (native.length !== 0) {
+      const stored = this.read(command.strategyId);
+      const origin = stored?.originReceiptHashHex === undefined ? undefined : this.originReceipt(stored.originReceiptHashHex);
+      const receipt = native[0]!;
+      if (native.length !== 1 || receipts.length !== 1 || command.parameters.kind !== "EXIT" || receipt.action !== "EXIT"
+        || origin === undefined || !("kind" in origin) || receipt.entryReceiptHashHex !== origin.receiptHashHex
+        || receipt.strategyAccount !== origin.strategyAccount || receipt.owner !== prior.ownerId
+        || receipt.packageMarketId !== prior.executionClassId || prior.liabilities.length !== 0 || next.length !== 1
+        || next[0]!.open || next[0]!.legs.some(leg => leg.signedQuantityAtoms !== 0n)
+        || prior.legs.length !== 2 || receipt.spotVenue === receipt.perpVenue
+        || prior.legs.find(leg => leg.venueId === receipt.spotVenue)?.signedQuantityAtoms !== -receipt.netSpotDelta!
+        || prior.legs.find(leg => leg.venueId === receipt.perpVenue)?.signedQuantityAtoms !== -receipt.perpPositionDelta) {
+        throw new StrategyBookError("EXECUTION_MISMATCH", "The exit must close this strategy's exact originating account and entry.");
+      }
+      return hashes;
+    }
+    const storedOrigin = this.read(command.strategyId)?.originReceiptHashHex;
+    if (storedOrigin !== undefined && this.originReceipt(storedOrigin) !== undefined && "kind" in this.originReceipt(storedOrigin)!) {
+      throw new StrategyBookError("EXECUTION_MISMATCH", "An account-backed strategy requires its native finalized execution receipt.");
+    }
     const packageOrders = command.parameters.kind === "APPLY_PACKAGE"
       ? receipts.map((receipt) => {
         if (!isStrategyPackageReceipt(receipt)) {
@@ -379,7 +443,7 @@ export class SqliteStrategyBookStore {
       command.parameters.kind,
       prior,
       next[0] as StrategyState,
-      receipts,
+      receipts as readonly (PackageReceiptInput | StrategyPackageReceiptInput)[],
       command.parameters.kind === "APPLY_PACKAGE" ? command.parameters.operation : undefined,
       packageOrders,
     );
@@ -423,6 +487,10 @@ export class SqliteStrategyBookStore {
       return;
     }
     if (receipt.action !== "ENTRY") throw new StrategyBookError("ORIGIN_MISMATCH", "Only a settled entry founds a strategy.");
+    const canonical = this.canonicalOriginState?.(originHex);
+    if (canonical !== undefined && toHex(strategyStateHash(canonical)) !== toHex(strategyStateHash(state))) {
+      throw new StrategyBookError("ORIGIN_MISMATCH", "The strategy differs from its bound entry account and instruments.");
+    }
     if (receipt.owner !== state.ownerId || receipt.packageMarketId !== state.executionClassId) {
       throw new StrategyBookError("ORIGIN_MISMATCH", "The receipt names another owner or market.");
     }

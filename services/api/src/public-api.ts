@@ -111,7 +111,7 @@ import type { SqliteQualificationStore } from "./qualification-store.js";
 import { PositionSnapshotStoreError, type SqlitePositionSnapshotStore } from "./position-snapshot-store.js";
 import { CollateralSnapshotStoreError, type SqliteCollateralSnapshotStore } from "./collateral-snapshot-store.js";
 import { StrategyBookError, type SqliteStrategyBookStore } from "./strategy-book-store.js";
-import { prepareStrategyOpen, prepareStrategyTransition, StrategyOpenPreparationError } from "./strategy-open-preparation.js";
+import { prepareCanonicalStrategyOpen, prepareStrategyOpen, prepareStrategyTransition, StrategyOpenPreparationError } from "./strategy-open-preparation.js";
 import type { StrategyCommandAuthorization } from "./strategy-command-authorization.js";
 import { BuilderStoreError, type SqliteBuilderStore } from "./builder-store.js";
 import { KeeperExecutorError, type SqliteKeeperExecutor } from "./keeper-executor.js";
@@ -324,6 +324,11 @@ export interface PublicApiOptions {
   readonly collateral?: Pick<SqliteCollateralSnapshotStore, "append" | "latest" | "now">;
   /** The signed strategy book; without it the strategy routes answer 503. */
   readonly strategies?: Pick<SqliteStrategyBookStore, "submit" | "strategy" | "history" | "ownerStrategies" | "environmentName">;
+  readonly baseStrategyTransfersEnabled?: boolean;
+  readonly strategyTransferContext?: ReturnType<typeof import("./base-strategy-transfer-verifier.js").createBaseStrategyTransferContext>;
+  readonly prepareCanonicalStrategy?: (receiptHash: string, atValue: bigint) => import("./strategy-open-preparation.js").PreparedStrategyOpen | undefined | Promise<import("./strategy-open-preparation.js").PreparedStrategyOpen | undefined>;
+  readonly prepareCanonicalTransition?: (strategyId: string, receiptHash: string, atValue: bigint) => Promise<import("./strategy-open-preparation.js").PreparedStrategyTransition | undefined>;
+  readonly canonicalStrategyReceipt?: (receiptHash: string) => import("@naryx/protocol-types").PackageReceiptInput | undefined;
   /** Durable admitted package intake; without it submission answers 503 while validation remains available. */
   readonly strategyPackages?: Pick<SqliteStrategyPackageStore, "registerOrder" | "registerQuote" | "recentAdmissions" | "receipt" | "receiptByQuote">
     & Partial<Pick<SqliteStrategyPackageStore, "order" | "admissionByQuote" | "registerBoundQuote" | "lockPackageExecution" | "ownerReceipts" | "executionIntelligence" | "strategyExecutionQuality">>;
@@ -995,6 +1000,13 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const view = requireCoordination().incident(id(match[1], "Incident id"));
       if (view === undefined) throw new RequestError(404, "INCIDENT_NOT_FOUND", "No such incident.");
       return view;
+    }
+    if ((match = /^\/v1\/strategies\/([^/]+)\/transfer-context$/.exec(path)) !== null) {
+      onlyParams(url, []);
+      if (options.strategyTransferContext === undefined) throw new RequestError(503, "TRANSFERS_UNAVAILABLE", "Account transfers are not activated.");
+      const stored = options.strategies?.strategy(match[1]!);
+      if (stored === undefined) throw new RequestError(404, "STRATEGY_NOT_FOUND", "No recorded strategy has this identity.");
+      return options.strategyTransferContext(stored);
     }
     if ((match = /^\/v1\/strategies\/([^/]+)\/health$/.exec(path)) !== null) {
       onlyParams(url, []);
@@ -2319,10 +2331,25 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       if (Object.keys(body).length !== 1 || typeof body.receiptHash !== "string" || !HASH_HEX.test(body.receiptHash)) {
         throw new RequestError(400, "INVALID_REQUEST", "The request must contain one lowercase receiptHash.");
       }
-      if (options.strategies === undefined || options.strategyPackages?.order === undefined) {
+      if (options.strategies === undefined) {
         throw new RequestError(503, "STRATEGIES_UNAVAILABLE", "Strategy preparation requires the strategy book and package evidence store.");
       }
-      const receipt = options.strategyPackages.receipt(body.receiptHash);
+      const receipt = options.strategyPackages?.receipt(body.receiptHash);
+      if (receipt === undefined) {
+        const prepared = await options.prepareCanonicalStrategy?.(body.receiptHash, BigInt(clockMs()));
+        if (prepared !== undefined) return prepared;
+        const canonical = options.canonicalStrategyReceipt?.(body.receiptHash);
+        if (canonical === undefined) throw new RequestError(404, "RECEIPT_NOT_FOUND", "No settled entry receipt has this hash.");
+        const executionClass = exchange.getOpenExecutionClass(canonical.packageMarketId);
+        const series = executionClass === undefined ? undefined : exchange.getSeriesRecord(executionClass.seriesId, executionClass.seriesVersion);
+        if (executionClass === undefined || series === undefined || series.documentHashHex !== toHex(executionClass.seriesManifestHash)) {
+          throw new RequestError(409, "SERIES_UNAVAILABLE", "The entry receipt has no registered execution class and series.");
+        }
+        return prepareCanonicalStrategyOpen({ environment: options.strategies.environmentName(), atValue: BigInt(clockMs()),
+          receiptHashHex: body.receiptHash, receipt: canonical, series: series.document, executionClass,
+          transferable: options.baseStrategyTransfersEnabled === true });
+      }
+      if (options.strategyPackages?.order === undefined) throw new RequestError(503, "STRATEGIES_UNAVAILABLE", "Strategy order evidence is unavailable.");
       if (receipt === undefined) throw new RequestError(404, "RECEIPT_NOT_FOUND", "No settled strategy receipt has this hash.");
       const checkedReceipt = strategyPackageReceipt(receipt);
       const stored = options.strategyPackages.order(toHex(checkedReceipt.orderHash));
@@ -2343,12 +2370,17 @@ export function createPublicApiHandler(options: PublicApiOptions) {
         || typeof body.strategyId !== "string" || !ID.test(body.strategyId)) {
         throw new RequestError(400, "INVALID_REQUEST", "The request must contain one strategyId and one lowercase receiptHash.");
       }
-      if (options.strategies === undefined || options.strategyPackages?.order === undefined) {
+      if (options.strategies === undefined) {
         throw new RequestError(503, "STRATEGIES_UNAVAILABLE", "Strategy transition preparation requires the strategy book and package evidence store.");
       }
       const storedStrategy = options.strategies.strategy(body.strategyId);
       if (storedStrategy === undefined) throw new RequestError(404, "STRATEGY_NOT_FOUND", "No such strategy exists.");
       if (storedStrategy.retiredByCommandHashHex !== undefined) throw new RequestError(409, "STRATEGY_RETIRED", "The strategy was split or merged away.");
+      const canonical = await options.prepareCanonicalTransition?.(body.strategyId, body.receiptHash, BigInt(clockMs()));
+      if (canonical !== undefined) return canonical;
+      if (options.strategyPackages?.order === undefined) {
+        throw new RequestError(503, "STRATEGIES_UNAVAILABLE", "Strategy order evidence is unavailable.");
+      }
       const receipt = options.strategyPackages.receipt(body.receiptHash);
       if (receipt === undefined) throw new RequestError(404, "RECEIPT_NOT_FOUND", "No settled strategy receipt has this hash.");
       const checkedReceipt = strategyPackageReceipt(receipt);

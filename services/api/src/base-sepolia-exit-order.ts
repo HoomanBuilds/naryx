@@ -130,7 +130,7 @@ export function baseSepoliaExitLimits(input: Readonly<{
   });
 }
 
-export type BaseSepoliaExitOrderRequest = Readonly<{ owner: string; slippageBps: number; idempotencyKey: string }>;
+export type BaseSepoliaExitOrderRequest = Readonly<{ owner: string; slippageBps: number; idempotencyKey: string; strategyAccount?: string }>;
 
 export type BaseSepoliaExitOrderService = Readonly<{
   createExitOrder(request: BaseSepoliaExitOrderRequest): Promise<InternalOrderCreateResult & Readonly<{ quantityAtoms: bigint }>>;
@@ -165,7 +165,7 @@ export function createBaseSepoliaExitOrderService(input: Readonly<{
     if (await port.chainId() !== BigInt(BASE_SEPOLIA_CHAIN_REFERENCE)) {
       fail("WRONG_CHAIN", "Base Sepolia RPC eth_chainId is not 84532.");
     }
-    const resolved = await resolveBaseSepoliaStrategyAccount(port, identity, request.owner);
+    const resolved = await resolveBaseSepoliaStrategyAccount(port, identity, request.owner, request.strategyAccount);
     if (!resolved.deployed) fail("NO_OPEN_PACKAGE", "The owner has no strategy account, so no open package.");
     const account: Address = resolved.account;
     const open = packageVerifierOpenPackage(await port.readContract({
@@ -323,7 +323,8 @@ export function createBaseSepoliaExitOrderRoutes(input: Readonly<{
       try {
         const body = await readBody(request) as Record<string, unknown> | null;
         if (typeof body !== "object" || body === null || Array.isArray(body)
-          || Object.keys(body).sort().join(",") !== "idempotencyKey,owner,slippageBps"
+          || !["idempotencyKey,owner,slippageBps", "idempotencyKey,owner,slippageBps,strategyAccount"].includes(Object.keys(body).sort().join(","))
+          || (body.strategyAccount !== undefined && typeof body.strategyAccount !== "string")
           || typeof body.owner !== "string" || typeof body.slippageBps !== "number"
           || typeof body.idempotencyKey !== "string" || !IDEMPOTENCY_KEY.test(body.idempotencyKey)) {
           reject(response, 400, "INVALID_FIELDS", "Request must contain only owner, slippageBps, and idempotencyKey.");
@@ -333,6 +334,7 @@ export function createBaseSepoliaExitOrderRoutes(input: Readonly<{
           owner: body.owner,
           slippageBps: body.slippageBps,
           idempotencyKey: body.idempotencyKey,
+          ...(body.strategyAccount === undefined ? {} : { strategyAccount: body.strategyAccount as string }),
         });
         send(response, result.created ? 201 : 200, {
           status: "UNSIGNED_CREATED",

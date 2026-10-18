@@ -294,6 +294,7 @@ export interface EvmTestnetAccountPort {
     owner: string;
     /** A stored order of this owner; its spot quote cap is what the account must hold. */
     orderHash?: string;
+    strategyAccount?: string;
     marginAtoms: bigint;
   }>): Promise<Readonly<Record<string, unknown>>>;
 }

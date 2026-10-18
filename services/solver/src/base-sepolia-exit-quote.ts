@@ -160,7 +160,7 @@ async function buildExitQuote(
   const deployment = input.deployment.deployment;
   const chain = input.chain;
   await requireBaseSepoliaChain(chain);
-  const account = await readBaseSepoliaAccountOf(chain, deployment, order.owner);
+  const account = await readBaseSepoliaAccountOf(chain, deployment, order.owner, order.settlementAccount);
   if (!equalAddress(account, requiredEvmAddress(order.settlementAccount, 'order.settlementAccount'))) {
     fail('order settlement account is not the owner factory account');
   }
