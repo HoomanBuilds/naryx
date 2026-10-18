@@ -94,6 +94,7 @@ export type DependencyIncidentScopeStatus = Readonly<{
   evidenceObservedAtMs: string;
   evidenceValidUntilMs: string;
   evidenceFresh: boolean;
+  qualificationPolicy?: 'OWNER_APPROVED_TESTNET';
   latestReceiptHash: string | null;
 }>;
 
@@ -1699,8 +1700,12 @@ function requireDependencyIncidentStatus(value: unknown): DependencyIncidentStat
     requireExactKeys(entry, [
       "scopeId", "scopeHash", "domainId", "state", "entryAllowed", "exitAllowed", "revision",
       "evidenceCommitment", "evidenceObservedAtMs", "evidenceValidUntilMs", "evidenceFresh",
-      "latestReceiptHash",
+      "latestReceiptHash", ...(entry.qualificationPolicy === undefined ? [] : ["qualificationPolicy"]),
     ], `Dependency incident scope ${index}`);
+    if (entry.qualificationPolicy !== undefined
+      && (entry.qualificationPolicy !== 'OWNER_APPROVED_TESTNET' || entry.domainId !== 'svm:devnet')) {
+      throw new Error('Unknown or mismatched testnet qualification policy.');
+    }
     if (typeof entry.scopeId !== "string" || entry.scopeId.length === 0 || entry.scopeId.length > 256 ||
         typeof entry.domainId !== "string" || !DOMAIN_ID_PATTERN.test(entry.domainId) ||
         typeof entry.scopeHash !== "string" || !EVM_HASH_PATTERN.test(entry.scopeHash) || seen.has(entry.scopeHash) ||
@@ -1738,6 +1743,7 @@ function requireDependencyIncidentStatus(value: unknown): DependencyIncidentStat
       evidenceObservedAtMs,
       evidenceValidUntilMs,
       evidenceFresh: entry.evidenceFresh,
+      ...(entry.qualificationPolicy === undefined ? {} : { qualificationPolicy: entry.qualificationPolicy }),
       latestReceiptHash: entry.latestReceiptHash,
     });
   });

@@ -378,6 +378,9 @@ export function NetworkView() {
             <dt>Authority fence</dt><dd className={styles.mono}>{authorityFence}</dd>
             <dt>Dependencies</dt><dd className={styles.mono} title={dependencyStatus}>{dependencyStatus}</dd>
             <dt>Incident state</dt><dd className={styles.mono}>{incidentState}</dd>
+            {selectedIncidentScopes.some(entry => entry.qualificationPolicy === 'OWNER_APPROVED_TESTNET') ? <>
+              <dt>Qualification policy</dt><dd>Owner-approved testnet. Not independently reviewed.</dd>
+            </> : null}
             <dt>Incident permissions</dt><dd className={styles.mono}>{incidentPermissions}</dd>
             <dt>Incident evidence</dt><dd className={styles.mono}>{newestIncidentEvidence?.evidenceCommitment ?? "NOT AVAILABLE"}</dd>
           </dl>
