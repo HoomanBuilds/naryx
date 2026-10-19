@@ -5,7 +5,7 @@ import { NATIVE_CASH_RANGE_ABI, NATIVE_CASH_HOUSE_ABI, type EvmNativeCashRangeBi
 import { createPublicClient, createWalletClient, encodeFunctionData, http, keccak256, parseAbi, stringToHex, type Chain, type Hex } from 'viem';
 import { baseSepolia, arbitrumSepolia } from 'viem/chains';
 import { loadEvmStrategySolverKey } from './evm-strategy-execution-authorization.js';
-import { NATIVE_CASH_MARK_GAS_CAP_WEI, NativeCashMarkJournal } from './native-cash-mark-journal.js';
+import { NATIVE_CASH_MARK_GAS_CAP_WEI, NativeCashMarkJournal, nativeCashMarkTransaction } from './native-cash-mark-journal.js';
 import { runNativeCashMarkWorker } from './native-cash-mark-worker.js';
 
 if (process.env.NARYX_NATIVE_CASH_MARK_ENABLED !== 'true') throw new Error('Native cash mark writes are disabled.');
@@ -66,7 +66,7 @@ try {
           const request = await wallet.prepareTransactionRequest({ to: binding.controller, data, gas, ...fees });
           if (await client.getChainId() !== chain.id) throw new Error('Native cash chain changed before signing.');
           const raw = await wallet.signTransaction(request);
-          pending = { id: `${binding.marketId}:${sequence}`, chainId: chain.id, hash: keccak256(raw), raw, costWei: gas * fees.maxFeePerGas };
+          pending = nativeCashMarkTransaction(chain.id, raw, gas * fees.maxFeePerGas);
           journal.reserve(pending);
         }
         let receipt;

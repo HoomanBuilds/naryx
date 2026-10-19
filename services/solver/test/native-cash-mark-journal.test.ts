@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { keccak256 } from 'viem';
-import { NATIVE_CASH_MARK_GAS_CAP_WEI, NativeCashMarkJournal } from '../src/native-cash-mark-journal.js';
+import { NATIVE_CASH_MARK_GAS_CAP_WEI, NativeCashMarkJournal, nativeCashMarkTransaction } from '../src/native-cash-mark-journal.js';
 
 test('cash mark journal survives restart without releasing pending commitments or resetting the gas budget', () => {
   const dir = mkdtempSync(join(tmpdir(), 'naryx-cash-mark-'));
@@ -37,5 +37,26 @@ test('cash mark journal refuses unknown networks, changed raw transaction hashes
     journal.reserve(transaction); journal.resolve(transaction.hash, true);
     assert.throws(() => journal.reserve(transaction));
     assert.equal(journal.reserved(84532), 100n);
+  } finally { journal.close(); rmSync(dir, { recursive: true }); }
+});
+
+test('a reverted mark can be retried with a new transaction without releasing either gas reservation', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'naryx-cash-mark-retry-'));
+  const path = join(dir, 'marks.sqlite');
+  const initial = [{ chainId: 84532, reservedWei: NATIVE_CASH_MARK_GAS_CAP_WEI - 70n }];
+  let journal = new NativeCashMarkJournal(path, initial);
+  const failed = nativeCashMarkTransaction(84532, '0x0102', 30n);
+  const retry = nativeCashMarkTransaction(84532, '0x0103', 40n);
+  try {
+    journal.reserve(failed);
+    journal.resolve(failed.hash, false);
+    journal.close();
+    journal = new NativeCashMarkJournal(path, initial);
+    journal.reserve(retry);
+    assert.deepEqual(journal.pending(84532), retry);
+    assert.equal(journal.reserved(84532), NATIVE_CASH_MARK_GAS_CAP_WEI);
+    journal.resolve(retry.hash, true);
+    assert.throws(() => journal.reserve(nativeCashMarkTransaction(84532, '0x0104', 1n)), /exhausted/);
+    assert.equal(journal.reserved(84532), NATIVE_CASH_MARK_GAS_CAP_WEI);
   } finally { journal.close(); rmSync(dir, { recursive: true }); }
 });

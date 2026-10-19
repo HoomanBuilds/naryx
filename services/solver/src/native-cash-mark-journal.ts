@@ -7,6 +7,11 @@ export interface NativeCashMarkTransaction {
   readonly id: string; readonly chainId: number; readonly hash: string; readonly raw: string; readonly costWei: bigint;
 }
 
+export function nativeCashMarkTransaction(chainId: number, raw: Hex, costWei: bigint): NativeCashMarkTransaction {
+  const hash = keccak256(raw);
+  return { id: hash, chainId, hash, raw, costWei };
+}
+
 export class NativeCashMarkJournal {
   readonly #db: Database.Database;
   constructor(path: string, initial: readonly { chainId: number; reservedWei: bigint }[]) {
