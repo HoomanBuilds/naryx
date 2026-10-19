@@ -1,30 +1,31 @@
 @import "tailwindcss";
 
-/*
- * Terminal design tokens. Neutral graphite surfaces, Naryx yellow for brand and primary actions
- * only, green and red strictly for side, purple for implied liquidity, and orange for data that is
- * a fixture and not an observation.
- */
 :root {
   color-scheme: dark;
-  --canvas: #0d1014;
-  --panel: #161a20;
-  --panel-raised: #20262d;
-  --field: #101419;
-  --hover: #272e37;
-  --line: #2c333d;
-  --line-soft: #232a33;
-  --line-strong: #414b58;
-  --text-primary: #f3f5f7;
-  --text-secondary: #bac3ce;
-  --text-dim: #929dab;
-  --text-faint: #6e7a89;
-  --yellow: #ffff00;
+  --canvas: #0c0c0e;
+  --panel: #151517;
+  --panel-raised: #212124;
+  --field: #101012;
+  --hover: #29292d;
+  --line: #2c2c30;
+  --line-soft: #242427;
+  --line-strong: #424246;
+  --text-primary: #f5f4f0;
+  --text-secondary: #c2c1bd;
+  --text-dim: #969590;
+  --text-faint: #757570;
+  --yellow: #f2ef18;
+  --yellow-soft: rgba(242, 239, 24, 0.08);
+  --yellow-edge: rgba(242, 239, 24, 0.35);
   --yellow-ink: #0a0a0a;
-  --up: #1fc27e;
-  --up-strong: #16a86b;
-  --down: #f0515f;
-  --down-strong: #d63d4b;
+  --up: #3fd9a4;
+  --up-strong: #2ab889;
+  --up-soft: rgba(63, 217, 164, 0.1);
+  --up-edge: rgba(63, 217, 164, 0.35);
+  --down: #ff637d;
+  --down-strong: #e64f6c;
+  --down-soft: rgba(255, 99, 125, 0.1);
+  --down-edge: rgba(255, 99, 125, 0.35);
   --implied: #a88bfa;
   --fixture: #ff9d3d;
   --info: #7cb4ff;
@@ -79,7 +80,7 @@ select {
 }
 
 ::selection {
-  background: rgba(255, 255, 0, 0.24);
+  background: rgba(242, 239, 24, 0.24);
   color: var(--text-primary);
 }
 

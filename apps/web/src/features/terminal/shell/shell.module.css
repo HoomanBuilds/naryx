@@ -18,7 +18,7 @@
   align-items: center;
   gap: 28px;
   border-bottom: 1px solid var(--line);
-  background: var(--panel);
+  background: var(--field);
   padding: 0 14px 0 16px;
 }
 
@@ -55,7 +55,7 @@
   font-family: var(--font-geist-mono), monospace;
   font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.34em;
+  letter-spacing: 0.28em;
 }
 
 .nav {
@@ -69,15 +69,16 @@
   position: relative;
   display: flex;
   align-items: center;
-  color: var(--text-secondary);
+  color: var(--text-dim);
   padding: 0 11px;
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 500;
   text-decoration: none;
-  transition: color 0.12s;
+  transition: color 0.12s, background 0.12s;
 }
 
 .nav a:hover {
+  background: var(--panel);
   color: var(--text-primary);
 }
 
@@ -95,7 +96,7 @@
 }
 
 .nav .navActive {
-  color: var(--text-primary);
+  color: var(--yellow);
 }
 
 .nav .navActive::after {
@@ -133,17 +134,18 @@
   align-items: center;
   gap: 8px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--canvas);
+  border-radius: var(--radius);
+  background: transparent;
   color: var(--text-primary);
   padding: 0 10px 0 8px;
   cursor: pointer;
-  transition: border-color 0.12s;
+  transition: border-color 0.12s, background 0.12s;
 }
 
 .networkButton:hover,
 .networkButton[aria-expanded="true"] {
   border-color: var(--line-strong);
+  background: var(--panel);
 }
 
 .networkText {
@@ -156,7 +158,7 @@
 }
 
 .networkText strong {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -191,7 +193,7 @@
   flex-direction: column;
   gap: 2px;
   border: 1px solid var(--line-strong);
-  border-radius: 10px;
+  border-radius: var(--radius);
   background: var(--panel-raised);
   padding: 4px;
   list-style: none;
@@ -217,7 +219,7 @@
   align-items: center;
   gap: 10px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-small);
   background: transparent;
   color: var(--text-primary);
   padding: 8px;
@@ -230,25 +232,34 @@
 }
 
 .networkList .networkOptionOn {
-  background: var(--field);
+  background: var(--yellow-soft);
+  box-shadow: inset 2px 0 var(--yellow);
 }
 
 .statusLive,
 .statusMuted {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   margin-left: auto;
-  border-radius: 999px;
-  padding: 1px 7px;
+  padding: 1px 4px;
   font-size: 10.5px;
   font-weight: 600;
 }
 
 .statusLive {
-  background: rgba(31, 194, 126, 0.14);
   color: var(--up);
 }
 
+.statusLive::before {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
+}
+
 .statusMuted {
-  background: var(--field);
   color: var(--text-dim);
 }
 
@@ -263,7 +274,7 @@
 .connectButton {
   height: 34px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--yellow);
   color: var(--yellow-ink);
   padding: 0 16px;
@@ -288,16 +299,17 @@
   align-items: center;
   gap: 8px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--canvas);
+  border-radius: var(--radius);
+  background: var(--panel);
   color: var(--text-primary);
   padding: 0 11px 0 9px;
   cursor: pointer;
-  transition: border-color 0.12s;
+  transition: border-color 0.12s, background 0.12s;
 }
 
 .accountButton:hover {
   border-color: var(--line-strong);
+  background: var(--panel-raised);
 }
 
 .accountChains {
@@ -310,7 +322,7 @@
 
 .accountChains > * {
   border-radius: 50%;
-  box-shadow: 0 0 0 2px var(--canvas);
+  box-shadow: 0 0 0 2px var(--panel);
 }
 
 .accountAddress {
@@ -335,7 +347,7 @@
 .wrongNetwork {
   height: 34px;
   border: 1px solid rgba(255, 157, 61, 0.45);
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: rgba(255, 157, 61, 0.08);
   color: var(--fixture);
   padding: 0 12px;
