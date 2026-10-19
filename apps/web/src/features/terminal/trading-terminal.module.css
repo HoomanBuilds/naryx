@@ -320,12 +320,14 @@
     outline-offset: 2px;
   }
 
-  .mobileEntry {
-    background: var(--up-strong);
+  .mobileActions .mobileEntry {
+    background: var(--yellow);
+    color: var(--yellow-ink);
   }
 
   .mobileExit {
-    background: var(--down-strong);
+    background: var(--panel-raised);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
   }
 }
 
@@ -350,18 +352,30 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--line-soft);
   padding-bottom: 12px;
 }
 
 .ticketHeader h2 {
+  position: relative;
   margin: 0;
+  padding-left: 10px;
   font-size: 14px;
   font-weight: 600;
 }
 
+.ticketHeader h2::before {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 0;
+  width: 2px;
+  background: var(--yellow);
+  content: "";
+}
+
 .ticketHeader > span {
-  color: var(--text-secondary);
+  color: var(--text-dim);
   font-size: 11px;
   text-align: right;
 }
@@ -377,21 +391,22 @@
 }
 
 .strategySelector label {
-  color: var(--text-dim);
-  font-size: 11.5px;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .strategySelector select {
   width: 100%;
   min-width: 0;
-  height: 40px;
+  height: 42px;
   border: 1px solid var(--line);
   border-radius: var(--radius-small);
   background: var(--field);
   color: var(--text-primary);
   padding: 0 10px;
   font: inherit;
-  font-size: 12px;
+  font-size: 12.5px;
+  font-weight: 500;
 }
 
 .strategySelector span {
@@ -399,11 +414,22 @@
   font-size: 11px;
 }
 
+.strategySelector > span[data-active="true"] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.strategySelector > span[data-active="true"]::before {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--up);
+  content: "";
+}
+
 .strategyCatalogue {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-small);
-  background: color-mix(in srgb, var(--field) 55%, transparent);
-  padding: 8px;
+  padding: 0 1px;
 }
 
 .strategyCatalogue summary {
@@ -411,8 +437,14 @@
   align-items: center;
   justify-content: space-between;
   color: var(--text-secondary);
-  font-size: 11px;
+  min-height: 26px;
+  font-size: 11.5px;
   cursor: pointer;
+}
+
+.strategyCatalogue summary:hover,
+.strategyPresets summary:hover {
+  color: var(--text-primary);
 }
 
 .strategyCatalogue summary strong {
@@ -474,10 +506,8 @@
 }
 
 .strategyPresets {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-small);
-  background: color-mix(in srgb, var(--field) 55%, transparent);
-  padding: 8px;
+  border-bottom: 1px solid var(--line-soft);
+  padding: 0 1px 10px;
 }
 
 .strategyPresets summary {
@@ -485,12 +515,13 @@
   align-items: center;
   justify-content: space-between;
   color: var(--text-secondary);
-  font-size: 11px;
+  min-height: 26px;
+  font-size: 11.5px;
   cursor: pointer;
 }
 
 .strategyPresets summary span:last-child {
-  color: var(--yellow);
+  color: var(--text-dim);
   font-family: var(--font-geist-mono), monospace;
 }
 
@@ -585,31 +616,35 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  background: var(--field);
+  padding: 4px;
 }
 
 .lifecycleSelector button {
   min-width: 0;
-  min-height: 32px;
-  border: 1px solid var(--line);
+  min-height: 34px;
+  border: 1px solid transparent;
   border-radius: var(--radius-small);
-  background: var(--panel-raised);
-  color: var(--text-dim);
+  background: transparent;
+  color: var(--text-secondary);
   padding: 6px 4px;
   font-size: 11px;
+  font-weight: 500;
   overflow-wrap: anywhere;
   cursor: pointer;
 }
 
 .lifecycleSelector .lifecycleActive {
-  border-color: var(--text-dim);
-  background: var(--hover);
-  color: var(--text-primary);
+  border-color: var(--yellow);
+  background: var(--yellow);
+  color: var(--yellow-ink);
+  font-weight: 600;
 }
 
-.lifecycleSelector button:hover {
-  border-color: var(--text-dim);
+.lifecycleSelector button:hover:not(.lifecycleActive) {
+  background: var(--panel-raised);
   color: var(--text-primary);
 }
 
@@ -634,8 +669,8 @@
   left: 2px;
   width: calc(50% - 3px);
   border-radius: var(--radius-small);
-  background: var(--panel-raised);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
+  background: color-mix(in srgb, var(--yellow) 12%, var(--field));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--yellow) 48%, transparent);
   transition:
     transform 0.28s var(--ease-out),
     background-color 0.28s var(--ease-out),
@@ -644,8 +679,6 @@
 
 .sideSwitch[data-mode="exit"] .sidePill {
   transform: translateX(calc(100% + 2px));
-  background: var(--panel-raised);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
 .sideSwitch button {
@@ -670,7 +703,7 @@
 .sideSwitch .sideEntryActive:hover,
 .sideSwitch .sideExitActive,
 .sideSwitch .sideExitActive:hover {
-  color: #ffffff;
+  color: var(--yellow);
 }
 
 .orderTypes {
@@ -752,17 +785,17 @@
   gap: 6px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--canvas);
-  padding: 9px 11px 10px;
+  background: var(--field);
+  padding: 12px;
   transition: border-color 0.12s;
 }
 
 .sizeBox:focus-within {
-  border-color: var(--text-dim);
+  border-color: var(--yellow);
 }
 
 .sizeBox label {
-  color: var(--text-dim);
+  color: var(--text-secondary);
   font-size: 11.5px;
 }
 
@@ -774,7 +807,7 @@
   color: var(--text-primary);
   padding: 0;
   font-family: var(--font-geist-mono), monospace;
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   text-align: right;
@@ -824,7 +857,7 @@
   height: 26px;
   border: 1px solid var(--line);
   border-radius: var(--radius-small);
-  background: var(--panel-raised);
+  background: var(--field);
   color: var(--text-secondary);
   font-family: var(--font-geist-mono), monospace;
   font-size: 11px;
@@ -841,8 +874,9 @@
 
 .presets .presetActive,
 .presets .presetActive:hover {
-  border-color: var(--text-dim);
-  color: var(--text-primary);
+  border-color: color-mix(in srgb, var(--yellow) 40%, var(--line));
+  background: color-mix(in srgb, var(--yellow) 6%, var(--field));
+  color: var(--yellow);
 }
 
 .ticketRow {
@@ -882,8 +916,9 @@
 
 .miniSegment .miniSegmentActive,
 .miniSegment .miniSegmentActive:hover {
-  background: var(--line-strong);
+  background: var(--panel-raised);
   color: var(--text-primary);
+  box-shadow: inset 0 -1px 0 var(--yellow);
 }
 
 .legList {
@@ -892,6 +927,7 @@
   margin: 0;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius);
+  background: var(--field);
   padding: 0;
   list-style: none;
 }
@@ -905,7 +941,7 @@
 }
 
 .legList li + li {
-  border-top: 1px dashed var(--line);
+  border-top: 1px solid var(--line-soft);
 }
 
 /* A leg's asset with the chain it executes on pinned to the corner */
@@ -1043,10 +1079,10 @@
 .connectCta {
   width: 100%;
   height: 42px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid transparent;
   border-radius: var(--radius);
-  background: var(--text-primary);
-  color: #0a0a0a;
+  background: var(--yellow);
+  color: var(--yellow-ink);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -1056,7 +1092,7 @@
 }
 
 .connectCta:hover:not(:disabled) {
-  background: #ffffff;
+  filter: brightness(0.92);
 }
 
 .connectCta:active:not(:disabled) {
@@ -1142,11 +1178,29 @@
 
 .summaryCard {
   display: grid;
-  gap: 8px;
-  border: 1px solid var(--line);
+  gap: 10px;
+  border: 1px solid var(--line-soft);
   border-radius: var(--radius);
   background: var(--panel-raised);
-  padding: 11px 12px;
+  padding: 12px;
+}
+
+.summaryHeading {
+  margin: 0;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.summaryCard .summaryHero strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.summaryCard[data-quoted="true"] .summaryHeading {
+  color: var(--yellow);
 }
 
 .summaryRow {
@@ -1158,7 +1212,7 @@
 }
 
 .summaryRow span {
-  color: var(--text-dim);
+  color: var(--text-secondary);
 }
 
 .summaryRow strong {
@@ -1179,8 +1233,7 @@
 }
 
 .flowDetails {
-  border: 1px solid var(--line-soft);
-  border-radius: var(--radius);
+  border-top: 1px solid var(--line-soft);
 }
 
 .flowDetails > summary {
@@ -1188,7 +1241,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 12px 0;
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 500;
@@ -1242,8 +1295,7 @@
 }
 
 .ticket > .executionReview {
-  border-top: 1px solid var(--line);
-  padding: 12px 0 0;
+  padding: 4px 0 0;
 }
 
 .evidenceHeading {
@@ -1260,15 +1312,14 @@
 }
 
 .evidenceHeading span {
-  border: 1px solid var(--line-strong);
-  border-radius: 3px;
-  padding: 1px 6px;
-  color: var(--text-secondary);
-  font-family: var(--font-geist-mono), monospace;
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 400;
   overflow-wrap: anywhere;
+}
+
+.evidenceHeading span[data-confirmed="true"] {
+  color: var(--up);
 }
 
 .reviewNotice,
@@ -1285,7 +1336,7 @@
   grid-template-columns: auto minmax(0, 1fr);
   gap: 5px 12px;
   border-radius: var(--radius-small);
-  background: var(--canvas);
+  background: var(--field);
   padding: 9px 10px;
   font-size: 11px;
 }
@@ -1308,29 +1359,40 @@
 
 .strategyPrepareForm {
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 
 .strategyPrepareForm label {
-  color: var(--text-dim);
-  font-size: 10.5px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
 }
 
 .strategyPrepareForm input,
 .strategyPrepareForm select {
   width: 100%;
   min-width: 0;
-  height: 38px;
+  height: 40px;
   border: 1px solid var(--line);
   border-radius: var(--radius-small);
-  background: var(--canvas);
+  background: var(--field);
   color: var(--text-primary);
-  padding: 0 9px;
-  font: 12px var(--font-geist-mono), monospace;
+  padding: 0 10px;
+  font: 13px var(--font-geist-mono), monospace;
 }
 
 .strategyPrepareForm select {
   font-family: inherit;
+  font-size: 12px;
+}
+
+.strategyPrepareForm input[inputmode="decimal"] {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.strategyPrepareForm input[readonly] {
+  color: var(--text-secondary);
+  border-color: var(--line-soft);
 }
 
 .flowDetails > .strategyPrepareForm {
@@ -1395,6 +1457,7 @@
 
 .quoteCandidateSelected {
   box-shadow: inset 2px 0 0 var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 4%, var(--field));
 }
 
 .quoteCandidate:focus-visible,
@@ -1569,12 +1632,12 @@
 
 .primaryAction {
   border: 1px solid transparent;
-  background: var(--text-primary);
-  color: #0a0a0a;
+  background: var(--yellow);
+  color: var(--yellow-ink);
 }
 
 .primaryAction:hover:not(:disabled) {
-  background: #ffffff;
+  filter: brightness(0.92);
 }
 
 .secondaryAction,

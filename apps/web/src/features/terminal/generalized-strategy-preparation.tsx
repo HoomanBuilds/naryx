@@ -5550,7 +5550,7 @@ export function GeneralizedStrategyPreparationPanel({
     <section className={styles.executionReview} aria-labelledby="generalized-strategy-review-title" data-strategy-order tabIndex={-1}>
       <div className={styles.evidenceHeading}>
         <h3 id="generalized-strategy-review-title">Order details</h3>
-        <span>{evmExecutionConfirmed || solanaObservation?.status === "FINALIZED" ? "Confirmed"
+        <span data-confirmed={evmExecutionConfirmed || solanaObservation?.status === "FINALIZED"}>{evmExecutionConfirmed || solanaObservation?.status === "FINALIZED" ? "Confirmed"
           : solanaObservation?.status === "FAILED" ? "Failed"
           : evmExecutionReverted ? "Reverted"
           : evmExecutionDropped || solanaObservation?.status === "DROPPED" ? "Dropped"
@@ -5559,8 +5559,9 @@ export function GeneralizedStrategyPreparationPanel({
           : review ? "Ready for review" : quoteReview ? "Quote received"
             : packageStatusLabel ?? "Quote required"}</span>
       </div>
-      <section className={styles.summaryCard} aria-label="Selected quote summary">
-        <div className={styles.summaryRow}>
+      {quoteReview || quoteHash || review ? <section className={styles.summaryCard} aria-label="Selected quote summary" data-quoted={quoteReview !== null}>
+        <h4 className={styles.summaryHeading}>Quote summary</h4>
+        <div className={`${styles.summaryRow} ${styles.summaryHero}`}>
           <span>Quoted net outcome</span>
           <strong title={quoteReview?.quoteAsset}>{quoteReview ? formatAtomicAmount(quoteReview.netOutcomeAtoms, quoteReview.quoteDecimals, quoteAssetLabel) : quoteHash ? "Details unavailable" : "Not quoted"}</strong>
         </div>
@@ -5580,9 +5581,9 @@ export function GeneralizedStrategyPreparationPanel({
           <span>Valid until</span>
           <strong>{expiryText(quoteReview.validUntilUnit, quoteReview.validUntilValue)}</strong>
         </div> : null}
-      </section>
+      </section> : null}
       <p className={styles.reviewNotice}>
-        Set the package limits, request a quote, then review the full order before signing. Execution uses test funds.
+        Set limits, request a quote, then review before signing. Test funds only.
       </p>
       {sourceOrderHash !== null ? (
         <div className={styles.strategyPrepareForm}>

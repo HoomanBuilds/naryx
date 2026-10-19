@@ -1667,8 +1667,8 @@ function Ticket({
       ) : null}
 
       {nativeCashFlow ? <section className={styles.summaryCard} aria-labelledby="fee-summary-title">
-        <h3 id="fee-summary-title" className={styles.visuallyHidden}>Order summary</h3>
-        <div className={styles.summaryRow}>
+        <h3 id="fee-summary-title" className={styles.summaryHeading}>Order estimate</h3>
+        <div className={`${styles.summaryRow} ${styles.summaryHero}`}>
           <span title="Estimated from the current mid price and your slippage. The binding limit is set from the pool's executable quote for this exact size when the order is created.">
             {mode === "entry" ? "Maximum quote (est.)" : "Minimum output (est.)"}
           </span>
