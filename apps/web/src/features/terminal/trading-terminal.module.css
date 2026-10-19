@@ -207,23 +207,35 @@
   overflow-y: auto;
 }
 
+.areaTicket,
+.areaTicket > .ticket {
+  scrollbar-width: none;
+}
+
+.areaTicket::-webkit-scrollbar,
+.areaTicket > .ticket::-webkit-scrollbar {
+  display: none;
+}
+
 .areaBottom {
   grid-area: bottom;
 }
 
 @media (min-width: 1280px) {
-  /* The page scrolls: chart and book take most of the first screen, positions and history sit below,
-     and the ticket stays pinned under the 52px header. */
   .terminalGrid {
     grid-template-rows: 60px clamp(540px, calc(100dvh - 262px), 940px) minmax(420px, auto);
   }
 
   .areaTicket {
+    overflow: clip;
+  }
+
+  .areaTicket > .ticket {
     position: sticky;
     top: 56px;
-    align-self: start;
-    /* Header 52px, the pinned 28px status bar, and the grid gaps. */
-    max-height: calc(100dvh - 92px);
+    height: calc(100dvh - 92px);
+    min-height: 0;
+    overflow-y: auto;
   }
 
   .areaBottom .tableScroller {
