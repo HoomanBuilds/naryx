@@ -641,6 +641,7 @@ export interface PublicFeedStatus {
   readonly state: "connecting" | "live" | "stale" | "unavailable";
   readonly detail: string;
   readonly updatedAtMs?: number;
+  readonly halted?: boolean;
 }
 
 interface LiveState {
@@ -709,13 +710,17 @@ export function usePublicMarketFeed(
     let socket: WebSocket | undefined;
     let streaming = false;
     let reconnectDelayMs = STREAM_RETRY_MIN_MS;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let depthRevision = 0;
+    let polling = false;
 
     const publish = (detail: string) => {
+      if (controller.signal.aborted) return;
       const observed = { packageMarketId: marketId, bids, asks, trades, cursor, halted };
       setLive((previous) => ({ ...observed, version: (previous?.version ?? 0) + 1 }));
       setStatus({
         packageMarketId: marketId,
-        status: { state: "live", detail: halted ? "Market halted by the exchange." : detail, updatedAtMs: Date.now() },
+        status: { state: "live", detail: halted ? "Market halted by the exchange." : detail, updatedAtMs: Date.now(), halted },
       });
     };
     const markStale = (error: unknown) => {
@@ -725,7 +730,7 @@ export function usePublicMarketFeed(
         return {
           packageMarketId: marketId,
           status: previous.state === "live" || previous.state === "stale"
-            ? { state: "stale", detail: `Last update failed (${detail}); showing the last observed data.`, ...(previous.updatedAtMs === undefined ? {} : { updatedAtMs: previous.updatedAtMs }) }
+            ? { ...previous, state: "stale", detail: `Last update failed (${detail}); showing the last observed data.` }
             : { state: "unavailable", detail: `Public market API unavailable (${detail}); no market data is shown.` },
         };
       });
@@ -748,14 +753,21 @@ export function usePublicMarketFeed(
         return;
       }
       const opened = new WebSocket(url);
+      let failed = false;
       socket = opened;
       opened.addEventListener("open", () => {
+        if (controller.signal.aborted || socket !== opened || failed) return;
         opened.send(JSON.stringify({ op: "subscribe", channel: "package-depth", packageMarketId }));
         opened.send(JSON.stringify({ op: "subscribe", channel: "package-tape", packageMarketId, after: cursor }));
       });
       opened.addEventListener("message", (event) => {
+        if (controller.signal.aborted || socket !== opened || failed) return;
         try {
           const message = decode(JSON.parse(String(event.data)) as Json) as Record<string, unknown>;
+          if (message.type === "error" && (message.packageMarketId === undefined || message.packageMarketId === packageMarketId)) {
+            throw new PublicApiError(`stream refused: ${String(message.code)}`);
+          }
+          if (message.packageMarketId !== packageMarketId) return;
           if (message.type === "subscribed" && message.channel === "package-tape") {
             streaming = true;
             reconnectDelayMs = STREAM_RETRY_MIN_MS;
@@ -763,24 +775,23 @@ export function usePublicMarketFeed(
             publish("Streaming from the public market API.");
             return;
           }
-          if (message.packageMarketId !== packageMarketId) return;
           if (message.type === "package-depth") {
             const nextBids = levels(message.bids, "bids");
             const nextAsks = levels(message.asks, "asks");
             bids = nextBids;
             asks = nextAsks;
             halted = message.halted === true;
+            depthRevision += 1;
             publish("Streaming from the public market API.");
           } else if (message.type === "package-tape") {
             const next = tapePage(message, cursor);
             trades = [...trades, ...next.trades].slice(-MAX_TRADES);
             cursor = next.nextCursor;
             publish("Streaming from the public market API.");
-          } else if (message.type === "error") {
-            throw new PublicApiError(`stream refused: ${String(message.code)}`);
           }
         } catch (error) {
           // A malformed push ends the stream; polling takes over from the last good state.
+          failed = true;
           markStale(error);
           opened.close();
         }
@@ -791,12 +802,15 @@ export function usePublicMarketFeed(
         streaming = false;
         if (controller.signal.aborted) return;
         schedule(wasStreaming ? 0 : POLL_MS);
-        setTimeout(openStream, reconnectDelayMs);
+        reconnectTimer = setTimeout(openStream, reconnectDelayMs);
         reconnectDelayMs = Math.min(reconnectDelayMs * 2, STREAM_RETRY_MAX_MS);
       });
     };
 
     const poll = async () => {
+      if (polling || controller.signal.aborted) return;
+      polling = true;
+      const startDepthRevision = depthRevision;
       try {
         const depth = await read(base, `/v1/markets/${market}/package-depth`, controller.signal);
         if (depth.packageMarketId !== packageMarketId) throw new PublicApiError("depth is for another market");
@@ -816,9 +830,12 @@ export function usePublicMarketFeed(
           nextCursor = next.nextCursor;
           if (next.trades.length === 0 || (body.trades as unknown[]).length < TAPE_PAGE) break;
         }
-        bids = nextBids;
-        asks = nextAsks;
-        halted = depth.halted === true;
+        if (controller.signal.aborted) return;
+        if (depthRevision === startDepthRevision) {
+          bids = nextBids;
+          asks = nextAsks;
+          halted = depth.halted === true;
+        }
         // A stream push that advanced the tape during this read wins over the read.
         if (cursor === startCursor) {
           trades = nextTrades;
@@ -830,6 +847,8 @@ export function usePublicMarketFeed(
       } catch (error) {
         if (controller.signal.aborted) return;
         markStale(error);
+      } finally {
+        polling = false;
       }
       schedule(streaming ? STREAM_RESYNC_MS : POLL_MS);
     };
@@ -837,6 +856,7 @@ export function usePublicMarketFeed(
     return () => {
       controller.abort();
       if (timer !== undefined) clearTimeout(timer);
+      if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
       socket?.close();
       socket = undefined;
     };
@@ -881,7 +901,7 @@ export function usePublicMarketFeed(
     const candleCache = new Map<ChartInterval, Candle[]>();
     return {
       label: "OBSERVED",
-      sourceNote: `Package ${packageMarketId}: executable depth and observed trades from the public market API.${referenceNote}`,
+      sourceNote: `Package ${packageMarketId}: ${status.detail}${referenceNote}`,
       book: BOOK_UNIT,
       candles(series: ChartSeriesKey, interval: ChartInterval) {
         if (fromReference(series)) return reference?.candles(series, interval) ?? [];
@@ -906,5 +926,7 @@ export function usePublicMarketFeed(
     };
   }, [configured, live, fallback, packageMarketId, reference, status]);
 
-  return { feed, status: configured ? status : null };
+  return { feed, status: !configured ? null : packageMarketId === null
+    ? { state: "unavailable", detail: "No published package market is selected." }
+    : status };
 }

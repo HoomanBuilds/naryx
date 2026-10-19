@@ -7,6 +7,10 @@
   flex-direction: column;
 }
 
+.terminalShell > footer {
+  position: static;
+}
+
 .visuallyHidden {
   position: absolute;
   width: 1px;
@@ -267,7 +271,7 @@
   .terminalGrid {
     gap: 3px;
     padding: 3px;
-    grid-template-rows: 64px 420px 420px auto minmax(320px, auto);
+    grid-template-rows: minmax(112px, auto) 420px 420px auto minmax(320px, auto);
   }
 }
 
@@ -329,10 +333,42 @@
 
 .ticket {
   display: flex;
+  min-width: 0;
   min-height: 100%;
   flex-direction: column;
   gap: 12px;
+  background: var(--panel);
   padding: 12px;
+}
+
+.ticket > * {
+  min-width: 0;
+}
+
+.ticketHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 12px;
+}
+
+.ticketHeader h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ticketHeader > span {
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-align: right;
+}
+
+.ticket :is(button, select, summary):focus-visible {
+  outline: 1px solid var(--yellow);
+  outline-offset: 2px;
 }
 
 .strategySelector {
@@ -347,22 +383,20 @@
 
 .strategySelector select {
   width: 100%;
-  height: 36px;
+  min-width: 0;
+  height: 40px;
   border: 1px solid var(--line);
   border-radius: var(--radius-small);
-  background: var(--canvas);
+  background: var(--field);
   color: var(--text-primary);
   padding: 0 10px;
-  font: 500 12px var(--font-geist-mono), monospace;
+  font: inherit;
+  font-size: 12px;
 }
 
 .strategySelector span {
-  color: var(--yellow);
-  font-size: 10.5px;
-}
-
-.strategySelector span[data-active="true"] {
-  color: var(--up-strong);
+  color: var(--text-dim);
+  font-size: 11px;
 }
 
 .strategyCatalogue {
@@ -382,7 +416,7 @@
 }
 
 .strategyCatalogue summary strong {
-  color: var(--yellow);
+  color: var(--text-dim);
   font-family: var(--font-geist-mono), monospace;
   font-size: 10px;
   font-weight: 500;
@@ -436,55 +470,6 @@
 .strategyCatalogueList small {
   color: var(--text-dim);
   font-size: 9px;
-  text-transform: lowercase;
-}
-
-.templateSpecification {
-  border: 1px solid var(--line-soft);
-  border-radius: var(--radius-small);
-  padding: 7px 8px;
-}
-
-.templateSpecification summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  color: var(--text-secondary);
-  font-size: 10.5px;
-  cursor: pointer;
-}
-
-.templateSpecification summary strong {
-  overflow: hidden;
-  color: var(--text-dim);
-  font-family: var(--font-geist-mono), monospace;
-  font-size: 9px;
-  font-weight: 400;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.templateSpecification dl {
-  display: grid;
-  gap: 5px;
-  margin-top: 8px;
-}
-
-.templateSpecification dl > div {
-  display: grid;
-  grid-template-columns: 70px minmax(0, 1fr);
-  gap: 8px;
-  font-size: 9.5px;
-}
-
-.templateSpecification dt {
-  color: var(--text-dim);
-}
-
-.templateSpecification dd {
-  overflow-wrap: anywhere;
-  color: var(--text-secondary);
   text-transform: lowercase;
 }
 
@@ -597,27 +582,39 @@
 }
 
 .lifecycleSelector {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
-  overflow-x: auto;
-  padding-bottom: 2px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 12px;
 }
 
 .lifecycleSelector button {
-  flex: 0 0 auto;
-  height: 26px;
+  min-width: 0;
+  min-height: 32px;
   border: 1px solid var(--line);
   border-radius: var(--radius-small);
-  background: transparent;
+  background: var(--panel-raised);
   color: var(--text-dim);
-  padding: 0 8px;
-  font-size: 10.5px;
+  padding: 6px 4px;
+  font-size: 11px;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 
 .lifecycleSelector .lifecycleActive {
-  border-color: var(--yellow);
+  border-color: var(--text-dim);
+  background: var(--hover);
   color: var(--text-primary);
+}
+
+.lifecycleSelector button:hover {
+  border-color: var(--text-dim);
+  color: var(--text-primary);
+}
+
+.sideSwitch[hidden] {
+  display: none;
 }
 
 .sideSwitch {
@@ -637,8 +634,8 @@
   left: 2px;
   width: calc(50% - 3px);
   border-radius: var(--radius-small);
-  background: var(--up-strong);
-  box-shadow: 0 4px 14px rgba(22, 168, 107, 0.25);
+  background: var(--panel-raised);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
   transition:
     transform 0.28s var(--ease-out),
     background-color 0.28s var(--ease-out),
@@ -647,8 +644,8 @@
 
 .sideSwitch[data-mode="exit"] .sidePill {
   transform: translateX(calc(100% + 2px));
-  background: var(--down-strong);
-  box-shadow: 0 4px 14px rgba(214, 61, 75, 0.25);
+  background: var(--panel-raised);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 
 .sideSwitch button {
@@ -678,6 +675,7 @@
 
 .orderTypes {
   display: flex;
+  flex-wrap: wrap;
   gap: 18px;
   border-bottom: 1px solid var(--line);
 }
@@ -726,10 +724,10 @@
 }
 
 .ticketFacts div {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 8px;
+  font-size: 11px;
 }
 
 .ticketFacts dt {
@@ -793,6 +791,12 @@
   font-size: 10.5px;
 }
 
+.sizeMeta > span:last-child {
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
 .symbolChip {
   display: inline-flex;
   align-items: center;
@@ -820,7 +824,7 @@
   height: 26px;
   border: 1px solid var(--line);
   border-radius: var(--radius-small);
-  background: transparent;
+  background: var(--panel-raised);
   color: var(--text-secondary);
   font-family: var(--font-geist-mono), monospace;
   font-size: 11px;
@@ -1074,12 +1078,10 @@
   min-width: 0;
   align-items: center;
   gap: 6px;
-  overflow: hidden;
   color: var(--text-secondary);
   font-family: var(--font-geist-mono), monospace;
   font-size: 11.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .feeDetails > summary {
@@ -1135,25 +1137,24 @@
 }
 
 .ticketFacts dd {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .summaryCard {
   display: grid;
-  gap: 7px;
+  gap: 8px;
+  border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel-raised);
   padding: 11px 12px;
 }
 
 .summaryRow {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
   align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 12px;
+  gap: 8px;
+  font-size: 11px;
 }
 
 .summaryRow span {
@@ -1161,12 +1162,14 @@
 }
 
 .summaryRow strong {
+  min-width: 0;
   color: var(--text-primary);
   font-family: var(--font-geist-mono), monospace;
   font-size: 11.5px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   text-align: right;
+  overflow-wrap: anywhere;
 }
 
 .summaryNote {
@@ -1239,8 +1242,8 @@
 }
 
 .ticket > .executionReview {
-  border: 1px solid rgba(255, 255, 0, 0.18);
-  border-radius: var(--radius);
+  border-top: 1px solid var(--line);
+  padding: 12px 0 0;
 }
 
 .evidenceHeading {
@@ -1265,7 +1268,7 @@
   font-size: 9.5px;
   font-weight: 600;
   letter-spacing: 0.06em;
-  text-transform: uppercase;
+  overflow-wrap: anywhere;
 }
 
 .reviewNotice,
@@ -1289,6 +1292,7 @@
 
 .reviewGrid span {
   color: var(--text-dim);
+  overflow-wrap: anywhere;
 }
 
 /* Long exact amounts wrap instead of being cut off, so no digit is hidden. */
@@ -1315,17 +1319,22 @@
 .strategyPrepareForm input,
 .strategyPrepareForm select {
   width: 100%;
-  height: 34px;
+  min-width: 0;
+  height: 38px;
   border: 1px solid var(--line);
   border-radius: var(--radius-small);
   background: var(--canvas);
   color: var(--text-primary);
   padding: 0 9px;
-  font: 10.5px var(--font-geist-mono), monospace;
+  font: 12px var(--font-geist-mono), monospace;
 }
 
 .strategyPrepareForm select {
-  appearance: none;
+  font-family: inherit;
+}
+
+.flowDetails > .strategyPrepareForm {
+  padding: 12px;
 }
 
 .strategyPrepareForm .auctionSolverSelect {
@@ -1456,6 +1465,18 @@
   gap: 6px;
 }
 
+.ticket .evidenceHeading {
+  flex-wrap: wrap;
+}
+
+.ticket .reviewGrid {
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+}
+
+.ticket .reviewEconomics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .reviewEconomics div {
   display: grid;
   gap: 3px;
@@ -1470,9 +1491,11 @@
 }
 
 .reviewEconomics strong {
+  min-width: 0;
   font-family: var(--font-geist-mono), monospace;
   font-size: 12px;
   font-weight: 500;
+  overflow-wrap: anywhere;
 }
 
 .reviewLeg {

@@ -17,7 +17,6 @@ function UtcClock() {
   return <span className={styles.statusItem} suppressHydrationWarning>{now === null ? "--:--:--" : now} UTC</span>;
 }
 
-/** The persistent footer: environment, connection, activation status, and data provenance. */
 export function StatusBar({
   snapshot,
   providerConnection,
@@ -38,37 +37,24 @@ export function StatusBar({
   executionLive: boolean;
 }) {
   const connection = providerConnection === "connected" ? "Service connected" : providerConnection === "connecting" ? "Connecting" : "Service offline";
+  const dataLabel = feedLabel === "FIXTURE" ? "Sample data" : feedLabel === "REFERENCE" ? "Index prices" : feedLabel === "OBSERVED" ? "Market data" : "Data unavailable";
   return (
     <footer className={styles.statusBar} aria-label="Terminal status">
       <span className={providerConnection === "connected" ? styles.statusPillOk : styles.statusPill}>
         <i className={providerConnection === "connected" ? styles.dotOk : providerConnection === "connecting" ? styles.dotWarn : styles.dotOff} aria-hidden="true" />
         {connection}
       </span>
-      <span className={styles.statusItem}>
+      <span className={styles.statusNetwork} title={`${domainLabel}. ${domainNote}`}>
         <ChainIcon chain={domainLabel} size={12} />
-        {domainLabel} <em>{domainNote}</em>
+        {domainLabel} <span>{snapshot.environment.source === "LOCAL_CONFORMANCE" ? "Local" : "Testnet"}</span>
       </span>
-      <span className={styles.statusItem}>Evidence <em>{snapshot.environment.evidenceGrade}</em></span>
-      <span className={styles.statusItem} title={feedStatus?.detail}>
-        Market data <em className={feedLabel === "FIXTURE" ? styles.statusFixture : undefined}>{feedLabel}</em>
-        {feedStatus === null ? null : (
-          <i
-            className={feedStatus.state === "live" ? styles.dotOk : feedStatus.state === "unavailable" ? styles.dotOff : styles.dotWarn}
-            aria-label={`Market data feed ${feedStatus.state}`}
-            role="img"
-          />
-        )}
+      <span className={`${styles.statusItem} ${styles.statusData}`} title={feedStatus?.detail}>
+        {dataLabel}{feedStatus === null ? null : <em>{feedStatus.state === "live" ? "connected" : feedStatus.state}</em>}
       </span>
       <span className={styles.statusSpacer} />
-      <span className={executionLive ? styles.statusItem : styles.statusWarn}>
-        {executionLive ? <>Testnet execution <em>live</em></> : "Testnet execution off"}
+      <span className={`${styles.statusItem} ${styles.statusExecution}`}>
+        {executionLive ? <>Execution <em>available</em></> : "Execution unavailable"}
       </span>
-      <span className={styles.statusDanger}>Mainnet writes prohibited</span>
-      {snapshot.environment.source === "LOCAL_CONFORMANCE" ? (
-        <span className={styles.statusItem} title="Fixture capture time">Fixture {snapshot.environment.capturedAt}</span>
-      ) : snapshot.environment.evidenceGrade === "OBSERVED_UNATTESTED" ? (
-        <span className={styles.statusItem} title="Live observation capture time">Observed {snapshot.environment.capturedAt}</span>
-      ) : null}
       <UtcClock />
     </footer>
   );

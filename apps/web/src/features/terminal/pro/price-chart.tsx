@@ -3,8 +3,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type {
   CandlestickData,
+  CrosshairMode,
   HistogramData,
   IChartApi,
+  IPriceLine,
   ISeriesApi,
   LineData,
   MouseEventParams,
@@ -24,6 +26,7 @@ import {
 } from "../market-feed";
 import { usePersistedFlag, usePersistedSetting } from "../persisted-setting";
 import { CHART_COLORS } from "./chart-colors";
+import { ChartTools, type ChartCursorMode } from "./chart-tools";
 import styles from "./pro.module.css";
 
 type ChartStyle = "candles" | "bars" | "line" | "area";
@@ -114,6 +117,7 @@ interface ChartSeries {
   readonly ohlc: boolean;
   readonly volume: ISeriesApi<"Histogram"> | undefined;
   readonly averages: readonly { readonly series: ISeriesApi<"Line">; readonly length: number }[];
+  readonly cursorModes: Readonly<Record<ChartCursorMode, CrosshairMode>>;
   byTime: Map<number, Candle>;
 }
 
@@ -167,15 +171,12 @@ interface Legend {
   changePercent: number;
 }
 
-/**
- * The price chart: candles, bars, line, or area over six intervals, with volume, two moving
- * averages, a crosshair OHLCV legend, and a watermark whenever the feed is fixture data. It
- * renders only on the client; the canvas library is loaded on mount.
- */
 export function PriceChart({ feed }: { feed: MarketFeed }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ChartSeries | null>(null);
+  const markerRef = useRef<IPriceLine | null>(null);
+  const cursorRef = useRef<ChartCursorMode>("crosshair");
   const [interval, setChartInterval] = usePersistedSetting<ChartInterval>(CHART_INTERVAL_SETTING.key, CHART_INTERVAL_SETTING.fallback, CHART_INTERVALS.map((entry) => entry.id));
   const [style, setStyle] = usePersistedSetting<ChartStyle>("chart.style", "candles", CHART_STYLES.map((entry) => entry.id));
   const [seriesKey, setSeriesKey] = usePersistedSetting<ChartSeriesKey>(CHART_SERIES_SETTING.key, CHART_SERIES_SETTING.fallback, SERIES.map((entry) => entry.id));
@@ -184,6 +185,8 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
   const [showMa50, setShowMa50] = usePersistedFlag("chart.ma50", false);
   const [legend, setLegend] = useState<Legend | null>(null);
   const [ready, setReady] = useState(false);
+  const [cursor, setCursor] = useState<ChartCursorMode>("crosshair");
+  const [markerPrice, setMarkerPrice] = useState<number | null>(null);
 
   const candles = useMemo(() => feed.candles(seriesKey, interval), [feed, seriesKey, interval]);
   const candlesRef = useRef<readonly Candle[]>(candles);
@@ -209,7 +212,7 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
     if (container === null) return;
     void import("lightweight-charts").then((library) => {
       if (disposed) return;
-      const { createChart, createTextWatermark, CandlestickSeries, BarSeries, LineSeries, AreaSeries, HistogramSeries, CrosshairMode, LineStyle } = library;
+      const { createChart, CandlestickSeries, BarSeries, LineSeries, AreaSeries, HistogramSeries, CrosshairMode, LineStyle } = library;
       const monoFamily = getComputedStyle(container).getPropertyValue("--font-geist-mono").trim();
       chart = createChart(container, {
         autoSize: true,
@@ -221,10 +224,10 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
           attributionLogo: true,
         },
         grid: { vertLines: { color: CHART_COLORS.grid }, horzLines: { color: CHART_COLORS.grid } },
-        rightPriceScale: { borderColor: CHART_COLORS.border, scaleMargins: { top: 0.1, bottom: showVolume && hasVolume ? 0.22 : 0.08 } },
+        rightPriceScale: { borderColor: CHART_COLORS.border, scaleMargins: { top: 0.16, bottom: showVolume && hasVolume ? 0.22 : 0.08 } },
         timeScale: { borderColor: CHART_COLORS.border, timeVisible: interval !== "1d", secondsVisible: false, rightOffset: 6, barSpacing: 6 },
         crosshair: {
-          mode: CrosshairMode.Normal,
+          mode: cursorRef.current === "pointer" ? CrosshairMode.Hidden : CrosshairMode.Normal,
           vertLine: { color: CHART_COLORS.crosshair, width: 1, style: LineStyle.Dashed, labelBackgroundColor: CHART_COLORS.label },
           horzLine: { color: CHART_COLORS.crosshair, width: 1, style: LineStyle.Dashed, labelBackgroundColor: CHART_COLORS.label },
         },
@@ -265,19 +268,14 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
         if (!enabled) continue;
         averages.push({ series: chart.addSeries(LineSeries, { color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }), length });
       }
-      if (feed.label === "FIXTURE") {
-        const pane = chart.panes()[0];
-        if (pane !== undefined) {
-          createTextWatermark(pane, {
-            horzAlign: "center",
-            vertAlign: "center",
-            lines: [
-              { text: "FIXTURE DATA", color: CHART_COLORS.watermark, fontSize: 40, fontStyle: "600" },
-              { text: "Deterministic model. Not market data.", color: CHART_COLORS.watermark, fontSize: 12 },
-            ],
-          });
-        }
-      }
+      chart.subscribeClick((param: MouseEventParams<Time>) => {
+        if (markerRef.current === null || param.point === undefined) return;
+        const value = price.coordinateToPrice(param.point.y);
+        if (value === null || !Number.isFinite(value)) return;
+        const rounded = Number(value.toFixed(meta.precision));
+        markerRef.current.applyOptions({ price: rounded });
+        setMarkerPrice(rounded);
+      });
       chart.subscribeCrosshairMove((param: MouseEventParams<Time>) => {
         const candle = typeof param.time === "number" ? seriesRef.current?.byTime.get(param.time) : undefined;
         if (candle === undefined) return setLegend(null);
@@ -285,9 +283,11 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
         setLegend({ candle, change, changePercent: candle.open === 0 ? 0 : (change / Math.abs(candle.open)) * 100 });
       });
       price.applyOptions({ priceLineColor: CHART_COLORS.priceLine, priceLineStyle: LineStyle.Dotted });
-      seriesRef.current = { chart, price, ohlc: style === "candles" || style === "bars", volume, averages, byTime: new Map() };
+      seriesRef.current = { chart, price, ohlc: style === "candles" || style === "bars", volume, averages, cursorModes: { pointer: CrosshairMode.Hidden, crosshair: CrosshairMode.Normal }, byTime: new Map() };
       applyCandles(seriesRef.current, candlesRef.current, seconds);
       chart.timeScale().scrollToRealTime();
+      setLegend(null);
+      setMarkerPrice(null);
       setReady(true);
     });
     return () => {
@@ -295,8 +295,9 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
       chart?.remove();
       chartRef.current = null;
       seriesRef.current = null;
+      markerRef.current = null;
     };
-  }, [style, showVolume, hasVolume, showMa20, showMa50, feed.label, interval, seconds, meta.precision]);
+  }, [style, showVolume, hasVolume, showMa20, showMa50, interval, seconds, meta.precision, meta.title, seriesKey]);
 
   // New candles update the series in place, so zoom, scroll, and the crosshair survive live data.
   useEffect(() => {
@@ -305,9 +306,45 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
   }, [candles, seconds]);
 
   const shown = legend ?? lastLegend;
-  const tone = shown === null ? undefined : shown.change >= 0 ? styles.up : styles.down;
+  const tone = shown === null || shown.change === 0 ? undefined : shown.change > 0 ? styles.up : styles.down;
   const intervalLabel = CHART_INTERVALS.find((entry) => entry.id === interval)?.label ?? interval;
   const sourceLabel = meta.label ?? feed.label;
+  const sourceText = sourceLabel === "REFERENCE" ? seriesKey === "basis" ? "Spot/perp index" : `${seriesKey === "spot" ? "Spot" : "Perp"} index`
+    : sourceLabel === "FIXTURE" ? "Sample data"
+      : sourceLabel === "OBSERVED" ? seriesKey === "basis" ? "Package trades" : "Observed prices"
+        : "Data unavailable";
+  const chartTitle = seriesKey === "basis" ? meta.unit === "bps" ? "Perp minus spot basis" : "Package price" : seriesKey === "spot" ? "Spot price" : "Perpetual price";
+
+  function changeCursor(mode: ChartCursorMode) {
+    cursorRef.current = mode;
+    setCursor(mode);
+    const target = seriesRef.current;
+    if (target !== null) target.chart.applyOptions({ crosshair: { mode: target.cursorModes[mode] } });
+  }
+
+  function changeMarker(value: number | null) {
+    const price = seriesRef.current?.price;
+    if (price === undefined) return;
+    if (value === null) {
+      if (markerRef.current !== null) price.removePriceLine(markerRef.current);
+      markerRef.current = null;
+    } else if (Number.isFinite(value)) {
+      if (markerRef.current === null) markerRef.current = price.createPriceLine({ price: value, color: CHART_COLORS.brand, lineWidth: 1, axisLabelVisible: true, title: "Marker" });
+      else markerRef.current.applyOptions({ price: value });
+    } else return;
+    setMarkerPrice(value);
+  }
+
+  function zoom(factor: number) {
+    const scale = chartRef.current?.timeScale();
+    if (scale === undefined) return;
+    scale.applyOptions({ barSpacing: Math.max(0.5, Math.min(80, scale.options().barSpacing * factor)) });
+  }
+
+  function fitChart() {
+    chartRef.current?.priceScale("right").applyOptions({ autoScale: true });
+    chartRef.current?.timeScale().fitContent();
+  }
 
   return (
     <>
@@ -342,62 +379,71 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
             Indicators
           </summary>
           <div className={styles.menuPanel} role="group" aria-label="Indicators">
-            <label><input type="checkbox" checked={showVolume} onChange={(event) => setShowVolume(event.target.checked)} /> Volume</label>
+            <label><input type="checkbox" checked={showVolume && hasVolume} disabled={!hasVolume} onChange={(event) => setShowVolume(event.target.checked)} /> Volume{hasVolume ? "" : " unavailable"}</label>
             <label><input type="checkbox" checked={showMa20} onChange={(event) => setShowMa20(event.target.checked)} /> <i className={styles.swatchMa20} aria-hidden="true" /> MA 20</label>
             <label><input type="checkbox" checked={showMa50} onChange={(event) => setShowMa50(event.target.checked)} /> <i className={styles.swatchMa50} aria-hidden="true" /> MA 50</label>
           </div>
         </details>
-        <div className={styles.toolbarEnd}>
-          <button type="button" className={styles.iconButton} aria-label="Fit all bars" title="Fit all bars" onClick={() => chartRef.current?.timeScale().fitContent()}>
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3v10M14 3v10M4.5 8h7M6.5 6 4.5 8l2 2M9.5 6l2 2-2 2" /></svg>
-          </button>
-          <button type="button" className={styles.iconButton} aria-label="Scroll to latest" title="Scroll to latest" onClick={() => chartRef.current?.timeScale().scrollToRealTime()}>
-            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4l4 4-4 4M8 4l4 4-4 4M14 3v10" /></svg>
-          </button>
-        </div>
       </div>
-      <div className={styles.chartBody}>
-        <div className={styles.chartLegend} aria-live="off">
-          <span className={styles.legendTitle}>{meta.title} <span>{meta.unit}</span> <span>{intervalLabel}</span></span>
-          <span
-            className={sourceLabel === "FIXTURE" ? styles.labelFixture : sourceLabel === "OBSERVED" ? styles.labelObserved : styles.labelUnavailable}
-            title={meta.note ?? feed.sourceNote}
-          >
-            {sourceLabel}
-          </span>
-          {shown === null ? null : (
-            <span className={styles.legendValues}>
-              <span>O<b className={tone}>{formatValue(shown.candle.open, meta.precision)}</b></span>
-              <span>H<b className={tone}>{formatValue(shown.candle.high, meta.precision)}</b></span>
-              <span>L<b className={tone}>{formatValue(shown.candle.low, meta.precision)}</b></span>
-              <span>C<b className={tone}>{formatValue(shown.candle.close, meta.precision)}</b></span>
-              <b className={tone}>
-                {shown.change >= 0 ? "+" : ""}{formatValue(shown.change, meta.precision)} ({shown.changePercent >= 0 ? "+" : ""}{shown.changePercent.toFixed(2)}%)
-              </b>
-            </span>
+      <div className={styles.chartSourceRow}>
+        <span>{chartTitle} <span className={styles.chartUnit}>{meta.unit} · {intervalLabel}</span></span>
+        <span className={styles.chartSource} title={meta.note ?? feed.sourceNote} tabIndex={0}>{sourceText}</span>
+      </div>
+      <div className={styles.chartFrame}>
+        <ChartTools
+          ready={ready}
+          hasData={candles.length > 0}
+          cursor={cursor}
+          markerActive={markerPrice !== null}
+          onCursorChange={changeCursor}
+          onMarkerToggle={() => changeMarker(markerPrice === null ? shown?.candle.close ?? null : null)}
+          onZoom={zoom}
+          onFit={fitChart}
+          onLatest={() => chartRef.current?.timeScale().scrollToRealTime()}
+        />
+        <div className={styles.chartBody} data-cursor={cursor}>
+          <div className={styles.chartLegend} aria-live="off">
+            {shown === null ? null : (
+              <span className={styles.legendValues}>
+                <span>O<b className={tone}>{formatValue(shown.candle.open, meta.precision)}</b></span>
+                <span>H<b className={tone}>{formatValue(shown.candle.high, meta.precision)}</b></span>
+                <span>L<b className={tone}>{formatValue(shown.candle.low, meta.precision)}</b></span>
+                <span>C<b className={tone}>{formatValue(shown.candle.close, meta.precision)}</b></span>
+                <b className={tone}>
+                  {shown.change >= 0 ? "+" : ""}{formatValue(shown.change, meta.precision)} ({shown.changePercent >= 0 ? "+" : ""}{shown.changePercent.toFixed(2)}%)
+                </b>
+              </span>
+            )}
+            {showVolume && hasVolume && shown !== null ? <span className={styles.legendValues}><span>Vol<b>{formatVolume(shown.candle.volume)}</b></span></span> : null}
+            {showMa20 || showMa50 ? (
+              <span className={styles.legendValues}>
+                {showMa20 ? <span className={styles.legendMa20}>MA 20</span> : null}
+                {showMa50 ? <span className={styles.legendMa50}>MA 50</span> : null}
+              </span>
+            ) : null}
+          </div>
+          {markerPrice === null ? null : (
+            <div className={styles.markerEditor}>
+              <label>Marker <input aria-label={`Price marker in ${meta.unit}`} type="number" step={1 / 10 ** meta.precision} value={markerPrice} onChange={(event) => { if (event.target.value !== "") changeMarker(event.target.valueAsNumber); }} /></label>
+              <span>{meta.unit}</span>
+              <button type="button" aria-label="Remove price marker" title="Remove price marker" onClick={() => changeMarker(null)}>×</button>
+            </div>
           )}
-          {showVolume && hasVolume && shown !== null ? <span className={styles.legendValues}><span>Vol<b>{formatVolume(shown.candle.volume)}</b></span></span> : null}
-          {showMa20 || showMa50 ? (
-            <span className={styles.legendValues}>
-              {showMa20 ? <span className={styles.legendMa20}>MA 20</span> : null}
-              {showMa50 ? <span className={styles.legendMa50}>MA 50</span> : null}
-            </span>
+          <div ref={containerRef} className={styles.chartCanvas} />
+          {ready && candles.length === 0 ? (
+            <div className={styles.chartEmpty} role="status">
+              <strong>{meta.empty?.title ?? "No candles in this window"}</strong>
+              {meta.empty === undefined ? null : <span>{meta.empty.detail}</span>}
+            </div>
           ) : null}
+          {ready ? null : (
+            <div className={styles.chartSkeleton} role="status" aria-label="Loading chart">
+              {Array.from({ length: 28 }, (_, index) => (
+                <i key={index} style={{ height: `${28 + ((index * 37) % 46)}%` }} />
+              ))}
+            </div>
+          )}
         </div>
-        <div ref={containerRef} className={styles.chartCanvas} />
-        {ready && candles.length === 0 ? (
-          <div className={styles.chartEmpty} role="status">
-            <strong>{meta.empty?.title ?? "No candles in this window"}</strong>
-            {meta.empty === undefined ? null : <span>{meta.empty.detail}</span>}
-          </div>
-        ) : null}
-        {ready ? null : (
-          <div className={styles.chartSkeleton} role="status" aria-label="Loading chart">
-            {Array.from({ length: 28 }, (_, index) => (
-              <i key={index} style={{ height: `${28 + ((index * 37) % 46)}%` }} />
-            ))}
-          </div>
-        )}
       </div>
     </>
   );

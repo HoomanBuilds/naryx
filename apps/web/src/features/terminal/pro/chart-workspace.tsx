@@ -128,7 +128,7 @@ function DepthChart({ feed, unit }: { feed: MarketFeed; unit: string }) {
       {empty ? (
         <div className={styles.chartEmpty} role="status">
           <strong>No package depth</strong>
-          <span>{feed.label === "UNAVAILABLE" ? "No published package market is selected." : feed.label === "REFERENCE" ? "Package depth is published only by the public market API, which this deployment does not run." : "The package book has no resting orders."}</span>
+          <span>{feed.label === "UNAVAILABLE" ? "Select a market to view package depth." : feed.label === "REFERENCE" ? "Index prices are available. Package orders have not been published for this market." : "The package book has no resting orders."}</span>
         </div>
       ) : width > 0 && height > 0 ? (
         <svg width={width} height={height} role="img" aria-label="Cumulative package depth" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
@@ -317,7 +317,13 @@ export function ChartWorkspace({
   size: string;
 }) {
   const [view, setView] = usePersistedSetting<ChartView>("chart.view", "chart", VIEWS.map((entry) => entry.id));
+  const [fullscreen, setFullscreen] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const onFullscreenChange = () => setFullscreen(document.fullscreenElement === panelRef.current);
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
   function toggleFullscreen() {
     const panel = panelRef.current;
     if (panel === null) return;
@@ -333,13 +339,14 @@ export function ChartWorkspace({
             type="button"
             role="tab"
             aria-selected={view === entry.id}
+            tabIndex={view === entry.id ? 0 : -1}
             className={view === entry.id ? styles.tabActive : undefined}
             onClick={() => setView(entry.id)}
           >
             {entry.label}
           </button>
         ))}
-        <button type="button" className={styles.iconButton} aria-label="Toggle full screen" title="Full screen" onClick={toggleFullscreen}>
+        <button type="button" className={styles.iconButton} aria-label="Toggle full screen" aria-pressed={fullscreen} title={fullscreen ? "Exit full screen" : "Full screen"} onClick={toggleFullscreen}>
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6V2.5H6M13.5 10v3.5H10M10 2.5h3.5V6M6 13.5H2.5V10" /></svg>
         </button>
       </div>

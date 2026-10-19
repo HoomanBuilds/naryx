@@ -161,6 +161,7 @@
 
 .panelTabs > .iconButton {
   align-self: center;
+  margin-left: auto;
   margin-right: -6px;
 }
 
@@ -176,6 +177,7 @@
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
   flex-direction: column;
   animation: viewIn 0.22s var(--ease-out) both;
 }
@@ -254,6 +256,10 @@
 .intervals button:focus-visible,
 .iconGroup button:focus-visible,
 .iconButton:focus-visible,
+.chartTools button:focus-visible,
+.markerEditor input:focus-visible,
+.markerEditor button:focus-visible,
+.chartSource:focus-visible,
 .menu summary:focus-visible,
 .stepSelect select:focus-visible {
   outline: 1px solid var(--yellow);
@@ -276,6 +282,7 @@
   flex: 0 0 auto;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 /* Base over quote with the execution chain pinned to the corner */
@@ -322,7 +329,7 @@
   gap: 10px;
   border: 1px solid var(--line-strong);
   border-radius: 5px;
-  background: var(--panel);
+  background: var(--panel-raised);
   padding: 6px 9px;
   color: var(--text-primary);
   text-align: left;
@@ -543,16 +550,18 @@
   min-width: 0;
   min-height: 0;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .chartToolbar {
   display: flex;
   flex: 0 0 auto;
-  min-height: 36px;
+  min-height: 40px;
   align-items: center;
   gap: 6px;
   border-bottom: 1px solid var(--line);
   padding: 0 8px;
+  background: var(--panel-raised);
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -568,7 +577,7 @@
 }
 
 .intervals button {
-  height: 24px;
+  height: 28px;
   min-width: 28px;
   border: 0;
   border-radius: var(--radius-small);
@@ -591,6 +600,7 @@
 
 .intervals .intervalActive,
 .intervals .intervalActive:hover {
+  background: var(--hover);
   color: var(--yellow);
 }
 
@@ -604,7 +614,7 @@
 .iconButton {
   display: grid;
   width: 26px;
-  height: 24px;
+  height: 28px;
   place-items: center;
   border: 0;
   border-radius: var(--radius-small);
@@ -669,7 +679,7 @@
 
 .menu summary {
   display: flex;
-  height: 24px;
+  height: 28px;
   align-items: center;
   gap: 6px;
   border-radius: var(--radius-small);
@@ -752,17 +762,173 @@
 }
 
 .swatchMa20 {
-  background: #38bdf8;
+  background: #89a9bc;
 }
 
 .swatchMa50 {
-  background: var(--implied);
+  background: #b9a5cd;
+}
+
+.chartSourceRow {
+  display: flex;
+  min-height: 32px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  border-bottom: 1px solid var(--line-soft);
+  background: #111315;
+  padding: 6px 12px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.chartUnit {
+  margin-left: 6px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.chartSource {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  cursor: help;
+}
+
+.chartFrame {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.chartTools {
+  display: flex;
+  flex: 0 0 40px;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  padding: 8px 3px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.chartTools button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.chartTools button:hover {
+  background: var(--hover);
+  color: var(--text-primary);
+}
+
+.chartTools button[aria-pressed="true"] {
+  background: var(--panel-raised);
+  color: var(--yellow);
+}
+
+.chartTools button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.chartTools svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.toolDivider {
+  width: 22px;
+  height: 1px;
+  margin: 3px 0;
+  background: var(--line);
+}
+
+.markerEditor {
+  position: absolute;
+  z-index: 3;
+  right: 76px;
+  bottom: 36px;
+  display: flex;
+  max-width: calc(100% - 88px);
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--panel-raised);
+  padding: 5px 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.markerEditor label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.markerEditor input {
+  width: 90px;
+  min-width: 0;
+  height: 26px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--canvas);
+  padding: 0 5px;
+  color: var(--text-primary);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 11px;
+}
+
+.markerEditor button {
+  width: 24px;
+  height: 26px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.markerEditor button:hover {
+  background: var(--hover);
+  color: var(--text-primary);
 }
 
 .chartBody {
   position: relative;
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: #111315;
+}
+
+.chartBody[data-cursor="pointer"] .chartCanvas {
+  cursor: default;
+}
+
+.chartBody[data-cursor="crosshair"] .chartCanvas {
+  cursor: crosshair;
 }
 
 .chartCanvas {
@@ -813,11 +979,11 @@
 }
 
 .legendMa20 {
-  color: #38bdf8;
+  color: #89a9bc;
 }
 
 .legendMa50 {
-  color: var(--implied);
+  color: #b9a5cd;
 }
 
 .chartLoading {
@@ -1216,7 +1382,7 @@
   display: flex;
   flex: 0 0 auto;
   min-width: 0;
-  height: 28px;
+  height: 30px;
   align-items: center;
   gap: 16px;
   border-top: 1px solid var(--line);
@@ -1237,11 +1403,16 @@
   }
 }
 
-.statusItem {
+.statusItem,
+.statusNetwork {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   font-variant-numeric: tabular-nums;
+}
+
+.statusNetwork > span {
+  color: var(--text-secondary);
 }
 
 .statusItem em {
@@ -1260,16 +1431,13 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid var(--line-strong);
-  border-radius: 3px;
-  padding: 1px 7px;
+  padding: 1px 0;
   color: var(--text-secondary);
   font-size: 10.5px;
 }
 
 .statusPillOk {
-  border-color: rgba(31, 194, 126, 0.35);
-  color: var(--up);
+  color: var(--text-secondary);
 }
 
 .statusSpacer {
@@ -1294,7 +1462,6 @@
 
 .dotOk {
   background: var(--up);
-  box-shadow: 0 0 6px rgba(31, 194, 126, 0.7);
 }
 
 .dotWarn {
@@ -1306,15 +1473,21 @@
 }
 
 @media (max-width: 1100px) {
-  .statusBar > span:nth-child(n + 3):not(.statusDanger):not(.statusSpacer) {
+  .statusData {
     display: none;
   }
 }
 
 @media (max-width: 640px) {
   .instrumentBar {
+    flex-wrap: wrap;
     gap: 12px;
-    padding: 0 12px;
+    padding: 10px 12px;
+  }
+
+  .instrumentStats {
+    flex-basis: 100%;
+    gap: 16px;
   }
 
   .instrumentKind {
@@ -1333,8 +1506,35 @@
     display: none;
   }
 
-  .statusBar > span:nth-child(2) {
+  .statusExecution,
+  .statusBar > .statusItem:last-child {
     display: none;
+  }
+
+  .chartSourceRow {
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    padding-inline: 8px;
+  }
+
+  .chartTools {
+    flex-basis: 36px;
+    gap: 6px;
+    padding-inline: 1px;
+  }
+
+  .chartTools button {
+    height: 38px;
+  }
+
+  .chartLegend {
+    left: 8px;
+    right: 66px;
+    font-size: 10px;
+  }
+
+  .legendValues {
+    gap: 4px 8px;
   }
 
   .chartKey {

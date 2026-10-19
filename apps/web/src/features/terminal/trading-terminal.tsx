@@ -86,6 +86,7 @@ import { randomId } from "./secure-context";
 import { ownerStrategyReceipts } from "./strategy-receipt-history";
 import { formatAtomicAmount } from "./format";
 import { marketProfileName } from "./market-label";
+import { lifecycleActionLabel, settlementLabel } from "./ticket-labels";
 
 /** How long a prepared Devnet review stays signable. */
 const REVIEW_TTL_MS = 45_000;
@@ -1381,24 +1382,13 @@ function Ticket({
   const nativeCashFlow = selectedStrategyTemplateId === "cash-and-carry-v1" &&
     (selectedLifecycleAction === "ENTRY" || selectedLifecycleAction === "EXIT");
   const ticketPreview = nativeCashFlow ? preview : null;
-  const legs = nativeCashFlow
-    ? (preview?.mode === mode ? preview.legs : plan.legs)
-    : (selectedAction?.legRoles.flatMap((role) => Array.from(
-      { length: Math.max(role.minimumCount, 1) },
-      () => ({
-        action: role.allowedFamilies.join(" / ").replaceAll("_", " ").toLowerCase(),
-        instrument: role.legTypeId.replaceAll("-", " "),
-        venue: "Qualified adapter",
-        quantity: "Bound by package",
-        limitLabel: "Typed role",
-        limit: role.allowedSides.join(" / "),
-        state: selectedAction?.activation === "EXECUTABLE_BY_QUALIFIED_LANE"
-          ? "Qualified execution lane"
-          : selectedAction?.activation === "ADAPTER_ACTIVATION_REQUIRED" ? "Adapter activation required" : "Capability check unavailable",
-        dependency: "Strategy graph",
-      }),
-    )).map((leg, index) => ({ ...leg, sequence: index + 1 })) ?? []);
+  const legs = preview?.mode === mode ? preview.legs : plan.legs;
   const meta = DOMAIN_META[selectedDomain];
+  const routeQuote = selectedDomain === "base" ? baseFlow?.quote
+    : selectedDomain === "arbitrum" ? arbitrumFlow?.quote
+      : selectedDomain === "hyperliquid" ? hyperliquidFlow?.quote : localFlow?.quote;
+  const selectedSettlement = routeQuote?.route.settlementClass
+    ?? (executionReview ? meta.settlementClass : undefined);
   const hyperliquidStage = hyperliquidFlow?.execution
     ? "executed"
     : hyperliquidFlow?.attempt ? "selected" : hyperliquidFlow?.quote ? "quote" : hyperliquidFlow?.order ? "order" : "idle";
@@ -1431,11 +1421,14 @@ function Ticket({
 
   return (
     <aside className={styles.ticket} aria-labelledby="ticket-title">
-      <h2 id="ticket-title" className={styles.visuallyHidden}>Package ticket</h2>
+      <header className={styles.ticketHeader}>
+        <h2 id="ticket-title">Trade package</h2>
+        <span>{meta.network}</span>
+      </header>
       {selectedDomain === "hyperliquid" ? <HyperliquidAccountSetup apiOrigin={privateApiBaseUrl} /> : null}
 
       <div className={styles.strategySelector}>
-        <label htmlFor="strategy-template">Strategy market</label>
+        <label htmlFor="strategy-template">Strategy</label>
         <select
           id="strategy-template"
           value={selectedStrategyTemplateId}
@@ -1449,8 +1442,8 @@ function Ticket({
         {selectedTemplate ? (
           <span data-active={selectedAction?.activation === "EXECUTABLE_BY_QUALIFIED_LANE"}>
             {selectedAction?.activation === "EXECUTABLE_BY_QUALIFIED_LANE"
-              ? `${selectedAction.qualifiedLanes.length} qualified execution lane${selectedAction.qualifiedLanes.length === 1 ? "" : "s"}`
-              : selectedAction?.activation === "ADAPTER_ACTIVATION_REQUIRED" ? "Protocol ready, adapter activation required" : "Canonical template, capability service unavailable"}
+              ? "Qualified testnet routes"
+              : selectedAction?.activation === "ADAPTER_ACTIVATION_REQUIRED" ? "Execution requires adapter activation" : "Execution status unavailable"}
           </span>
         ) : null}
       </div>
@@ -1474,7 +1467,7 @@ function Ticket({
               >
                 <span>
                   <strong>{template.displayName}</strong>
-                  <small>{template.actions.map((item) => item.action.replaceAll("_", " ")).join(" / ")}</small>
+                  <small>{template.actions.map((item) => lifecycleActionLabel(item.action)).join(" / ")}</small>
                 </span>
                 <span>
                   <strong>{minimumLegs === maximumLegs ? minimumLegs : `${minimumLegs}-${maximumLegs}`} legs</strong>
@@ -1486,23 +1479,6 @@ function Ticket({
         </div>
       </details>
 
-      {selectedTemplate ? (
-        <details className={styles.templateSpecification}>
-          <summary>
-            <span>Template specification</span>
-            <strong>{selectedTemplate.templateId}</strong>
-          </summary>
-          <dl>
-            <div><dt>Quote</dt><dd>{selectedTemplate.quoteConventionId.replaceAll("-", " ")}</dd></div>
-            <div><dt>Risk model</dt><dd>{selectedTemplate.riskClassId.replaceAll("-", " ")}</dd></div>
-            <div><dt>Lifecycle</dt><dd>{selectedTemplate.lifecycleConventionId.replaceAll("-", " ")}</dd></div>
-            <div><dt>Settlement</dt><dd>{[...new Set(selectedTemplate.actions.flatMap((item) => item.settlementClasses))].join(" / ").replaceAll("_", " ")}</dd></div>
-            <div><dt>Outputs</dt><dd>{selectedTemplate.metricIds.length === 0 ? "No template-specific metrics" : selectedTemplate.metricIds.join(" / ").replaceAll("-", " ")}</dd></div>
-            <div><dt>Qualified lanes</dt><dd>{selectedTemplate.qualifiedLanes.length === 0 ? "None currently reported" : selectedTemplate.qualifiedLanes.join(" / ")}</dd></div>
-          </dl>
-        </details>
-      ) : null}
-
       {selectedTemplate && selectedTemplate.actions.length > 0 ? (
         <div className={styles.lifecycleSelector} role="group" aria-label="Strategy lifecycle action">
           {selectedTemplate.actions.map((item) => (
@@ -1513,7 +1489,7 @@ function Ticket({
               className={selectedLifecycleAction === item.action ? styles.lifecycleActive : undefined}
               onClick={() => onLifecycleActionChange(item.action)}
             >
-              {item.action.replaceAll("_", " ").toLowerCase()}
+              {lifecycleActionLabel(item.action)}
             </button>
           ))}
         </div>
@@ -1539,7 +1515,7 @@ function Ticket({
         ))}
       </div>
 
-      <div className={styles.orderTypes} role="group" aria-label="Quote mode">
+      {nativeCashFlow ? <div className={styles.orderTypes} role="group" aria-label="Quote mode">
         {snapshot.ticket.quoteModes.map((item) => (
           <button
             key={item.id}
@@ -1551,7 +1527,7 @@ function Ticket({
             {item.label}
           </button>
         ))}
-      </div>
+      </div> : null}
 
       <div className={styles.ticketRow}>
         <span>Account</span>
@@ -1561,6 +1537,7 @@ function Ticket({
         </span>
       </div>
 
+      {nativeCashFlow ? <>
       <div className={styles.sizeBox}>
         <label htmlFor="package-size">Package size</label>
         <input
@@ -1579,7 +1556,7 @@ function Ticket({
           </span>
           <span id="size-context">
             <span key={ticketPreview?.bound.value ?? "none"} className={styles.flash}>
-              {ticketPreview ? `${ticketPreview.bound.label} ${usd(ticketPreview.bound.value)}` : nativeCashFlow ? previewRejection ?? "Bound unavailable" : "Quoted by complete strategy"}
+              {ticketPreview ? `${ticketPreview.bound.label} ${usd(ticketPreview.bound.value)}` : previewRejection ?? "Estimate unavailable"}
             </span>
           </span>
         </div>
@@ -1634,16 +1611,16 @@ function Ticket({
             </div>
             <div className={styles.legNumbers}>
               <strong>{tidy(leg.quantity)}</strong>
-              <small title={`${leg.limitLabel} ${leg.limit}`}>{leg.limitLabel === "Typed role"
-                ? "Awaiting quote"
-                : `${/max/i.test(leg.limitLabel) ? "max" : "min"} ${tidy(leg.limit)}`}</small>
+              <small title={`${leg.limitLabel} ${leg.limit}`}>{`${/max/i.test(leg.limitLabel) ? "max" : "min"} ${tidy(leg.limit)}`}</small>
             </div>
           </li>
         ))}
       </ol>
+      </> : null}
 
       {nativeCashFlow ? <div className={styles.actionArea}>
         <button
+          data-native-quote-action
           className={action.kind === "connect" || action.kind === "switch" ? styles.connectCta : styles.primaryCta}
           type="button"
           disabled={action.disabled || actionBusy}
@@ -1689,13 +1666,13 @@ function Ticket({
         </details>
       ) : null}
 
-      <section className={styles.summaryCard} aria-labelledby="fee-summary-title">
+      {nativeCashFlow ? <section className={styles.summaryCard} aria-labelledby="fee-summary-title">
         <h3 id="fee-summary-title" className={styles.visuallyHidden}>Order summary</h3>
         <div className={styles.summaryRow}>
           <span title="Estimated from the current mid price and your slippage. The binding limit is set from the pool's executable quote for this exact size when the order is created.">
             {mode === "entry" ? "Maximum quote (est.)" : "Minimum output (est.)"}
           </span>
-          <strong key={ticketPreview?.bound.value ?? "none"} className={styles.flash}>{ticketPreview ? usd(ticketPreview.bound.value) : "Awaiting package quote"}</strong>
+          <strong key={ticketPreview?.bound.value ?? "none"} className={styles.flash}>{ticketPreview ? usd(ticketPreview.bound.value) : "Estimate unavailable"}</strong>
         </div>
         <details className={styles.feeDetails}>
           <summary className={styles.summaryRow}>
@@ -1709,27 +1686,37 @@ function Ticket({
             </div>
           ))}
         </details>
-        <div className={styles.summaryRow} title={nativeCashFlow ? SETTLEMENT_GUARANTEE[meta.settlementClass] : "The final class is bound by the selected execution route."}>
+        <div className={styles.summaryRow} title={typeof selectedSettlement === "string" ? SETTLEMENT_GUARANTEE[selectedSettlement] : "The selected quote determines settlement."}>
           <span>Settlement</span>
-          <strong>{nativeCashFlow ? meta.settlement : selectedAction?.settlementClasses.join(" / ") ?? "Route bound"}</strong>
+          <strong>{settlementLabel(selectedSettlement)}</strong>
         </div>
         <div className={styles.summaryRow} title="Marketable limit, exact all legs: the only package order policy the initial activation accepts. Every other type, time in force, or partial-fill policy is rejected before authorization.">
           <span>Order</span>
-          <strong>{nativeCashFlow ? `Limit, ${meta.settlementClass === "ATOMIC_POSTCONDITION" ? "FOK" : "IOC"}, all legs` : "Typed N-leg package"}</strong>
+          <strong>{`Limit, ${meta.settlementClass === "ATOMIC_POSTCONDITION" ? "FOK" : "IOC"}, all legs`}</strong>
         </div>
-      </section>
+      </section> : null}
 
       <details className={styles.flowDetails}>
         <summary>
-          <span>Package details</span>
-          <span className={styles.fixtureText}>{ticketPreview?.evidenceGrade ?? snapshot.environment.evidenceGrade}</span>
+          <span>Advanced details</span>
         </summary>
         <dl className={styles.ticketFacts}>
-          <div><dt>Template</dt><dd title={selectedStrategyTemplateId}>{selectedTemplate?.displayName ?? selectedStrategyTemplateId}</dd></div>
+          <div><dt>Template ID</dt><dd>{selectedStrategyTemplateId}</dd></div>
           <div><dt>Action</dt><dd>{selectedLifecycleAction}</dd></div>
+          <div><dt>Market evidence</dt><dd>{ticketPreview?.evidenceGrade ?? snapshot.environment.evidenceGrade}</dd></div>
           {selectedTemplate ? <div><dt>Quote convention</dt><dd>{selectedTemplate.quoteConventionId}</dd></div> : null}
           {selectedTemplate ? <div><dt>Risk class</dt><dd>{selectedTemplate.riskClassId}</dd></div> : null}
-          <div><dt>Settlement classes</dt><dd>{selectedAction?.settlementClasses.join(", ") ?? meta.settlementClass}</dd></div>
+          {selectedTemplate ? <div><dt>Lifecycle</dt><dd>{selectedTemplate.lifecycleConventionId}</dd></div> : null}
+          {selectedTemplate ? <div><dt>Output metrics</dt><dd>{selectedTemplate.metricIds.join(", ") || "None"}</dd></div> : null}
+          {selectedTemplate ? <div><dt>Qualified lanes</dt><dd>{selectedTemplate.qualifiedLanes.join(", ") || "None reported"}</dd></div> : null}
+          <div><dt>Supported settlement</dt><dd>{selectedAction?.settlementClasses.join(", ") ?? meta.settlementClass}</dd></div>
+          {selectedAction ? <div><dt>Leg count</dt><dd>{selectedAction.minimumLegs}-{selectedAction.maximumLegs}</dd></div> : null}
+          {selectedAction?.legRoles.map((role) => (
+            <div key={role.legTypeId}>
+              <dt>{role.legTypeId}</dt>
+              <dd>{role.allowedFamilies.join(", ")}; {role.allowedSides.join(", ")}; {role.minimumCount}-{role.maximumCount} legs</dd>
+            </div>
+          ))}
           {snapshot.ticket.evidence.map((row) => (
             <div key={row.label}><dt>{row.label}</dt><dd>{row.value}</dd></div>
           ))}
@@ -1737,7 +1724,9 @@ function Ticket({
         <p className={styles.summaryNote}>
           {ticketPreview?.evidenceGrade === "OBSERVED_UNATTESTED"
             ? `${ticketPreview.bound.symbol} estimate from observed books, captured ${ticketPreview.capturedAt}.`
-            : ticketPreview ? "USDC conformance estimate." : "No activated adapter quote is available."} Balances are on the Portfolio page.
+            : ticketPreview ? "USDC conformance estimate."
+              : nativeCashFlow ? "No current price estimate is available."
+                : "Quote and execution evidence appears with the selected order above."} Balances are on the Portfolio page.
         </p>
       </details>
 
@@ -4231,6 +4220,23 @@ export function TradingTerminal({
     document.getElementById("package-ticket")?.scrollIntoView({ block: "start", behavior: reduceMotion ? "auto" : "smooth" });
   }
 
+  function focusTicketQuote() {
+    const ticket = document.getElementById("package-ticket");
+    const strategy = ticket?.querySelector<HTMLElement>("[data-strategy-order]");
+    const firstStrategyField = Array.from(strategy?.querySelectorAll<HTMLElement>(
+      "input:not([readonly]):not(:disabled), select:not(:disabled)",
+    ) ?? []).find((field) => field.getClientRects().length > 0);
+    const target = nativeStrategyAction
+      ? ticket?.querySelector<HTMLElement>("[data-native-quote-action]:not(:disabled)")
+        ?? ticket?.querySelector<HTMLElement>("#package-size")
+      : strategy?.querySelector<HTMLElement>("[data-quote-action]:not(:disabled)")
+        ?? firstStrategyField
+        ?? strategy;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    (target ?? ticket)?.scrollIntoView({ block: "center", behavior: reduceMotion ? "auto" : "smooth" });
+    target?.focus({ preventScroll: true });
+  }
+
   const actionBusy = executionBusy || solanaOnboarding.busy !== null || currentHyperliquidFlow?.busy != null || currentBaseFlow?.busy != null || currentArbitrumFlow?.busy != null || arbitrumExit.busy;
   const walletPrompt = actionBusy && (evmWallet.awaitingWallet || wallet.awaitingWallet);
   const arbitrumPendingHash = currentArbitrumFlow === null ? null
@@ -4288,7 +4294,7 @@ export function TradingTerminal({
           />
         </div>
         <div className={styles.areaBook}>
-          <OrderBook key={feed.label} feed={feed} />
+          <OrderBook key={feed.label} feed={feed} status={publicFeedStatus} onRequestQuote={focusTicketQuote} />
         </div>
         <div id="package-ticket" className={styles.areaTicket}>
           <Ticket

@@ -7,18 +7,18 @@
  */
 :root {
   color-scheme: dark;
-  --canvas: #070707;
-  --panel: #101011;
-  --panel-raised: #161617;
-  --field: #1a1a1c;
-  --hover: #1f1f22;
-  --line: #232325;
-  --line-soft: #1a1a1c;
-  --line-strong: #323235;
-  --text-primary: #f4f4f5;
-  --text-secondary: #a1a1a6;
-  --text-dim: #6e6e73;
-  --text-faint: #4a4a4f;
+  --canvas: #0d1014;
+  --panel: #161a20;
+  --panel-raised: #20262d;
+  --field: #101419;
+  --hover: #272e37;
+  --line: #2c333d;
+  --line-soft: #232a33;
+  --line-strong: #414b58;
+  --text-primary: #f3f5f7;
+  --text-secondary: #bac3ce;
+  --text-dim: #929dab;
+  --text-faint: #6e7a89;
   --yellow: #ffff00;
   --yellow-ink: #0a0a0a;
   --up: #1fc27e;
@@ -37,7 +37,7 @@
   --background: var(--canvas);
   --foreground: var(--text-primary);
   --terminal-bg: var(--panel);
-  --terminal-bg-raised: var(--panel);
+  --terminal-bg-raised: var(--panel-raised);
   --surface: var(--field);
   --surface-hover: var(--hover);
   --border: var(--line);

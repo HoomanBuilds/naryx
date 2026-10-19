@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DepthLevel, MarketFeed, TapeTrade } from "../market-feed";
+import type { PublicFeedStatus } from "../public-market-feed";
 import { handleTablistKeys, usePersistedSetting } from "../persisted-setting";
 import styles from "./pro.module.css";
+import bookStyles from "./order-book.module.css";
 
 type BookView = "book" | "trades" | "ladder";
 
@@ -50,7 +52,7 @@ const ROW_HEIGHT = 21;
 const SPREAD_HEIGHT = 34;
 
 /** How many whole rows fit in the book body, so no level is ever drawn partially clipped. */
-function useRowCapacity() {
+function useRowCapacity(enabled: boolean) {
   const ref = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(0);
   useEffect(() => {
@@ -61,7 +63,7 @@ function useRowCapacity() {
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, []);
+  }, [enabled]);
   return { ref, height };
 }
 
@@ -84,7 +86,11 @@ function SideIcon({ side }: { side: BookSide }) {
  * size is derived from leg sources and is shown in its own column and never merged into direct
  * size. Depth bars scale with cumulative direct size only.
  */
-export function OrderBook({ feed }: { feed: MarketFeed }) {
+export function OrderBook({ feed, status, onRequestQuote }: {
+  feed: MarketFeed;
+  status?: PublicFeedStatus | null;
+  onRequestQuote?: () => void;
+}) {
   const { unit, precision } = feed.book ?? feed.seriesMeta("basis");
   const [view, setView] = usePersistedSetting<BookView>("book.view", "book", ["book", "trades", "ladder"]);
   const [sideFilter, setSideFilter] = usePersistedSetting<BookSide>("book.side", "both", ["both", "bids", "asks"]);
@@ -93,9 +99,20 @@ export function OrderBook({ feed }: { feed: MarketFeed }) {
   const noBook = feed.label === "REFERENCE" || feed.label === "UNAVAILABLE";
   const trades = useMemo(() => feed.tape(), [feed]);
   const emptyView = view === "trades" ? trades.length === 0 : book.bids.length + book.asks.length === 0;
+  const stale = status?.state === "stale";
+  const halted = status?.halted === true;
+  const connecting = status?.state === "connecting";
+  const unavailable = noBook || status?.state === "unavailable";
+  const emptyTitle = connecting ? "Loading package quotes" : halted ? "Market paused"
+    : unavailable ? "Package book unavailable" : view === "trades" ? "No trades yet" : "No resting quotes";
+  const emptyDetail = connecting ? "Reading the latest published depth."
+    : halted ? "This market is not accepting orders."
+      : unavailable ? "Package depth could not be loaded. Check available routes for this strategy."
+        : view === "trades" ? "Completed package trades will appear here."
+          : "Request a quote for this strategy. Published orders appear here when available.";
   const steps = [book.tick, book.tick * 2, book.tick * 10];
   const [step, setStep] = useState(book.tick);
-  const { ref: bodyRef, height: bodyHeight } = useRowCapacity();
+  const { ref: bodyRef, height: bodyHeight } = useRowCapacity(!emptyView && view === "book");
   const available = Math.max(0, bodyHeight - SPREAD_HEIGHT);
   const rowsPerSide = bodyHeight === 0 ? 12 : Math.max(3, Math.floor((sideFilter === "both" ? available / 2 : available) / ROW_HEIGHT));
 
@@ -149,15 +166,25 @@ export function OrderBook({ feed }: { feed: MarketFeed }) {
         {/* Depth from the public API is executable package book depth; trades are observed; a fixture is
             neither, and reference history has no package book at all. */}
         <span
-          className={`${fixture ? styles.labelFixture : noBook || emptyView ? styles.labelUnavailable : styles.labelObserved} ${styles.tabTag}`}
+          className={`${fixture ? styles.labelFixture : unavailable || emptyView || stale || halted ? styles.labelUnavailable : styles.labelObserved} ${styles.tabTag}`}
           title={fixture
             ? "Deterministic fixture levels for layout; not resting orders"
-            : feed.label === "REFERENCE" ? "Package depth and trades are published only by the public market API, which this deployment does not run." : feed.sourceNote}
+            : status?.detail ?? feed.sourceNote}
         >
-          {fixture ? "FIXTURE" : noBook ? "UNAVAILABLE" : emptyView ? view === "trades" ? "NO TRADES" : "NO DEPTH" : view === "trades" ? "OBSERVED" : "EXECUTABLE"}
+          {fixture ? "FIXTURE" : connecting ? "LOADING" : halted ? "PAUSED" : stale ? "STALE" : unavailable ? "UNAVAILABLE" : emptyView ? view === "trades" ? "NO TRADES" : "NO DEPTH" : view === "trades" ? "OBSERVED" : "EXECUTABLE"}
         </span>
       </div>
-      {view === "book" ? (
+      {emptyView ? (
+        <div className={bookStyles.empty} role="status">
+          <svg className={bookStyles.emptyIcon} viewBox="0 0 32 32" fill="none" aria-hidden="true">
+            <path d="M5 8h14M5 16h9M5 24h17M24 8h3M19 16h8M26 24h1" />
+          </svg>
+          <strong>{emptyTitle}</strong>
+          <p>{emptyDetail}</p>
+          {!connecting && !halted && view !== "trades" && onRequestQuote !== undefined
+            ? <button type="button" onClick={onRequestQuote}>Request quote</button> : null}
+        </div>
+      ) : view === "book" ? (
         <div key="book" className={styles.viewFade}>
           <div className={styles.bookControls}>
             <div className={styles.iconGroup} role="group" aria-label="Book side">

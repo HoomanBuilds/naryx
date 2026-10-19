@@ -11,8 +11,8 @@ import styles from "./pro.module.css";
 
 // Compact labels for the dense header; the full label stays available as the tooltip.
 const SHORT_LABELS: Readonly<Record<string, string>> = {
-  "Spot reference": "Spot ref",
-  "Perp reference": "Perp ref",
+  "Spot reference": "Spot index",
+  "Perp reference": "Perp index",
   "Expected net annualized yield": "Net carry (model)",
   "Funding annualized": "Funding (current)",
   "Liquidity at size": "Depth at size",
@@ -57,7 +57,7 @@ export function InstrumentBar({
       volume: window.reduce((sum, candle) => sum + candle.volume, 0),
     };
   }, [feed, missingPublicMarket]);
-  const tone = stats === null || stats.change === null ? undefined : stats.change >= 0 ? styles.up : styles.down;
+  const tone = stats === null || stats.change === null || stats.change === 0 ? undefined : stats.change > 0 ? styles.up : styles.down;
   const basisMeta = feed.seriesMeta("basis");
   const { unit, precision, volume: hasVolume } = basisMeta;
   const referencePrice = (basisMeta.label ?? feed.label) === "REFERENCE";
@@ -74,16 +74,16 @@ export function InstrumentBar({
     && selectedMarket.templateId !== "cash-and-carry-v1"
     ? []
     : snapshot.market.metrics.filter((entry) => !/^basis$/i.test(entry.label));
-  let priceSource = { tag: "UNAVAILABLE", className: styles.labelUnavailable, title: marketStatus ?? snapshot.environment.detail };
+  let priceSource = { tag: "Unavailable", title: marketStatus ?? snapshot.environment.detail };
   if (!missingPublicMarket) {
     if (referencePrice) {
-      priceSource = { tag: "SPOT/PERP REF", className: styles.labelObserved, title: `Observed spot-perp reference, not a traded package price. ${basisMeta.note ?? ""}` };
+      priceSource = { tag: "Spot/perp index", title: `Observed spot-perp reference, not a traded package price. ${basisMeta.note ?? ""}` };
     } else if (feed.label === "FIXTURE") {
-      priceSource = { tag: "FIXTURE", className: styles.labelFixture, title: "These values are unattested fixtures, not market data." };
+      priceSource = { tag: "Sample data", title: "These values are deterministic samples, not market data." };
     } else if (stats !== null && feed.label === "OBSERVED") {
-      priceSource = { tag: "TRADED", className: styles.labelObserved, title: "Observed package trades from the public market tape." };
+      priceSource = { tag: "Package trades", title: "Observed package trades from the public market tape." };
     } else if (stats === null) {
-      priceSource = { tag: "NO TRADES", className: styles.labelUnavailable, title: "No package trade or reference price is available for this market." };
+      priceSource = { tag: "No trades", title: "No package trade or reference price is available for this market." };
     }
   }
 
@@ -111,7 +111,7 @@ export function InstrumentBar({
       </div>
       <div className={styles.instrumentPrice}>
         <strong className={tone}>{stats === null ? "-" : stats.last.toFixed(precision)}</strong>
-        <span>{referencePrice ? "Spot/perp ref bps" : unit === "bps" ? "Basis bps" : `Package ${unit}`}</span>
+        <span>{referencePrice ? "Index basis · bps" : unit === "bps" ? "Basis · bps" : `Package · ${unit}`}</span>
       </div>
       <dl className={styles.instrumentStats}>
         <div>
@@ -132,7 +132,7 @@ export function InstrumentBar({
         </div>
         <div className={styles.metricSource} title={priceSource.title}>
           <dt>Price source</dt>
-          <dd><span className={priceSource.className}>{priceSource.tag}</span></dd>
+          <dd>{priceSource.tag}</dd>
         </div>
         {metrics.map((entry) => (
           <div key={entry.label} title={entry.detail === undefined ? entry.label : `${entry.label}. ${entry.detail}`}>

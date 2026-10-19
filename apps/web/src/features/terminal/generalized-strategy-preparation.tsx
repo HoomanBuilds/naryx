@@ -42,6 +42,7 @@ import styles from "./trading-terminal.module.css";
 import { AdvancedOrderControls } from "./advanced-order-controls";
 import { PackageFillSimulation, PackageHaltEvidence } from "./package-book-insight";
 import { randomId, requireSubtleCrypto } from "./secure-context";
+import { settlementLabel } from "./ticket-labels";
 
 const HASH = /^[0-9a-f]{64}$/;
 const LINKED_PACKAGE_MISSING = "The linked package is not open here. Choose a package";
@@ -5528,13 +5529,15 @@ export function GeneralizedStrategyPreparationPanel({
     }
     return right.receivedAtMs - left.receivedAtMs;
   });
+  const quoteAssetLabel = marketAssetLabel(quoteReview?.quoteAsset ?? null);
+  const selectedAdmission = matchingAdmissions.find((admission) => admission.quoteHash === quoteHash);
 
   if (!laneSupportsTemplate) {
     return (
-      <section className={styles.executionReview} aria-labelledby="generalized-strategy-review-title">
+      <section className={styles.executionReview} aria-labelledby="generalized-strategy-review-title" data-strategy-order tabIndex={-1}>
         <div className={styles.evidenceHeading}>
-          <h3 id="generalized-strategy-review-title">Package quote and execution</h3>
-          <span>LANE NOT ACTIVE</span>
+          <h3 id="generalized-strategy-review-title">Order details</h3>
+          <span>Unavailable</span>
         </div>
         <p className={styles.reviewNotice}>
           This strategy has no reviewed execution lane on {executionDomain}. Select a supported chain before creating or authorizing an order.
@@ -5544,20 +5547,42 @@ export function GeneralizedStrategyPreparationPanel({
   }
 
   return (
-    <section className={styles.executionReview} aria-labelledby="generalized-strategy-review-title">
+    <section className={styles.executionReview} aria-labelledby="generalized-strategy-review-title" data-strategy-order tabIndex={-1}>
       <div className={styles.evidenceHeading}>
-        <h3 id="generalized-strategy-review-title">Package quote and execution</h3>
-        <span>{evmExecutionConfirmed || solanaObservation?.status === "FINALIZED" ? "ONCHAIN CONFIRMED"
-          : solanaObservation?.status === "FAILED" ? "FAILED"
-          : evmExecutionReverted ? "REVERTED"
-          : evmExecutionDropped || solanaObservation?.status === "DROPPED" ? "DROPPED"
-          : evmExecutionHash || solanaExecutionSignature ? "SUBMITTED"
-          : review && authorizedOrderHash === review.orderHash ? "OWNER AUTHORIZED"
-          : review ? "UNSIGNED PLAN" : quoteReview ? "SIGNED QUOTE"
-            : packageStatusLabel ?? "QUOTE REQUIRED"}</span>
+        <h3 id="generalized-strategy-review-title">Order details</h3>
+        <span>{evmExecutionConfirmed || solanaObservation?.status === "FINALIZED" ? "Confirmed"
+          : solanaObservation?.status === "FAILED" ? "Failed"
+          : evmExecutionReverted ? "Reverted"
+          : evmExecutionDropped || solanaObservation?.status === "DROPPED" ? "Dropped"
+          : evmExecutionHash || solanaExecutionSignature ? "Submitted"
+          : review && authorizedOrderHash === review.orderHash ? "Authorized"
+          : review ? "Ready for review" : quoteReview ? "Quote received"
+            : packageStatusLabel ?? "Quote required"}</span>
       </div>
+      <section className={styles.summaryCard} aria-label="Selected quote summary">
+        <div className={styles.summaryRow}>
+          <span>Quoted net outcome</span>
+          <strong title={quoteReview?.quoteAsset}>{quoteReview ? formatAtomicAmount(quoteReview.netOutcomeAtoms, quoteReview.quoteDecimals, quoteAssetLabel) : quoteHash ? "Details unavailable" : "Not quoted"}</strong>
+        </div>
+        <div className={styles.summaryRow}>
+          <span>Margin change</span>
+          <strong title={quoteReview?.quoteAsset}>{quoteReview ? formatAtomicAmount(quoteReview.marginDeltaAtoms, quoteReview.quoteDecimals, quoteAssetLabel) : "-"}</strong>
+        </div>
+        <div className={styles.summaryRow}>
+          <span>Fees and costs (est.)</span>
+          <strong title={quoteReview?.quoteAsset}>{quoteReview ? formatAtomicAmount(BigInt(quoteReview.serviceFeeAtoms) + BigInt(quoteReview.passThroughCostAtoms), quoteReview.quoteDecimals, quoteAssetLabel) : "-"}</strong>
+        </div>
+        <div className={styles.summaryRow}>
+          <span>Settlement</span>
+          <strong>{settlementLabel(quoteReview?.settlementClass ?? review?.settlementClass ?? selectedAdmission?.settlementClass)}</strong>
+        </div>
+        {quoteReview ? <div className={styles.summaryRow}>
+          <span>Valid until</span>
+          <strong>{expiryText(quoteReview.validUntilUnit, quoteReview.validUntilValue)}</strong>
+        </div> : null}
+      </section>
       <p className={styles.reviewNotice}>
-        Submit the stored strategy to the native package market or request a direct solver quote, inspect complete-package economics, then compile the admitted route into an unsigned execution plan.
+        Set the package limits, request a quote, then review the full order before signing. Execution uses test funds.
       </p>
       {sourceOrderHash !== null ? (
         <div className={styles.strategyPrepareForm}>
@@ -6360,6 +6385,9 @@ export function GeneralizedStrategyPreparationPanel({
         </div>
       ) : null}
       <div className={styles.strategyPrepareForm}>
+        <details className={styles.flowDetails} open={packageSubmission !== null || preparedAdvancedAttempt !== null}>
+          <summary><span>Order book and advanced orders</span></summary>
+          <div className={styles.strategyPrepareForm}>
         <label htmlFor="generalized-strategy-order">Stored order hash</label>
         <input
           id="generalized-strategy-order"
@@ -6591,7 +6619,10 @@ export function GeneralizedStrategyPreparationPanel({
             {quoteBusyMode === "SETTLEMENT" ? "Requesting post-match route quote" : "Request solver route after full match"}
           </button>
         ) : null}
+          </div>
+        </details>
         <button
+          data-quote-action
           type="button"
           className={styles.secondaryAction}
           disabled={advancedOrder !== null || publicApiBaseUrl === null || quoteBusyMode !== null || !HASH.test(orderHash)}
@@ -6599,6 +6630,9 @@ export function GeneralizedStrategyPreparationPanel({
         >
           {quoteBusyMode === "DIRECT" ? "Requesting direct solver quote" : "Request direct solver quote"}
         </button>
+        <details className={styles.flowDetails} open={privateRfqSession !== null || sealedAuction !== null}>
+          <summary><span>Private quotes and auctions</span></summary>
+          <div className={styles.strategyPrepareForm}>
         {privateRfqOrderContext !== null ? (
           <>
             <label htmlFor="private-rfq-solver">Private RFQ solver</label>
@@ -6676,6 +6710,8 @@ export function GeneralizedStrategyPreparationPanel({
             ) : null}
           </>
         ) : null}
+          </div>
+        </details>
       </div>
       {privateRfqSession !== null ? (
         <div className={styles.quoteReview}>
@@ -6702,7 +6738,7 @@ export function GeneralizedStrategyPreparationPanel({
               <div className={styles.reviewGrid}>
                 <span>Quote</span><strong title={privateRfqSession.preview.quoteHash}>{compact(privateRfqSession.preview.quoteHash)}</strong>
                 <span>Route</span><strong title={privateRfqSession.preview.routeHash}>{compact(privateRfqSession.preview.routeHash)}</strong>
-                <span>Settlement</span><strong>{privateRfqSession.preview.settlementClass}</strong>
+                <span>Settlement</span><strong>{settlementLabel(privateRfqSession.preview.settlementClass)}</strong>
                 <span>Valid until</span><strong>{expiryText(privateRfqSession.preview.validUntilUnit, privateRfqSession.preview.validUntilValue)}</strong>
               </div>
               {!privateRfqSession.accepted ? (
@@ -6794,7 +6830,7 @@ export function GeneralizedStrategyPreparationPanel({
                   <span><small>Net outcome</small><strong title={quote.quoteAsset}>{formatAtomicAmount(quote.netOutcomeAtoms, quote.quoteDecimals, quoteAssetLabel)}</strong></span>
                   <span><small>Est. costs</small><strong title={quote.quoteAsset}>{formatAtomicAmount(totalCost, quote.quoteDecimals, quoteAssetLabel)}</strong></span>
                   <span><small>Margin</small><strong title={quote.quoteAsset}>{formatAtomicAmount(quote.marginDeltaAtoms, quote.quoteDecimals, quoteAssetLabel)}</strong></span>
-                  <span><small>Settlement</small><strong>{quote.settlementClass.replaceAll("_", " ")}</strong></span>
+                  <span><small>Settlement</small><strong>{settlementLabel(quote.settlementClass)}</strong></span>
                   <span><small>Valid until</small><strong>{expiryText(quote.validUntilUnit, quote.validUntilValue)}</strong></span>
                 </button>
               );
@@ -6818,7 +6854,9 @@ export function GeneralizedStrategyPreparationPanel({
             {feeShare(quoteReview.serviceFeeAtoms, quoteReview.grossNotionalAtoms)} of gross notional,{" "}
             {feeShare(quoteReview.serviceFeeAtoms, quoteReview.marginDeltaAtoms)} of the margin this package commits.
           </p>
-          <div className={styles.reviewGrid}>
+          <details className={styles.flowDetails}>
+            <summary><span>Quote details</span></summary>
+            <div className={styles.reviewGrid}>
             <span>Series</span><strong>{quoteReview.seriesId}</strong>
             <span>Solver</span><strong title={quoteReview.solverId}>{solverDisplayName(quoteReview.solverId)}</strong>
             <span>Quote mode</span><strong>{quoteReview.quoteMode}</strong>
@@ -6826,7 +6864,8 @@ export function GeneralizedStrategyPreparationPanel({
             <span>Valid until</span><strong>{expiryText(quoteReview.validUntilUnit, quoteReview.validUntilValue)}</strong>
             <span>Quote</span><strong title={quoteReview.quoteHash}>{compact(quoteReview.quoteHash)}</strong>
             <span>Route</span><strong title={quoteReview.routeHash}>{compact(quoteReview.routeHash)}</strong>
-          </div>
+            </div>
+          </details>
           {quoteReview.metrics.length > 0 ? (
             <details className={styles.quoteMetrics}>
               <summary>Package economics</summary>
@@ -6910,6 +6949,9 @@ export function GeneralizedStrategyPreparationPanel({
             </select>
           </>
         ) : null}
+        <details className={styles.flowDetails}>
+          <summary><span>Load a quote by ID</span></summary>
+          <div className={styles.strategyPrepareForm}>
         <label htmlFor="generalized-strategy-quote">Quote hash</label>
         <input
           id="generalized-strategy-quote"
@@ -6939,6 +6981,8 @@ export function GeneralizedStrategyPreparationPanel({
             setError(null);
           }}
         />
+          </div>
+        </details>
         <button
           type="button"
           className={styles.secondaryAction}
@@ -7120,7 +7164,9 @@ export function GeneralizedStrategyPreparationPanel({
       </p>
       {review ? (
         <>
-          <div className={styles.reviewGrid}>
+          <details className={styles.flowDetails}>
+            <summary><span>Execution identifiers</span></summary>
+            <div className={styles.reviewGrid}>
             <span>Template</span><strong>{review.templateId} v{review.templateVersion}</strong>
             <span>Operation</span><strong>{review.operation}</strong>
             <span>Settlement</span><strong>{review.settlementClass}</strong>
@@ -7131,7 +7177,8 @@ export function GeneralizedStrategyPreparationPanel({
             <span>Quote</span><strong title={review.quoteHash}>{compact(review.quoteHash)}</strong>
             <span>Route</span><strong title={review.routeHash}>{compact(review.routeHash)}</strong>
             {review.crossDomainPlanHash ? <><span>Coordination plan</span><strong title={review.crossDomainPlanHash}>{compact(review.crossDomainPlanHash)}</strong></> : null}
-          </div>
+            </div>
+          </details>
           {review.domains.map((domain) => (
             <div className={styles.strategyDomainReview} key={`${domain.domainId}:${domain.manifestVersion}`}>
               <div className={styles.evidenceHeading}>
@@ -7140,7 +7187,7 @@ export function GeneralizedStrategyPreparationPanel({
               </div>
               <div className={styles.reviewGrid}>
                 <span>Guarantee</span><strong>{domain.localGuarantee}</strong>
-                <span>Route settlement</span><strong>{domain.routeSettlementClass}</strong>
+                <span>Route settlement</span><strong>{settlementLabel(domain.routeSettlementClass)}</strong>
                 <span>Manifest</span><strong title={domain.manifestHash}>v{domain.manifestVersion} / {compact(domain.manifestHash)}</strong>
                 <span>Concrete plan</span><strong title={domain.summary}>{domain.summary}</strong>
                 {domain.expiry ? <><span>Request expiry</span><strong>{domain.expiry} ms</strong></> : null}
