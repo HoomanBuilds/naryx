@@ -207,12 +207,12 @@ The six outstanding items below are the completion scope established on 2026-10-
 Changes and verification belong to these items; the broader roadmap does not add new launch
 requirements. Process health, implemented classes and isolated checks are not end-to-end activation.
 
-Status checked 2026-10-18:
+Status checked 2026-10-19:
 
 | Item | Current state | Evidence needed to close |
 | --- | --- | --- |
 | 1. Standing liquidity for routed strategies | Closed for the enabled Solana cash-and-carry maker lane. Actual entry/exit and inventory reconciliation completed on 2026-10-18. | Evidence below. This does not advertise native cash liquidity as routed liquidity or activate additional routed maker lanes. |
-| 2. Cross-chain execution activation | Recovery contracts, replacement reservation books and executor profile 5 are active. Public wallet onboarding derives accounts and adapters from verified factories. The terminal supports setup, funding, separate entry/recovery signatures, closing and owner-only idle collateral withdrawal. Historical operator recovery and the safely expired incompatible-book attempt remain recorded below. | Public access is deployed, with unchanged spending limits. No fresh funded public-calendar round trip was run for this release because the owner requested deployment without tests. Historical execution does not prove that new flow. |
+| 2. Cross-chain execution activation | Recovery contracts, replacement reservation books and executor profile 5 are active. Public wallet onboarding derives accounts and adapters from verified factories. Fresh website entries finalized on both chains. The clock-order defect is fixed on AWS and the existing job has a separately recorded receipt-bound resolution. Both owner-signed closes succeeded. | Entry and exit receipts are recorded below. Finalized browser closure reconciliation remains pending. Existing operator evidence does not replace this public-flow check. |
 | 3. Hyperliquid pooled-mode terminal integration | Closed for the public version-3 application/provider flow. Three dedicated wallets enrolled under fresh custody consent, reconciled 12 mock USDC, submitted an epoch signed by both traders and the recovery sponsor, and withdrew every remaining balance through Portfolio. Admission limits remain 100,000 mock USDC aggregate and 1,000 per wallet. | The public-release browser cycle below opened and closed an actual net BTC position. All seven ledger operations completed; final venue backing, member balances, orders and positions were zero. A restricted test-wallet provider supplied real signatures; this does not establish compatibility with every wallet extension. |
 | 4. Strategy ownership transfers | Closed for the Base cash-and-carry account path. The seller proposed and the buyer accepted through live Portfolio, acceptance finalized, dual-signed strategy-book novation succeeded, and the new owner's exit finalized. Book closure and collateral withdrawals reconciled with an empty strategy account. | Evidence below. This does not claim transferable positions on other venues or compatibility with every wallet extension. |
 | 5. Threshold-encryption backend | Backend and solver participation deployed; a real beacon opening was verified. | Preserve this completed backend evidence. Any claim of terminal-integrated encrypted trading also needs an encrypted auction award and settlement; current terminal auctions remain ordinary commit/reveal. |
@@ -621,6 +621,75 @@ proof and result stages remain in the durable operation journal. No mainnet asse
 An authenticated member read returned HTTP 200. Reusing that signature with another owner or
 a different action returned HTTP 409; neither request authorized access or a ledger operation.
 This verifies this public-release pooled flow, not every strategy template or wallet extension.
+
+## Public calendar browser cycle, 2026-10-19
+
+The live Network page submitted a fresh calendar package using an existing dedicated owner's
+factory-registered accounts. A restricted EIP-1193 provider supplied real wallet signatures.
+This checks the website flow, not every wallet extension or fresh-wallet account creation.
+Each domain committed 1 mock USDC against a 0.0001-unit futures leg under the previously
+approved spending limits. No mainnet transaction was signed or sent.
+
+Plan: `efc97c9d90c443932bd8e7cc221ce10fee7f2c24820adfebedee6d468b80f859`.
+
+| Domain | Finalized entry | Expired inventory release |
+| --- | --- | --- |
+| Base Sepolia | `0x53cc45880026ee23680e508e523191843d69e2d12820722d0c9156b03170ee7b` | `0x78c7c0123670837ede97c2b12a177423aed9685d4b919c2d6ae5625d800fbf93` |
+| Arbitrum Sepolia | `0x967579ee607bf6329d8318f6c9a3ed0671a253423f3a173b69fc038ad179639d` | `0x72f5d3e3e9d1945087c1af13a3e64dbdaeea21e00d20a80c1827a40b92138227` |
+
+Both entries succeeded, but Base's finalized observation time was 19 seconds behind the
+Arbitrum observation already in the append-only coordination journal. The kernel correctly
+fenced the backward event. Fix `0f7e238a` defers lagging observations without replacing their
+timestamps. The original events, authorizations, executor profile 5 and its hashed modules
+remain unchanged. The journal history hash is
+`61ab5d1209521aab88c07b6291f32f2d10da822c5e697a2f5d6479f1b05eef41`.
+
+The operator reconciliation independently verifies both finalized transaction receipts,
+the exact active package states, account ownership and deployment identities. It releases
+unused expired inventory through the original submission journals and gas caps. Only after
+finalized release may it append an immutable resolution and clear the job's account locks.
+This does not rewrite the original fenced replay or qualify other failures for automatic recovery.
+Both expired reservations finalized and the receipt-bound resolution was recorded separately
+from the original journal. The website then submitted both owner-signed closes without browser
+exceptions. Base close: `0x133a4c68368fe169792aef405b8199c4922c2f7f5530862b45b32c997290033f`.
+Arbitrum close: `0xd8684c308ea0f813b3899a305a82c66b95af72b32a04bd25f0f517fbdbb7e821`.
+Both close transactions were included successfully. Arbitrum finalized and the live browser
+reported `Confirmed flat` with no page errors. Base remains pending finality: at 04:02:43 UTC,
+its configured RPC still reported a finalized head older than the close, although the safe
+head had passed it. An earlier public RPC check reported the same finalized head.
+The browser reports the pending distinction and
+retains that transaction hash. Reconciliation was run with transaction sending disabled.
+The coordinator job is `TERMINAL`, its last error is null and it has zero account locks.
+Closing deletes the contract's active package record, including its last-receipt pointer;
+the API therefore records `FLAT` rather than inventing a receipt hash from that cleared state.
+Transaction logs and the contract's separate receipt mapping remain the close evidence.
+
+The owner separately approved raising both dedicated workers' lifetime allowances from
+0.0005 to 0.002 test ETH. The stopped-worker migration backed up both SQLite journals,
+preserved every submission and its hash, and changed only the approved cap plus its runtime
+binding. Reserved expenditure remains 241250000000000 wei on Base and 338750000000000 wei
+on Arbitrum. The API again reports sufficient allowance for a complete entry/recovery cycle.
+This migration transferred no funds and did not change the overall 0.01 test ETH per-network
+ceiling. The owner then separately approved transferring exactly 0.0005 test ETH to each
+worker from the existing deployer. Both transfers succeeded after chain-ID, recipient,
+nonce, value and bounded-gas verification. Signing used the existing encrypted keystore;
+private keys were not extracted or moved to AWS. A durable local transaction record prevents
+duplicate top-ups on retry.
+
+| Domain | Worker | Top-up receipt | Balance at top-up block, test ETH |
+| --- | --- | --- | --- |
+| Base Sepolia | `0x4391c17B94175F2Ef7f535D81D516BF8B0596F2b` | `0x8d477c721c267144ff86526c047d43840e2af6ff42c19b74e12fdec9c72fb662` | 0.000728277764995516 |
+| Arbitrum Sepolia | `0x3072B1Cda657730E0933cCc8c15Ed61F2D9A928F` | `0xcf327aac3fb25c4be9cc858059506f616af6dcda982de21c6579dab124112f62` | 0.000689939469678 |
+
+Both worker balances exceed the conservative 231250000000000-wei full-cycle reserve.
+The overall per-network budget and historical expenditure were not reset. The live API
+reports all four testnet runtimes ready; this process-health result is separate from
+the finalized browser closure evidence.
+
+Validation: the 32 focused clock, execution-driver and durable-worker checks passed. The full
+solver suite passed 382 of 385 checks; three older pool assertions expected superseded error
+messages. Commit `ce009de7` aligned those expectations, and all six checks in the two affected
+pool test files then passed. No production behavior or financial guard was relaxed for those tests.
 
 ## Recovery deployment identities
 
