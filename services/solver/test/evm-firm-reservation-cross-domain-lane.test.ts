@@ -802,6 +802,35 @@ test('durable job intake is immutable, fences accounts and retains escalation fe
   } finally { store.close(); rmSync(folder, { recursive: true, force: true }); }
 });
 
+test('clock resolutions bind escalated entries, persist independently and cannot be overwritten', async () => {
+  const folder = mkdtempSync(join(tmpdir(), 'naryx-cross-domain-resolution-'));
+  let store = new SqliteCrossDomainJobStore(join(folder, 'jobs.sqlite'));
+  try {
+    const job = await durableJobFixture();
+    const planHash = store.admit(job);
+    const resolution = { kind: 'FINALIZED_CLOCK_SKEW' as const, planHash, historyHash: hash('c'), observedAtMs: Date.now(),
+      receipts: job.execution.domains.map(domain => {
+        assert.ok(domain.kind === 'EVM_MULTI_STRATEGY_ACCOUNT');
+        return { domainId: domain.domain.domainId, evidenceHash: domain.envelope.execution.packageId.slice(2), transactionHash: hex('d') };
+      }) };
+    assert.throws(() => store.resolveFinalizedClockSkew(resolution), /only escalated/);
+    store.record(planHash, 'ESCALATION_REQUIRED');
+    assert.throws(() => store.resolveFinalizedClockSkew({ ...resolution,
+      receipts: resolution.receipts.map(receipt => ({ ...receipt, evidenceHash: hash('e') })) }), /identity differs/);
+    assert.equal(store.status(planHash)?.status, 'ESCALATION_REQUIRED');
+    store.resolveFinalizedClockSkew(resolution);
+    store.close();
+    store = new SqliteCrossDomainJobStore(join(folder, 'jobs.sqlite'));
+    assert.equal(store.status(planHash)?.status, 'TERMINAL');
+    assert.deepEqual(store.status(planHash)?.resolution, resolution);
+    assert.deepEqual(store.get(planHash), job);
+    assert.throws(() => store.resolveFinalizedClockSkew(resolution), /only escalated/);
+    assert.throws(() => store.record(planHash, 'ACTIVE'), /only active/);
+    const plan = { ...job.bundle.plan, prepareDeadline: job.bundle.plan.prepareDeadline + 1n };
+    store.admit({ ...job, bundle: { ...job.bundle, plan }, execution: { ...job.execution, crossDomainPlanHash: crossDomainPlanHash(plan) } });
+  } finally { store.close(); rmSync(folder, { recursive: true, force: true }); }
+});
+
 test('worker coalesces ticks, resumes durable jobs and never advances a terminal job', async () => {
   const folder = mkdtempSync(join(tmpdir(), 'naryx-cross-domain-worker-'));
   const store = new SqliteCrossDomainJobStore(join(folder, 'jobs.sqlite'));

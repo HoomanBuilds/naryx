@@ -8,6 +8,7 @@ import { getAddress } from 'viem';
 import type { AuthorizedEvmStrategyExecution } from './evm-strategy-execution-authorization.js';
 import type { EvmCrossDomainRecoveryAuthorization } from './evm-recoverable-cross-domain-lane.js';
 import type { PreparedStrategyExecutionTransport } from './strategy-execution-transport.js';
+import type { FinalizedClockSkewResolution } from './cross-domain-clock-reconciliation.js';
 
 export interface CrossDomainJob {
   readonly version: 1;
@@ -72,6 +73,13 @@ export class SqliteCrossDomainJobStore {
       CREATE TABLE IF NOT EXISTS cross_domain_account_locks (
         account_key TEXT PRIMARY KEY, plan_hash TEXT NOT NULL
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS cross_domain_resolutions (
+        plan_hash TEXT PRIMARY KEY REFERENCES cross_domain_jobs(plan_hash), resolution_json TEXT NOT NULL
+      ) STRICT;
+      CREATE TRIGGER IF NOT EXISTS immutable_cross_domain_resolution_update BEFORE UPDATE ON cross_domain_resolutions
+        BEGIN SELECT RAISE(ABORT, 'resolution records are immutable'); END;
+      CREATE TRIGGER IF NOT EXISTS immutable_cross_domain_resolution_delete BEFORE DELETE ON cross_domain_resolutions
+        BEGIN SELECT RAISE(ABORT, 'resolution records are immutable'); END;
     `);
   }
 
@@ -114,11 +122,36 @@ export class SqliteCrossDomainJobStore {
       .map(row => row.plan_hash);
   }
 
-  status(planHash: string): Readonly<{ planHash: string; status: string; updatedAtMs: number }> | undefined {
+  status(planHash: string): Readonly<{ planHash: string; status: string; updatedAtMs: number; resolution?: FinalizedClockSkewResolution }> | undefined {
     requireCondition(/^[0-9a-f]{64}$/.test(planHash), 'invalid plan hash');
     const row = this.#db.prepare('SELECT status, updated_at_ms FROM cross_domain_jobs WHERE plan_hash = ?').get(planHash) as
       { status: string; updated_at_ms: number } | undefined;
-    return row === undefined ? undefined : { planHash, status: row.status, updatedAtMs: row.updated_at_ms };
+    if (row === undefined) return undefined;
+    const resolution = this.#db.prepare('SELECT resolution_json FROM cross_domain_resolutions WHERE plan_hash=?').get(planHash) as { resolution_json: string } | undefined;
+    return { planHash, status: row.status, updatedAtMs: row.updated_at_ms,
+      ...(resolution ? { resolution: parseProtocolJson(resolution.resolution_json) as FinalizedClockSkewResolution } : {}) };
+  }
+
+  resolveFinalizedClockSkew(resolution: FinalizedClockSkewResolution): void {
+    const job = this.get(resolution.planHash);
+    requireCondition(job && resolution.kind === 'FINALIZED_CLOCK_SKEW' && /^[0-9a-f]{64}$/.test(resolution.historyHash)
+      && Number.isSafeInteger(resolution.observedAtMs) && resolution.observedAtMs > 0
+      && resolution.observedAtMs <= Date.now() && resolution.receipts.length === job.execution.domains.length,
+    'invalid finalized-clock resolution');
+    for (const domain of job.execution.domains) {
+      const matches = resolution.receipts.filter(receipt => receipt.domainId === domain.domain.domainId);
+      requireCondition(domain.kind === 'EVM_MULTI_STRATEGY_ACCOUNT' && matches.length === 1
+        && matches[0]!.evidenceHash === domain.envelope.execution.packageId.slice(2)
+        && /^0x[0-9a-f]{64}$/.test(matches[0]!.transactionHash) && !/^0x0{64}$/.test(matches[0]!.transactionHash),
+      'resolution receipt identity differs from job');
+    }
+    this.#db.transaction(() => {
+      requireCondition(this.status(resolution.planHash)?.status === 'ESCALATION_REQUIRED', 'only escalated jobs can be resolved');
+      this.#db.prepare('INSERT INTO cross_domain_resolutions VALUES (?, ?)').run(resolution.planHash, stringifyProtocolJson(resolution));
+      this.#db.prepare("UPDATE cross_domain_jobs SET status='TERMINAL', last_error=NULL, updated_at_ms=? WHERE plan_hash=?")
+        .run(Date.now(), resolution.planHash);
+      this.#db.prepare('DELETE FROM cross_domain_account_locks WHERE plan_hash=?').run(resolution.planHash);
+    })();
   }
 
   record(planHash: string, status: 'ACTIVE' | 'TERMINAL' | 'ESCALATION_REQUIRED', error?: string): void {

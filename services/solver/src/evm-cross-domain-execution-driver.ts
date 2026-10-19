@@ -180,6 +180,8 @@ export class EvmCrossDomainExecutionDriver implements CrossDomainExecutionDriver
     if (pendingEvidence !== undefined) {
       requireCondition(bytesEqual(evidenceHash, pendingEvidence), 'finality evidence differs from the submitted evidence');
     }
+    // Finalized heads on different chains can lag each other. Keep the original evidence time.
+    if (input.events.some(event => event.atValue > result.atValue)) return undefined;
     if (result.status === 'DEFINITIVE_PREPARE_FAILURE') {
       requireCondition(phase === 'PREPARE' && pendingEvidence === undefined,
         'only a new prepare can report a definitive failure');

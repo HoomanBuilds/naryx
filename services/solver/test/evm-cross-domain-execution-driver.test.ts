@@ -169,6 +169,23 @@ test('maps a testnet EVM lane submission and its exact finality evidence into co
   assert.equal(finalized?.finality, 'FINALIZED');
 });
 
+test('waits for lagging finality without rewriting evidence timestamps or hashes', async () => {
+  const lane = new Lane();
+  lane.now = 100n;
+  const pending: CrossDomainEvent = { kind: 'COMMITTED', domainId: domain.domainId,
+    evidenceHash: hash('f'), finality: 'OBSERVED', atValue: 50n };
+  const other: CrossDomainEvent = { ...pending, domainId: 'eip155:421614', finality: 'FINALIZED', atValue: 70n };
+  const request = input({ kind: 'AWAIT_FINALITY', domainId: domain.domainId }, [pending, other]);
+  const executionDriver = driver(lane);
+  assert.equal(await executionDriver.advance(request), undefined);
+  lane.finalityResult = { ...lane.finalityResult, status: 'FINALIZED', evidenceHash: hash('f'), atValue: 70n };
+  const event = await executionDriver.advance(request);
+  assert.equal(event?.atValue, 70n);
+  assert.equal(toHex(event!.evidenceHash as Uint8Array), hash('f'));
+  lane.finalityResult = { ...lane.finalityResult, evidenceHash: hash('a') };
+  await assert.rejects(() => executionDriver.advance(request), /finality evidence differs/);
+});
+
 test('rejects mainnet lanes, wrong RPC chains, and changed finality evidence', async () => {
   assert.throws(
     () => driver(new Lane(domainRef('eip155:8453', 1, hash('1')))),

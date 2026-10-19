@@ -84,6 +84,21 @@ not broadcast. The daemon validates its own caps again before each advance. Its 
 authorizations and submission history survive restart; unresolved or manual-intervention outcomes
 keep accounts fenced. Final chain evidence, not an API terminal label alone, releases a fence.
 
+Finality timestamps can lag between chains. The driver defers an observation older than the
+latest journal event without rewriting its evidence time. For an existing isolated clock-order
+fence, `node dist/cross-domain-reconcile-main.js PLAN_HASH` independently checks both finalized
+entry receipts, current positions, ownership, deployment identities and reservations. It uses
+the worker's environment/configuration, accepts only the configured dedicated Sepolia accounts,
+and cannot sign or broadcast by default.
+
+If this inspection reports expired unused inventory, the explicit
+`--release-expired-inventory` mode uses the existing capped submission journal to release only
+those exact reservations. It does not trade or retry entries. After finalized release, `--apply`
+rechecks the evidence and appends an immutable resolution to the job store before clearing its
+account locks. The original coordination events, signed documents and fenced replay stay intact;
+the resolution binds their history hash and both finalized transaction hashes. Other failures,
+incomplete finality, changed state and ambiguous outcomes cannot use this procedure.
+
 The version-two recovery path supports exact spot purchases and their full sales, plus qualified
 recoverable perpetual and dated-future adapters. A derivative close binds the exact entry generation,
 adapter identity, signed quantity and payload; an ordinary derivative adapter is not interchangeable.
@@ -94,8 +109,8 @@ finalized expiry; a reservation is not represented as a guarantee of external po
 The systemd unit is `deployments/aws/systemd/naryx-cross-domain.service`. Implementation or startup
 alone is not live qualification: activation still requires recorded execution and recovery evidence.
 The dedicated Base/Arbitrum Sepolia worker was enabled on AWS on 2026-10-18 against new version-3
-domain deployments. It accepts operator-imported signed jobs only, with separate capped senders.
-It does not convert existing website orders into those jobs or fund their strategy accounts.
+domain deployments. The later canonical-calendar integration also admits separately approved
+website packages, with separate capped senders. It does not fund users' strategy accounts.
 
 ### Maker emergency controls
 
