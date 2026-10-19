@@ -212,7 +212,7 @@ Status checked 2026-10-19:
 | Item | Current state | Evidence needed to close |
 | --- | --- | --- |
 | 1. Standing liquidity for routed strategies | Closed for the enabled Solana cash-and-carry maker lane. Actual entry/exit and inventory reconciliation completed on 2026-10-18. | Evidence below. This does not advertise native cash liquidity as routed liquidity or activate additional routed maker lanes. |
-| 2. Cross-chain execution activation | Recovery contracts, replacement reservation books and executor profile 5 are active. Public wallet onboarding derives accounts and adapters from verified factories. Fresh website entries finalized on both chains. The clock-order defect is fixed on AWS and the existing job has a separately recorded receipt-bound resolution. Both owner-signed closes succeeded. | Entry and exit receipts are recorded below. Finalized browser closure reconciliation remains pending. Existing operator evidence does not replace this public-flow check. |
+| 2. Cross-chain execution activation | Closed for the public Base/Arbitrum calendar application/provider flow. Recovery contracts, reservation books and executor profile 5 are active. Website entries and owner-signed closes finalized on both chains, and the browser confirmed both positions flat. The clock-order defect is fixed on AWS and the original job has a separately recorded receipt-bound resolution. | Finalized entry, release and exit receipts are recorded below. No browser errors or duplicate close transactions occurred. The cycle used existing factory-registered accounts and a restricted real-signing provider; it does not verify every wallet extension or fresh-account setup. |
 | 3. Hyperliquid pooled-mode terminal integration | Closed for the public version-3 application/provider flow. Three dedicated wallets enrolled under fresh custody consent, reconciled 12 mock USDC, submitted an epoch signed by both traders and the recovery sponsor, and withdrew every remaining balance through Portfolio. Admission limits remain 100,000 mock USDC aggregate and 1,000 per wallet. | The public-release browser cycle below opened and closed an actual net BTC position. All seven ledger operations completed; final venue backing, member balances, orders and positions were zero. A restricted test-wallet provider supplied real signatures; this does not establish compatibility with every wallet extension. |
 | 4. Strategy ownership transfers | Closed for the Base cash-and-carry account path. The seller proposed and the buyer accepted through live Portfolio, acceptance finalized, dual-signed strategy-book novation succeeded, and the new owner's exit finalized. Book closure and collateral withdrawals reconciled with an empty strategy account. | Evidence below. This does not claim transferable positions on other venues or compatibility with every wallet extension. |
 | 5. Threshold-encryption backend | Backend and solver participation deployed; a real beacon opening was verified. | Preserve this completed backend evidence. Any claim of terminal-integrated encrypted trading also needs an encrypted auction award and settlement; current terminal auctions remain ordinary commit/reveal. |
@@ -653,16 +653,24 @@ Both expired reservations finalized and the receipt-bound resolution was recorde
 from the original journal. The website then submitted both owner-signed closes without browser
 exceptions. Base close: `0x133a4c68368fe169792aef405b8199c4922c2f7f5530862b45b32c997290033f`.
 Arbitrum close: `0xd8684c308ea0f813b3899a305a82c66b95af72b32a04bd25f0f517fbdbb7e821`.
-Both close transactions were included successfully. Arbitrum finalized and the live browser
-reported `Confirmed flat` with no page errors. Base remains pending finality: at 04:02:43 UTC,
-its configured RPC still reported a finalized head older than the close, although the safe
-head had passed it. An earlier public RPC check reported the same finalized head.
-The browser reports the pending distinction and
-retains that transaction hash. Reconciliation was run with transaction sending disabled.
+Both close transactions finalized. At 04:07:10 UTC, read-only verification bound each
+successful transaction, canonical finalized block, execution event and stored contract receipt
+to the original calendar order and its exact package. Both active flags were false and both
+package state hashes were zero. The live Network page then reported `Confirmed flat` on
+both chains with no page errors. Reconciliation ran with transaction sending disabled.
 The coordinator job is `TERMINAL`, its last error is null and it has zero account locks.
 Closing deletes the contract's active package record, including its last-receipt pointer;
-the API therefore records `FLAT` rather than inventing a receipt hash from that cleared state.
-Transaction logs and the contract's separate receipt mapping remain the close evidence.
+the API therefore records `FLAT` with a null cached receipt pointer. Both exit rows were
+reconciled through the normal browser/API flow, not by inserting synthetic database receipts.
+The verified receipt identities from transaction events and the contract's separate mapping are:
+
+- Base: `0x78b85185140f4bc09a0c3745a7028c76641b79ac8be9b92697dc150f54093cac`.
+- Arbitrum: `0x5cec7f2059a121e22a0c16317ff2b56d2d4debc5cd7638b02254398c76019e7e`.
+
+The evidence is retained on AWS at
+`/srv/naryx/release/patches/calendar-clock-20261019/calendar-closure-evidence-20261019.json`.
+Base's finality delay was observed rather than bypassed; no repeated trade was submitted
+while waiting. This closes the remaining calendar entry/exit verification in the fixed scope.
 
 The owner separately approved raising both dedicated workers' lifetime allowances from
 0.0005 to 0.002 test ETH. The stopped-worker migration backed up both SQLite journals,
@@ -683,8 +691,8 @@ duplicate top-ups on retry.
 
 Both worker balances exceed the conservative 231250000000000-wei full-cycle reserve.
 The overall per-network budget and historical expenditure were not reset. The live API
-reports all four testnet runtimes ready; this process-health result is separate from
-the finalized browser closure evidence.
+reports all four testnet runtimes ready; the browser and chain evidence above separately
+establish this calendar cycle's completed execution.
 
 Validation: the 32 focused clock, execution-driver and durable-worker checks passed. The full
 solver suite passed 382 of 385 checks; three older pool assertions expected superseded error
