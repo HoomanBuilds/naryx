@@ -18,13 +18,14 @@ import type {
 import {
   CHART_INTERVAL_SETTING,
   CHART_INTERVALS,
-  CHART_SERIES_SETTING,
+  chartSeriesSetting,
   type Candle,
   type ChartInterval,
   type ChartSeriesKey,
   type MarketFeed,
 } from "../market-feed";
 import { usePersistedFlag, usePersistedSetting } from "../persisted-setting";
+import { useTerminal } from "../shell/terminal-context";
 import { CHART_COLORS } from "./chart-colors";
 import { ChartTools, type ChartCursorMode } from "./chart-tools";
 import styles from "./pro.module.css";
@@ -172,6 +173,8 @@ interface Legend {
 }
 
 export function PriceChart({ feed }: { feed: MarketFeed }) {
+  const { selectedDomain } = useTerminal();
+  const seriesSetting = chartSeriesSetting(selectedDomain);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ChartSeries | null>(null);
@@ -179,7 +182,7 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
   const cursorRef = useRef<ChartCursorMode>("crosshair");
   const [interval, setChartInterval] = usePersistedSetting<ChartInterval>(CHART_INTERVAL_SETTING.key, CHART_INTERVAL_SETTING.fallback, CHART_INTERVALS.map((entry) => entry.id));
   const [style, setStyle] = usePersistedSetting<ChartStyle>("chart.style", "candles", CHART_STYLES.map((entry) => entry.id));
-  const [seriesKey, setSeriesKey] = usePersistedSetting<ChartSeriesKey>(CHART_SERIES_SETTING.key, CHART_SERIES_SETTING.fallback, SERIES.map((entry) => entry.id));
+  const [seriesKey, setSeriesKey] = usePersistedSetting<ChartSeriesKey>(seriesSetting.key, seriesSetting.fallback, SERIES.map((entry) => entry.id));
   const [showVolume, setShowVolume] = usePersistedFlag("chart.volume", true);
   const [showMa20, setShowMa20] = usePersistedFlag("chart.ma20", true);
   const [showMa50, setShowMa50] = usePersistedFlag("chart.ma50", false);

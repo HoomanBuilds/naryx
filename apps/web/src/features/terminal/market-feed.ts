@@ -1,4 +1,4 @@
-import type { TerminalViewModel } from "./terminal-view-model";
+import type { DomainId, TerminalViewModel } from "./terminal-view-model";
 
 export type ChartInterval = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
 export type ChartSeriesKey = "basis" | "spot" | "perp";
@@ -19,7 +19,9 @@ export const CHART_INTERVALS: readonly { id: ChartInterval; label: string; secon
 export const CHART_SERIES: readonly ChartSeriesKey[] = ["basis", "spot", "perp"];
 /** The chart's persisted selection; a feed that fetches per series reads the same settings. */
 export const CHART_INTERVAL_SETTING = { key: "chart.interval", fallback: "15m" } as const;
-export const CHART_SERIES_SETTING = { key: "chart.series", fallback: "spot" } as const;
+export function chartSeriesSetting(domain: DomainId): { readonly key: string; readonly fallback: ChartSeriesKey } {
+  return { key: `chart.series.${domain}`, fallback: domain === "solana" ? "spot" : "basis" };
+}
 
 export interface Candle {
   /** Bucket open time in UTC seconds. */

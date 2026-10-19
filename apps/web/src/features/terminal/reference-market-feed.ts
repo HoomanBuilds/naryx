@@ -5,7 +5,7 @@ import {
   CHART_INTERVAL_SETTING,
   CHART_INTERVALS,
   CHART_SERIES,
-  CHART_SERIES_SETTING,
+  chartSeriesSetting,
   type Candle,
   type ChartInterval,
   type ChartSeriesKey,
@@ -125,7 +125,8 @@ export function useReferenceMarketFeed(
     CHART_INTERVAL_SETTING.fallback,
     CHART_INTERVALS.map((entry) => entry.id),
   );
-  const [chartSeries] = usePersistedSetting<ChartSeriesKey>(CHART_SERIES_SETTING.key, CHART_SERIES_SETTING.fallback, CHART_SERIES);
+  const seriesSetting = chartSeriesSetting(domain);
+  const [chartSeries] = usePersistedSetting<ChartSeriesKey>(seriesSetting.key, seriesSetting.fallback, CHART_SERIES);
   const wanted = [...new Set([`${chartSeries}:${chartInterval}`, "basis:1h", "basis:1m"])].sort().join(",");
   const [state, setState] = useState<ReferenceState | null>(null);
 
