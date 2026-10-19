@@ -13,7 +13,7 @@ export type MarketStreamChannel = "package-depth" | "package-tape";
 
 export interface MarketStreamOptions {
   readonly exchange: Pick<SqlitePackageExchangeStore, "getBook" | "allocationTape" | "latestTrade">;
-  readonly nowValue: () => bigint;
+  readonly nowValue: (packageMarketId: string) => bigint;
   readonly pollIntervalMs?: number;
   readonly maximumConnections?: number;
   readonly maximumConnectionsPerClient?: number;
@@ -53,7 +53,7 @@ export function createMarketStream(options: MarketStreamOptions): {
 
   const depthMessage = (packageMarketId: string) => {
     const state = options.exchange.getBook(packageMarketId);
-    return state === undefined ? undefined : { type: "package-depth", label: "EXECUTABLE", ...packageDepthView(state, options.nowValue()) };
+    return state === undefined ? undefined : { type: "package-depth", label: "EXECUTABLE", ...packageDepthView(state, options.nowValue(packageMarketId)) };
   };
 
   const pushDepth = (client: Client, subscription: Subscription, cache: Map<string, { text: string; content: string } | undefined>) => {
@@ -87,7 +87,7 @@ export function createMarketStream(options: MarketStreamOptions): {
           if (subscription.channel === "package-depth") pushDepth(client, subscription, depthCache);
           else pushTape(client, subscription);
         } catch {
-          send(client, { type: "error", code: "STREAM_READ_FAILED", message: `The ${subscription.channel} of ${subscription.packageMarketId} could not be read.` });
+          send(client, { type: "error", code: "STREAM_READ_FAILED", channel: subscription.channel, packageMarketId: subscription.packageMarketId, message: `The ${subscription.channel} of ${subscription.packageMarketId} could not be read.` });
         }
       }
     }
@@ -144,7 +144,7 @@ export function createMarketStream(options: MarketStreamOptions): {
       if (channel === "package-depth") pushDepth(client, subscription, new Map());
       else pushTape(client, subscription);
     } catch {
-      send(client, { type: "error", code: "STREAM_READ_FAILED", message: `The ${channel} of ${packageMarketId} could not be read.` });
+      send(client, { type: "error", code: "STREAM_READ_FAILED", channel, packageMarketId, message: `The ${channel} of ${packageMarketId} could not be read.` });
     }
   };
 

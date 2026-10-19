@@ -472,6 +472,36 @@ function solverSummary(entry: { documentHashHex: string; subjectVersion: number;
   };
 }
 
+function marketClockValue(unit: string, clockMs: () => number, unitClock?: (unit: string) => bigint | undefined): bigint | undefined {
+  const observed = unitClock?.(unit);
+  if (observed !== undefined) return observed > 0n ? observed : undefined;
+  if (unit === "EVM_UNIX_SECONDS") return BigInt(Math.floor(clockMs() / 1_000));
+  if (unit === "HYPERLIQUID_UNIX_MILLISECONDS") return BigInt(clockMs());
+  return undefined;
+}
+
+export function createPackageBookClock(options: {
+  readonly exchange: Pick<PublicExchangeStore, "getOpenExecutionClass">;
+  readonly clockMs?: () => number;
+  readonly unitClock?: (unit: string) => bigint | undefined;
+}) {
+  return (classId: string): { unit: string; value: bigint } => {
+    const executionClass = options.exchange.getOpenExecutionClass(classId);
+    if (executionClass === undefined) throw new RequestError(404, "BOOK_NOT_FOUND", "Package market is not open.");
+    if (executionClass.domains.length !== 1) {
+      throw new RequestError(409, "BOOK_CLOCK_UNSUPPORTED", "A multi-domain package book needs an explicit clock policy.");
+    }
+    const domainId = executionClass.domains[0]?.domainId;
+    const unit = domainId?.startsWith("svm:") ? "SOLANA_SLOT"
+      : domainId?.startsWith("eip155:") ? "EVM_UNIX_SECONDS"
+        : domainId?.startsWith("hypercore:") ? "HYPERLIQUID_UNIX_MILLISECONDS" : undefined;
+    if (unit === undefined) throw new RequestError(409, "BOOK_CLOCK_UNSUPPORTED", "Package market has no supported clock.");
+    const value = marketClockValue(unit, options.clockMs ?? Date.now, options.unitClock);
+    if (value === undefined) throw new RequestError(503, "BOOK_CLOCK_UNAVAILABLE", "Package market clock is unavailable.");
+    return { unit, value };
+  };
+}
+
 /**
  * The public, read-only v1 API: registries, strategy series, package markets with depth, tape,
  * candles, and an executable index, allocation evidence by capability, and computation routes.
@@ -485,6 +515,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
   const pinnedSuiteIds = options.pinnedSuiteIds ?? [];
   const { windowMs, maxRequests } = options.rateLimit;
   const clockMs = options.clockMs ?? Date.now;
+  const bookClock = createPackageBookClock(options);
   const limiter = createRateLimiter({ windowMs, maxRequests, clockMs });
   const strategyOrderIntake = options.strategyOrderIntake ?? (
     registry !== undefined && options.graphContext !== undefined && options.strategyPackages !== undefined
@@ -519,27 +550,7 @@ export function createPublicApiHandler(options: PublicApiOptions) {
 
   /** Server time in a quote's own unit; slot-timed quotes cannot be judged against wall-clock time. */
   function nowIn(unit: string): bigint | undefined {
-    const observed = options.unitClock?.(unit);
-    if (observed !== undefined) return observed > 0n ? observed : undefined;
-    if (unit === "EVM_UNIX_SECONDS") return BigInt(Math.floor(clockMs() / 1_000));
-    if (unit === "HYPERLIQUID_UNIX_MILLISECONDS") return BigInt(clockMs());
-    return undefined;
-  }
-
-  function bookClock(classId: string): { unit: string; value: bigint } {
-    const executionClass = exchange.getOpenExecutionClass(classId);
-    if (executionClass === undefined) throw new RequestError(404, "BOOK_NOT_FOUND", "Package market is not open.");
-    if (executionClass.domains.length !== 1) {
-      throw new RequestError(409, "BOOK_CLOCK_UNSUPPORTED", "A multi-domain package book needs an explicit clock policy.");
-    }
-    const domainId = executionClass.domains[0]?.domainId;
-    const unit = domainId?.startsWith("svm:") ? "SOLANA_SLOT"
-      : domainId?.startsWith("eip155:") ? "EVM_UNIX_SECONDS"
-        : domainId?.startsWith("hypercore:") ? "HYPERLIQUID_UNIX_MILLISECONDS" : undefined;
-    if (unit === undefined) throw new RequestError(409, "BOOK_CLOCK_UNSUPPORTED", "Package market has no supported clock.");
-    const value = nowIn(unit);
-    if (value === undefined) throw new RequestError(503, "BOOK_CLOCK_UNAVAILABLE", "Package market clock is unavailable.");
-    return { unit, value };
+    return marketClockValue(unit, clockMs, options.unitClock);
   }
 
   function requireBookClock(classId: string, unit: string): bigint {

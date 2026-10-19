@@ -17,7 +17,7 @@ import type {
   PackageOrder,
 } from "@naryx/protocol-types";
 import { SqlitePackageExchangeStore } from "./package-exchange-store.js";
-import { createPublicApiHandler } from "./public-api.js";
+import { createPackageBookClock, createPublicApiHandler } from "./public-api.js";
 import { SqliteRegistryStore } from "./registry-store.js";
 import { createSolverApiHandler, createSolverStream, type AdmissionContext } from "./solver-api.js";
 import { SqliteSolverApiStore } from "./solver-api-store.js";
@@ -991,7 +991,8 @@ export function loadPublicMarketRuntime(
         clockMs,
         rateLimit,
       });
-    const stream = createMarketStream({ exchange: store, nowValue });
+    const bookClock = createPackageBookClock({ exchange: store, clockMs, ...(unitClock === undefined ? {} : { unitClock }) });
+    const stream = createMarketStream({ exchange: store, nowValue: (marketId) => bookClock(marketId).value });
     opened.push(stream);
     const solverStream = solverState === undefined || registry === undefined
       ? undefined

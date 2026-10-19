@@ -8,6 +8,7 @@ import test from "node:test";
 import { parseProtocolJson, stringifyProtocolJson } from "@naryx/protocol-types";
 import { SqlitePackageExchangeStore } from "../src/index.js";
 import { createMarketStream } from "../src/market-stream.js";
+import { createPackageBookClock, packageDepthView } from "../src/public-api.js";
 import { CLASS, CLASS_SUPPORT, NOW, SERIES_SUPPORT, order, registerAll, settlement } from "./exchange-fixtures.js";
 
 type Message = Record<string, unknown>;
@@ -49,7 +50,9 @@ test("the stream pushes executable depth on change and observed trades after a c
   const dir = mkdtempSync(join(tmpdir(), "naryx-stream-"));
   const exchange = new SqlitePackageExchangeStore(join(dir, "exchange.sqlite"), { seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT });
   registerAll(exchange);
-  const stream = createMarketStream({ exchange, nowValue: () => NOW, pollIntervalMs: 50, maximumSubscriptionsPerConnection: 2 });
+  let slot = NOW;
+  const bookClock = createPackageBookClock({ exchange, clockMs: () => 1_700_000_000_000, unitClock: () => slot });
+  const stream = createMarketStream({ exchange, nowValue: (marketId) => bookClock(marketId).value, pollIntervalMs: 50, maximumSubscriptionsPerConnection: 2 });
   const server = createServer((_request, response) => {
     response.statusCode = 404;
     response.end();
@@ -74,6 +77,7 @@ test("the stream pushes executable depth on change and observed trades after a c
     const first = await messages.next((message) => message.type === "package-depth");
     assert.equal(first.label, "EXECUTABLE");
     assert.equal((first.asks as readonly unknown[]).length, 1);
+    assert.deepEqual(first, { type: "package-depth", label: "EXECUTABLE", ...packageDepthView(exchange.getBook(CLASS)!, NOW) });
     // A new resting order changes depth, so it is pushed without asking.
     const secondOrder = order(2, { limitPriceTicks: 101n });
     exchange.submitOrder(CLASS, secondOrder, NOW, settlement(secondOrder));
@@ -99,6 +103,13 @@ test("the stream pushes executable depth on change and observed trades after a c
     assert.equal((await messages.next((message) => message.type === "error")).code, "BOOK_NOT_FOUND");
     send({ op: "subscribe", channel: "package-candles", packageMarketId: CLASS });
     assert.equal((await messages.next((message) => message.type === "error")).code, "INVALID_SUBSCRIPTION");
+    slot = 0n;
+    const unavailable = await messages.next((message) => message.type === "error" && message.code === "STREAM_READ_FAILED");
+    assert.equal(unavailable.packageMarketId, CLASS);
+    assert.equal(unavailable.channel, "package-depth");
+    slot = 2_000n;
+    const expired = await messages.next((message) => message.type === "package-depth" && message.asOfValue === slot);
+    assert.deepEqual(expired.asks, []);
     assert.equal(stream.connectionCount, 1);
   } finally {
     socket.close();
