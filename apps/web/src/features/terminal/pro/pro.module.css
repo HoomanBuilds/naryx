@@ -816,6 +816,37 @@
   cursor: help;
 }
 
+.chartNotice {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--panel);
+  padding: 7px 12px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.chartNotice button {
+  border: 0;
+  background: transparent;
+  padding: 2px 0;
+  color: var(--yellow);
+  font: inherit;
+  cursor: pointer;
+}
+
+.chartNotice button:hover {
+  text-decoration: underline;
+}
+
+.chartNotice button:focus-visible {
+  outline: 1px solid var(--yellow);
+  outline-offset: 3px;
+}
+
 .chartFrame {
   display: flex;
   flex: 1 1 auto;

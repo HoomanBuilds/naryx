@@ -19,7 +19,7 @@ export const CHART_INTERVALS: readonly { id: ChartInterval; label: string; secon
 export const CHART_SERIES: readonly ChartSeriesKey[] = ["basis", "spot", "perp"];
 /** The chart's persisted selection; a feed that fetches per series reads the same settings. */
 export const CHART_INTERVAL_SETTING = { key: "chart.interval", fallback: "15m" } as const;
-export const CHART_SERIES_SETTING = { key: "chart.series", fallback: "basis" } as const;
+export const CHART_SERIES_SETTING = { key: "chart.series", fallback: "spot" } as const;
 
 export interface Candle {
   /** Bucket open time in UTC seconds. */

@@ -74,9 +74,9 @@ const CHART_STYLES: readonly { id: ChartStyle; label: string; icon: ReactNode }[
 ];
 
 const SERIES: readonly { id: ChartSeriesKey; label: string }[] = [
-  { id: "basis", label: "Basis" },
   { id: "spot", label: "Spot" },
   { id: "perp", label: "Perp" },
+  { id: "basis", label: "Basis" },
 ];
 
 function movingAverage(slots: readonly (Candle | WhitespaceData<Time>)[], length: number): (LineData<Time> | WhitespaceData<Time>)[] {
@@ -313,7 +313,9 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
     : sourceLabel === "FIXTURE" ? "Sample data"
       : sourceLabel === "OBSERVED" ? seriesKey === "basis" ? "Package trades" : "Observed prices"
         : "Data unavailable";
-  const chartTitle = seriesKey === "basis" ? meta.unit === "bps" ? "Perp minus spot basis" : "Package price" : seriesKey === "spot" ? "Spot price" : "Perpetual price";
+  const chartTitle = seriesKey === "basis" ? meta.unit === "bps" ? "Perp minus spot basis" : "Package price" : meta.title;
+  const flatBasis = seriesKey === "basis" && meta.unit === "bps" && candles.length > 1
+    && candles.every((candle) => candle.high === candles[0].close && candle.low === candles[0].close);
 
   function changeCursor(mode: ChartCursorMode) {
     cursorRef.current = mode;
@@ -368,7 +370,7 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
         <div className={styles.intervals} role="group" aria-label="Series">
           {SERIES.map((entry) => (
             <button key={entry.id} type="button" aria-pressed={seriesKey === entry.id} className={seriesKey === entry.id ? styles.intervalActive : undefined} onClick={() => setSeriesKey(entry.id)}>
-              {entry.label}
+              {entry.id === "basis" && feed.seriesMeta("basis").unit !== "bps" ? "Package" : entry.label}
             </button>
           ))}
         </div>
@@ -389,6 +391,12 @@ export function PriceChart({ feed }: { feed: MarketFeed }) {
         <span>{chartTitle} <span className={styles.chartUnit}>{meta.unit} · {intervalLabel}</span></span>
         <span className={styles.chartSource} title={meta.note ?? feed.sourceNote} tabIndex={0}>{sourceText}</span>
       </div>
+      {flatBasis ? (
+        <div className={styles.chartNotice} role="status">
+          <span>No basis movement in this window. This measures the spread, not the asset price.</span>
+          <button type="button" onClick={() => setSeriesKey("spot")}>View spot price</button>
+        </div>
+      ) : null}
       <div className={styles.chartFrame}>
         <ChartTools
           ready={ready}

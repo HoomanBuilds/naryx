@@ -231,7 +231,7 @@ export function useReferenceMarketFeed(
       seriesMeta(series): SeriesMeta {
         if (series === "basis") return { title: `${market.base} perp minus spot basis`, unit: "bps", precision: 2, volume: false, empty };
         return {
-          title: `${market.base} ${series === "spot" ? "spot" : "perpetual"} reference`,
+          title: `${market.base} ${series === "spot" ? "spot" : "perpetual"}`,
           unit: market.quote,
           precision: pricePrecision(lastClose(series)),
           volume: false,
