@@ -171,6 +171,17 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
   The native mark journal conservatively charges both the transferred value and maximum gas
   against its existing allowance. Insufficient-gas failures now have an explicit log message.
   Check the public standing book's `validUntil` and actual bid/ask capacity, not just systemd.
+- Cash mark retries use the signed transaction hash as their journal identity. A reverted
+  transaction does not advance the contract's mark sequence, so using that sequence as a
+  unique database key permanently blocks retries. Preserve reverted rows and their gas
+  reservations; never delete journal entries or reset a budget to restore quote updates.
+- Package depth streaming uses the same domain clock as HTTP depth. Solana expiry is in
+  slots, EVM expiry is in seconds, and Hyperliquid expiry is in milliseconds. Compare the
+  same market's HTTP and streaming `asOfValue` when diagnosing disappearing quotes.
+- Publish a coherent source and compiled artifact set from a successful checkout build.
+  Do not rebuild a partially synchronized service on AWS: older source or dependency
+  declarations can fail compilation while TypeScript still overwrites running artifacts.
+  Back up the full affected service output before deployment, not only the edited files.
 - Native cash standing-book reads tolerate a qualified oracle/clearing mark update window.
   After checking pinned code, bindings, freshness, bounds and fees, a price mismatch retries
   up to five observations with one-second spacing and an eight-second response deadline.
