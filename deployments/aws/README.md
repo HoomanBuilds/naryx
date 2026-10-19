@@ -171,6 +171,15 @@ solver, keeper, and executor routes and any backslash path, so a proxy mistake c
   The native mark journal conservatively charges both the transferred value and maximum gas
   against its existing allowance. Insufficient-gas failures now have an explicit log message.
   Check the public standing book's `validUntil` and actual bid/ask capacity, not just systemd.
+- Approved quote-worker gas top-ups on 2026-10-19 restored freshness without a restart or
+  collateral change. The Solana worker received 0.05 Devnet SOL in
+  `3bMrLfgSzkE7zJfkuUNRMob745ac6BMNabUQJBPxb8bLKD8hWXPYNEJgxQDscuzmQhTaqEwUjL9ieiTTKT1NJFCK`;
+  its standing ask resumed with 450 units of capacity, while its bid remained absent.
+  The Arbitrum mark updater received 0.0002 Sepolia ETH in
+  `0x53acc43e3246510fed4baa50882b4b2ee00e46a3d4c99b1c984e491983e40660`;
+  its funded cash book resumed with five units on each side and an unexpired mark.
+  Existing gas-budget journals and caps remain unchanged. These are distinct quote sources,
+  not resting liquidity in the routed strategy books.
 - Cash mark retries use the signed transaction hash as their journal identity. A reverted
   transaction does not advance the contract's mark sequence, so using that sequence as a
   unique database key permanently blocks retries. Preserve reverted rows and their gas
