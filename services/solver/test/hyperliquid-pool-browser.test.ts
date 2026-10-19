@@ -31,7 +31,7 @@ test('browser pool requests bind wallet, action, payload, expiry and dedicated p
       poolBrowserTypedData(store, owner, request.action, request.payload, request.expiresAtMs)) }), /signature/);
     await assert.rejects(commands('execute', { ...request, action: 'withdrawal-submit', payload: { id: 'other' }, signature }), /signature/);
     await assert.rejects(commands('execute', { ...request, payload: { id: 'unexpected' }, signature }), /Invalid/);
-    await assert.rejects(commands('execute', { ...request, owner: other.address.toLowerCase(), signature }), /Dedicated/);
+    await assert.rejects(commands('execute', { ...request, owner: other.address.toLowerCase(), signature }), /not eligible/);
     const withdrawal = { owner, action: 'withdrawal-submit' as const, payload: { id: 'missing' }, expiresAtMs: request.expiresAtMs };
     await assert.rejects(commands('execute', { ...withdrawal, signature: await wallet.signTypedData(poolBrowserTypedData(
       store, owner, withdrawal.action, withdrawal.payload, withdrawal.expiresAtMs)) }), /does not belong/);

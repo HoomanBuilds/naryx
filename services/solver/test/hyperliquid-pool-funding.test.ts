@@ -64,7 +64,7 @@ test('wrong signer, substituted pool and unconsented funding cannot mutate liabi
   try {
     const other = privateKeyToAccount(generatePrivateKey());
     const outsider = other.address.toLowerCase() as `0x${string}`;
-    await assert.rejects(f.service.enroll(outsider, await other.signTypedData(poolConsentTypedData(f.store.binding, outsider))), /dedicated test/);
+    await assert.rejects(f.service.enroll(outsider, await other.signTypedData(poolConsentTypedData(f.store.binding, outsider))), /not eligible/);
     await assert.rejects(f.service.enroll(f.owner, await other.signTypedData(poolConsentTypedData(f.store.binding, f.owner))), /consent/);
     await assert.rejects(f.service.enroll(f.owner, await f.wallet.signTypedData(poolConsentTypedData({ ...f.store.binding,
       poolAccount: other.address.toLowerCase() as `0x${string}` }, f.owner))), /consent/);
@@ -109,7 +109,9 @@ test('stale backing, unaccounted cash, wrong transfer identity and expired autho
   try {
     await f.enroll();
     f.setEquity(20_000_000n);
-    await assert.rejects(f.service.creditDeposit(f.deposit), /reconcile/);
+    await assert.rejects(f.service.creditDeposit(f.deposit), /not fully backed/);
+    assert.equal(f.store.totalQuoteAtoms(), 0n);
+    assert.equal(f.store.operation(f.deposit.id), undefined);
     f.setEquity(19_000_000n);
     await assert.rejects(f.service.creditDeposit({ ...f.deposit, transferHash: hash(5) }), /bind/);
     f.stale();
