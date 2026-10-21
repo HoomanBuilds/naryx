@@ -64,11 +64,43 @@
 
 /* A solid block behind the copy, so it reads over any part of the mosaic */
 .side {
+  position: relative;
   width: min(400px, 32vw);
-  padding: 20px;
+  padding: 40px 20px 20px;
   border-radius: var(--radius);
   background: #000;
   pointer-events: auto;
+}
+
+.side[hidden] {
+  display: none;
+}
+
+.close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: rgba(248, 248, 255, 0.6);
+  cursor: pointer;
+  transition: color 0.2s, background-color 0.2s;
+}
+
+.close:hover {
+  color: var(--glint);
+  background: rgba(248, 248, 255, 0.08);
+}
+
+.close:focus-visible {
+  outline: 2px solid var(--yellow);
+  outline-offset: 2px;
 }
 
 .side p {

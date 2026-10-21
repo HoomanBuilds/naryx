@@ -114,7 +114,7 @@ export default function Header() {
           ))}
         </nav>
 
-        <a className={styles.cta} href="#use">
+        <a className={styles.cta} href="/trade">
           Get started
         </a>
 
@@ -139,6 +139,10 @@ export default function Header() {
             {label}
           </a>
         ))}
+        <a href="/trade" onClick={() => setOpen(false)}>
+          <span className="mono">0{LINKS.length + 1}</span>
+          Get started
+        </a>
       </nav>
     </header>
   );

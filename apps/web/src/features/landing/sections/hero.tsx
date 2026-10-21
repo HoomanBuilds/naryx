@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import Arrow from "@/features/landing/arrow";
 import { useExperience } from "@/features/landing/experience";
 import Button from "@/features/landing/button";
@@ -21,6 +21,7 @@ export default function Hero() {
   const { ready } = useExperience();
   const root = useRef<HTMLElement>(null);
   const field = useRef<GlyphField | null>(null);
+  const [introductionDismissed, setIntroductionDismissed] = useState(false);
 
   useGSAP(
     () => {
@@ -156,7 +157,13 @@ export default function Hero() {
             </h1>
           </div>
 
-          <div className={styles.side} data-hero-fade>
+          <div className={styles.side} data-hero-fade hidden={introductionDismissed}>
+            <button type="button" className={styles.close} aria-label="Close introduction"
+              onClick={() => setIntroductionDismissed(true)}>
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </button>
             <p>
               Send one order with every leg of a strategy. Independent solvers quote the complete outcome, Naryx holds
               them to your limits across venues, and one receipt covers the whole package.
