@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { SolanaDevnetStandingBook } from './solana-devnet-standing-book.js';
+import type { SolanaDevnetQuoteLadder, SolanaDevnetStandingBook } from './solana-devnet-standing-book.js';
 import {
   compileFirmCashCarryExitPlan,
   compileFirmCashCarryPlan,
@@ -616,6 +616,7 @@ export function createSolanaDevnetBindingServer(
   service: ReturnType<typeof createSolanaDevnetBindingService>,
   releaser?: SolanaDevnetReservationReleaser,
   standingBook?: () => Promise<SolanaDevnetStandingBook>,
+  quoteLadder?: () => Promise<SolanaDevnetQuoteLadder>,
 ): Server {
   return createServer((request, response) => {
     if (!isLoopback(request.socket.remoteAddress)) {
@@ -623,6 +624,16 @@ export function createSolanaDevnetBindingServer(
       return;
     }
     const url = new URL(request.url ?? '/', 'http://solver.internal');
+    if (url.pathname === '/internal/solana-devnet/quote-ladder' && url.search === '' && quoteLadder !== undefined) {
+      if (request.method !== 'GET') {
+        response.setHeader('Allow', 'GET');
+        sendJson(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: 'only GET is allowed' } });
+        return;
+      }
+      void quoteLadder().then((book) => sendJson(response, 200, book)).catch(() =>
+        sendJson(response, 503, { error: { code: 'QUOTE_LADDER_UNAVAILABLE', message: 'Current maker quotes are unavailable' } }));
+      return;
+    }
     if (url.pathname === '/internal/solana-devnet/standing-book' && url.search === '' && standingBook !== undefined) {
       if (request.method !== 'GET') {
         response.setHeader('Allow', 'GET');

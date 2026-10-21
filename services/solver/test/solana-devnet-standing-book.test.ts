@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { solanaDevnetStandingBook } from '../src/solana-devnet-standing-book.js';
+import { solanaDevnetQuoteLadder, solanaDevnetStandingBook } from '../src/solana-devnet-standing-book.js';
 import { QUOTE_MODE_FIRM_ONCHAIN, QUOTE_SIDE_ASK, QUOTE_SIDE_BID } from '../src/solana-devnet-wire.js';
 
 const hash = new Uint8Array(32).fill(7);
@@ -70,4 +70,35 @@ test('standing book excludes expired, mismatched and paused levels', () => {
   assert.throws(() => solanaDevnetStandingBook({ ...current, shard: {
     ...current.shard, seriesManifestHash: new Uint8Array(32),
   } }, config), /series does not match/);
+});
+
+test('maker ladder uses actual pricing and non-additive sizes within funded capacity', () => {
+  const current = state();
+  const inputs = { ...current, market: { ...current.market, baseDecimals: 9, collateralDecimals: 6, takerFeeBps: 0,
+    initialMarginBps: 1000, pauseOpens: false } };
+  const settings = { ...config, quoteTtlSlots: 30n, resources: {
+    baseAsset: { subjectAddress: shard }, quoteAsset: { subjectAddress: 'So11111111111111111111111111111111111111112' },
+  } } as Parameters<typeof solanaDevnetQuoteLadder>[1];
+  const ladder = solanaDevnetQuoteLadder(inputs, settings, 1_000);
+  assert.equal(ladder.pricing, 'INDICATIVE');
+  assert.equal(ladder.quantityKind, 'ALTERNATIVE_SIZES');
+  assert.equal(ladder.asks.length, 5);
+  assert.equal(ladder.asks[0]?.quantityAtoms, '1');
+  assert.equal(ladder.asks.at(-1)?.quantityAtoms, '100');
+  assert.equal(ladder.asks[0]?.basisQuoteAtoms, '0');
+  assert.equal(ladder.asks[0]?.feeQuoteAtoms, '0');
+  assert.deepEqual(ladder.bids, []);
+  const small = solanaDevnetQuoteLadder({ ...inputs, availableInventory: { baseAtoms: 1n, quoteAtoms: 0n } }, settings, 1_000);
+  assert.equal(small.asks.length, 1);
+  assert.equal(small.asks[0]?.quantityAtoms, '1');
+  assert.deepEqual(solanaDevnetQuoteLadder({ ...inputs, slot: 130n }, settings, 1_000).asks, []);
+  assert.deepEqual(solanaDevnetQuoteLadder({ ...inputs, availableInventory: { baseAtoms: 0n, quoteAtoms: 0n } }, settings, 1_000).asks, []);
+  const twoSided = { ...inputs, oraclePricePerLot: 10_000n,
+    availableInventory: { baseAtoms: 100n, quoteAtoms: 1_000_000n },
+    market: { ...inputs.market, takerFeeBps: 5, halfSpreadBps: 10, pauseOpens: true },
+    levels: [...inputs.levels, { ...inputs.levels[0]!, side: QUOTE_SIDE_BID, levelId: 2n }] };
+  const paused = solanaDevnetQuoteLadder(twoSided, settings, 1_000);
+  assert.deepEqual(paused.asks, []);
+  assert.equal(paused.bids[0]?.basisQuoteAtoms, '-10');
+  assert.equal(paused.bids[0]?.feeQuoteAtoms, '6');
 });

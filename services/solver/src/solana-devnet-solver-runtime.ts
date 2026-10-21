@@ -15,7 +15,7 @@ import {
   readSolanaDevnetQuoteState,
   refreshSolanaDevnetStandingLevels,
 } from './solana-devnet-firm-quote.js';
-import { solanaDevnetStandingBook } from './solana-devnet-standing-book.js';
+import { solanaDevnetQuoteLadder, solanaDevnetStandingBook, type SolanaDevnetQuoteLadder } from './solana-devnet-standing-book.js';
 import { createSolanaDevnetReservationReleaser } from './solana-devnet-reservation-release.js';
 import { HttpSolanaDevnetSolverRpc, requireSolanaDevnet, type SolanaDevnetSolverWritePort } from './solana-devnet-rpc.js';
 import {
@@ -92,8 +92,23 @@ export async function loadSolanaDevnetSolverRuntime(
     releaser,
     admissions: new HttpSelectedSolanaAdmissionProvider(options.apiOrigin).get,
   });
+  let pendingLadder: Promise<SolanaDevnetQuoteLadder> | undefined;
+  let lastLadder: SolanaDevnetQuoteLadder | undefined;
+  const readQuoteLadder = (): Promise<SolanaDevnetQuoteLadder> => {
+    if (lastLadder !== undefined && Date.now() - lastLadder.capturedAtMs < 3_000) return Promise.resolve(lastLadder);
+    if (pendingLadder !== undefined) return pendingLadder;
+    lastLadder = undefined;
+    const startedAt = Date.now();
+    pendingLadder = readSolanaDevnetQuoteState(rpc, manifest, config)
+      .then((state) => {
+        if (Date.now() - startedAt > 8_000) throw new Error('Maker quote observation took too long');
+        lastLadder = solanaDevnetQuoteLadder(state, config, startedAt);
+        return lastLadder;
+      }).finally(() => { pendingLadder = undefined; });
+    return pendingLadder;
+  };
   const server: Server = createSolanaDevnetBindingServer(service, releaser, async () =>
-    solanaDevnetStandingBook(await readSolanaDevnetQuoteState(rpc, manifest, config), config));
+    solanaDevnetStandingBook(await readSolanaDevnetQuoteState(rpc, manifest, config), config), readQuoteLadder);
   const orders = new HttpInternalOrderProvider(options.apiOrigin).get;
   // With writes on, keep standing firm levels fresh so user quotes never wait on a Devnet write.
   let refreshTimer: NodeJS.Timeout | undefined;
