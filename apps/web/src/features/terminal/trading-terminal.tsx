@@ -1382,8 +1382,9 @@ function Ticket({
   const marketsPending = publicApiBaseUrl !== null && packageMarketId === null;
   const nativeCashFlow = selectedStrategyTemplateId === "cash-and-carry-v1" &&
     (selectedLifecycleAction === "ENTRY" || selectedLifecycleAction === "EXIT");
-  const ticketPreview = nativeCashFlow ? preview : null;
-  const legs = preview?.mode === mode ? preview.legs : plan.legs;
+  const ticketPreview = nativeCashFlow && preview?.domain === selectedDomain && preview.mode === mode
+    && preview.quoteMode === quoteMode && trimSize(preview.size.value) === trimSize(size) ? preview : null;
+  const legs = ticketPreview?.mode === mode ? ticketPreview.legs : plan.legs;
   const meta = DOMAIN_META[selectedDomain];
   const routeQuote = selectedDomain === "base" ? baseFlow?.quote
     : selectedDomain === "arbitrum" ? arbitrumFlow?.quote
@@ -1611,8 +1612,10 @@ function Ticket({
               <small>{leg.instrument} / {leg.venue}</small>
             </div>
             <div className={styles.legNumbers}>
-              <strong>{tidy(leg.quantity)}</strong>
-              <small title={`${leg.limitLabel} ${leg.limit}`}>{`${/max/i.test(leg.limitLabel) ? "max" : "min"} ${tidy(leg.limit)}`}</small>
+              <strong>{ticketPreview ? tidy(leg.quantity) : `${size || "-"} ${snapshot.market.base}`}</strong>
+              <small title={ticketPreview ? `${leg.limitLabel} ${leg.limit}` : undefined}>
+                {ticketPreview ? `${/max/i.test(leg.limitLabel) ? "max" : "min"} ${tidy(leg.limit)}` : "Awaiting quote"}
+              </small>
             </div>
           </li>
         ))}
@@ -2110,14 +2113,6 @@ export function TradingTerminal({
   // With a configured service the ticket waits for its preview instead of showing the local one.
   const [preview, setPreview] = useState<TerminalPreview | null>(privateProvider ? null : initialPreview);
   const [previewRejection, setPreviewRejection] = useState<string | null>(null);
-  // A preview belongs to the lane it was fetched for: switching lanes clears it at once instead of
-  // showing the previous lane's bound and fees until the new lane's preview arrives.
-  const [previewDomain, setPreviewDomain] = useState(selectedDomain);
-  if (previewDomain !== selectedDomain) {
-    setPreviewDomain(selectedDomain);
-    setPreview(null);
-    setPreviewRejection(null);
-  }
   const [mode, setMode] = useState<PackageMode>("entry");
   // The Hyperliquid package an exit names: the trader's pick, else the one a Portfolio link named.
   const [hyperliquidExitChoice, setHyperliquidExitChoice] = useState<string | null>(null);
@@ -2128,6 +2123,13 @@ export function TradingTerminal({
     initialSnapshot.ticket.defaultSlippageBps,
   );
   const [quoteMode, setQuoteMode] = useState<QuoteMode>("coordinated_limits");
+  const previewInput = JSON.stringify({ selectedDomain, mode, size, slippage, quoteMode });
+  const [previewInputKey, setPreviewInputKey] = useState(previewInput);
+  if (previewInputKey !== previewInput) {
+    setPreviewInputKey(previewInput);
+    setPreview(null);
+    setPreviewRejection(null);
+  }
   const [workspaceTab, setWorkspaceTab] = usePersistedSetting<WorkspaceTab>(
     "workspace.tab",
     "positions",
