@@ -26,6 +26,25 @@ Moving to Postgres would mean rewriting every store as asynchronous code for no 
 and a free Supabase project pauses when inactive, which would take trading down with it. Durability
 comes from hourly online backups to S3 (`backup.sh`, `naryx-backup.timer`) plus EBS snapshots.
 
+### Mainnet launch waitlist
+
+The landing page posts email signups directly to `POST /v1/waitlist` on the AWS API using
+`NEXT_PUBLIC_NARYX_PUBLIC_API_BASE_URL`. It uses no Vercel Function and makes no chain writes.
+The API creates `mainnet-waitlist.db` beside `NARYX_API_ORDER_DB`, inside the existing durable
+data directory. The online backup discovers this SQLite file automatically. Keep it across releases.
+`mainnet_waitlist` stores normalized unique emails, signup time, consent version, and source.
+There is no public subscriber-list endpoint; read or export it only on the host as the service user.
+No wallet, IP address, or user agent is stored with a signup.
+
+Requests require JSON, an email, and `consent: true`, with an optional empty `website` honeypot.
+The API enforces a 2 KiB body limit, five attempts per client per ten minutes, and 300 attempts
+globally per ten minutes. Browser origins use the existing `NARYX_TERMINAL_ORIGIN` allowlist.
+Existing emails receive the same success response and do not overwrite their original consent.
+The API checks email syntax and DNS mail routing (MX or SMTP address fallback), refusing nonexistent
+and null-MX domains. DNS failures return a retryable error and never save an unvalidated signup.
+The form collects consent for mainnet launch emails only. Signup does not send a confirmation
+email or verify mailbox existence or ownership; an outbound email campaign is a separate operation.
+
 ## 1. The instance
 
 - Ubuntu 24.04 LTS, `t3.medium` (2 vCPU, 4 GiB; the TypeScript builds need the memory), 40 GiB gp3.

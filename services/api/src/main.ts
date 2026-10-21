@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { CrossDomainApprovalClient } from './cross-domain-approval-client.js';
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { createMainnetWaitlistHandler, MainnetWaitlistStore } from "./mainnet-waitlist.js";
 import { createPrivateTerminalServer, loadPrivateTerminalServerConfig } from "./http-server.js";
 import { loadMakerControlProxy } from "./maker-control-proxy.js";
 import { createNativeCashProxy } from "./native-cash-proxy.js";
@@ -198,6 +199,8 @@ if (hyperliquidAccountMode !== "PER_USER" && hyperliquidAccountMode !== "SHARED_
 const startup = loadPrivateTerminalStartupConfig(process.env, config);
 const reportRuntimeFailure = stderrRuntimeFailureReporter();
 const orderStore = new SqliteInternalOrderStore(startup.orderDbPath);
+const waitlistStore = new MainnetWaitlistStore(join(dirname(startup.orderDbPath), "mainnet-waitlist.db"));
+const waitlistHandler = createMainnetWaitlistHandler({ store: waitlistStore, allowedOrigins: config.terminalOrigin });
 const lifecycleStore = new SqlitePackageLifecycleStore(startup.lifecycleDbPath);
 const executionIntentStore = new SqliteExecutionIntentStore(startup.executionIntentDbPath);
 const manifestRuntime = startup.solanaLocalEnvironmentManifestPath === undefined
@@ -1274,6 +1277,7 @@ const server = createPrivateTerminalServer(
   // A dedicated public listener keeps the public API off the private terminal server entirely;
   // keeper executor routes are loopback-only and never ride the public listener.
   privateServerRoutes(
+    waitlistHandler,
     explicitlyEnabled('NARYX_HYPERLIQUID_TESTNET_ENROLLMENT_ENABLED')
       ? createHyperliquidEnrollmentProxy(process.env.NARYX_HYPERLIQUID_TESTNET_EXECUTOR_ORIGIN ?? '') : undefined,
     makerControlProxy,
@@ -1330,6 +1334,7 @@ const server = createPrivateTerminalServer(
 const publicServer = publicMarket?.listener === undefined
   ? undefined
   : createServer((request, response) => {
+    if (waitlistHandler(request, response)) return;
     if (nativeCashProxy?.(request, response)) return;
     if (hyperliquidPoolProxy?.(request, response)) return;
     if (publicMarket.handler(request, response)) return;
@@ -1362,6 +1367,7 @@ function shutdown(): void {
   publicServer?.close();
   server.close(() => {
     orderStore.close();
+    waitlistStore.close();
     lifecycleStore.close();
     executionIntentStore.close();
     solanaLocalPreparationStore?.close();
