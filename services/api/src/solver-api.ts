@@ -87,6 +87,7 @@ export interface SolverApiOptions {
   /** Current time in the books' expiry unit. */
   readonly nowValue: () => bigint;
   readonly bookNowValue?: (executionClassId: string) => bigint;
+  readonly unitClock?: (unit: string) => bigint | undefined;
   readonly clockMs?: () => number;
   readonly thresholdAuctions?: ThresholdAuctionBackend;
   /** Largest accepted difference between a request timestamp and server time. */
@@ -148,9 +149,11 @@ function requireObject(value: unknown, name: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function manifestNow(manifest: SolverCapabilityManifestInput, nowMs: number): bigint {
+export function solverManifestNow(manifest: SolverCapabilityManifestInput, nowMs: number, unitClock?: SolverApiOptions['unitClock']): bigint {
   if (manifest.validityUnit === "EVM_UNIX_SECONDS") return BigInt(Math.floor(nowMs / 1_000));
   if (manifest.validityUnit === "HYPERLIQUID_UNIX_MILLISECONDS") return BigInt(nowMs);
+  const slot = manifest.validityUnit === 'SOLANA_SLOT' ? unitClock?.('SOLANA_SLOT') : undefined;
+  if (typeof slot === 'bigint' && slot > 0n) return slot;
   throw new SolverRequestError(401, "VALIDITY_UNIT_UNSUPPORTED", "Slot-timed manifests cannot authenticate API requests.");
 }
 
@@ -175,7 +178,7 @@ interface SignedSolverRequest {
  * for the first time. The HTTP API and the solver stream both authenticate through it.
  */
 function verifySolverRequest(
-  options: Pick<SolverApiOptions, "store" | "registry">,
+  options: Pick<SolverApiOptions, "store" | "registry" | "unitClock">,
   request: SignedSolverRequest,
   nowMs: number,
   maxSkew: number,
@@ -188,7 +191,7 @@ function verifySolverRequest(
   const entry = options.registry.latest<SolverCapabilityManifestInput>("SOLVER_CAPABILITY", solverId);
   if (entry === undefined) throw new SolverRequestError(401, "UNKNOWN_SOLVER", "No capability manifest is registered for this solver.");
   const manifest = entry.document;
-  const now = manifestNow(manifest, nowMs);
+  const now = solverManifestNow(manifest, nowMs, options.unitClock);
   if (now >= manifest.validUntilValue) throw new SolverRequestError(401, "MANIFEST_EXPIRED", "The solver's capability manifest has expired.");
   const key = validQuoteKeys(manifest, now).find((candidate) => candidate.keyId === keyId);
   if (key === undefined) throw new SolverRequestError(401, "KEY_NOT_VALID", "The key is unknown, not Ed25519, or outside its validity.");
@@ -250,7 +253,7 @@ export function createSolverApiHandler(options: SolverApiOptions) {
     if (shard.templateId.includes(".")) throw new SolverRequestError(400, "INVALID_REQUEST", "A quoted template id may not contain a dot.");
     if (shardIdOf(shard) !== shardId) throw new SolverRequestError(400, "SHARD_ID_MISMATCH", "The shard id must equal templateId.marketGroupId.");
     const hash = packageQuoteShardHash(shard);
-    const keys = validQuoteKeys(manifest, manifestNow(manifest, clockMs()));
+    const keys = validQuoteKeys(manifest, solverManifestNow(manifest, clockMs(), options.unitClock));
     if (!keys.some((key) => verifyEd25519(key.verificationKey, hash, shard.signature))) {
       throw new SolverRequestError(400, "INVALID_SHARD_SIGNATURE", "The shard is not signed by a valid quote key.");
     }
@@ -619,7 +622,7 @@ export function createSolverApiHandler(options: SolverApiOptions) {
         throw new SolverRequestError(409, "MANIFEST_MISMATCH", "The quote does not bind the solver's current capability manifest.");
       }
       if (quote.solverSignatureScheme !== "ED25519") throw new SolverRequestError(400, "UNSUPPORTED_SIGNATURE_SCHEME", "Public quotes are signed with Ed25519.");
-      const keys = validQuoteKeys(manifest, manifestNow(manifest, clockMs()));
+      const keys = validQuoteKeys(manifest, solverManifestNow(manifest, clockMs(), options.unitClock));
       if (!keys.some((key) => bytesEqual(key.verificationKey, quote.solverVerificationKey))) {
         throw new SolverRequestError(400, "KEY_NOT_VALID", "The quote key is not a currently valid registered quote key.");
       }
@@ -815,7 +818,7 @@ export function createSolverApiHandler(options: SolverApiOptions) {
   };
 }
 
-export interface SolverStreamOptions extends Pick<SolverApiOptions, "store" | "registry" | "evidence" | "delivery" | "clockMs" | "maxClockSkewMs"> {
+export interface SolverStreamOptions extends Pick<SolverApiOptions, "store" | "registry" | "evidence" | "delivery" | "clockMs" | "maxClockSkewMs" | "unitClock"> {
   readonly pollIntervalMs?: number;
   readonly maximumConnectionsPerSolver?: number;
 }

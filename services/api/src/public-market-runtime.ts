@@ -997,6 +997,7 @@ export function loadPublicMarketRuntime(
         packageSourceBackingAtomsPerUnit: support.packageSourceBackingAtomsPerUnit,
         nowValue,
         bookNowValue: classId => bookClock(classId).value,
+        ...(unitClock === undefined ? {} : { unitClock }),
         isStrategyExecutionSettled: orderHash => {
           const receipt = strategyPackages?.receiptByOrder(orderHash)?.receipt;
           return receipt !== undefined && receipt.environment === 'testnet'
@@ -1014,6 +1015,7 @@ export function loadPublicMarketRuntime(
       : createSolverStream({
         store: solverState,
         registry,
+        ...(unitClock === undefined ? {} : { unitClock }),
         ...(delivery === undefined ? {} : { delivery }),
         ...(evidence === undefined ? {} : { evidence }),
         clockMs,

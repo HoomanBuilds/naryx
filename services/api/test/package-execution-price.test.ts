@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assetRef, type PackageGraph, type StrategyPackageQuote } from '@naryx/protocol-types';
+import { assetRef, protocolId, assetAmount, type PackageGraph, type StrategyPackageQuote } from '@naryx/protocol-types';
 import { requireMatchedExecutionPrice } from '../src/package-execution-price.js';
 
 function input(side: 'BID' | 'ASK', near: bigint, far: bigint, matched: bigint) {
@@ -29,4 +29,31 @@ test('matched basket rejects direction, quantity and zero denominator mismatches
   const quote = { ...value.quote, legEconomics: value.quote.legEconomics.map(leg => ({ ...leg,
     executionPrice: { ...leg.executionPrice!, baseAtoms: 0n } })) };
   assert.throws(() => requireMatchedExecutionPrice({ ...value, quote }), /direction/);
+});
+
+test('treasury inventory is marked once and collateral transfers are not priced as purchases', () => {
+  const value = input('BID', 2000_000_000n, 1999_000_000n, 1_000_000n);
+  const roles = ['inventory-position', 'treasury-hedge'].map(value => protocolId(value));
+  const graph = { ...value.graph, templateId: protocolId('treasury-inventory-hedge-v1'), legs: value.graph.legs.map((l, i) => ({ ...l,
+    legId: roles[i]!, side: i === 0 ? 'NONE' as const : 'SELL' as const })) };
+  const quote = { ...value.quote, legEconomics: value.quote.legEconomics.map((l, i) => {
+    const { executionPrice, ...rest } = l;
+    return { ...rest, legId: roles[i]!, grossNotional: assetAmount(value.quote.quoteAsset, 10_000_000n),
+      ...(i === 0 ? {} : { executionPrice: executionPrice! }) };
+  }) };
+  requireMatchedExecutionPrice({ ...value, graph, quote });
+  assert.throws(() => requireMatchedExecutionPrice({ ...value, graph, quote, fills: [{ quantity: value.quantity, priceTicks: 999_999n }] }), /worse/);
+  const converted = { ...graph, templateId: protocolId('collateral-conversion-hedge-v1'), legs: [
+    { ...graph.legs[0]!, legId: protocolId('collateral-swap'), side: 'BUY' as const },
+    { ...graph.legs[0]!, legId: protocolId('collateral-transfer') },
+    { ...graph.legs[1]!, legId: protocolId('conversion-hedge') },
+  ] };
+  const convertedQuote = { ...quote, legEconomics: [
+    { ...value.quote.legEconomics[0]!, legId: protocolId('collateral-swap') },
+    { ...quote.legEconomics[0]!, legId: protocolId('collateral-transfer') },
+    { ...quote.legEconomics[1]!, legId: protocolId('conversion-hedge') },
+  ] };
+  requireMatchedExecutionPrice({ ...value, graph: converted, quote: convertedQuote });
+  assert.throws(() => requireMatchedExecutionPrice({ ...value, graph: converted, quote: { ...convertedQuote,
+    legEconomics: convertedQuote.legEconomics.map((l, i) => i === 1 ? { ...l, executionPrice: value.quote.legEconomics[0]!.executionPrice! } : l) } }), /transfer/);
 });
