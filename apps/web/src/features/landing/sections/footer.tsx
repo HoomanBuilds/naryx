@@ -197,7 +197,7 @@ export default function Footer() {
               <label htmlFor="waitlist-website">Leave this field empty</label>
               <input id="waitlist-website" name="website" type="text" tabIndex={-1} autoComplete="off" />
             </div>
-            <p id="waitlist-consent" className={styles.consent}>By joining, you agree to receive Naryx mainnet launch emails.</p>
+            <p id="waitlist-consent" className={styles.consent}>Join for early access to Naryx.</p>
             <p id="waitlist-status" className={styles.status} data-state={state} role="status" aria-live="polite">{message}</p>
           </form>
         </div>
