@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { loadEvmPackageMaker } from './evm-package-maker.js';
 import { isAbsolute, resolve } from 'node:path';
 import { hyperliquidTestnetAccountMode } from './hyperliquid-testnet-account-binding.js';
 import { loadHyperliquidTestnetPerUserRuntime, loadHyperliquidTestnetUserAccounts } from './hyperliquid-testnet-per-user-runtime.js';
@@ -472,6 +473,8 @@ const generalizedStrategyLanes = loadHyperliquidTestnetGeneralizedQuoteLanes(
   strategyPreparationLanes,
   { nonceSource: new SqliteAtomicQuoteNonceSource(store, 'hypercore:testnet:generalized') },
 );
+const packageMaker = loadEvmPackageMaker({ path: process.env.NARYX_EVM_PACKAGE_MAKER_CONFIG,
+  runtime: evmCalendarRuntime, origin: apiOrigin, signer: executionSigner });
 const allGeneralizedStrategyLanes = Object.freeze([
   ...generalizedStrategyLanes,
   ...(evmOptionRuntime?.quoteLanes ?? []),
@@ -893,6 +896,7 @@ function shutdown(): void {
   stopCrossBatchClearing?.();
   if (clockRefresh !== undefined) clearInterval(clockRefresh);
   void Promise.allSettled([
+    packageMaker?.close(),
     close(quoteServer), close(executorServer), close(arbitrumExecutorServer), baseSolver?.close(),
     solanaDevnetSolver?.close(),
   ]).then((results) => {
@@ -924,6 +928,7 @@ process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);
 try {
   await listen(quoteServer, listenPort, host);
+  packageMaker?.start();
   if (executorServer !== undefined && executorPort !== undefined) {
     await listen(executorServer, executorPort, host);
   }
@@ -961,7 +966,7 @@ try {
   stopPrivateRfqs?.();
   stopNettingBatches?.();
   stopCrossBatchClearing?.();
-  await Promise.allSettled([close(quoteServer), close(executorServer), close(arbitrumExecutorServer)]);
+  await Promise.allSettled([packageMaker?.close(), close(quoteServer), close(executorServer), close(arbitrumExecutorServer)]);
   executorRuntime?.close();
   arbitrumJournal?.close();
   store.close();

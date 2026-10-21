@@ -169,7 +169,7 @@ export class HttpMakerShardGateway implements MakerShardGateway {
     this.#clockMs = input.clockMs ?? Date.now;
   }
 
-  async #call(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Record<string, unknown>> {
+  protected async request(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<Record<string, unknown>> {
     const text = body === undefined ? '' : JSON.stringify(toProtocolJson(body));
     const timestampMs = BigInt(Math.floor(this.#clockMs()));
     const nonce = randomBytes(32).toString('hex');
@@ -209,21 +209,21 @@ export class HttpMakerShardGateway implements MakerShardGateway {
       const code = response.status === 404 && error.code === 'SHARD_NOT_FOUND'
         ? 'SHARD_NOT_FOUND'
         : 'REMOTE_REJECTED';
-      throw new MakerControlError(code, String(error.message ?? 'maker solver API rejected the request'));
+      throw new MakerControlError(code, `${String(error.code ?? response.status)}: ${String(error.message ?? 'maker solver API rejected the request')}`);
     }
     return payload;
   }
 
   async getShard(shardId: string) {
     const id = exactShardId(shardId);
-    return servedShard(await this.#call('GET', `/v1/solver/quote-shards/${id}`), id);
+    return servedShard(await this.request('GET', `/v1/solver/quote-shards/${id}`), id);
   }
 
   async cancelAll(shardId: string, shard: PackageQuoteShardInput) {
     const id = exactShardId(shardId);
     const hash = toHex(packageQuoteShardHash(shard));
     return admittedShard(
-      await this.#call('POST', `/v1/solver/quote-shards/${id}/cancel-all`, { shard }),
+      await this.request('POST', `/v1/solver/quote-shards/${id}/cancel-all`, { shard }),
       hash,
       shard.shardSequence,
     );
@@ -233,7 +233,7 @@ export class HttpMakerShardGateway implements MakerShardGateway {
     const id = exactShardId(shardId);
     const hash = toHex(packageQuoteShardHash(shard));
     return admittedShard(
-      await this.#call('POST', '/v1/solver/kill-switch', { shardId: id, shard }),
+      await this.request('POST', '/v1/solver/kill-switch', { shardId: id, shard }),
       hash,
       shard.shardSequence,
     );
