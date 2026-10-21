@@ -138,6 +138,8 @@ fail closed. The public proof route can read this evidence but cannot create or 
 
 Setting `NARYX_MAKER_SOLVER_ID` adds a private terminal snapshot for that solver at `/internal/terminal/maker/operations`. It reports current signed quote shards, exact-state fill totals, inventory utilization, and capacity status. When `NARYX_MAKER_OPERATOR_TOKEN_SHA256` is also configured, the terminal can relay exact-state cancel-all and one-way kill-switch requests to the loopback solver control service. The raw token and signing key are never configured in the browser or API, arbitrary shard mutations are not accepted, and re-arming remains outside the terminal.
 
+Standing implied quotes require exclusive backing across all package books, not just within one market. Admission claims each leg reservation and solver commitment in the same SQLite transaction that publishes the quote. Cancel or invalidate an old quote before reusing its unconsumed backing, including after expiry: other markets may use different clocks. Consumed backing cannot be published again. This applies to both leg-derived and multi-package implied liquidity; a conflicting batch publishes nothing.
+
 | Route | Rule |
 |---|---|
 | `PUT /v1/solver/quote-shards/{templateId.marketGroupId}`, `GET` the same | the shard must also be signed by a valid quote key over its hash, belong to the caller, and advance its sequence; an identical repeat is idempotent |

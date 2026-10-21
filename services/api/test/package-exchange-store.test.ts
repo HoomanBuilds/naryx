@@ -8,6 +8,7 @@ import {
   assetRef,
   commitmentHash,
   crossBatchExternalExecutionEvidence,
+  deriveImpliedPackageQuote,
   domainRef,
   netObligations,
   nettingAllocationExecutionAuthorization,
@@ -928,6 +929,82 @@ test("a consumed source reservation cannot back new implied liquidity", () => {
       () => store.addImpliedLiquidity(CLASS, { quote: impliedAsk(2, 2, 501), participantId: "solver-a", commonControlGroupId: "solver", nowValue: NOW }),
       { code: "SOURCE_ALREADY_CONSUMED" },
     );
+  });
+});
+
+test("implied backing cannot be reused across markets or store connections before cancellation", () => {
+  withStore((store, path) => {
+    registerAll(store);
+    const otherPolicy = packageMatchingPolicy({ ...POLICY, executionClassId: "other-package-market" });
+    store.registerMatchingPolicy(otherPolicy);
+    store.registerExecutionClass(executionClass({
+      executionClassId: otherPolicy.executionClassId,
+      matchingPolicyHash: packageMatchingPolicyHash(otherPolicy),
+    }));
+    store.openBook(otherPolicy.executionClassId, 1);
+    const first = impliedAsk(1, 1, 501);
+    store.addImpliedLiquidity(CLASS, {
+      quote: first, participantId: "solver-a", commonControlGroupId: "solver", nowValue: NOW, expiresAtValue: NOW + 1n,
+    });
+    const other = new SqlitePackageExchangeStore(path, { seriesSupport: SERIES_SUPPORT, executionClassSupport: CLASS_SUPPORT });
+    try {
+      const quote = deriveImpliedPackageQuote(otherPolicy, {
+        executionClassId: otherPolicy.executionClassId, side: "ASK", evidence: "RESERVATION_BACKED_IMPLIED",
+        legRatios: SERIES.economicLegRatios, legSources: [
+          { sourceId: "other-spot", sourceVersion: 1n, side: "ASK", priceTicks: 1_100n, quantity: 20n, reservationId: id(501) },
+          { sourceId: "other-perp", sourceVersion: 1n, side: "BID", priceTicks: 1_000n, quantity: 20n, reservationId: id(902) },
+        ],
+      });
+      const publish = () => other.addImpliedLiquidity(otherPolicy.executionClassId, {
+        quote, participantId: "solver-a", commonControlGroupId: "solver", nowValue: NOW + 2n,
+      });
+      assert.throws(publish, { code: "BACKING_IN_USE" });
+      assert.equal(other.getBook(otherPolicy.executionClassId)?.entries.length, 0);
+      store.cancelEntry(CLASS, first.entryId, "solver-a");
+      assert.equal(toHex(publish().entryId), toHex(quote.entryId));
+    } finally {
+      other.close();
+    }
+  });
+});
+
+test("a filled solver commitment cannot be reused in another market", () => {
+  withStore((store) => {
+    registerAll(store);
+    const otherPolicy = packageMatchingPolicy({ ...POLICY, executionClassId: "other-package-market" });
+    store.registerMatchingPolicy(otherPolicy);
+    store.registerExecutionClass(executionClass({
+      executionClassId: otherPolicy.executionClassId,
+      matchingPolicyHash: packageMatchingPolicyHash(otherPolicy),
+    }));
+    store.openBook(otherPolicy.executionClassId, 1);
+    const input = {
+      side: "ASK" as const, evidence: "SOLVER_BACKED_IMPLIED" as const, solverCommitment: id(700),
+      legRatios: SERIES.economicLegRatios,
+      legSources: [
+        { sourceId: "spot-1", sourceVersion: 1n, side: "ASK" as const, priceTicks: 1_100n, quantity: 20n },
+        { sourceId: "perp-1", sourceVersion: 1n, side: "BID" as const, priceTicks: 1_000n, quantity: 20n },
+      ],
+    };
+    const quote = deriveImpliedPackageQuote(packageMatchingPolicy(POLICY), { ...input, executionClassId: CLASS });
+    store.addImpliedLiquidity(CLASS, { quote, participantId: "solver-a", commonControlGroupId: "solver", nowValue: NOW });
+    const taker = order(9, { side: "BID", quantity: 20n, timeInForce: "IOC" });
+    const result = store.submitOrder(CLASS, taker, NOW, settlement(taker));
+    assert.equal(result.accepted && result.allocation.externalImpliedQuantity, 20n);
+    assert.throws(() => store.addImpliedLiquidity(otherPolicy.executionClassId, {
+      quote: deriveImpliedPackageQuote(otherPolicy, { ...input, executionClassId: otherPolicy.executionClassId }),
+      participantId: "solver-a", commonControlGroupId: "solver", nowValue: NOW,
+    }), { code: "SOURCE_ALREADY_CONSUMED" });
+  });
+});
+
+test("a batch that shares backing rolls back every quote", () => {
+  withStore((store) => {
+    registerAll(store);
+    assert.throws(() => store.addImpliedLiquidityBatch(CLASS, [1, 2].map((index) => ({
+      quote: impliedAsk(index, index, 501), participantId: "solver-a", commonControlGroupId: "solver", nowValue: NOW,
+    }))), { code: "BACKING_IN_USE" });
+    assert.equal(store.getBook(CLASS)?.entries.length, 0);
   });
 });
 

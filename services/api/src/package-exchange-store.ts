@@ -1601,6 +1601,38 @@ export class SqlitePackageExchangeStore {
     return this.addImpliedLiquidityBatch(executionClassId, [input])[0] as PackageBookEntry;
   }
 
+  private impliedBackingClaims(): Set<string> {
+    const claims = new Set<string>();
+    const rows = this.db.prepare(
+      "SELECT entry_json FROM package_book_entries WHERE json_type(entry_json, '$.implied') = 'object'",
+    ).all() as { entry_json: string }[];
+    for (const row of rows) {
+      const entry = parseProtocolJson(row.entry_json) as PackageBookEntry;
+      for (const source of entry.implied!.sources) {
+        if (source.reservationId !== undefined) claims.add(toHex(source.reservationId));
+      }
+      if (entry.implied!.solverCommitment !== undefined) claims.add(toHex(entry.implied!.solverCommitment));
+    }
+    return claims;
+  }
+
+  private claimImpliedBacking(entry: PackageBookEntry, claims: Set<string>): void {
+    const keys = entry.implied!.sources.flatMap((source) => source.reservationId === undefined ? [] : [source.reservationId]);
+    if (entry.implied!.solverCommitment !== undefined) keys.push(entry.implied!.solverCommitment);
+    const consumed = this.db.prepare("SELECT 1 FROM package_book_consumed_sources WHERE source_key = ?");
+    for (const key of keys) {
+      if (consumed.get(key) !== undefined) {
+        throw new PackageExchangeStoreError("SOURCE_ALREADY_CONSUMED", "Implied backing was already consumed.");
+      }
+      const id = toHex(key);
+      if (claims.has(id)) {
+        throw new PackageExchangeStoreError("BACKING_IN_USE", "Implied backing already supports a resting quote. Cancel it before reusing the backing in any market.");
+      }
+      // Other books may use a different expiry clock; release through cancellation or invalidation.
+      claims.add(id);
+    }
+  }
+
   addMultiPackageImpliedLiquidity(
     executionClassId: string,
     input: MultiPackageImpliedLiquidityInput,
@@ -1622,6 +1654,7 @@ export class SqlitePackageExchangeStore {
       const result = guarded("INVALID_INPUT", "Multi-package implied liquidity is invalid.", () =>
         admitMultiPackageImpliedLiquidity(policy, book, input),
       );
+      this.claimImpliedBacking(result.entry, this.impliedBackingClaims());
       this.writeBook(result.state);
       return result.entry;
     });
@@ -1639,6 +1672,7 @@ export class SqlitePackageExchangeStore {
       const { policy, book } = this.policyAndBook(executionClassId);
       const versions = this.db.prepare("SELECT current_version FROM implied_source_versions WHERE source_id = ?");
       const consumed = this.db.prepare("SELECT 1 FROM package_book_consumed_sources WHERE source_key = ?");
+      const backingClaims = this.impliedBackingClaims();
       let state = book;
       const entries: PackageBookEntry[] = [];
       for (const input of inputs) {
@@ -1652,6 +1686,7 @@ export class SqlitePackageExchangeStore {
           }
         }
         const result = guarded("INVALID_INPUT", "Implied liquidity is invalid.", () => addImpliedLiquidity(policy, state, input));
+        this.claimImpliedBacking(result.entry, backingClaims);
         state = result.state;
         entries.push(result.entry);
       }
