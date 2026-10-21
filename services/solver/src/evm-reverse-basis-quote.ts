@@ -159,7 +159,7 @@ function validateConfiguration(input: EvmReverseBasisPricingInput): void {
   manifestHash(input.feePolicyManifestHash, 'evmReverseBasis.feePolicyManifestHash');
 }
 
-function collateralPricing(input: EvmReverseBasisPricingInput): EvmCollateralConversionPricingInput {
+export function reverseBasisCollateralPricing(input: EvmReverseBasisPricingInput): EvmCollateralConversionPricingInput {
   return Object.freeze({
     chainId: input.chainId,
     domain: input.domain,
@@ -190,7 +190,7 @@ function collateralPricing(input: EvmReverseBasisPricingInput): EvmCollateralCon
   });
 }
 
-function perpPricing(input: EvmReverseBasisPricingInput): EvmTreasuryHedgePricingInput {
+export function reverseBasisPerpPricing(input: EvmReverseBasisPricingInput): EvmTreasuryHedgePricingInput {
   return Object.freeze({
     chainId: input.chainId,
     domain: input.domain,
@@ -218,8 +218,8 @@ export function createEvmReverseBasisGeneralizedPricing(
   input: EvmReverseBasisPricingInput,
 ): GeneralizedStrategyPricingPort {
   validateConfiguration(input);
-  const spotInput = collateralPricing(input);
-  const derivativeInput = perpPricing(input);
+  const spotInput = reverseBasisCollateralPricing(input);
+  const derivativeInput = reverseBasisPerpPricing(input);
   return Object.freeze({
     async quote({ documents, currentTime }: Readonly<{
       documents: StoredStrategyPackageOrderDocuments;

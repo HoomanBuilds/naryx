@@ -4,6 +4,11 @@ import { isAbsolute } from 'node:path';
 import { parseProtocolJson, stringifyProtocolJson } from '@naryx/protocol-types';
 import { getAddress, parseAbi } from 'viem';
 import type { loadEvmCalendarSpreadRuntime } from './evm-calendar-spread-config.js';
+import type { loadEvmOptionSpreadRuntime } from './evm-option-spread-config.js';
+import type { loadEvmTreasuryHedgeRuntime } from './evm-treasury-hedge-config.js';
+import type { loadEvmCollateralConversionRuntime } from './evm-collateral-conversion-config.js';
+import type { loadEvmReverseBasisRuntime } from './evm-reverse-basis-config.js';
+import { createEvmStrategyMakerReader } from './evm-strategy-maker.js';
 import { readEvmCalendarFutureSnapshot, type EvmCalendarSpreadPricingInput } from './evm-calendar-spread-quote.js';
 import { HttpPackageMakerGateway, PackageMaker, PackageMakerJournal, type PackageMakerSnapshot } from './package-maker.js';
 import type { MakerControlSigner } from './maker-control.js';
@@ -116,6 +121,10 @@ export function createCalendarMakerReader(input: Readonly<{
 export function loadEvmPackageMaker(input: Readonly<{
   path: string | undefined;
   runtime: ReturnType<typeof loadEvmCalendarSpreadRuntime> | undefined;
+  optionRuntime?: ReturnType<typeof loadEvmOptionSpreadRuntime> | undefined;
+  treasuryRuntime?: ReturnType<typeof loadEvmTreasuryHedgeRuntime> | undefined;
+  conversionRuntime?: ReturnType<typeof loadEvmCollateralConversionRuntime> | undefined;
+  reverseRuntime?: ReturnType<typeof loadEvmReverseBasisRuntime> | undefined;
   origin: string;
   signer: MakerControlSigner;
 }>) {
@@ -128,30 +137,49 @@ export function loadEvmPackageMaker(input: Readonly<{
   };
   if (config.version !== 1 || config.environment !== 'testnet' || !isAbsolute(config.journalPath)
     || !Number.isSafeInteger(config.intervalMs) || config.intervalMs < 10000 || config.intervalMs > 30000
-    || !Array.isArray(config.markets) || config.markets.length < 1 || config.markets.length > 8
+    || !Array.isArray(config.markets) || config.markets.length < 1 || config.markets.length > 16
     || new Set(config.markets.map(m => m.laneId)).size !== config.markets.length || input.runtime === undefined) {
-    throw new Error('Package maker configuration must select supported testnet calendar lanes.');
+    throw new Error('Package maker configuration must select supported testnet strategy lanes.');
   }
   const journal = new PackageMakerJournal(config.journalPath);
   try {
+    const scopes = new Map<string, string>();
+    const marketIds = new Set<string>();
     const makers = config.markets.map(market => {
-      const index = input.runtime!.quoteLanes.findIndex(lane => lane.laneId === market.laneId);
-      const lane = input.runtime!.quoteLanes[index];
-      const pricing = input.runtime!.preparationLanes[index]?.pricing;
-      if (!lane || !pricing) throw new Error('Package maker lane is not registered.');
-      const source = createCalendarMakerReader({ ...market, pricing, marketId: lane.executionClassId, solverId: lane.solverId });
+      const candidates = [
+        ...(input.runtime?.preparationLanes.map((p, i) => ({ kind: 'calendar' as const, pricing: p.pricing, lane: input.runtime!.quoteLanes[i]! })) ?? []),
+        ...(input.optionRuntime?.preparationLanes.map((p, i) => ({ kind: 'option' as const, pricing: p.pricing, lane: input.optionRuntime!.quoteLanes[i]! })) ?? []),
+        ...(input.treasuryRuntime?.preparationLanes.map((p, i) => ({ kind: 'treasury' as const, pricing: p.pricing, lane: input.treasuryRuntime!.quoteLanes[i]! })) ?? []),
+        ...(input.conversionRuntime?.preparationLanes.map((p, i) => ({ kind: 'conversion' as const, pricing: p.pricing, lane: input.conversionRuntime!.quoteLanes[i]! })) ?? []),
+        ...(input.reverseRuntime?.preparationLanes.map((p, i) => ({ kind: 'reverse' as const, pricing: p.pricing, lane: input.reverseRuntime!.quoteLanes[i]! })) ?? []),
+      ];
+      const selected = candidates.find(c => c.lane.laneId === market.laneId);
+      if (!selected) throw new Error('Package maker lane is not registered.');
+      const { lane, pricing } = selected;
+      if (marketIds.has(lane.executionClassId)) throw new Error('Package maker execution class repeats.');
+      marketIds.add(lane.executionClassId);
+      const scope = stringifyProtocolJson({ solverId: lane.solverId, domain: pricing.domain, asset: pricing.quoteAsset });
+      const funding = stringifyProtocolJson({ account: getAddress(market.fundingAccount), token: pricing.quoteToken,
+        cap: market.maximumCapacityAtoms });
+      if (scopes.has(scope) && scopes.get(scope) !== funding) throw new Error('Package maker collateral scope has inconsistent backing.');
+      scopes.set(scope, funding);
+      const common = { ...market, marketId: lane.executionClassId, solverId: lane.solverId };
+      const source = selected.kind === 'calendar'
+        ? createCalendarMakerReader({ ...common, pricing: selected.pricing })
+        : createEvmStrategyMakerReader({ ...common, ...selected });
       const gateway = new HttpPackageMakerGateway({ origin: input.origin, solverId: lane.solverId,
         keyId: market.keyId, signer: input.signer });
       const maker = new PackageMaker({ marketId: lane.executionClassId, solverId: lane.solverId, sourceIds: source.sourceIds,
         binding: { ...market, domain: pricing.domain, token: pricing.quoteToken, executionClassManifestHash: lane.executionClassManifestHash },
         quoteLifetime: TTL, journal, gateway, read: source.read });
-      return { maker, marketId: lane.executionClassId };
+      return { maker, marketId: lane.executionClassId, scope };
     });
+    const groups = [...new Set(makers.map(m => m.scope))].map(scope => makers.filter(m => m.scope === scope));
     let stopped = true;
     let running: Promise<void> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const tick = async () => {
-      for (const { maker, marketId } of makers) {
+      await Promise.all(groups.map(async group => { for (const { maker, marketId } of group) {
         if (stopped) return;
         try {
           const result = await maker.tick();
@@ -160,12 +188,13 @@ export function loadEvmPackageMaker(input: Readonly<{
           process.stderr.write(JSON.stringify({ event: 'package-maker-refused', marketId,
             error: error instanceof Error ? error.message : 'unknown error' }) + '\n');
         }
-      }
+      } }));
     };
     const schedule = () => {
+      const startedAt = Date.now();
       running = tick().finally(() => {
         running = undefined;
-        if (!stopped) timer = setTimeout(schedule, config.intervalMs);
+        if (!stopped) timer = setTimeout(schedule, Math.max(1000, config.intervalMs - (Date.now() - startedAt)));
       });
     };
     return {

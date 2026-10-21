@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { loadEvmPackageMaker } from './evm-package-maker.js';
+import { loadSolanaPackageMaker } from './solana-package-maker.js';
 import { isAbsolute, resolve } from 'node:path';
 import { hyperliquidTestnetAccountMode } from './hyperliquid-testnet-account-binding.js';
 import { loadHyperliquidTestnetPerUserRuntime, loadHyperliquidTestnetUserAccounts } from './hyperliquid-testnet-per-user-runtime.js';
@@ -474,7 +475,11 @@ const generalizedStrategyLanes = loadHyperliquidTestnetGeneralizedQuoteLanes(
   { nonceSource: new SqliteAtomicQuoteNonceSource(store, 'hypercore:testnet:generalized') },
 );
 const packageMaker = loadEvmPackageMaker({ path: process.env.NARYX_EVM_PACKAGE_MAKER_CONFIG,
-  runtime: evmCalendarRuntime, origin: apiOrigin, signer: executionSigner });
+  runtime: evmCalendarRuntime, optionRuntime: evmOptionRuntime, treasuryRuntime: evmTreasuryRuntime,
+  conversionRuntime: evmCollateralConversionRuntime, reverseRuntime: evmReverseBasisRuntime,
+  origin: apiOrigin, signer: executionSigner });
+const solanaPackageMaker = loadSolanaPackageMaker({ path: process.env.NARYX_SOLANA_PACKAGE_MAKER_CONFIG,
+  runtime: solanaTreasuryRuntime, origin: apiOrigin, signer: executionSigner });
 const allGeneralizedStrategyLanes = Object.freeze([
   ...generalizedStrategyLanes,
   ...(evmOptionRuntime?.quoteLanes ?? []),
@@ -897,6 +902,7 @@ function shutdown(): void {
   if (clockRefresh !== undefined) clearInterval(clockRefresh);
   void Promise.allSettled([
     packageMaker?.close(),
+    solanaPackageMaker?.close(),
     close(quoteServer), close(executorServer), close(arbitrumExecutorServer), baseSolver?.close(),
     solanaDevnetSolver?.close(),
   ]).then((results) => {
@@ -929,6 +935,7 @@ process.once('SIGTERM', shutdown);
 try {
   await listen(quoteServer, listenPort, host);
   packageMaker?.start();
+  solanaPackageMaker?.start();
   if (executorServer !== undefined && executorPort !== undefined) {
     await listen(executorServer, executorPort, host);
   }
@@ -966,7 +973,7 @@ try {
   stopPrivateRfqs?.();
   stopNettingBatches?.();
   stopCrossBatchClearing?.();
-  await Promise.allSettled([packageMaker?.close(), close(quoteServer), close(executorServer), close(arbitrumExecutorServer)]);
+  await Promise.allSettled([packageMaker?.close(), solanaPackageMaker?.close(), close(quoteServer), close(executorServer), close(arbitrumExecutorServer)]);
   executorRuntime?.close();
   arbitrumJournal?.close();
   store.close();
