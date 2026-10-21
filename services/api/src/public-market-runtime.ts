@@ -421,6 +421,10 @@ export function loadPublicMarketRuntime(
     throw new PublicMarketConfigError("NARYX_PUBLIC_MARKET_REQUESTS_PER_MINUTE must be between 1 and 10000.");
   }
   const requestsPerMinute = Number(rawRate);
+  const rawSolverRate = environment.NARYX_SOLVER_REQUESTS_PER_MINUTE ?? rawRate;
+  if (!/^[1-9]\d{0,4}$/.test(rawSolverRate) || Number(rawSolverRate) > 10_000) {
+    throw new PublicMarketConfigError("NARYX_SOLVER_REQUESTS_PER_MINUTE must be between 1 and 10000.");
+  }
   const rawPort = environment.NARYX_PUBLIC_API_PORT;
   let listener: { host: string; port: number } | undefined;
   if (rawPort !== undefined && rawPort !== "") {
@@ -1001,7 +1005,7 @@ export function loadPublicMarketRuntime(
             && receipt.legOutcomes.every(leg => leg.onchainEnforced);
         },
         clockMs,
-        rateLimit,
+        rateLimit: { windowMs: rateLimit.windowMs, maxRequests: Number(rawSolverRate) },
       });
     const stream = createMarketStream({ exchange: store, nowValue: (marketId) => bookClock(marketId).value });
     opened.push(stream);

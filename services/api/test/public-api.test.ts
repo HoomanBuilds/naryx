@@ -489,6 +489,10 @@ test("the runtime is off by default and validates its configuration", () => {
     assert.deepEqual(separate?.listener, { host: "0.0.0.0", port: 8788 });
     separate?.close();
     const qualificationDb = { ...env, NARYX_QUALIFICATION_DB: join(dir, "qualification.sqlite") };
+    assert.throws(() => loadPublicMarketRuntime({ ...env, NARYX_SOLVER_REQUESTS_PER_MINUTE: "10001" }), /NARYX_SOLVER_REQUESTS_PER_MINUTE/);
+    const separateSolverRate = loadPublicMarketRuntime({ ...env, NARYX_SOLVER_REQUESTS_PER_MINUTE: "600" });
+    assert.equal(separateSolverRate?.requestsPerMinute, 120);
+    separateSolverRate?.close();
     assert.throws(() => loadPublicMarketRuntime(qualificationDb), /requires NARYX_QUALIFICATION_AUTHORITIES/);
     const key = "4".repeat(44);
     assert.throws(() => loadPublicMarketRuntime({ ...qualificationDb, NARYX_QUALIFICATION_AUTHORITIES: "key-1:not-a-key", NARYX_QUALIFICATION_ACTIVATION_DELAY: "10" }), /distinct keyId:base58/);
