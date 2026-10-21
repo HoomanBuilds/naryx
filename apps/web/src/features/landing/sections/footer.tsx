@@ -20,6 +20,7 @@ const HREFS: Record<string, string> = {
   Solvers: "#engine",
   "Settlement classes": "#shielded",
   "Activation status": "/network",
+  X: "https://x.com/NaryxNetwork",
 };
 
 function Crosshair() {
@@ -214,7 +215,8 @@ export default function Footer() {
                         {link}
                       </span>
                     ) : (
-                      <a href={HREFS[link]}>{link}</a>
+                      <a href={HREFS[link]}
+                        {...(HREFS[link]?.startsWith("https://") ? { target: "_blank", rel: "noopener noreferrer" } : {})}>{link}</a>
                     )}
                   </li>
                 ))}

@@ -9,7 +9,7 @@ import styles from "./involved.module.css";
 const LINKS = [
   { group: "Trade", note: "Review a package, its quotes, settlement class and fees in the terminal.", label: "Open the terminal", href: "/trade" },
   { group: "Operate", note: "How independent solvers compete to quote complete packages.", label: "Solver competition", href: "#engine" },
-  { group: "Join the community", note: "New strategies, domains and product news.", label: "X.com" },
+  { group: "Join the community", note: "New strategies, domains and product news.", label: "X.com", href: "https://x.com/NaryxNetwork" },
   { group: "Build", note: "Package format, API reference and the protocol spec.", label: "Documentation" },
 ];
 
@@ -71,7 +71,8 @@ export default function Involved() {
                 {content}
               </div>
             ) : (
-              <a key={label} href={href} className={styles.cell}>
+              <a key={label} href={href} className={styles.cell}
+                {...(href.startsWith("https://") ? { target: "_blank", rel: "noopener noreferrer" } : {})}>
                 {content}
               </a>
             );
