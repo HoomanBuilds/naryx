@@ -37,6 +37,7 @@ export function createCalendarMakerReader(input: Readonly<{
     || new Set(input.quantities).size !== input.quantities.length) throw new Error('Calendar maker funding or quantities are invalid.');
   const sourceId = (index: number, leg: number) => `${input.solverId}:${input.marketId}:${index}:${leg}`;
   const sourceIds = input.quantities.flatMap((_, i) => [sourceId(i, 0), sourceId(i, 1)]);
+  const totalQuantity = input.quantities.reduce((sum, quantity) => sum + quantity, 0n);
   const read = async (sourceVersion: bigint): Promise<PackageMakerSnapshot> => {
     const reads = new Map<string, Promise<unknown>>();
     const snapshotPricing = { ...pricing, chain: { ...pricing.chain, readContract: (request: Parameters<typeof pricing.chain.readContract>[0]) => {
@@ -62,18 +63,20 @@ export function createCalendarMakerReader(input: Readonly<{
       const read = (functionName: string) => pricing.chain.readContract({ address: market.contract.address, abi: MARKET, functionName });
       const [insurance, paused, maximum] = await Promise.all([read('insuranceWad'), read('opensPaused'), read('maxPositionSizeWad')]);
       if (typeof insurance !== 'bigint' || insurance <= 0n || paused !== false || typeof maximum !== 'bigint'
-        || input.quantities.some(quantity => quantity > maximum)) throw new Error('Calendar venue is paused or has insufficient risk capacity.');
+        || input.quantities.some(quantity => totalQuantity + quantity > maximum)) throw new Error('Calendar venue is paused or has insufficient risk capacity.');
       return insurance;
     }));
     let grossNotional = 0n;
     for (const [index, quantity] of input.quantities.entries()) {
+      const pricingQuantity = totalQuantity + quantity;
       const [nearBuy, nearSell, farBuy, farSell] = await Promise.all([
-        readEvmCalendarFutureSnapshot(snapshotPricing, near, quantity), readEvmCalendarFutureSnapshot(snapshotPricing, near, -quantity),
-        readEvmCalendarFutureSnapshot(snapshotPricing, far, quantity), readEvmCalendarFutureSnapshot(snapshotPricing, far, -quantity),
+        readEvmCalendarFutureSnapshot(snapshotPricing, near, pricingQuantity), readEvmCalendarFutureSnapshot(snapshotPricing, near, -pricingQuantity),
+        readEvmCalendarFutureSnapshot(snapshotPricing, far, pricingQuantity), readEvmCalendarFutureSnapshot(snapshotPricing, far, -pricingQuantity),
       ]);
       if (nearBuy.expiry <= observedAt + TTL || nearBuy.expiry >= farBuy.expiry) throw new Error('Calendar maker maturity is unavailable.');
-      const worstNotional = [nearBuy.notionalWad, nearSell.notionalWad, farBuy.notionalWad, farSell.notionalWad]
+      const worstPrice = [nearBuy.fillPriceWad, nearSell.fillPriceWad, farBuy.fillPriceWad, farSell.fillPriceWad]
         .reduce((maximum, value) => value > maximum ? value : maximum, 0n);
+      const worstNotional = ceil(quantity * worstPrice, WAD);
       const backingAtoms = ceil(quantity * input.backingAtomsPerWholeAsset, WAD);
       grossNotional += worstNotional * 2n;
       if (backingAtoms < ceil(worstNotional * 2n, nearBuy.collateralScale)) {
@@ -92,7 +95,7 @@ export function createCalendarMakerReader(input: Readonly<{
           }),
         } });
       }
-      observations.push({ quantity, nearBuy, nearSell, farBuy, farSell });
+      observations.push({ quantity, pricingQuantity, nearBuy, nearSell, farBuy, farSell });
     }
     if (marketCapacity.some(insurance => insurance < grossNotional)) throw new Error('Calendar venue payout reserve is below published gross exposure.');
     const availableAtoms = balance < input.maximumCapacityAtoms ? balance : input.maximumCapacityAtoms;
