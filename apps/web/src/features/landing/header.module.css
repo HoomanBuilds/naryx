@@ -25,7 +25,10 @@
 
 /* the ticker along the very top */
 .ticker {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
   height: 30px;
   overflow: hidden;
   border-bottom: 1px solid var(--yellow);
@@ -38,31 +41,17 @@
   transition: color 0.3s;
 }
 
-.ticker:hover {
-  color: var(--cyan);
+.waitlistLink {
+  border: 1px solid currentColor;
+  padding: 2px 8px;
+  line-height: 16px;
+  font-size: 10px;
 }
 
-.tickerTrack {
-  display: flex;
-  width: max-content;
-  animation: ticker 30s linear infinite;
-}
-
-.tickerTrack span {
-  padding: 0 22px;
-}
-
-.tickerTrack span::after {
-  content: "\25A0";
-  margin-left: 22px;
-  font-size: 7px;
-  vertical-align: 2px;
-}
-
-@keyframes ticker {
-  to {
-    transform: translateX(-50%);
-  }
+.waitlistLink:hover,
+.waitlistLink:focus-visible {
+  background: var(--yellow);
+  color: #000;
 }
 
 .bar {

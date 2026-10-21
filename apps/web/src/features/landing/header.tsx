@@ -12,12 +12,6 @@ const LINKS = [
   { label: "Use", href: "#use" },
   { label: "Lifecycle", href: "#roadmap" },
 ];
-const TICKER = [
-  "Cash-and-carry in one package",
-  "Solvers quote the whole outcome",
-  "One receipt for every leg",
-  "Pre-mainnet: public deployment deferred",
-];
 const WORD = "NARYX";
 
 /** The wordmark, which re-scrambles through the glyph alphabet on hover. */
@@ -97,17 +91,10 @@ export default function Header() {
       data-hidden={(hidden && !open) || undefined}
       data-waiting={!ready || undefined}
     >
-      <a className={`mono ${styles.ticker}`} href="#roadmap">
-        <span className={styles.tickerTrack}>
-          {[0, 1].map((copy) =>
-            TICKER.map((item) => (
-              <span key={`${copy}-${item}`} aria-hidden={copy > 0 || undefined}>
-                {item}
-              </span>
-            )),
-          )}
-        </span>
-      </a>
+      <div className={`mono ${styles.ticker}`}>
+        <span>Mainnet waitlist is open</span>
+        <a className={styles.waitlistLink} href="#waitlist" onClick={() => setOpen(false)}>Join waitlist</a>
+      </div>
 
       <div className={`container ${styles.bar}`}>
         <a href="#top" className={styles.brand} aria-label="Naryx, back to top">

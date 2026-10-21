@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { gsap, reducedMotion, ScrollTrigger, useGSAP } from "@/features/landing/gsap";
 import { ParticleWordmark } from "@/features/landing/particle-wordmark";
 import styles from "./footer.module.css";
@@ -33,11 +33,14 @@ function Crosshair() {
 
 /**
  * The footer: a violet cloud sky, glowing square and crosshair
- * ornaments, the newsletter tag and link columns in the mono face, and a
+ * ornaments, the waitlist tag and link columns in the mono face, and a
  * particle wordmark that breaks into pixels and scatters from the pointer.
  */
 export default function Footer() {
   const root = useRef<HTMLElement>(null);
+  const submitting = useRef(false);
+  const [state, setState] = useState<"idle" | "pending" | "success" | "error">("idle");
+  const [message, setMessage] = useState("");
 
   useGSAP(
     () => {
@@ -120,9 +123,46 @@ export default function Footer() {
     { scope: root },
   );
 
-  // There is no mailing list yet, so the form is visibly closed instead of pretending to accept an address.
-  const subscribe = (event: FormEvent) => {
+  const subscribe = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (submitting.current || state === "success") return;
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const api = process.env.NEXT_PUBLIC_NARYX_PUBLIC_API_BASE_URL;
+    if (!api) {
+      setState("error");
+      setMessage("The waitlist is temporarily unavailable. Please try again shortly.");
+      return;
+    }
+    submitting.current = true;
+    setState("pending");
+    setMessage("");
+    try {
+      const response = await fetch(`${api.replace(/\/$/, "")}/v1/waitlist`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "omit",
+        signal: AbortSignal.timeout(15_000),
+        body: JSON.stringify({ email: data.get("email"), consent: true, website: data.get("website") }),
+      });
+      if (!response.ok) {
+        setState("error");
+        setMessage(response.status === 429 ? "Too many attempts. Please try again in 10 minutes."
+          : response.status === 400 ? "Enter a valid email address and try again."
+          : "We could not save your email. Please try again shortly.");
+        return;
+      }
+      const result = await response.json() as { status?: string };
+      if (result.status !== "joined") throw new Error("Unexpected waitlist response.");
+      setState("success");
+      setMessage("You're on the list. We'll email you when mainnet launches.");
+      form.reset();
+    } catch {
+      setState("error");
+      setMessage("We couldn't confirm your signup. Check your connection and try again.");
+    } finally {
+      submitting.current = false;
+    }
   };
 
   return (
@@ -140,20 +180,26 @@ export default function Footer() {
 
       <div className={styles.middle}>
         <div className={styles.top}>
-          <form className={styles.form} onSubmit={subscribe}>
-            <label htmlFor="newsletter" className={`${styles.title} ${styles.brand}`}>
-              Newsletter
+          <form id="waitlist" className={styles.form} onSubmit={subscribe} aria-busy={state === "pending"}>
+            <label htmlFor="waitlist-email" className={`${styles.title} ${styles.brand}`}>
+              Mainnet waitlist
             </label>
+            <p className={styles.intro}>Be first to know when Naryx goes live on mainnet.</p>
             <div className={styles.field}>
-              <input id="newsletter" type="email" placeholder="OPENS AT PUBLIC LAUNCH" disabled aria-describedby="newsletter-status" />
-              <button type="submit" disabled>
-                Not open yet
+              <input id="waitlist-email" name="email" type="email" placeholder="Your email address" required maxLength={254}
+                autoComplete="email" autoCapitalize="none" spellCheck={false}
+                disabled={state === "pending" || state === "success"} aria-describedby="waitlist-consent waitlist-status" />
+              <button type="submit" disabled={state === "pending" || state === "success"}>
+                {state === "pending" ? "Joining..." : state === "success" ? "Joined" : "Join waitlist"}
               </button>
             </div>
+            <div className={styles.honeypot} aria-hidden="true">
+              <label htmlFor="waitlist-website">Leave this field empty</label>
+              <input id="waitlist-website" name="website" type="text" tabIndex={-1} autoComplete="off" />
+            </div>
+            <p id="waitlist-consent" className={styles.consent}>By joining, you agree to receive Naryx mainnet launch emails.</p>
+            <p id="waitlist-status" className={styles.status} data-state={state} role="status" aria-live="polite">{message}</p>
           </form>
-          <p id="newsletter-status" className={`${styles.title} ${styles.contact}`}>
-            Newsletter and contact channels open at public launch
-          </p>
         </div>
 
         <nav className={styles.columns} aria-label="Footer">
