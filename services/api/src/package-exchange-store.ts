@@ -1616,6 +1616,22 @@ export class SqlitePackageExchangeStore {
     return claims;
   }
 
+  impliedBackingState(id: Uint8Array | string): "LIVE" | "CONSUMED" | "UNUSED" {
+    const hash = commitmentHash(id);
+    if (this.db.prepare("SELECT 1 FROM package_book_consumed_sources WHERE source_key = ?").get(hash) !== undefined) return "CONSUMED";
+    return this.impliedBackingClaims().has(toHex(hash)) ? "LIVE" : "UNUSED";
+  }
+
+  consumedBackingOrder(id: Uint8Array | string): string | undefined {
+    const row = this.db.prepare(`SELECT a.execution_class_id,a.allocation_json
+      FROM package_book_consumed_sources s JOIN package_book_allocations a ON a.allocation_hash=s.allocation_hash
+      WHERE s.source_key=?`).get(commitmentHash(id)) as { execution_class_id: string; allocation_json: string } | undefined;
+    if (row === undefined) return undefined;
+    const allocation = this.decodeAllocation(row.execution_class_id, row.allocation_json);
+    const commitment = this.settlementCommitment(allocation.takerOrderId);
+    return commitment === undefined ? undefined : toHex(commitment.strategyOrderHash);
+  }
+
   private claimImpliedBacking(entry: PackageBookEntry, claims: Set<string>): void {
     const keys = entry.implied!.sources.flatMap((source) => source.reservationId === undefined ? [] : [source.reservationId]);
     if (entry.implied!.solverCommitment !== undefined) keys.push(entry.implied!.solverCommitment);
@@ -1877,6 +1893,16 @@ export class SqlitePackageExchangeStore {
       haltedSnapshotHashHex: toHex(hashBytes(row.halted_snapshot_hash, "halted_snapshot_hash")),
       recordedAtMs,
     });
+  }
+
+  orderSide(packageOrderId: Uint8Array | string): PackageBookSide | undefined {
+    const row = this.db.prepare("SELECT side FROM package_book_order_terms WHERE package_order_id = ?")
+      .get(commitmentHash(packageOrderId)) as { side: unknown } | undefined;
+    if (row === undefined) return undefined;
+    if (row.side !== "BID" && row.side !== "ASK") {
+      throw new PackageExchangeStoreError("CORRUPT_ROW", "Stored package order side is invalid.");
+    }
+    return row.side;
   }
 
   getAllocation(takerOrderId: Uint8Array | string): PackageAllocation | undefined {

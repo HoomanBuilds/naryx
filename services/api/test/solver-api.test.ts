@@ -470,6 +470,11 @@ test("implied quotes post atomically in batches and a solver reads only its own 
     assert.equal(posted.status, 200, JSON.stringify(toProtocolJson(posted.body)));
     assert.deepEqual((posted.body.entries as readonly { priceTicks: bigint }[]).map((value) => value.priceTicks), [100n, 120n]);
     assert.equal(api.exchange.getBook(CLASS)?.entries.length, 2);
+    const heldRelease = await api.call("POST", "/v1/solver/reservations/release", { ...scope, commitmentId: id(501) });
+    assert.equal((heldRelease.body.error as { code: string }).code, "BACKING_IN_USE");
+    assert.equal((await api.call("PUT", "/v1/solver/sources/solver-a:spot-501/version", { sourceVersion: 2n })).status, 200);
+    assert.equal((await api.call("POST", "/v1/solver/reservations/release", { ...scope, commitmentId: id(501) })).status, 200);
+    assert.equal((await api.call("POST", "/v1/solver/reservations/release", { ...scope, commitmentId: id(501) })).status, 200);
 
     // Settlements are read by quote hash, and only the solver named on the receipt sees them.
     const orderHash = fill(1);

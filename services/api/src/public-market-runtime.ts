@@ -222,7 +222,7 @@ function loadSupport(path: string): {
   clockUnit: PublicMarketClockUnit;
   seriesSupport: EconomicStrategySeriesSupportInput;
   executionClassSupport: SeriesExecutionClassSupportInput;
-  backingAtomsPerPackageUnit: ReadonlyMap<string, { readonly commitment: bigint; readonly legs: readonly bigint[] }>;
+  backingAtomsPerPackageUnit: ReadonlyMap<string, { readonly commitment: bigint; readonly legs: readonly bigint[]; readonly quantityScale?: bigint }>;
   packageSourceBackingAtomsPerUnit: ReadonlyMap<string, bigint>;
 } {
   if (statSync(path).size > MAX_SUPPORT_MANIFEST_BYTES) throw new PublicMarketConfigError("Support manifest is too large.");
@@ -240,14 +240,17 @@ function loadSupport(path: string): {
     throw new PublicMarketConfigError("Support manifest must be version 1 with clockUnit, seriesSupport, executionClassSupport, and optional backing unit maps.");
   }
   // Committed atoms per package unit of implied liquidity, by execution class; classes without one take none.
-  const units = new Map<string, { commitment: bigint; legs: bigint[] }>();
+  const units = new Map<string, { commitment: bigint; legs: bigint[]; quantityScale?: bigint }>();
   for (const [classId, value] of Object.entries(manifest.backingAtomsPerPackageUnit === undefined ? {} : object(manifest.backingAtomsPerPackageUnit, "backingAtomsPerPackageUnit"))) {
     const entry = object(value, `backingAtomsPerPackageUnit.${classId}`);
-    const positive = (atoms: unknown) => typeof atoms === "bigint" && atoms > 0n;
-    if (!positive(entry.commitment) || !Array.isArray(entry.legs) || entry.legs.length === 0 || !entry.legs.every(positive)) {
+    const positive = (atoms: unknown) => typeof atoms === "bigint" && atoms > 0n && atoms < (1n << 128n);
+    if (Object.keys(entry).some(key => !["commitment", "legs", "quantityScale"].includes(key))
+      || !positive(entry.commitment) || !Array.isArray(entry.legs) || entry.legs.length === 0 || !entry.legs.every(positive)
+      || (entry.quantityScale !== undefined && !positive(entry.quantityScale))) {
       throw new PublicMarketConfigError(`backingAtomsPerPackageUnit.${classId} needs a positive commitment and positive per-leg atoms.`);
     }
-    units.set(classId, { commitment: entry.commitment as bigint, legs: entry.legs as bigint[] });
+    units.set(classId, { commitment: entry.commitment as bigint, legs: entry.legs as bigint[],
+      ...(entry.quantityScale === undefined ? {} : { quantityScale: entry.quantityScale as bigint }) });
   }
   const packageSourceUnits = new Map<string, bigint>();
   for (const [seriesId, atoms] of Object.entries(
@@ -974,6 +977,7 @@ export function loadPublicMarketRuntime(
     const thresholdAuctions = environment.NARYX_THRESHOLD_AUCTIONS_ENABLED === 'true' && delivery !== undefined
       ? new ThresholdAuctionBackend(delivery, clockMs) : undefined;
     if (thresholdAuctions) opened.push(thresholdAuctions);
+    const bookClock = createPackageBookClock({ exchange: store, clockMs, ...(unitClock === undefined ? {} : { unitClock }) });
     const solverHandler = solverState === undefined || registry === undefined
       ? undefined
       : createSolverApiHandler({
@@ -988,10 +992,17 @@ export function loadPublicMarketRuntime(
         backingAtomsPerPackageUnit: support.backingAtomsPerPackageUnit,
         packageSourceBackingAtomsPerUnit: support.packageSourceBackingAtomsPerUnit,
         nowValue,
+        bookNowValue: classId => bookClock(classId).value,
+        isStrategyExecutionSettled: orderHash => {
+          const receipt = strategyPackages?.receiptByOrder(orderHash)?.receipt;
+          return receipt !== undefined && receipt.environment === 'testnet'
+            && receipt.finalityStatus === 'FINALIZED' && receipt.terminalResidualValue.atoms === 0n
+            && receipt.terminalState !== 'MANUAL_INTERVENTION'
+            && receipt.legOutcomes.every(leg => leg.onchainEnforced);
+        },
         clockMs,
         rateLimit,
       });
-    const bookClock = createPackageBookClock({ exchange: store, clockMs, ...(unitClock === undefined ? {} : { unitClock }) });
     const stream = createMarketStream({ exchange: store, nowValue: (marketId) => bookClock(marketId).value });
     opened.push(stream);
     const solverStream = solverState === undefined || registry === undefined

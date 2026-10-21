@@ -48,6 +48,7 @@ import { EvidenceStoreError, type SqliteEvidenceStore } from "./evidence-store.j
 import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 import { acceptWebSocket, type WebSocketConnection } from "./websocket.js";
 import type { ThresholdAuctionBackend } from './threshold-auction.js';
+import { impliedBackingAtoms, type ImpliedBackingUnits } from './implied-backing.js';
 
 const MAX_BODY_BYTES = 65_536;
 const HEX32 = /^[0-9a-f]{64}$/;
@@ -63,7 +64,8 @@ export interface SolverApiOptions {
   readonly store: Pick<SqliteSolverApiStore, "outstandingCommitments" | "consumeNonce" | "admitShard" | "getShard" | "putCapacity" | "commitCapacity" | "releaseCapacity" | "shardFills">;
   readonly registry: Pick<SqliteRegistryStore, "latest" | "registerSolverManifest">;
   /** Optional: book quote routes answer 503 without an exchange store. */
-  readonly exchange?: Pick<SqlitePackageExchangeStore, "getBook" | "getMatchingPolicy" | "getOpenExecutionClass" | "getSeriesRecord" | "addImpliedLiquidityBatch" | "addMultiPackageImpliedLiquidity" | "observeSourceVersion" | "cancelEntry">;
+  readonly exchange?: Pick<SqlitePackageExchangeStore, "getBook" | "getMatchingPolicy" | "getOpenExecutionClass" | "getSeriesRecord" | "addImpliedLiquidityBatch" | "addMultiPackageImpliedLiquidity" | "observeSourceVersion" | "cancelEntry" | "impliedBackingState" | "consumedBackingOrder">;
+  readonly isStrategyExecutionSettled?: (orderHash: string) => boolean;
   /** Optional: the open order feed answers 503 without it. */
   readonly evidence?: Pick<SqliteEvidenceStore, "openOrders" | "settlementsForQuote" | "recordQuote" | "recordRouteDecision">;
   /** Optional: route simulation answers 503 without the admission context of the package's domain. */
@@ -78,12 +80,13 @@ export interface SolverApiOptions {
    * solver commitment, and from each leg's reservation in leg order. Executable implied quantity
    * is bounded by what its backing actually holds; a class without an entry takes no implied liquidity.
    */
-  readonly backingAtomsPerPackageUnit?: ReadonlyMap<string, { readonly commitment: bigint; readonly legs: readonly bigint[] }>;
+  readonly backingAtomsPerPackageUnit?: ReadonlyMap<string, ImpliedBackingUnits>;
   readonly packageSourceBackingAtomsPerUnit?: ReadonlyMap<string, bigint>;
   /** Optional: private RFQ and sealed auction routes answer 503 without it. */
   readonly delivery?: Pick<SqlitePrivateDeliveryStore, "pendingFor" | "getEnvelope" | "acknowledge" | "storeResponse" | "eligibleAuctions" | "appendAuctionEvent" | "auctionDefinition">;
   /** Current time in the books' expiry unit. */
   readonly nowValue: () => bigint;
+  readonly bookNowValue?: (executionClassId: string) => bigint;
   readonly clockMs?: () => number;
   readonly thresholdAuctions?: ThresholdAuctionBackend;
   /** Largest accepted difference between a request timestamp and server time. */
@@ -371,6 +374,13 @@ export function createSolverApiHandler(options: SolverApiOptions) {
     }
     if (method === "POST" && path === "/v1/solver/reservations/release") {
       const body = decodeBody(raw);
+      if (typeof body.commitmentId !== "string" || !HEX32.test(body.commitmentId)) throw new SolverRequestError(400, "INVALID_REQUEST", "commitmentId is malformed.");
+      const state = exchange?.impliedBackingState(body.commitmentId);
+      const consumedOrder = state === "CONSUMED" ? exchange?.consumedBackingOrder(body.commitmentId) : undefined;
+      const settled = consumedOrder !== undefined && options.isStrategyExecutionSettled?.(consumedOrder) === true;
+      if (state === "LIVE" || (state === "CONSUMED" && !settled)) {
+        throw new SolverRequestError(409, "BACKING_IN_USE", "Cancel unused quotes before releasing backing; allocated backing requires settlement reconciliation.");
+      }
       store.releaseCapacity(solverId, { domain: requireObject(body.domain, "domain") as unknown as DomainRef, asset: requireObject(body.asset, "asset") as unknown as AssetRef }, body.commitmentId as string);
       return { released: true };
     }
@@ -498,11 +508,18 @@ export function createSolverApiHandler(options: SolverApiOptions) {
       const book = books.getBook(classId);
       const policy = book === undefined ? undefined : books.getMatchingPolicy(book.matchingPolicyHash);
       if (book === undefined || policy === undefined) throw new SolverRequestError(404, "BOOK_NOT_FOUND", "Package market is not open.");
-      const now = nowValue();
+      const executionClass = books.getOpenExecutionClass(classId);
+      const series = executionClass === undefined ? undefined : books.getSeriesRecord(executionClass.seriesId, executionClass.seriesVersion);
+      if (series === undefined || executionClass === undefined
+        || !bytesEqual(fromHex(series.documentHashHex), executionClass.seriesManifestHash)) {
+        throw new SolverRequestError(409, "SERIES_BINDING_INVALID", "The market has no matching registered strategy series.");
+      }
+      const capacityNow = nowValue();
+      const now = options.bookNowValue?.(classId) ?? capacityNow;
       // Executable depth must be backed by what this solver actually holds: every source
       // reservation, or the solver commitment, must be outstanding in a healthy capacity ledger,
       // and none may already back another live entry in this book or another quote in the batch.
-      const outstanding = store.outstandingCommitments(solverId, now);
+      const outstanding = store.outstandingCommitments(solverId, capacityNow);
       const inUse = new Set(
         book.entries
           .filter((entry) => entry.implied !== undefined && (entry.expiresAtValue === undefined || entry.expiresAtValue > now))
@@ -522,6 +539,11 @@ export function createSolverApiHandler(options: SolverApiOptions) {
         }
         // The quote is derived here from its sources, so a solver cannot post a price its sources do not imply.
         const quote = deriveImpliedPackageQuote(policy, quoteInput as unknown as ImpliedPackageQuoteInput);
+        const ratios = (quoteInput as unknown as ImpliedPackageQuoteInput).legRatios;
+        if (ratios.length !== series.document.economicLegRatios.length || ratios.some((ratio, index) => {
+          const expected = series.document.economicLegRatios[index]!;
+          return ratio.numerator * expected.denominator !== expected.numerator * ratio.denominator;
+        })) throw new SolverRequestError(409, "SERIES_RATIOS_MISMATCH", "Implied leg ratios differ from the registered strategy market.");
         if (typeof entry.expiresAtValue !== "bigint" || entry.expiresAtValue <= now) {
           throw new SolverRequestError(400, "INVALID_REQUEST", "Executable implied liquidity needs a future expiresAtValue.");
         }
@@ -536,7 +558,7 @@ export function createSolverApiHandler(options: SolverApiOptions) {
           const held = id === undefined ? undefined : outstanding.get(toHex(id));
           if (held === undefined) throw new SolverRequestError(409, "BACKING_NOT_OUTSTANDING", "A reservation or commitment is not outstanding for this solver.");
           const perUnit = quote.evidence === "SOLVER_BACKED_IMPLIED" ? units.commitment : (units.legs[index] as bigint);
-          if (quote.quantity * perUnit > held.atoms) {
+          if (impliedBackingAtoms(quote.quantity, perUnit, units.quantityScale) > held.atoms) {
             throw new SolverRequestError(409, "BACKING_INSUFFICIENT", "The implied quantity needs more than its reservation or commitment holds.");
           }
           if (quote.evidence === "SOLVER_BACKED_IMPLIED" && !held.firm) throw new SolverRequestError(409, "BACKING_NOT_FIRM", "Solver-backed implication needs a firm commitment.");

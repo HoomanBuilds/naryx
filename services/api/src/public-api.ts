@@ -103,6 +103,7 @@ import type {
 import { MAX_TAPE_PAGE, PackageExchangeStoreError, type SqlitePackageExchangeStore } from "./package-exchange-store.js";
 import { RegistryStoreError, type SqliteRegistryStore } from "./registry-store.js";
 import type { SqliteSolverApiStore } from "./solver-api-store.js";
+import { requireMatchedExecutionPrice } from "./package-execution-price.js";
 import { PrivateDeliveryStoreError, type SqlitePrivateDeliveryStore } from "./private-delivery-store.js";
 import { requestClientKey, createRateLimiter } from "./rate-limit.js";
 import { EvidenceStoreError, type SqliteEvidenceStore } from "./evidence-store.js";
@@ -219,6 +220,7 @@ export type PublicExchangeStore = Pick<
   | "getOpenExecutionClass"
   | "getMatchingPolicy"
   | "getAllocation"
+  | "orderSide"
   | "settlementCommitment"
   | "settlementAuthorization"
   | "settlementHandoff"
@@ -816,6 +818,16 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       }
     }
     if (packageExecution !== undefined) {
+      const side = exchange.orderSide(packageExecution.packageOrderId);
+      if (side === undefined) throw new RequestError(409, "PACKAGE_PRICE_UNAVAILABLE", "Stored package price direction is unavailable.");
+      if (graph.templateId === "calendar-spread-v1" || graph.templateId === "option-spread-v1") {
+        try {
+          requireMatchedExecutionPrice({ side, quantity: stored.order.economicQuantity.atoms,
+            graph, quote: admitted.quote, fills: packageExecution.settlement.obligations });
+        } catch (error) {
+          throw new RequestError(409, "PACKAGE_EXECUTION_PRICE_MISMATCH", error instanceof Error ? error.message : "Package execution price does not match.");
+        }
+      }
       if (result.executionBinding === undefined) {
         throw new RequestError(400, "EXECUTION_BINDING_MISSING", "The solver omitted the package execution binding.");
       }

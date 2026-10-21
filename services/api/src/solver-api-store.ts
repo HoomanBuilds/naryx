@@ -416,6 +416,8 @@ export class SqliteSolverApiStore {
     this.transaction(() => {
       const current = this.ledger(solverId, scope);
       if (current === undefined) throw new SolverApiStoreError("NO_CAPACITY_EVIDENCE", "No capacity ledger exists for this scope.");
+      const id = typeof commitmentId === "string" ? commitmentId : toHex(commitmentId);
+      if (!current.commitments.some(commitment => toHex(commitment.commitmentId) === id)) return;
       this.writeLedger(solverId, scope, releaseSolverCapacity(current, commitmentId));
     });
   }
