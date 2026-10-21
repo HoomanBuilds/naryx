@@ -3,6 +3,16 @@ import { keccak256, type Hex } from 'viem';
 import { nativeCashDataPath } from './native-cash-service.js';
 
 export const NATIVE_CASH_MARK_GAS_CAP_WEI = 9_000_000_000_000_000n;
+const MAXIMUM_TESTNET_MARK_GAS_CAP_WEI = 100_000_000_000_000_000n;
+
+export function nativeCashMarkGasCapWei(chainId: number, value?: string): bigint {
+  if (![84532, 421614].includes(chainId) || (value !== undefined && !/^[1-9][0-9]{0,17}$/.test(value))) {
+    throw new Error('Native cash mark gas cap is invalid.');
+  }
+  const cap = value === undefined ? NATIVE_CASH_MARK_GAS_CAP_WEI : BigInt(value);
+  if (cap > MAXIMUM_TESTNET_MARK_GAS_CAP_WEI) throw new Error('Native cash mark gas cap exceeds the testnet bound.');
+  return cap;
+}
 export interface NativeCashMarkTransaction {
   readonly id: string; readonly chainId: number; readonly hash: string; readonly raw: string; readonly costWei: bigint;
 }
@@ -14,7 +24,8 @@ export function nativeCashMarkTransaction(chainId: number, raw: Hex, costWei: bi
 
 export class NativeCashMarkJournal {
   readonly #db: Database.Database;
-  constructor(path: string, initial: readonly { chainId: number; reservedWei: bigint }[]) {
+  readonly #caps = new Map<number, bigint>();
+  constructor(path: string, initial: readonly { chainId: number; reservedWei: bigint; maximumGasBudgetWei?: bigint }[]) {
     this.#db = new Database(nativeCashDataPath(path));
     this.#db.pragma('journal_mode=WAL'); this.#db.pragma('synchronous=FULL'); this.#db.pragma('busy_timeout=5000');
     this.#db.exec(`CREATE TABLE IF NOT EXISTS budgets(chain_id INTEGER PRIMARY KEY,reserved_wei TEXT NOT NULL) STRICT;
@@ -22,14 +33,22 @@ export class NativeCashMarkJournal {
         raw TEXT NOT NULL,cost_wei TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('PENDING','MINED','REVERTED'))) STRICT;`);
     try {
       for (const entry of initial) {
+        const cap = nativeCashMarkGasCapWei(entry.chainId, entry.maximumGasBudgetWei?.toString());
         if (![84532, 421614].includes(entry.chainId) || typeof entry.reservedWei !== 'bigint'
-          || entry.reservedWei < 0n || entry.reservedWei > NATIVE_CASH_MARK_GAS_CAP_WEI) throw new Error('Native cash mark budget is invalid.');
+          || this.#caps.has(entry.chainId) || entry.reservedWei < 0n || entry.reservedWei > cap) throw new Error('Native cash mark budget is invalid.');
+        this.#caps.set(entry.chainId, cap);
         this.#db.prepare('INSERT OR IGNORE INTO budgets VALUES(?,?)').run(entry.chainId, entry.reservedWei.toString());
         if (this.reserved(entry.chainId) < entry.reservedWei) throw new Error('Native cash mark budget changed outside its journal.');
+        if (this.reserved(entry.chainId) > cap) throw new Error('Native cash mark gas cap is below its existing commitments.');
       }
     } catch (error) { this.#db.close(); throw error; }
   }
   close() { this.#db.close(); }
+  cap(chainId: number) {
+    const cap = this.#caps.get(chainId);
+    if (cap === undefined) throw new Error('Native cash mark chain budget is unknown.');
+    return cap;
+  }
   reserved(chainId: number) {
     const row = this.#db.prepare('SELECT reserved_wei FROM budgets WHERE chain_id=?').get(chainId) as { reserved_wei: string } | undefined;
     if (row === undefined) throw new Error('Native cash mark chain budget is unknown.');
@@ -47,7 +66,7 @@ export class NativeCashMarkJournal {
     this.#db.transaction(() => {
       if (this.pending(transaction.chainId) !== undefined) throw new Error('Native cash mark chain has an unresolved transaction.');
       const next = this.reserved(transaction.chainId) + transaction.costWei;
-      if (next > NATIVE_CASH_MARK_GAS_CAP_WEI) throw new Error('Approved native cash test gas budget is exhausted.');
+      if (next > this.cap(transaction.chainId)) throw new Error('Approved native cash test gas budget is exhausted.');
       this.#db.prepare('INSERT INTO transactions VALUES(?,?,?,?,?,\'PENDING\')')
         .run(transaction.id, transaction.chainId, transaction.hash, transaction.raw, transaction.costWei.toString());
       this.#db.prepare('UPDATE budgets SET reserved_wei=? WHERE chain_id=?').run(next.toString(), transaction.chainId);

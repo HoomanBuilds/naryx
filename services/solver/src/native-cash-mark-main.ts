@@ -5,7 +5,7 @@ import { NATIVE_CASH_RANGE_ABI, NATIVE_CASH_HOUSE_ABI, type EvmNativeCashRangeBi
 import { createPublicClient, createWalletClient, encodeFunctionData, http, keccak256, parseAbi, stringToHex, type Chain, type Hex } from 'viem';
 import { baseSepolia, arbitrumSepolia } from 'viem/chains';
 import { loadEvmStrategySolverKey } from './evm-strategy-execution-authorization.js';
-import { NATIVE_CASH_MARK_GAS_CAP_WEI, NativeCashMarkJournal, nativeCashMarkTransaction } from './native-cash-mark-journal.js';
+import { nativeCashMarkGasCapWei, NativeCashMarkJournal, nativeCashMarkTransaction } from './native-cash-mark-journal.js';
 import { runNativeCashMarkWorker } from './native-cash-mark-worker.js';
 
 if (process.env.NARYX_NATIVE_CASH_MARK_ENABLED !== 'true') throw new Error('Native cash mark writes are disabled.');
@@ -34,11 +34,14 @@ for (const entry of config.markets) {
   const updater = await client.readContract({ address: binding.controller, abi: parseAbi(['function markUpdater() view returns(address)']), functionName: 'markUpdater' });
   const signer = loadEvmStrategySolverKey(entry.markKeyPath, updater);
   const wallet = createWalletClient({ account: signer, chain, transport: http(rpc, { timeout: 10_000, retryCount: 0 }) });
-  markets.push({ entry, chain, client, wallet });
+  const maximumGasBudgetWei = nativeCashMarkGasCapWei(chain.id, process.env[
+    chain.id === 84532 ? 'NARYX_BASE_SEPOLIA_NATIVE_CASH_MARK_GAS_CAP_WEI' : 'NARYX_ARBITRUM_SEPOLIA_NATIVE_CASH_MARK_GAS_CAP_WEI']);
+  markets.push({ entry, chain, client, wallet, maximumGasBudgetWei });
 }
 const journalPath = process.env.NARYX_NATIVE_CASH_MARK_DB;
 if (!journalPath) throw new Error('Native cash mark database path is required.');
-const journal = new NativeCashMarkJournal(journalPath, markets.map(m => ({ chainId: m.chain.id, reservedWei: m.entry.reservedWei })));
+const journal = new NativeCashMarkJournal(journalPath, markets.map(m => ({ chainId: m.chain.id,
+  reservedWei: m.entry.reservedWei, maximumGasBudgetWei: m.maximumGasBudgetWei })));
 const controller = new AbortController();
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => controller.abort());
 try {
@@ -62,7 +65,7 @@ try {
           const data = encodeFunctionData({ abi: NATIVE_CASH_RANGE_ABI, functionName: 'refreshMark', args: [hash, price, sequence, until] });
           const gas = (await client.estimateGas({ account: wallet.account, to: binding.controller, data })) * 12n / 10n;
           const fees = await client.estimateFeesPerGas();
-          if (journal.reserved(chain.id) + gas * fees.maxFeePerGas > NATIVE_CASH_MARK_GAS_CAP_WEI) throw new Error('Approved testnet gas budget is exhausted.');
+          if (journal.reserved(chain.id) + gas * fees.maxFeePerGas > journal.cap(chain.id)) throw new Error('Approved testnet gas budget is exhausted.');
           const request = await wallet.prepareTransactionRequest({ to: binding.controller, data, gas, ...fees });
           if (await client.getChainId() !== chain.id) throw new Error('Native cash chain changed before signing.');
           const raw = await wallet.signTransaction(request);
