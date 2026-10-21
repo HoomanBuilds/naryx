@@ -35,6 +35,12 @@ The initial ETH cash-range markets are bounded, fully collateralized cash instru
 
 Registered standing-supplier variants additionally show live contract-derived bids, asks and funded capacity. Their pricing policy runs onchain through ERC-1271. These separate cash-range books do not imply that the external strategy books have funded maker liquidity. Capacity is conditional on the account state at acceptance and is never labeled an exclusive inventory reservation.
 
+### SOL cash-and-carry maker quotes
+
+Selecting cash and carry on Solana shows live maker pricing at up to five alternative sizes per side. The AWS API reads finalized standing levels, available inventory and venue pricing through `/internal/terminal/solana-devnet/quote-ladder`. The terminal refreshes every five seconds while visible and removes failed or ten-second-old observations. Entry quotes disappear when the perpetual market pauses opens; supported exits remain separate.
+
+These are indicative, inventory-backed size alternatives, not additive resting depth. Basis is spot value minus perpetual notional for the complete size; perpetual fees are shown separately, excluding funding and gas. Clicking a row only updates the entry or exit ticket. A fresh, wallet-specific firm quote is still required before reservation and execution. Treasury hedges and other strategy books never reuse this liquidity.
+
 ## Data and trust boundaries
 
 `src/features/terminal/shell/` owns the shared header, selected domain, service health, wallet context, and transaction watch. `pages/` owns the six terminal views. `pro/` owns the chart, depth, ticket-side widgets, and market bar. `private-http-terminal-provider.ts` talks to the private terminal API; `public-market-feed.ts` uses the public v1 API and stream.

@@ -86,10 +86,11 @@ function SideIcon({ side }: { side: BookSide }) {
  * size is derived from leg sources and is shown in its own column and never merged into direct
  * size. Depth bars scale with cumulative direct size only.
  */
-export function OrderBook({ feed, status, onRequestQuote }: {
+export function OrderBook({ feed, status, onRequestQuote, onOpenMakerQuotes }: {
   feed: MarketFeed;
   status?: PublicFeedStatus | null;
   onRequestQuote?: () => void;
+  onOpenMakerQuotes?: () => void;
 }) {
   const { unit, precision } = feed.book ?? feed.seriesMeta("basis");
   const [view, setView] = usePersistedSetting<BookView>("book.view", "book", ["book", "trades", "ladder"]);
@@ -183,6 +184,8 @@ export function OrderBook({ feed, status, onRequestQuote }: {
           <p>{emptyDetail}</p>
           {!connecting && !halted && view !== "trades" && onRequestQuote !== undefined
             ? <button type="button" onClick={onRequestQuote}>Request quote</button> : null}
+          {view !== "trades" && onOpenMakerQuotes !== undefined
+            ? <button type="button" onClick={onOpenMakerQuotes}>View SOL cash-and-carry quotes</button> : null}
         </div>
       ) : view === "book" ? (
         <div key="book" className={styles.viewFade}>

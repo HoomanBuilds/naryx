@@ -12,6 +12,7 @@ import { handleTablistKeys, usePersistedFlag, usePersistedSetting } from "./pers
 import { ChartWorkspace } from "./pro/chart-workspace";
 import { InstrumentBar } from "./pro/instrument-bar";
 import { OrderBook } from "./pro/order-book";
+import { MakerQuotes } from "./pro/maker-quotes";
 import { StatusBar } from "./pro/status-bar";
 import { localConformanceTerminalProvider } from "./local-conformance-provider";
 import { useStrategyPositions } from "./pages/strategy-positions";
@@ -4294,7 +4295,15 @@ export function TradingTerminal({
           />
         </div>
         <div className={styles.areaBook}>
-          <OrderBook key={feed.label} feed={feed} status={publicFeedStatus} onRequestQuote={focusTicketQuote} />
+          {selectedDomain === "solana" && nativeStrategyAction ? <MakerQuotes
+            apiOrigin={privateApiBaseUrl}
+            onSelectSize={(atoms, decimals, nextMode) => {
+              setSize(atomsDecimal(atoms, decimals));
+              jumpToTicket(nextMode);
+            }}
+          /> : <OrderBook key={feed.label} feed={feed} status={publicFeedStatus} onRequestQuote={focusTicketQuote}
+            onOpenMakerQuotes={selectedDomain === "solana" ? () => handleStrategyTemplateChange("cash-and-carry-v1") : undefined}
+          />}
         </div>
         <div id="package-ticket" className={styles.areaTicket}>
           <Ticket
