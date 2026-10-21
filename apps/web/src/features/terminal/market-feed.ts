@@ -69,7 +69,7 @@ export interface MarketFeed {
   readonly label: FeedLabel;
   readonly sourceNote: string;
   /** Unit and precision of depth and tape prices when they differ from the basis series. */
-  readonly book?: { readonly unit: string; readonly precision: number };
+  readonly book?: { readonly unit: string; readonly precision: number; readonly quantityUnit?: string };
   candles(series: ChartSeriesKey, interval: ChartInterval): readonly Candle[];
   depth(): { readonly bids: readonly DepthLevel[]; readonly asks: readonly DepthLevel[]; readonly tick: number };
   tape(): readonly TapeTrade[];

@@ -304,6 +304,7 @@ export function privateRfqResponseMatchesQuote(
 
 export interface PublicApiOptions {
   readonly exchange: PublicExchangeStore;
+  readonly packageQuantityScales?: ReadonlyMap<string, bigint>;
   /** Optional: registry routes answer 503 when no registry is configured. */
   readonly registry?: PublicRegistryStore;
   /** Optional: solver quote and capacity routes answer 503 without it. */
@@ -1546,7 +1547,9 @@ export function createPublicApiHandler(options: PublicApiOptions) {
     if ((match = /^\/v1\/markets\/([^/]+)\/package-depth$/.exec(path)) !== null) {
       onlyParams(url, []);
       const state = book(id(match[1], "Package market id"));
-      return packageDepthView(state, bookClock(state.executionClassId).value);
+      const quantityScale = options.packageQuantityScales?.get(state.executionClassId);
+      return { ...packageDepthView(state, bookClock(state.executionClassId).value),
+        ...(quantityScale === undefined ? {} : { quantityScale }) };
     }
     if ((match = /^\/v1\/markets\/([^/]+)\/package-tape$/.exec(path)) !== null) {
       onlyParams(url, ["after", "limit"]);

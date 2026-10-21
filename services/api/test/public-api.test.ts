@@ -144,12 +144,13 @@ test("depth keeps direct and implied quantity apart within a level", async () =>
     store.addImpliedLiquidity(CLASS, { quote: impliedAsk(1, 1, 501), participantId: "solver-a", commonControlGroupId: "solver", nowValue: NOW });
     const { status, body } = await get(`/v1/markets/${CLASS}/package-depth`);
     assert.equal(status, 200);
-    const book = body as { halted: boolean; asks: readonly { priceTicks: bigint; directQuantity: bigint; impliedQuantity: bigint }[]; bids: readonly unknown[] };
+    const book = body as { halted: boolean; quantityScale: bigint; asks: readonly { priceTicks: bigint; directQuantity: bigint; impliedQuantity: bigint }[]; bids: readonly unknown[] };
     assert.equal(book.halted, false);
+    assert.equal(book.quantityScale, 1_000_000_000n);
     assert.deepEqual(book.bids, []);
     assert.deepEqual(book.asks, [{ priceTicks: 100n, directQuantity: 10n, impliedQuantity: 20n }]);
     assert.equal((await get("/v1/markets/unknown-class/package-depth")).status, 404);
-  });
+  }, { packageQuantityScales: new Map([[CLASS, 1_000_000_000n]]) });
 });
 
 test("advanced-order activation registration and status use the configured durable runtime", async () => {

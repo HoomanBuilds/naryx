@@ -921,6 +921,8 @@ export function loadPublicMarketRuntime(
       ? undefined
       : createCatalogueIssuer({ exchange: store, ...(registry === undefined ? {} : { registry }), ...catalogueSigner, clockMs });
     const publicHandler = createPublicApiHandler({
+      packageQuantityScales: new Map([...support.backingAtomsPerPackageUnit]
+        .flatMap(([id, backing]) => backing.quantityScale === undefined ? [] : [[id, backing.quantityScale] as const])),
       exchange: store,
       ...(registry === undefined ? {} : { registry }),
       ...(solverState === undefined ? {} : { solverState }),

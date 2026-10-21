@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import bs58 from "bs58";
+import { formatUnits } from "viem";
 import {
   NaryxApiError,
   NaryxClient,
@@ -574,14 +575,14 @@ function exact(value: unknown, context: string): bigint {
   return value;
 }
 
-function levels(value: unknown, context: string): DepthLevel[] {
+function levels(value: unknown, context: string, decimals = 0): DepthLevel[] {
   if (!Array.isArray(value)) throw new PublicApiError(`${context} is not a list`);
   return value.map((entry, index) => {
     const level = entry as Record<string, unknown>;
     return {
       price: Number(exact(level.priceTicks, `${context}[${index}].priceTicks`)),
-      direct: Number(exact(level.directQuantity, `${context}[${index}].directQuantity`)),
-      implied: Number(exact(level.impliedQuantity, `${context}[${index}].impliedQuantity`)),
+      direct: Number(formatUnits(exact(level.directQuantity, `${context}[${index}].directQuantity`), decimals)),
+      implied: Number(formatUnits(exact(level.impliedQuantity, `${context}[${index}].impliedQuantity`), decimals)),
     };
   });
 }
@@ -591,7 +592,7 @@ interface TapePage {
   readonly nextCursor: number;
 }
 
-function tapePage(body: Record<string, unknown>, after: number): TapePage {
+function tapePage(body: Record<string, unknown>, after: number, decimals = 0): TapePage {
   if (!Array.isArray(body.trades) || typeof body.nextCursor !== "number") throw new PublicApiError("tape is malformed");
   let previous = after;
   const trades: TapeTrade[] = [];
@@ -609,7 +610,7 @@ function tapePage(body: Record<string, unknown>, after: number): TapePage {
         id: `${String(entry.allocationHash)}:${String(fill.fillSequence)}`,
         time: Math.floor(recordedAtMs / 1_000),
         price: Number(exact(fill.priceTicks, "fill.priceTicks")),
-        size: Number(exact(fill.quantity, "fill.quantity")),
+        size: Number(formatUnits(exact(fill.quantity, "fill.quantity"), decimals)),
         side,
         source: fill.makerSource === "IMPLIED" ? "IMPLIED" : "DIRECT",
       });
@@ -646,6 +647,7 @@ export interface PublicFeedStatus {
 
 interface LiveState {
   readonly packageMarketId: string;
+  readonly quantityUnit: string;
   readonly bids: DepthLevel[];
   readonly asks: DepthLevel[];
   readonly trades: TapeTrade[];
@@ -713,10 +715,12 @@ export function usePublicMarketFeed(
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let depthRevision = 0;
     let polling = false;
+    let quantityDecimals = 0;
+    let quantityUnit = "units";
 
     const publish = (detail: string) => {
       if (controller.signal.aborted) return;
-      const observed = { packageMarketId: marketId, bids, asks, trades, cursor, halted };
+      const observed = { packageMarketId: marketId, bids, asks, trades, cursor, halted, quantityUnit };
       setLive((previous) => ({ ...observed, version: (previous?.version ?? 0) + 1 }));
       setStatus({
         packageMarketId: marketId,
@@ -776,15 +780,15 @@ export function usePublicMarketFeed(
             return;
           }
           if (message.type === "package-depth") {
-            const nextBids = levels(message.bids, "bids");
-            const nextAsks = levels(message.asks, "asks");
+            const nextBids = levels(message.bids, "bids", quantityDecimals);
+            const nextAsks = levels(message.asks, "asks", quantityDecimals);
             bids = nextBids;
             asks = nextAsks;
             halted = message.halted === true;
             depthRevision += 1;
             publish("Streaming from the public market API.");
           } else if (message.type === "package-tape") {
-            const next = tapePage(message, cursor);
+            const next = tapePage(message, cursor, quantityDecimals);
             trades = [...trades, ...next.trades].slice(-MAX_TRADES);
             cursor = next.nextCursor;
             publish("Streaming from the public market API.");
@@ -814,10 +818,18 @@ export function usePublicMarketFeed(
       try {
         const depth = await read(base, `/v1/markets/${market}/package-depth`, controller.signal);
         if (depth.packageMarketId !== packageMarketId) throw new PublicApiError("depth is for another market");
+        if (depth.quantityScale !== undefined) {
+          const scale = exact(depth.quantityScale, "quantityScale").toString();
+          if (!/^10{0,36}$/.test(scale)) throw new PublicApiError("quantity scale is invalid");
+          const decimals = scale.length - 1;
+          if (!first && decimals !== quantityDecimals) throw new PublicApiError("quantity scale changed");
+          quantityDecimals = decimals;
+          quantityUnit = "base";
+        }
         // Parse everything before touching state: a malformed response marks the feed stale here,
         // never throws inside a state updater during render.
-        const nextBids = levels(depth.bids, "bids");
-        const nextAsks = levels(depth.asks, "asks");
+        const nextBids = levels(depth.bids, "bids", quantityDecimals);
+        const nextAsks = levels(depth.asks, "asks", quantityDecimals);
         // While the stream is up it owns the tape cursor, so a resync reads depth only.
         const pages = streaming ? 0 : first ? INITIAL_TAPE_PAGES : 5;
         const startCursor = cursor;
@@ -825,7 +837,7 @@ export function usePublicMarketFeed(
         let nextCursor = cursor;
         for (let page = 0; page < pages; page += 1) {
           const body = await read(base, `/v1/markets/${market}/package-tape?after=${nextCursor}&limit=${TAPE_PAGE}`, controller.signal);
-          const next = tapePage(body, nextCursor);
+          const next = tapePage(body, nextCursor, quantityDecimals);
           nextTrades = [...nextTrades, ...next.trades].slice(-MAX_TRADES);
           nextCursor = next.nextCursor;
           if (next.trades.length === 0 || (body.trades as unknown[]).length < TAPE_PAGE) break;
@@ -902,7 +914,7 @@ export function usePublicMarketFeed(
     return {
       label: "OBSERVED",
       sourceNote: `Package ${packageMarketId}: ${status.detail}${referenceNote}`,
-      book: BOOK_UNIT,
+      book: { ...BOOK_UNIT, quantityUnit: live.quantityUnit },
       candles(series: ChartSeriesKey, interval: ChartInterval) {
         if (fromReference(series)) return reference?.candles(series, interval) ?? [];
         if (series !== "basis") return [];
