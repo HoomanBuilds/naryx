@@ -29,6 +29,7 @@ test('funded Hyperliquid ladders reserve exact venue margin and normalize USDC d
   const result = await source.read(1n);
   assert.equal(result.quotes.length, 32);
   assert.equal(result.capacity.availableAtoms, 199_00000000n);
+  assert.equal(result.capacity.expiresAtValue - result.capacity.observedAtValue, 120_000n);
   assert.equal(result.quotes.reduce((n, q) => n + q.backingAtoms, 0n), 32_00000000n);
   for (const side of ['BID', 'ASK']) assert.equal(new Set(result.quotes.filter(q => q.quote.side === side)
     .map(q => q.quote.legSources[0]!.priceTicks - q.quote.legSources[1]!.priceTicks)).size, 16);
@@ -36,6 +37,8 @@ test('funded Hyperliquid ladders reserve exact venue margin and normalize USDC d
   await assert.rejects(source.read(2n), /collateral/);
   f.setBalance(199_000_000n); f.setTime(980_000);
   await assert.rejects(source.read(3n), /stale/);
+  await assert.rejects(createHyperliquidMakerReader({ ...fixture().input, clockMs: () => 1_015_000 }).read(4n),
+    /freshly flat/);
 });
 
 test('cash carry reserves full spot capital and only publishes supported entry offers', async () => {

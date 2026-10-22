@@ -125,7 +125,7 @@ export function createHyperliquidMakerReader(input: MakerFunding & Readonly<{
     if (quotes.reduce((sum, quote) => sum + quote.backingAtoms, 0n) > capacity) throw new Error('Maker collateral cannot back this ladder.');
     return { bookNow: now, quotes, capacity: { version: 1, environment: 'testnet', solverId: market.solverId,
       domain: market.domain, asset: market.quoteAsset, availableAtoms: capacity, maximumConcurrentRecoveryAtoms: 0n,
-      evidenceGrade: 'ONCHAIN_AVAILABLE', observedAtValue: now, expiresAtValue: now + 30_000n,
+      evidenceGrade: 'ONCHAIN_AVAILABLE', observedAtValue: now, expiresAtValue: now + 120_000n,
       evidenceCommitment: createHash('sha256').update(stringifyProtocolJson({ proof, values, market,
         backingAtomsPerWholeAsset: input.backingAtomsPerWholeAsset })).digest('hex') } };
   } };
@@ -149,15 +149,25 @@ export function loadHyperliquidPackageMaker(input: Readonly<{
   const liveBooks = new HyperliquidSdkTestnetMarketReadClient();
   const liveFunding = hyperliquidTestnetPoolFundingReads(config.collateralTokenId);
   let fundingSnapshot: ReturnType<HyperliquidPoolFundingReadPort['flat']> | undefined;
-  const bookSnapshots = new Map<string, ReturnType<HyperliquidTestnetQuoteMarketReadPort['l2Book']>>();
+  let fundingRequestedAt = 0;
+  const bookSnapshots = new Map<string, { requestedAt: number; value: ReturnType<HyperliquidTestnetQuoteMarketReadPort['l2Book']> }>();
   const books: HyperliquidTestnetQuoteMarketReadPort = {
     environment: liveBooks.environment, apiUrl: liveBooks.apiUrl, userFees: account => liveBooks.userFees(account),
     l2Book: coin => {
-      if (!bookSnapshots.has(coin)) bookSnapshots.set(coin, liveBooks.l2Book(coin));
-      return bookSnapshots.get(coin)!;
+      const existing = bookSnapshots.get(coin);
+      if (!existing || Date.now() - existing.requestedAt >= 5000) {
+        bookSnapshots.set(coin, { requestedAt: Date.now(), value: liveBooks.l2Book(coin) });
+      }
+      return bookSnapshots.get(coin)!.value;
     },
   };
-  const funding = { flat: (account: `0x${string}`) => fundingSnapshot ??= liveFunding.flat(account) };
+  const funding = { flat: (account: `0x${string}`) => {
+    if (!fundingSnapshot || Date.now() - fundingRequestedAt >= 10_000) {
+      fundingRequestedAt = Date.now();
+      fundingSnapshot = liveFunding.flat(account);
+    }
+    return fundingSnapshot;
+  } };
   const journal = new PackageMakerJournal(config.journalPath);
   try {
     const seen = new Set<string>();
@@ -178,7 +188,7 @@ export function loadHyperliquidPackageMaker(input: Readonly<{
       const reader = createHyperliquidMakerReader({ ...row, marketId: lane.executionClassId, market, books, funding });
       return { marketId: lane.executionClassId, maker: new PackageMaker({ marketId: lane.executionClassId,
         solverId: market.solverId, sourceIds: reader.sourceIds, binding: { row, market, classHash: lane.executionClassManifestHash },
-        quoteLifetime: 30_000n, journal, read: reader.read,
+        quoteLifetime: 60_000n, journal, read: reader.read,
         gateway: new HttpPackageMakerGateway({ origin: input.origin, solverId: market.solverId, keyId: row.keyId, signer: input.signer }) }) };
     });
     let stopped = true;
