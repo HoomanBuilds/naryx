@@ -5,7 +5,7 @@ import { readEvmOptionPoolSnapshot, readEvmOptionReferencePrice, type EvmOptionS
 import { readEvmTreasuryHedgeMarketSnapshot, type EvmTreasuryHedgePricingInput } from './evm-treasury-hedge-quote.js';
 import { readEvmCollateralConversionSpotSnapshot, type EvmCollateralConversionPricingInput } from './evm-collateral-conversion-quote.js';
 import { reverseBasisCollateralPricing, reverseBasisPerpPricing, type EvmReverseBasisPricingInput } from './evm-reverse-basis-quote.js';
-import type { PackageMakerSnapshot } from './package-maker.js';
+import { PACKAGE_MAKER_LEVELS, makerPriceTicks, readMakerLevels, type PackageMakerSnapshot } from './package-maker.js';
 
 type Pricing = { kind: 'option'; pricing: EvmOptionSpreadPricingInput }
   | { kind: 'treasury'; pricing: EvmTreasuryHedgePricingInput }
@@ -27,10 +27,10 @@ export function createEvmStrategyMakerReader(input: Pricing & Readonly<{
   const signs = input.kind === 'reverse' ? [-1n, -1n, 1n] : input.kind === 'conversion' ? [1n, 1n, -1n] : [1n, -1n];
   if (![84532n, 421614n].includes(pricing.chainId) || base.decimals !== 18 || pricing.quoteAsset.decimals !== 6
     || input.backingAtomsPerWholeAsset <= 0n || input.maximumCapacityAtoms <= 0n || input.quantities.length < 1
-    || input.quantities.length > 4 || new Set(input.quantities).size !== input.quantities.length
+    || input.quantities.length > PACKAGE_MAKER_LEVELS || new Set(input.quantities).size !== input.quantities.length
     || input.quantities.some(q => q <= 0n || q > WAD || q % 1000n !== 0n)) throw new Error('Strategy maker quantities or funding are invalid.');
   const id = (i: number, j: number) => `${input.solverId}:${input.marketId}:${i}:${j}`;
-  const sourceIds = input.quantities.flatMap((_, i) => signs.map((_, j) => id(i, j)));
+  const sourceIds = signs.map((_, j) => id(0, j));
   const total = input.quantities.reduce((sum, q) => sum + q, 0n);
   return { sourceIds, read: async (sourceVersion: bigint): Promise<PackageMakerSnapshot> => {
     const cache = new Map<string, Promise<unknown>>();
@@ -71,6 +71,15 @@ export function createEvmStrategyMakerReader(input: Pricing & Readonly<{
         || total * 10n > maximum) throw new Error('Strategy maker venue risk capacity is unavailable.');
       insurance = reserve;
     }
+    const previews = perp === undefined ? [] : await readMakerLevels(input.quantities, async quantity => {
+      const sized = total * 10n + quantity;
+      const [buy, sell, spotBuy, spotSell] = await Promise.all([
+        readEvmTreasuryHedgeMarketSnapshot(perp, sized), readEvmTreasuryHedgeMarketSnapshot(perp, -sized),
+        conversion === undefined ? undefined : readEvmCollateralConversionSpotSnapshot(conversion, sized, true),
+        conversion === undefined ? undefined : readEvmCollateralConversionSpotSnapshot(conversion, sized, false),
+      ]);
+      return { buy, sell, spotBuy, spotSell };
+    });
     for (const [i, quantity] of input.quantities.entries()) {
       const previousGross = gross;
       const prices: Record<'BID' | 'ASK', bigint[]> = { BID: [], ASK: [] };
@@ -85,9 +94,8 @@ export function createEvmStrategyMakerReader(input: Pricing & Readonly<{
           const premiumBase = ceil(quantity * pool.premiumBps, 10_000n);
           const n = premiumBase * reference.answer * 1_000_000n;
           const d = WAD * 10n ** BigInt(reference.decimals);
-          const bufferBps = BigInt(i + 1);
-          const buy = ceil(ceil(n, d) * WAD * (10_000n + bufferBps), quantity * 10_000n);
-          const sell = (n / d) * WAD * (10_000n - bufferBps) / (quantity * 10_000n);
+          const buy = ceil(ceil(n, d) * WAD, quantity);
+          const sell = (n / d) * WAD / quantity;
           prices.ASK[j] = j === 0 ? buy : sell;
           prices.BID[j] = j === 0 ? sell : buy;
         }
@@ -95,8 +103,7 @@ export function createEvmStrategyMakerReader(input: Pricing & Readonly<{
         observations.push({ quantity, reference, pools });
       } else {
         const pricingQuantity = total * 10n + quantity;
-        const [buy, sell] = await Promise.all([readEvmTreasuryHedgeMarketSnapshot(perp!, pricingQuantity),
-          readEvmTreasuryHedgeMarketSnapshot(perp!, -pricingQuantity)]);
+        const { buy, sell } = previews[i]!;
         if (buy.expiry <= observedAt + 60n) throw new Error('Strategy maker derivative expired.');
         const buyPrice = ceil(buy.fillPriceWad, 10n ** 12n);
         const sellPrice = sell.fillPriceWad / (10n ** 12n);
@@ -104,10 +111,8 @@ export function createEvmStrategyMakerReader(input: Pricing & Readonly<{
           prices.ASK = [ceil(buy.oraclePriceWad, 10n ** 12n), sellPrice];
           prices.BID = [sell.oraclePriceWad / (10n ** 12n), buyPrice];
         } else {
-          const [spotBuy, spotSell] = await Promise.all([
-            readEvmCollateralConversionSpotSnapshot(conversion!, pricingQuantity, true),
-            readEvmCollateralConversionSpotSnapshot(conversion!, pricingQuantity, false),
-          ]);
+          const spotBuy = previews[i]!.spotBuy!;
+          const spotSell = previews[i]!.spotSell!;
           const spotAsk = ceil(spotBuy.quoteAtoms * WAD, pricingQuantity);
           const spotBid = spotSell.quoteAtoms * WAD / pricingQuantity;
           prices.ASK = input.kind === 'conversion' ? [spotAsk, 0n, sellPrice] : [0n, spotBid, buyPrice];
@@ -129,8 +134,9 @@ export function createEvmStrategyMakerReader(input: Pricing & Readonly<{
       }
       for (const side of ['BID', 'ASK'] as const) quotes.push({ key: `${i}:${side}`, backingAtoms, quote: {
         executionClassId: input.marketId, side, legRatios: signs.map(numerator => ({ numerator, denominator: 1n })),
-        legSources: signs.map((sign, j) => ({ sourceId: id(i, j), sourceVersion, quantity,
-          side: sign > 0n ? side : side === 'ASK' ? 'BID' : 'ASK', priceTicks: prices[side][j]! })),
+        legSources: signs.map((sign, j) => ({ sourceId: id(0, j), sourceVersion, quantity,
+          side: sign > 0n ? side : side === 'ASK' ? 'BID' : 'ASK',
+          priceTicks: makerPriceTicks(prices[side][j]!, sign > 0n ? side : side === 'ASK' ? 'BID' : 'ASK', i) })),
       } });
     }
     if (insurance !== undefined && insurance < gross * 10n) throw new Error('Strategy maker payout reserve is below shared gross exposure.');

@@ -10,7 +10,7 @@ const address = (n: string) => `0x${n.repeat(40)}` as const;
 const hash = `0x${'ab'.repeat(32)}` as const;
 const identity = (n: string) => ({ address: address(n), expectedCodeHash: hash });
 const common = { marketId: 'strategy', solverId: 'solver', fundingAccount: address('9'),
-  quantities: [wad / 100n, wad / 20n], backingAtomsPerWholeAsset: 10_000_000_000n,
+  quantities: Array.from({ length: 16 }, (_, i) => BigInt(i + 1) * wad / 10000n), backingAtomsPerWholeAsset: 10_000_000_000n,
   maximumCapacityAtoms: 100_000_000_000n, clockMs: () => 1_000_000 };
 
 function fixture() {
@@ -56,7 +56,9 @@ test('treasury ladder prices real inventory reference against the hedge and fail
   const { pricing, state } = fixture();
   const reader = createEvmStrategyMakerReader({ ...common, kind: 'treasury', pricing });
   const snapshot = await reader.read(4n);
-  assert.equal(snapshot.quotes.length, 4);
+  assert.equal(snapshot.quotes.length, 32);
+  for (const side of ['BID', 'ASK']) assert.equal(new Set(snapshot.quotes.filter(q => q.quote.side === side)
+    .map(q => q.quote.legSources[0]!.priceTicks - q.quote.legSources[1]!.priceTicks)).size, 16);
   for (const item of snapshot.quotes) {
     const [inventory, hedge] = item.quote.legSources;
     const spread = inventory!.priceTicks - hedge!.priceTicks;
@@ -81,7 +83,7 @@ test('option ladder binds actual pool premiums and refuses unbacked payouts', as
     ] } as unknown as EvmOptionSpreadPricingInput;
   const reader = createEvmStrategyMakerReader({ ...common, kind: 'option', pricing });
   const result = await reader.read(1n);
-  assert.equal(result.quotes.length, 4);
+  assert.equal(result.quotes.length, 32);
   const price = (i: number) => result.quotes[i]!.quote.legSources[0]!.priceTicks - result.quotes[i]!.quote.legSources[1]!.priceTicks;
   assert.ok(price(0) < 10_000_000n && price(1) > 10_000_000n);
   assert.ok(price(2) < price(0) && price(3) > price(1));

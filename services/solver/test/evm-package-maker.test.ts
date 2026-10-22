@@ -13,7 +13,7 @@ test('calendar maker quotes aggregate impact and refuses unavailable venue reser
   const codeHash = `0x${'55'.repeat(32)}`;
   let insurance = 100_000n * wad;
   const previewSizes: bigint[] = [];
-  const quantities = [wad / 100n, wad / 20n];
+  const quantities = Array.from({ length: 16 }, (_, i) => BigInt(i + 1) * wad / 1000n);
   const pricing = {
     chainId: 84532n, domain: domainRef('eip155:84532', 1, '66'.repeat(32)),
     baseAsset: assetRef('base', '77'.repeat(32), 18), quoteAsset: assetRef('quote', '88'.repeat(32), 6),
@@ -52,7 +52,9 @@ test('calendar maker quotes aggregate impact and refuses unavailable venue reser
     fundingAccount: `0x${'99'.repeat(20)}`, quantities, backingAtomsPerWholeAsset: 10_000_000_000n,
     maximumCapacityAtoms: 100_000_000_000n, clockMs: () => 1_000_000 });
   const result = await reader.read(1n);
-  assert.equal(result.quotes.length, 4);
+  assert.equal(result.quotes.length, 32);
+  for (const side of ['BID', 'ASK']) assert.equal(new Set(result.quotes.filter(q => q.quote.side === side)
+    .map(q => q.quote.legSources[0]!.priceTicks - q.quote.legSources[1]!.priceTicks)).size, 16);
   assert.ok(previewSizes.every(size => size > quantities.reduce((sum, quantity) => sum + quantity, 0n)));
   const asks = result.quotes.filter(row => row.quote.side === 'ASK');
   const aggregatePrice = asks.reduce((sum, row, index) => sum + quantities[index]! *

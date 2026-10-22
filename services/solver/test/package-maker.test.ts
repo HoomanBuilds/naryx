@@ -4,10 +4,27 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { assetRef, domainRef } from '@naryx/protocol-types';
-import { PackageMaker, PackageMakerJournal, type PackageMakerGateway, type PackageMakerSnapshot } from '../src/package-maker.js';
+import { PackageMaker, PackageMakerJournal, makerPriceTicks, type PackageMakerGateway, type PackageMakerSnapshot } from '../src/package-maker.js';
 
 const domain = domainRef('eip155:84532', 1, '11'.repeat(32));
 const asset = assetRef('test-usdc', '22'.repeat(32), 6);
+
+test('dealer tiers widen conservatively with integer rounding and preserve zero-value transfer legs', () => {
+  for (let level = 0; level < 16; level++) {
+    assert.equal(makerPriceTicks(0n, 'ASK', level), 0n);
+    assert.equal(makerPriceTicks(0n, 'BID', level), 0n);
+    assert.ok(makerPriceTicks(100_000_001n, 'ASK', level) > 100_000_001n);
+    assert.ok(makerPriceTicks(100_000_001n, 'BID', level) < 100_000_001n);
+    if (level > 0) {
+      assert.ok(makerPriceTicks(100_000_001n, 'ASK', level) > makerPriceTicks(100_000_001n, 'ASK', level - 1));
+      assert.ok(makerPriceTicks(100_000_001n, 'BID', level) < makerPriceTicks(100_000_001n, 'BID', level - 1));
+    }
+  }
+  assert.equal(makerPriceTicks(1n, 'ASK', 0), 2n);
+  assert.equal(makerPriceTicks(1n, 'BID', 0), 0n);
+  for (const level of [-1, 16, 1.5]) assert.throws(() => makerPriceTicks(1n, 'ASK', level), /invalid/);
+  assert.throws(() => makerPriceTicks(-1n, 'ASK', 0), /invalid/);
+});
 const snapshot = (version: bigint): PackageMakerSnapshot => ({
   bookNow: 100n,
   capacity: { version: 1, environment: 'testnet', solverId: 'maker', domain, asset,
@@ -19,7 +36,7 @@ const snapshot = (version: bigint): PackageMakerSnapshot => ({
       { sourceId: 'maker:far', sourceVersion: version, side: 'BID', priceTicks: 100n, quantity: 1n }] } }],
 });
 
-test('maker invalidates before refresh and reconciles consumed backing after restart', async () => {
+test('maker replaces sources at publication and reconciles consumed backing after restart', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'naryx-package-maker-'));
   const events: string[] = [];
   const held = new Set<string>();
@@ -31,7 +48,11 @@ test('maker invalidates before refresh and reconciles consumed backing after res
     capacity: async () => { events.push('capacity'); },
     reserve: async (_scope, id) => { held.add(id); events.push('reserve'); },
     release: async (_scope, id) => { events.push('release'); if (!settled) return false; held.delete(id); return true; },
-    publish: async () => { events.push('publish'); if (crash) { crash = false; throw new Error('lost response'); } },
+    publish: async (_market, quotes, sources) => {
+      assert.deepEqual(sources?.map(source => source.sourceId), ['maker:near', 'maker:far']);
+      assert.ok(quotes.every(quote => held.has(quote.quote.solverCommitment as string)));
+      events.push('publish'); if (crash) { crash = false; throw new Error('lost response'); }
+    },
   };
   let journal = new PackageMakerJournal(join(directory, 'maker.db'));
   const maker = () => new PackageMaker({ marketId: 'calendar', solverId: 'maker',
@@ -44,7 +65,7 @@ test('maker invalidates before refresh and reconciles consumed backing after res
     journal = new PackageMakerJournal(join(directory, 'maker.db'));
     await maker().tick();
     assert.equal(held.size, 2);
-    assert.deepEqual(events.slice(5, 9), ['maker:near:2', 'maker:far:2', 'release', 'capacity']);
+    assert.deepEqual(events.slice(0, 8), ['capacity', 'reserve', 'publish', 'release', 'capacity', 'reserve', 'publish', 'release']);
     settled = true;
     unavailable = true;
     await assert.rejects(maker().tick(), /stale source/);

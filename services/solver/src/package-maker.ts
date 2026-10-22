@@ -4,6 +4,23 @@ import { parseProtocolJson, stringifyProtocolJson, type AssetRef, type DomainRef
   type ImpliedPackageQuoteInput, type SolverCapacityRecordInput } from '@naryx/protocol-types';
 import { HttpMakerShardGateway } from './maker-control.js';
 
+export const PACKAGE_MAKER_LEVELS = 16;
+
+export async function readMakerLevels<T>(quantities: readonly bigint[], read: (quantity: bigint) => Promise<T>): Promise<T[]> {
+  const values: T[] = [];
+  for (let i = 0; i < quantities.length; i += 2) values.push(...await Promise.all(quantities.slice(i, i + 2).map(read)));
+  return values;
+}
+
+export function makerPriceTicks(price: bigint, side: 'BID' | 'ASK', level: number): bigint {
+  if (price < 0n || !Number.isInteger(level) || level < 0 || level >= PACKAGE_MAKER_LEVELS) {
+    throw new Error('Maker price or level is invalid.');
+  }
+  const buffer = BigInt(level + 1);
+  return side === 'ASK' ? (price * (10_000n + buffer) + 9_999n) / 10_000n
+    : price * (10_000n - buffer) / 10_000n;
+}
+
 export interface PackageMakerSnapshot {
   readonly capacity: SolverCapacityRecordInput;
   readonly bookNow: bigint;
@@ -19,7 +36,8 @@ export interface PackageMakerGateway {
   capacity(record: SolverCapacityRecordInput): Promise<void>;
   reserve(scope: Readonly<{ domain: DomainRef; asset: AssetRef }>, id: string, atoms: bigint): Promise<void>;
   release(scope: Readonly<{ domain: DomainRef; asset: AssetRef }>, id: string): Promise<boolean>;
-  publish(marketId: string, quotes: readonly Readonly<{ quote: ImpliedPackageQuoteInput; expiresAtValue: bigint }>[]): Promise<void>;
+  publish(marketId: string, quotes: readonly Readonly<{ quote: ImpliedPackageQuoteInput; expiresAtValue: bigint }>[],
+    replaceSources?: readonly Readonly<{ sourceId: string; sourceVersion: bigint }>[]): Promise<void>;
 }
 
 export class HttpPackageMakerGateway extends HttpMakerShardGateway implements PackageMakerGateway {
@@ -40,8 +58,9 @@ export class HttpPackageMakerGateway extends HttpMakerShardGateway implements Pa
       throw error;
     }
   }
-  async publish(marketId: string, quotes: readonly Readonly<{ quote: ImpliedPackageQuoteInput; expiresAtValue: bigint }>[]) {
-    const response = await this.request('POST', '/v1/solver/quotes/batch', { packageMarketId: marketId, quotes });
+  async publish(marketId: string, quotes: readonly Readonly<{ quote: ImpliedPackageQuoteInput; expiresAtValue: bigint }>[],
+    replaceSources?: readonly Readonly<{ sourceId: string; sourceVersion: bigint }>[]) {
+    const response = await this.request('POST', '/v1/solver/quotes/batch', { packageMarketId: marketId, quotes, replaceSources });
     if (!Array.isArray(response.entries) || response.entries.length !== quotes.length) {
       throw new Error('Package maker publication response differs from the submitted batch.');
     }
@@ -116,7 +135,7 @@ export class PackageMaker {
   constructor(input: PackageMaker['input']) {
     this.input = input;
     if (!/^[A-Za-z0-9._:-]{1,128}$/.test(input.marketId) || input.quoteLifetime <= 0n
-      || input.sourceIds.length < 1 || input.sourceIds.length > 32
+      || input.sourceIds.length < 1 || input.sourceIds.length > PACKAGE_MAKER_LEVELS * 3
       || new Set(input.sourceIds).size !== input.sourceIds.length
       || input.sourceIds.some(id => !/^[A-Za-z0-9._:-]{1,128}$/.test(id) || !id.startsWith(`${input.solverId}:`))) {
       throw new Error('Package maker policy is invalid.');
@@ -136,13 +155,11 @@ export class PackageMaker {
         for (const sourceId of this.#sources) await gateway.invalidate(sourceId, version);
         throw error;
       }
-      for (const sourceId of this.#sources) await gateway.invalidate(sourceId, version);
-      for (const hold of journal.pending(marketId)) {
-        journal.state(hold.id, await gateway.release(hold.scope, hold.id) ? 'RELEASED' : 'ALLOCATED');
-      }
+      const previous = journal.pending(marketId);
+      for (const hold of previous) if (await gateway.release(hold.scope, hold.id)) journal.state(hold.id, 'RELEASED');
       if (snapshot.capacity.environment !== 'testnet' || snapshot.capacity.solverId !== this.input.solverId
         || snapshot.capacity.evidenceGrade !== 'ONCHAIN_AVAILABLE' || snapshot.quotes.length < 1
-        || snapshot.quotes.length > 16 || snapshot.bookNow <= 0n
+        || snapshot.quotes.length > PACKAGE_MAKER_LEVELS * 2 || snapshot.bookNow <= 0n
         || new Set(snapshot.quotes.map(quote => quote.key)).size !== snapshot.quotes.length) {
         throw new Error('Package maker returned an invalid testnet snapshot.');
       }
@@ -162,7 +179,10 @@ export class PackageMaker {
         quotes.push({ quote: { ...item.quote, evidence: 'SOLVER_BACKED_IMPLIED', solverCommitment: id },
           expiresAtValue: snapshot.bookNow + this.input.quoteLifetime });
       }
-      await gateway.publish(marketId, quotes);
+      await gateway.publish(marketId, quotes, this.#sources.map(sourceId => ({ sourceId, sourceVersion: version })));
+      for (const hold of journal.pending(marketId).filter(hold => previous.some(old => old.id === hold.id))) {
+        journal.state(hold.id, await gateway.release(hold.scope, hold.id) ? 'RELEASED' : 'ALLOCATED');
+      }
       return { status: 'PUBLISHED', quotes: quotes.length };
     } finally { this.#running = false; }
   }

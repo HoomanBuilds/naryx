@@ -7,7 +7,7 @@ import type { loadSolanaTreasuryHedgeRuntime } from './solana-treasury-hedge-con
 import { requireSolanaDevnet } from './solana-devnet-rpc.js';
 import { decodeTokenAccount, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID,
   priceTestPerpShort, priceTestPerpCloseShort } from './solana-devnet-wire.js';
-import { PackageMaker, PackageMakerJournal, HttpPackageMakerGateway, type PackageMakerSnapshot } from './package-maker.js';
+import { PackageMaker, PackageMakerJournal, HttpPackageMakerGateway, PACKAGE_MAKER_LEVELS, makerPriceTicks, type PackageMakerSnapshot } from './package-maker.js';
 import type { MakerControlSigner } from './maker-control.js';
 import type { SolanaTreasuryHedgePreparationLane } from './solana-treasury-hedge-preparation.js';
 
@@ -23,11 +23,11 @@ export function createSolanaPackageMakerReader(input: Readonly<{
   const owner = new PublicKey(input.fundingAccount);
   const tokenAccount = PublicKey.findProgramAddressSync([owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(),
     new PublicKey(p.quoteMint).toBuffer()], ASSOCIATED_TOKEN_PROGRAM_ID)[0].toBase58();
-  if (p.domain.domainId !== 'svm:devnet' || input.quantities.length < 1 || input.quantities.length > 4
+  if (p.domain.domainId !== 'svm:devnet' || input.quantities.length < 1 || input.quantities.length > PACKAGE_MAKER_LEVELS
     || new Set(input.quantities).size !== input.quantities.length || input.quantities.some(q => q <= 0n)
     || input.backingAtomsPerWholeAsset <= 0n || input.maximumCapacityAtoms <= 0n) throw new Error('Solana maker policy is invalid.');
   const sourceId = (i: number, j: number) => `${input.solverId}:${input.marketId}:${i}:${j}`;
-  const sourceIds = input.quantities.flatMap((_, i) => [sourceId(i, 0), sourceId(i, 1)]);
+  const sourceIds = [sourceId(0, 0), sourceId(0, 1)];
   const total = input.quantities.reduce((sum, q) => sum + q, 0n);
   return { sourceIds, read: async (sourceVersion: bigint): Promise<PackageMakerSnapshot> => {
     await requireSolanaDevnet(lane.rpc);
@@ -63,10 +63,10 @@ export function createSolanaPackageMakerReader(input: Readonly<{
         const hedge = (side === 'ASK' ? sell : buy).fillPricePerLot * scale;
         quotes.push({ key: `${i}:${side}`, backingAtoms, quote: { executionClassId: input.marketId, side,
           legRatios: [{ numerator: 1n, denominator: 1n }, { numerator: -1n, denominator: 1n }],
-          legSources: [{ sourceId: sourceId(i, 0), sourceVersion, side, quantity,
-            priceTicks: side === 'ASK' ? ceil(reference, market.baseLotAtoms) : reference / market.baseLotAtoms },
-          { sourceId: sourceId(i, 1), sourceVersion, side: side === 'ASK' ? 'BID' : 'ASK', quantity,
-            priceTicks: side === 'ASK' ? hedge / market.baseLotAtoms : ceil(hedge, market.baseLotAtoms) }] } });
+          legSources: [{ sourceId: sourceId(0, 0), sourceVersion, side, quantity,
+            priceTicks: makerPriceTicks(side === 'ASK' ? ceil(reference, market.baseLotAtoms) : reference / market.baseLotAtoms, side, i) },
+          { sourceId: sourceId(0, 1), sourceVersion, side: side === 'ASK' ? 'BID' : 'ASK', quantity,
+            priceTicks: makerPriceTicks(side === 'ASK' ? hedge / market.baseLotAtoms : ceil(hedge, market.baseLotAtoms), side === 'ASK' ? 'BID' : 'ASK', i) }] } });
       }
     }
     if (reserve.amount < exposure * 2n) throw new Error('Solana maker payout reserve is insufficient.');

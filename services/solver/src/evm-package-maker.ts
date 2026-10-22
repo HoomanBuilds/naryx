@@ -10,7 +10,7 @@ import type { loadEvmCollateralConversionRuntime } from './evm-collateral-conver
 import type { loadEvmReverseBasisRuntime } from './evm-reverse-basis-config.js';
 import { createEvmStrategyMakerReader } from './evm-strategy-maker.js';
 import { readEvmCalendarFutureSnapshot, type EvmCalendarSpreadPricingInput } from './evm-calendar-spread-quote.js';
-import { HttpPackageMakerGateway, PackageMaker, PackageMakerJournal, type PackageMakerSnapshot } from './package-maker.js';
+import { HttpPackageMakerGateway, PackageMaker, PackageMakerJournal, PACKAGE_MAKER_LEVELS, makerPriceTicks, readMakerLevels, type PackageMakerSnapshot } from './package-maker.js';
 import type { MakerControlSigner } from './maker-control.js';
 
 const TOKEN = parseAbi(['function balanceOf(address) view returns(uint256)', 'function decimals() view returns(uint8)']);
@@ -37,11 +37,11 @@ export function createCalendarMakerReader(input: Readonly<{
   const far = pricing.markets.find(market => market.role === 'far-future')!;
   if (![84532n, 421614n].includes(pricing.chainId) || pricing.baseAsset.decimals !== 18
     || pricing.quoteAsset.decimals !== 6 || !near || !far || !positive(input.backingAtomsPerWholeAsset)
-    || !positive(input.maximumCapacityAtoms) || input.quantities.length < 1 || input.quantities.length > 4
+    || !positive(input.maximumCapacityAtoms) || input.quantities.length < 1 || input.quantities.length > PACKAGE_MAKER_LEVELS
     || input.quantities.some(q => !positive(q) || q > WAD || q % 1000n !== 0n)
     || new Set(input.quantities).size !== input.quantities.length) throw new Error('Calendar maker funding or quantities are invalid.');
   const sourceId = (index: number, leg: number) => `${input.solverId}:${input.marketId}:${index}:${leg}`;
-  const sourceIds = input.quantities.flatMap((_, i) => [sourceId(i, 0), sourceId(i, 1)]);
+  const sourceIds = [sourceId(0, 0), sourceId(0, 1)];
   const totalQuantity = input.quantities.reduce((sum, quantity) => sum + quantity, 0n);
   const read = async (sourceVersion: bigint): Promise<PackageMakerSnapshot> => {
     const reads = new Map<string, Promise<unknown>>();
@@ -71,13 +71,17 @@ export function createCalendarMakerReader(input: Readonly<{
         || input.quantities.some(quantity => totalQuantity + quantity > maximum)) throw new Error('Calendar venue is paused or has insufficient risk capacity.');
       return insurance;
     }));
+    const previews = await readMakerLevels(input.quantities, async quantity => {
+      const pricingQuantity = totalQuantity + quantity;
+      return Promise.all([
+        readEvmCalendarFutureSnapshot(snapshotPricing, near, pricingQuantity), readEvmCalendarFutureSnapshot(snapshotPricing, near, -pricingQuantity),
+        readEvmCalendarFutureSnapshot(snapshotPricing, far, pricingQuantity), readEvmCalendarFutureSnapshot(snapshotPricing, far, -pricingQuantity),
+      ] as const);
+    });
     let grossNotional = 0n;
     for (const [index, quantity] of input.quantities.entries()) {
       const pricingQuantity = totalQuantity + quantity;
-      const [nearBuy, nearSell, farBuy, farSell] = await Promise.all([
-        readEvmCalendarFutureSnapshot(snapshotPricing, near, pricingQuantity), readEvmCalendarFutureSnapshot(snapshotPricing, near, -pricingQuantity),
-        readEvmCalendarFutureSnapshot(snapshotPricing, far, pricingQuantity), readEvmCalendarFutureSnapshot(snapshotPricing, far, -pricingQuantity),
-      ]);
+      const [nearBuy, nearSell, farBuy, farSell] = previews[index]!;
       if (nearBuy.expiry <= observedAt + TTL || nearBuy.expiry >= farBuy.expiry) throw new Error('Calendar maker maturity is unavailable.');
       const worstPrice = [nearBuy.fillPriceWad, nearSell.fillPriceWad, farBuy.fillPriceWad, farSell.fillPriceWad]
         .reduce((maximum, value) => value > maximum ? value : maximum, 0n);
@@ -95,8 +99,8 @@ export function createCalendarMakerReader(input: Readonly<{
           legSources: selected.map((snapshot, legIndex) => {
             const legSide = legIndex === 0 ? side : side === 'BID' ? 'ASK' as const : 'BID' as const;
             const scaled = snapshot.fillPriceWad * 10n ** BigInt(pricing.quoteAsset.decimals);
-            return { sourceId: sourceId(index, legIndex), sourceVersion, side: legSide,
-              priceTicks: legSide === 'ASK' ? ceil(scaled, WAD) : scaled / WAD, quantity };
+            return { sourceId: sourceId(0, legIndex), sourceVersion, side: legSide,
+              priceTicks: makerPriceTicks(legSide === 'ASK' ? ceil(scaled, WAD) : scaled / WAD, legSide, index), quantity };
           }),
         } });
       }
