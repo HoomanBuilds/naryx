@@ -439,6 +439,50 @@ function rfqSender() {
   return { keyId, signEnvelope, entry };
 }
 
+test("a full two-sided dealer ladder admits 32 independently backed quotes", async () => {
+  await withSolverApi(async (api) => {
+    const scope = { domain: domainRef(DOMAIN_MANIFEST.domainId, 1, domainManifestHash(DOMAIN_MANIFEST)), asset: { assetId: "usdc", assetManifestHash: "33".repeat(32), decimals: 6 } };
+    const record = { version: 1, environment: "testnet", solverId: "solver-a", ...scope, availableAtoms: 2000n, maximumConcurrentRecoveryAtoms: 0n, evidenceGrade: "ONCHAIN_AVAILABLE", evidenceCommitment: "44".repeat(32), observedAtValue: NOW_S - 10n, expiresAtValue: FAR };
+    assert.equal((await api.call("PUT", "/v1/solver/capacity", { record })).status, 200);
+    const quotes = [];
+    for (let i = 0; i < 32; i++) {
+      const side = i % 2 === 0 ? "BID" : "ASK";
+      const commitmentId = id(2000 + i);
+      assert.equal((await api.call("POST", "/v1/solver/reservations", { ...scope,
+        commitment: { commitmentId, atoms: 20n, recoveryAtoms: 0n, firm: true, atValue: NOW_S } })).status, 200);
+      quotes.push({ quote: { executionClassId: CLASS, side, evidence: "SOLVER_BACKED_IMPLIED", solverCommitment: commitmentId,
+        legRatios: SERIES.economicLegRatios, legSources: [
+          { sourceId: 'solver-a:spot', sourceVersion: 1n, side, priceTicks: side === "BID" ? 990n - BigInt(i) : 1010n + BigInt(i), quantity: 10n },
+          { sourceId: 'solver-a:perp', sourceVersion: 1n, side: side === "BID" ? "ASK" : "BID", priceTicks: 1000n, quantity: 10n },
+        ] }, expiresAtValue: NOW + 60n });
+    }
+    const result = await api.call("POST", "/v1/solver/quotes/batch", { packageMarketId: CLASS, quotes });
+    assert.equal(result.status, 200, JSON.stringify(toProtocolJson(result.body)));
+    assert.equal(api.exchange.getBook(CLASS)?.entries.length, 32);
+    const refreshed = [];
+    for (const [i, item] of quotes.entries()) {
+      const commitmentId = id(3000 + i);
+      assert.equal((await api.call('POST', '/v1/solver/reservations', { ...scope,
+        commitment: { commitmentId, atoms: 20n, recoveryAtoms: 0n, firm: true, atValue: NOW_S } })).status, 200);
+      refreshed.push({ ...item, quote: { ...item.quote, solverCommitment: commitmentId,
+        legSources: item.quote.legSources.map(source => ({ ...source, sourceVersion: 2n })) } });
+    }
+    const replaceSources = [{ sourceId: 'solver-a:spot', sourceVersion: 2n }, { sourceId: 'solver-a:perp', sourceVersion: 2n }];
+    const crossed = refreshed.map((item, i) => i !== 30 ? item : { ...item, quote: { ...item.quote,
+      legSources: item.quote.legSources.map((source, leg) => leg === 0 ? { ...source, priceTicks: 5000n } : source) } });
+    assert.notEqual((await api.call('POST', '/v1/solver/quotes/batch', { packageMarketId: CLASS, quotes: crossed, replaceSources })).status, 200);
+    assert.equal(api.exchange.getBook(CLASS)?.entries.length, 32);
+    assert.ok(api.exchange.getBook(CLASS)?.entries.every(entry => entry.implied?.sources.every(source => source.sourceVersion === 1n)));
+    const replaced = await api.call('POST', '/v1/solver/quotes/batch', { packageMarketId: CLASS, quotes: refreshed, replaceSources });
+    assert.equal(replaced.status, 200, JSON.stringify(toProtocolJson(replaced.body)));
+    assert.equal(api.exchange.getBook(CLASS)?.entries.length, 32);
+    assert.ok(api.exchange.getBook(CLASS)?.entries.every(entry => entry.implied?.sources.every(source => source.sourceVersion === 2n)));
+    assert.equal((await api.call('POST', '/v1/solver/reservations/release', { ...scope, commitmentId: id(2000) })).status, 200);
+    assert.equal((await api.call("PUT", '/v1/solver/sources/solver-a:spot/version', { sourceVersion: 3n })).status, 200);
+    assert.equal(api.exchange.getBook(CLASS)?.entries.length, 0);
+  });
+});
+
 test("implied quotes post atomically in batches and a solver reads only its own settlements", async () => {
   await withSolverApi(async (api) => {
     const scope = { domain: domainRef(DOMAIN_MANIFEST.domainId, 1, domainManifestHash(DOMAIN_MANIFEST)), asset: { assetId: "usdc", assetManifestHash: "33".repeat(32), decimals: 6 } };
@@ -463,7 +507,7 @@ test("implied quotes post atomically in batches and a solver reads only its own 
     const conflicting = await api.call("POST", "/v1/solver/quotes/batch", { packageMarketId: CLASS, quotes: [entry(501, 901, 1_100n), entry(501, 902, 1_110n)] });
     assert.equal((conflicting.body.error as { code: string }).code, "BACKING_IN_USE");
     assert.equal(api.exchange.getBook(CLASS)?.entries.length, 0);
-    const tooMany = await api.call("POST", "/v1/solver/quotes/batch", { packageMarketId: CLASS, quotes: Array.from({ length: 17 }, () => entry(501, 901, 1_100n)) });
+    const tooMany = await api.call("POST", "/v1/solver/quotes/batch", { packageMarketId: CLASS, quotes: Array.from({ length: 33 }, () => entry(501, 901, 1_100n)) });
     assert.equal(tooMany.status, 400);
 
     const posted = await api.call("POST", "/v1/solver/quotes/batch", { packageMarketId: CLASS, quotes: [entry(501, 901, 1_100n), entry(502, 902, 1_120n)] });

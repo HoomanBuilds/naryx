@@ -572,7 +572,24 @@ export function createSolverApiHandler(options: SolverApiOptions) {
         }
         return { quote, participantId: solverId, commonControlGroupId: manifest.commonControlGroupId, expiresAtValue: entry.expiresAtValue, nowValue: now };
       });
-      const entries = books.addImpliedLiquidityBatch(classId, inputs);
+      const replacements: { sourceId: string; sourceVersion: bigint }[] = [];
+      if (body.replaceSources !== undefined) {
+        if (!batch || !Array.isArray(body.replaceSources) || body.replaceSources.length < 1 || body.replaceSources.length > 48) {
+          throw new SolverRequestError(400, "INVALID_REQUEST", "replaceSources must hold 1 to 48 sources on a quote batch.");
+        }
+        for (const value of body.replaceSources) {
+          const source = requireObject(value, "replacement source");
+          const sourceId = ownedSourceId(solverId, source.sourceId);
+          const version = source.sourceVersion;
+          if (typeof version !== 'bigint' || version <= 0n || version > 18_446_744_073_709_551_615n
+            || replacements.some(item => item.sourceId === sourceId)
+            || !inputs.some(item => item.quote.sources.some(s => s.sourceId === sourceId && s.sourceVersion === version))) {
+            throw new SolverRequestError(400, "INVALID_REQUEST", "Replacement source must match a unique source in the new quotes.");
+          }
+          replacements.push({ sourceId, sourceVersion: version });
+        }
+      }
+      const entries = books.addImpliedLiquidityBatch(classId, inputs, replacements);
       const posted = entries.map((entry) => ({ entryId: toHex(entry.entryId), priceTicks: entry.priceTicks, quantity: entry.quantity }));
       return batch ? { entries: posted } : posted[0];
     }

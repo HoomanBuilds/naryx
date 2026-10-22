@@ -344,7 +344,7 @@ export interface PackageExchangeStoreOptions {
 /** Resting entries one package book may hold, and one participant within it. */
 export const MAX_BOOK_ENTRIES = 2_000;
 /** Implied entries one batch may add. */
-export const MAX_IMPLIED_BATCH = 16;
+export const MAX_IMPLIED_BATCH = 32;
 export const MAX_ENTRIES_PER_PARTICIPANT = 250;
 
 export class PackageExchangeStoreError extends Error {
@@ -1680,11 +1680,13 @@ export class SqlitePackageExchangeStore {
    * Adds several implied entries to one book in a single transaction: every entry is admitted in
    * order against the book as it stands after the previous one, or none is.
    */
-  addImpliedLiquidityBatch(executionClassId: string, inputs: readonly ImpliedLiquidityInput[]): readonly PackageBookEntry[] {
+  addImpliedLiquidityBatch(executionClassId: string, inputs: readonly ImpliedLiquidityInput[],
+    replacements: readonly Readonly<{ sourceId: string; sourceVersion: bigint }>[] = []): readonly PackageBookEntry[] {
     if (!Array.isArray(inputs) || inputs.length === 0 || inputs.length > MAX_IMPLIED_BATCH) {
       throw new PackageExchangeStoreError("INVALID_INPUT", `A batch holds 1 to ${MAX_IMPLIED_BATCH} implied entries.`);
     }
     return this.transaction(() => {
+      for (const source of replacements) this.observeSourceVersion(source.sourceId, source.sourceVersion);
       const { policy, book } = this.policyAndBook(executionClassId);
       const versions = this.db.prepare("SELECT current_version FROM implied_source_versions WHERE source_id = ?");
       const consumed = this.db.prepare("SELECT 1 FROM package_book_consumed_sources WHERE source_key = ?");
