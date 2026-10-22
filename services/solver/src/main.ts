@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { loadEvmPackageMaker } from './evm-package-maker.js';
 import { loadSolanaPackageMaker } from './solana-package-maker.js';
+import { loadHyperliquidPackageMaker } from './hyperliquid-package-maker.js';
 import { isAbsolute, resolve } from 'node:path';
 import { hyperliquidTestnetAccountMode } from './hyperliquid-testnet-account-binding.js';
 import { loadHyperliquidTestnetPerUserRuntime, loadHyperliquidTestnetUserAccounts } from './hyperliquid-testnet-per-user-runtime.js';
@@ -480,6 +481,8 @@ const packageMaker = loadEvmPackageMaker({ path: process.env.NARYX_EVM_PACKAGE_M
   origin: apiOrigin, signer: executionSigner });
 const solanaPackageMaker = loadSolanaPackageMaker({ path: process.env.NARYX_SOLANA_PACKAGE_MAKER_CONFIG,
   runtime: solanaTreasuryRuntime, origin: apiOrigin, signer: executionSigner });
+const hyperliquidPackageMaker = loadHyperliquidPackageMaker({ path: process.env.NARYX_HYPERLIQUID_PACKAGE_MAKER_CONFIG,
+  env: process.env, lanes: generalizedStrategyLanes, origin: apiOrigin, signer: executionSigner });
 const allGeneralizedStrategyLanes = Object.freeze([
   ...generalizedStrategyLanes,
   ...(evmOptionRuntime?.quoteLanes ?? []),
@@ -903,6 +906,7 @@ function shutdown(): void {
   void Promise.allSettled([
     packageMaker?.close(),
     solanaPackageMaker?.close(),
+    hyperliquidPackageMaker?.close(),
     close(quoteServer), close(executorServer), close(arbitrumExecutorServer), baseSolver?.close(),
     solanaDevnetSolver?.close(),
   ]).then((results) => {
@@ -936,6 +940,7 @@ try {
   await listen(quoteServer, listenPort, host);
   packageMaker?.start();
   solanaPackageMaker?.start();
+  hyperliquidPackageMaker?.start();
   if (executorServer !== undefined && executorPort !== undefined) {
     await listen(executorServer, executorPort, host);
   }
@@ -973,7 +978,7 @@ try {
   stopPrivateRfqs?.();
   stopNettingBatches?.();
   stopCrossBatchClearing?.();
-  await Promise.allSettled([packageMaker?.close(), solanaPackageMaker?.close(), close(quoteServer), close(executorServer), close(arbitrumExecutorServer)]);
+  await Promise.allSettled([packageMaker?.close(), solanaPackageMaker?.close(), hyperliquidPackageMaker?.close(), close(quoteServer), close(executorServer), close(arbitrumExecutorServer)]);
   executorRuntime?.close();
   arbitrumJournal?.close();
   store.close();

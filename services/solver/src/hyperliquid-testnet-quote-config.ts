@@ -178,7 +178,7 @@ function embeddedGeneralizedLane(value: unknown): GeneralizedLaneSettings | unde
   });
 }
 
-function quoteConfiguration(env: NodeJS.ProcessEnv): Readonly<{
+export function quoteConfiguration(env: NodeJS.ProcessEnv): Readonly<{
   market: Record<string, unknown>;
   tradingAccount: `0x${string}`;
   generalized?: GeneralizedLaneSettings;
