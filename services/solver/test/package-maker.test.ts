@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import Database from 'better-sqlite3';
 import { assetRef, domainRef } from '@naryx/protocol-types';
 import { PackageMaker, PackageMakerJournal, makerPriceTicks, type PackageMakerGateway, type PackageMakerSnapshot } from '../src/package-maker.js';
 
@@ -99,4 +100,27 @@ test('maker refuses non-testnet capacity before publishing or reserving', async 
     await assert.rejects(maker.tick(), /invalid testnet snapshot/);
     assert.equal(writes, 0);
   } finally { journal.close(); }
+});
+
+test('quote housekeeping retains active obligations and exact released totals across restart', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'naryx-maker-retention-'));
+  const path = join(directory, 'journal.db');
+  let journal = new PackageMakerJournal(path);
+  const scope = { domain, asset };
+  try {
+    const pending = journal.prepare('calendar', scope, 1n);
+    const allocated = journal.prepare('calendar', scope, 2n); journal.state(allocated, 'ALLOCATED');
+    const held = journal.prepare('calendar', scope, 3n); journal.state(held, 'HELD');
+    for (let i = 0; i < 260; i++) journal.state(journal.prepare('calendar', scope, 1n << 100n), 'RELEASED');
+    assert.equal(journal.compactReleased('calendar'), 4);
+    assert.deepEqual(new Set(journal.pending('calendar').map(h => h.id)), new Set([pending, allocated, held]));
+    journal.close(); journal = new PackageMakerJournal(path);
+    assert.equal(journal.compactReleased('calendar'), 0);
+    const db = new Database(path, { readonly: true });
+    try {
+      assert.equal((db.prepare('SELECT count(*) AS n FROM package_maker_holds').get() as { n: number }).n, 259);
+      assert.deepEqual(db.prepare('SELECT released_count,released_atoms FROM package_maker_release_totals').get(),
+        { released_count: '4', released_atoms: String(4n * (1n << 100n)) });
+    } finally { db.close(); }
+  } finally { journal.close(); rmSync(directory, { recursive: true, force: true }); }
 });

@@ -81,6 +81,11 @@ export class PackageMakerJournal {
         commitment_id TEXT PRIMARY KEY, market_id TEXT NOT NULL, scope_json TEXT NOT NULL,
         atoms TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('PENDING','HELD','ALLOCATED','RELEASED'))
       ) STRICT;
+      CREATE INDEX IF NOT EXISTS package_maker_holds_market_state ON package_maker_holds (market_id, state);
+      CREATE TABLE IF NOT EXISTS package_maker_release_totals (
+        market_id TEXT NOT NULL, scope_json TEXT NOT NULL, released_count TEXT NOT NULL, released_atoms TEXT NOT NULL,
+        PRIMARY KEY (market_id, scope_json)
+      ) STRICT;
     `);
   }
   bind(marketId: string, binding: unknown) {
@@ -115,6 +120,26 @@ export class PackageMakerJournal {
     if (this.#db.prepare('UPDATE package_maker_holds SET state=? WHERE commitment_id=?').run(state, id).changes !== 1) {
       throw new Error('Package maker commitment disappeared.');
     }
+  }
+  compactReleased(marketId: string): number {
+    return this.#db.transaction(() => {
+      const rows = this.#db.prepare("SELECT commitment_id,scope_json,atoms FROM package_maker_holds WHERE market_id=? AND state='RELEASED' ORDER BY rowid DESC LIMIT 1024 OFFSET 256")
+        .all(marketId) as { commitment_id: string; scope_json: string; atoms: string }[];
+      const groups = new Map<string, { count: bigint; atoms: bigint }>();
+      for (const row of rows) {
+        const group = groups.get(row.scope_json) ?? { count: 0n, atoms: 0n };
+        group.count++; group.atoms += BigInt(row.atoms); groups.set(row.scope_json, group);
+      }
+      for (const [scope, sum] of groups) {
+        const old = this.#db.prepare('SELECT released_count,released_atoms FROM package_maker_release_totals WHERE market_id=? AND scope_json=?')
+          .get(marketId, scope) as { released_count: string; released_atoms: string } | undefined;
+        this.#db.prepare('INSERT INTO package_maker_release_totals VALUES (?,?,?,?) ON CONFLICT (market_id,scope_json) DO UPDATE SET released_count=excluded.released_count,released_atoms=excluded.released_atoms')
+          .run(marketId, scope, String(sum.count + BigInt(old?.released_count ?? '0')), String(sum.atoms + BigInt(old?.released_atoms ?? '0')));
+      }
+      const remove = this.#db.prepare("DELETE FROM package_maker_holds WHERE commitment_id=? AND state='RELEASED'");
+      for (const row of rows) remove.run(row.commitment_id);
+      return rows.length;
+    }).immediate();
   }
   close() { this.#db.close(); }
 }
@@ -183,6 +208,7 @@ export class PackageMaker {
       for (const hold of journal.pending(marketId).filter(hold => previous.some(old => old.id === hold.id))) {
         journal.state(hold.id, await gateway.release(hold.scope, hold.id) ? 'RELEASED' : 'ALLOCATED');
       }
+      journal.compactReleased(marketId);
       return { status: 'PUBLISHED', quotes: quotes.length };
     } finally { this.#running = false; }
   }
