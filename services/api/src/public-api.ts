@@ -822,7 +822,8 @@ export function createPublicApiHandler(options: PublicApiOptions) {
       const side = exchange.orderSide(packageExecution.packageOrderId);
       if (side === undefined) throw new RequestError(409, "PACKAGE_PRICE_UNAVAILABLE", "Stored package price direction is unavailable.");
       if (["calendar-spread-v1", "option-spread-v1", "treasury-inventory-hedge-v1",
-        "collateral-conversion-hedge-v1", "reverse-cash-and-carry-v1"].includes(graph.templateId)) {
+        "collateral-conversion-hedge-v1", "reverse-cash-and-carry-v1"].includes(graph.templateId)
+        || graph.legs.every(leg => leg.domain.domainId === 'hypercore:testnet')) {
         try {
           requireMatchedExecutionPrice({ side, quantity: stored.order.economicQuantity.atoms,
             graph, quote: admitted.quote, fills: packageExecution.settlement.obligations });

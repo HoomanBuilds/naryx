@@ -31,6 +31,28 @@ test('matched basket rejects direction, quantity and zero denominator mismatches
   assert.throws(() => requireMatchedExecutionPrice({ ...value, quote }), /direction/);
 });
 
+test('Hyperliquid package prices check actual leg directions and aggregate opening minimums', () => {
+  const base = assetRef('btc', '11'.repeat(32), 10);
+  const quoteAsset = assetRef('usdc', '22'.repeat(32), 8);
+  const quantity = 2_000_000n;
+  const roles = ['source-hedge', 'destination-hedge'];
+  const graph = { templateId: 'hedge-migration-v1', legs: roles.map((legId, i) => ({ legId, legTypeId: legId,
+    domain: { domainId: 'hypercore:testnet' }, legFamily: i === 0 ? 'PERP_CLOSE' : 'PERP_OPEN',
+    side: i === 0 ? 'BUY' : 'SELL', quantityAsset: base, quantityAtoms: quantity })) } as unknown as PackageGraph;
+  const quote = { quoteAsset, legEconomics: roles.map((legId, i) => ({ legId, quantity: { asset: base, atoms: quantity },
+    executionPrice: { baseAsset: base, quoteAsset, baseAtoms: 10n ** 10n, quoteAtoms: (83_001n - BigInt(i)) * 10n ** 8n } })) } as unknown as StrategyPackageQuote;
+  const value = { side: 'BID' as const, quantity, graph, quote, fills: [
+    { quantity: 1_000_000n, priceTicks: 10n ** 8n }, { quantity: 1_000_000n, priceTicks: 10n ** 8n }] };
+  requireMatchedExecutionPrice(value);
+  assert.throws(() => requireMatchedExecutionPrice({ ...value, side: 'ASK' }), /direction/);
+  assert.throws(() => requireMatchedExecutionPrice({ ...value, fills: [{ quantity, priceTicks: 99_999_999n }] }), /worse/);
+  const small = 1_000_000n;
+  assert.throws(() => requireMatchedExecutionPrice({ ...value, quantity: small,
+    graph: { ...graph, legs: graph.legs.map(l => ({ ...l, quantityAtoms: small })) },
+    quote: { ...quote, legEconomics: quote.legEconomics.map(l => ({ ...l, quantity: { ...l.quantity, atoms: small } })) },
+    fills: [{ quantity: small, priceTicks: 10n ** 8n }] }), /10 USDC/);
+});
+
 test('treasury inventory is marked once and collateral transfers are not priced as purchases', () => {
   const value = input('BID', 2000_000_000n, 1999_000_000n, 1_000_000n);
   const roles = ['inventory-position', 'treasury-hedge'].map(value => protocolId(value));

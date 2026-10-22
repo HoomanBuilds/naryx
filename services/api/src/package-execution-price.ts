@@ -10,12 +10,18 @@ export function requireMatchedExecutionPrice(input: Readonly<{
   fills: readonly Fill[];
 }>): void {
   const { graph, quote, side, quantity, fills } = input;
+  const hyperliquid = graph.legs.length > 0 && graph.legs.every(leg => leg.domain?.domainId === 'hypercore:testnet');
   const roles: readonly (readonly [string, bigint, 'TRADE' | 'REFERENCE' | 'TRANSFER'])[] | undefined =
     graph.templateId === "calendar-spread-v1" ? [["near-future", 1n, 'TRADE'], ["far-future", -1n, 'TRADE']]
     : graph.templateId === "option-spread-v1" ? [["option-long", 1n, 'TRADE'], ["option-short", -1n, 'TRADE']]
     : graph.templateId === "treasury-inventory-hedge-v1" ? [["inventory-position", 1n, 'REFERENCE'], ["treasury-hedge", -1n, 'TRADE']]
     : graph.templateId === "collateral-conversion-hedge-v1" ? [["collateral-swap", 1n, 'TRADE'], ["collateral-transfer", 1n, 'TRANSFER'], ["conversion-hedge", -1n, 'TRADE']]
     : graph.templateId === "reverse-cash-and-carry-v1" ? [["base-borrow", -1n, 'TRANSFER'], ["spot-sale", -1n, 'TRADE'], ["perp-purchase", 1n, 'TRADE']]
+    : hyperliquid && graph.templateId === 'cash-and-carry-v1' ? [['spot-purchase', 1n, 'TRADE'], ['perp-sale', -1n, 'TRADE']]
+    : hyperliquid && graph.templateId === 'external-inventory-hedge-v1' ? [['treasury-hedge', -1n, 'TRADE']]
+    : hyperliquid && graph.templateId === 'perpetual-funding-spread-v1' ? [['funding-long', 1n, 'TRADE'], ['funding-short', -1n, 'TRADE']]
+    : hyperliquid && graph.templateId === 'hedge-migration-v1' ? [['source-hedge', 1n, 'TRADE'], ['destination-hedge', -1n, 'TRADE']]
+    : hyperliquid && graph.templateId === 'delta-neutral-rebalance-v1' ? [['perp-adjustment', -1n, 'TRADE']]
     : undefined;
   if (roles === undefined) throw new Error("This template has no executable package-price convention.");
   if (quantity <= 0n || fills.length === 0 || fills.some(fill => fill.quantity <= 0n)
@@ -26,8 +32,8 @@ export function requireMatchedExecutionPrice(input: Readonly<{
   let numerator = 0n;
   let denominator = 1n;
   for (const [role, sign, kind] of roles) {
-    const leg = graph.legs.find(item => item.legId === role);
-    const economics = quote.legEconomics.find(item => item.legId === role);
+    const leg = graph.legs.find(item => hyperliquid ? item.legTypeId === role : item.legId === role);
+    const economics = quote.legEconomics.find(item => item.legId === leg?.legId);
     const price = kind === 'REFERENCE' && economics !== undefined && leg !== undefined
       ? { baseAsset: leg.quantityAsset, quoteAsset: economics.grossNotional.asset,
         quoteAtoms: economics.grossNotional.atoms, baseAtoms: quantity }
@@ -55,6 +61,10 @@ export function requireMatchedExecutionPrice(input: Readonly<{
       throw new Error("Package execution legs differ from the matched economic direction or assets.");
     }
     const signedPrice = price.quoteAtoms * 10n ** BigInt(price.baseAsset.decimals) * sign;
+    if (hyperliquid && ['SPOT_SWAP', 'PERP_OPEN', 'PERP_INCREASE'].includes(leg.legFamily)
+      && price.quoteAtoms * leg.quantityAtoms < 10n * 10n ** BigInt(quote.quoteAsset.decimals) * price.baseAtoms) {
+      throw new Error('Hyperliquid requires at least 10 USDC per opening leg; increase the package size.');
+    }
     numerator = numerator * price.baseAtoms + signedPrice * denominator;
     denominator *= price.baseAtoms;
   }
